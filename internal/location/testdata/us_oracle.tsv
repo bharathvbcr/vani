@@ -1,0 +1,315 @@
+# US-location oracle: 299 distinct board location strings from the live ledger
+# (2026-11-12, 7,606 distinct strings over 69,024 postings), drawn by a seeded
+# stratified sample over how the code before this fixture classified them:
+#   fd_hi/fd_lo  InUS false and outside exclude.only_locations ["United States"]
+#                (count >= 3 / < 3)
+#   tk           InUS true and kept by that rule
+#   td           InUS true but dropped by that rule
+#   un           unreadable to the rule
+# Hand-labelled. Columns, tab-separated:
+#   label   Y: some option the string lists is in the United States (or its
+#              territory Puerto Rico); N: none is; A: a bare name that is a
+#              well-known place both in and outside the US, so unresolvable;
+#              ?: names no readable place
+#   remote  the board's remote flag
+#   location, stratum, postings with that string in the ledger
+# Location strings only: no posting, company or person data.
+Y	false	Oakland, California, United States; Charlotte, North Carolina, United States	tk	1
+Y	false	Remote - USA - NY	tk	1
+Y	false	Peachtree Corners, GA, United States	tk	21
+N	false	Oeiras, Portugal	fd_lo	1
+Y	false	Texas - Dallas; Indiana - Indianapolis; Colorado - Denver	td	1
+N	false	Ciudad Obregón, MX	fd_lo	1
+N	false	Singapore, Hong Kong, Shanghai, Sydney	fd_lo	2
+Y	false	Colorado Springs, Colorado, United States; Huntsville, Alabama, United States	tk	2
+Y	false	Tempe, AZ; Dallas, TX; Indianapolis, IN; Kansas City, MO; Richmond, VA; St. Louis, MO; Oklahoma City, OK; New Orleans, LA; Charleston, SC	tk	1
+Y	false	Dallas, TX, United States	tk	30
+Y	false	US-NY-New York	td	15
+N	false	Armenia, Yerevan; Armenia, Remote	fd_lo	1
+N	false	Winnersh, Berkshire, United Kingdom	fd_hi	3
+N	false	Remote, Ireland, EMEA	fd_lo	1
+Y	false	Cincinnati, OH; Cleveland, OH; Columbus, OH; Louisville, KY	tk	1
+Y	true	San Francisco, California; Remote; Seattle, Washington; New York, New York	tk	1
+Y	false	New York, London, Singapore	td	1
+Y	false	Calabasas, CA, US	tk	1
+Y	false	Secaucus, New Jersey	tk	39
+Y	false	New York, Stamford	td	1
+Y	false	NYC | SF	td	5
+N	false	Hong Kong, Hong Kong; Sydney, Australia	fd_hi	7
+Y	false	Pensacola, FL	tk	6
+Y	false	Arlington, TX	tk	2
+A	false	Vienna	fd_lo	1
+N	false	Singapore-Depot Road	fd_hi	6
+Y	false	Wichita Metro Area	fd_hi	17
+N	false	Remote, South Korea	fd_lo	1
+N	false	Canada - Toronto	fd_lo	2
+Y	false	USA - Austin, TX; USA - New York, NY; USA - Sunnyvale, CA; USA - Redmond, WA	tk	2
+Y	false	New York, NY; San Francisco, CA; Seattle, WA; Los Angeles, CA; Chicago, IL; Austin, TX; Denver, CO; Atlanta, GA; Miami, FL; Boston, MA; Washington, D.C.	tk	1
+Y	false	Remote - Austin; Remote - Seattle; San Francisco, CA, United States	tk	2
+Y	false	Denver	td	27
+Y	false	Space Coast, FL; Greater Seattle Area	tk	26
+N	false	Belgrade, Serbia	fd_hi	38
+Y	false	Riverside, California	tk	1
+Y	false	Palo Alto, CA; Austin, TX	tk	4
+N	false	Remote-India (PEO)	fd_lo	1
+Y	false	Quonset, Rhode Island, United States	tk	29
+Y	false	Short Hills, NJ	tk	1
+Y	false	San Francisco, CA; New York, NY; Seattle, WA	tk	20
+N	false	Hyderabad, India; Singapore	fd_lo	2
+Y	false	US, CA, Santa Clara; US, WA, Redmond; US, WA, Seattle	td	1
+?	false	Distributed	fd_hi	69
+Y	false	Wilmington, DE, United States; Columbus, OH, United States; Tempe, AZ, United States; Chicago, IL, United States	tk	1
+Y	false	San Jose, California, US; Austin, Texas, US; RTP, North Carolina, US	tk	4
+N	false	Niteroi, Rio De Janeiro, Brasil	fd_lo	1
+Y	false	Palo Alto,CA	tk	1
+Y	false	US-San Francisco; US-New York City; US-Seattle; US-Remote; US-Chicago	tk	1
+Y	false	Miami, San Francisco	td	1
+N	true	GBR, Remote	fd_lo	1
+Y	false	OH, United States	tk	26
+Y	false	US - Remote West	td	1
+N	false	Aarhus, Central Denmark Region, Denmark	fd_hi	9
+Y	false	Tucson, AZ	tk	4
+Y	false	Santa Clara, CALIFORNIA, United States	tk	33
+N	false	Australia, Remote	fd_hi	7
+Y	false	Remote-California	tk	1
+N	false	Remote - Spain	fd_hi	6
+N	false	Remote - Ireland	fd_hi	38
+Y	true	Watsonville, CA	tk	1
+Y	true	Remote-CT	tk	1
+Y	false	Palo Alto, CA; Austin, TX; Bastrop, TX; New York, NY	tk	2
+Y	false	McLean, VA; Richmond, VA	tk	14
+Y	false	Milwaukee, WI	tk	4
+Y	false	Bellevue, WA, USA	tk	1
+N	false	Gurgaon, HR, IN	fd_hi	9
+Y	false	California - San Francisco; California - Palo Alto; Illinois - Chicago; New York - New York; Washington - Seattle; Colorado - Denver; Indiana - Indianapolis	tk	1
+Y	false	Atlanta, Georgia, United States; San Diego, California, United States; Mountain View, California, United States	tk	1
+Y	false	USA-Colorado-Fort Collins-4380 Ziegler Road	td	29
+N	false	Singapore, SG; Hong Kong, Central and Western District, Hong Kong SAR	fd_lo	1
+Y	true	Austin, Texas, United States; Charlotte, North Carolina, United States; Atlanta, Georgia, United States	tk	1
+N	false	Singapore, London, Dubai	fd_lo	1
+Y	false	Palm Beach, FL	tk	1
+N	false	Pouso Alegre, Minas Gerais, Brasil	fd_lo	1
+Y	false	San Francisco, NYC	td	1
+Y	false	San Francisco, CA; San Francisco, CA • United States	tk	1
+N	false	EMEA	fd_hi	16
+Y	true	Chicago-IL-W Adams Street	td	1
+Y	false	Fresno, CA, US	tk	2
+Y	false	Boynton Beach, FL, US	tk	2
+N	true	Curitiba, PR, Brazil	td	2
+N	false	Berlin, Germany; Munich, Germany	fd_hi	7
+N	false	Makati City, NCR, Philippines	fd_lo	2
+Y	false	Mountain View, California, United States; Remote	tk	1
+Y	false	Redlands, CA, US	tk	1
+N	false	Portugal, Remote	fd_lo	2
+N	false	JP-Tokyo	fd_hi	14
+Y	true	Phoenix, Arizona, United States	tk	1
+N	false	Seoul, KR	fd_hi	6
+Y	false	Remote (WA, US); Remote (OR, USA); Remote (CA, US); Remote (NM, US); Remote (CO, US); Remote (El Paso, TX, US); Remote (AZ, US); Remote (UT, US); Remote (ID, US); Remote (MT, US); Remote (WY, US); Remote (NV, US)	tk	1
+N	false	Ensenada, MX	fd_hi	3
+N	false	Querétaro City, MX	fd_hi	6
+Y	false	Ocean City, NJ	tk	1
+Y	false	California	tk	8
+N	false	Gurugram, India	fd_hi	19
+Y	false	Phoenix, United States of America; Austin, United States of America; Remote - USA - TX	tk	1
+Y	false	Alpharetta	fd_lo	1
+Y	false	Sunnyvale, CA / New York City, NY / Livingston, NJ	tk	1
+Y	false	San Francisco, CA, US; Los Angeles, CA, US; Seattle, WA, US	tk	1
+Y	false	Bellevue, Washington; Chicago, Illinois; San Francisco, California	tk	8
+N	true	Nanning, Guangxi, China	fd_lo	2
+Y	false	NY, United States; Columbus, OH, United States; Wilmington, DE, United States	tk	2
+N	false	Munich, BY	fd_hi	11
+N	true	Rome, Lazio, Italy	fd_lo	2
+Y	false	Atlanta, GA - Hybrid; Denver, CO - Hybrid; New York, NY - Hybrid; San Francisco, CA - Hybrid; Toronto, Ontario - Remote	tk	1
+Y	false	Chantilly, Virginia, United States; Herndon, Virginia, United States	tk	8
+Y	false	Seattle, Washington, USA; Irvine, California, USA; Herndon, Virginia, USA	tk	1
+Y	false	Austin, Texas, USA; Seattle, Washington, USA	tk	2
+N	false	Amsterdam, Netherlands; Belgrade, Serbia; Berlin, Germany; Limassol, Cyprus; Madrid, Spain; Munich, Germany; Paphos, Cyprus; Prague, Czech Republic; Warsaw, Poland; Yerevan, Armenia	fd_hi	3
+Y	false	Salt Lake City, UT, United States	tk	2
+Y	false	Northeast - United States; San Francisco, California; Seattle, Washington; Southeast - United States	tk	1
+N	false	Belgrade; London	fd_lo	1
+N	false	Paris, France; Rouen, France; Caen, France; Le Mans, France	fd_lo	1
+Y	false	Los Angeles, CA, USA	tk	2
+N	false	Suzano, Sao Paulo, Brasil	fd_lo	2
+Y	false	Fort Lauderdale, FL, US; Tamarac, Florida, United States	tk	1
+N	false	Chengdu, China	fd_lo	1
+Y	false	Austin, TX, Palo Alto, CA	tk	1
+N	false	Montreal, Canada; Remote - Canada - Quebec	fd_lo	1
+Y	false	Ann Arbor	td	12
+Y	false	San Francisco office	td	23
+N	false	Chennai, Tamil Nadu, India	fd_hi	3
+Y	false	New York City, NY; San Francisco, CA | New York City, NY	tk	6
+N	false	Suzhou Qu, Gansu, China	fd_hi	3
+N	false	Yenagoa, Bayelsa State, Nigeria	fd_lo	1
+N	false	Mumbai, MH, India	fd_lo	2
+Y	false	Los Angeles,California,United States of America; Vancouver,British Columbia,Canada; Los Gatos,California,United States of America	tk	1
+Y	false	Costa Mesa, California, United States; Huntsville, Alabama, United States; Irvine, California, United States; Reston, Virginia, United States; Seattle, Washington, United States; Washington, District of Columbia, United States	tk	1
+Y	true	Remote, New York, NY, US	tk	1
+N	false	Bertrange, LU	fd_lo	1
+Y	false	Central - United States; Northeast - United States; Remote - New York; Southeast - United States	tk	1
+N	false	Madrid, MD, Spain	td	5
+Y	false	Boxborough, Massachusetts	tk	11
+N	true	Korea	fd_hi	5
+Y	true	Seattle Office	td	3
+N	false	Zapopan, MX	fd_hi	4
+Y	false	Santa Clara, California, United States	tk	36
+Y	false	Austin, TX | Remote-Friendly, United States	tk	1
+Y	true	Greenville, SC, United States	tk	1
+N	false	Remote - Argentina	fd_lo	1
+Y	true	Orlando	fd_lo	1
+Y	false	Chicago, Illinois, United States of America; Austin, Texas, United States of America	tk	1
+Y	false	Chicago, IL; New York, NY; San Francisco, CA	tk	4
+N	false	Dublin, L, IE	fd_hi	19
+Y	false	San Juan, Puerto Rico	tk	1
+N	false	Itajai, Santa Catarina, Brasil	fd_lo	1
+N	false	India, Bengaluru; India, Gurugram; India, Remote; India, Hyderabad; India, Pune	fd_lo	1
+Y	false	Los Angeles,California,United States of America; Seattle,Washington,United States of America; New York,New York,United States of America; Los Gatos,California,United States of America	tk	1
+Y	false	Remote, Washington, United States, AMER	tk	4
+N	false	United Kingdom, Remote	fd_lo	1
+Y	false	Austin; Dallas; New York City; Seattle	td	1
+Y	false	Chicago, Illinois	tk	28
+Y	false	New York City, United States of America; Remote - USA - NJ	tk	2
+Y	false	US, CA, Santa Clara; US, GA, Remote; US, DC, Remote; US, NC, Remote; US, WA, Remote	tk	1
+N	false	Brasilia, Distrito Federal, Brasil	fd_lo	2
+N	false	São José, Santa Catarina, Brasil	fd_lo	1
+Y	false	Lubbock, TX	tk	6
+N	false	Adelaide, Australia	fd_lo	1
+N	false	Penang, MALAYSIA, Malaysia	fd_hi	4
+N	false	CASABLANCA, Morocco	fd_hi	3
+N	false	Villahermosa, MX	fd_lo	1
+N	false	Westport, MO, Ireland	td	21
+N	false	LONDON, United Kingdom; BOURNEMOUTH, DORSET, United Kingdom	fd_lo	2
+Y	false	US, California, Santa Clara; US, California, Folsom	td	1
+N	false	Lake Macquarie, New South Wales, Australia	fd_lo	2
+Y	false	Seattle, New York City	td	1
+N	false	Romania	fd_hi	14
+N	false	Hod Hasharon, Center District, Israel	fd_lo	1
+Y	false	US-REM	td	1
+N	true	Limburg, HE, Germany	fd_lo	1
+N	false	Ciudad Autónoma de Buenos Aires, Argentina; Buenos Aires, Argentina	fd_hi	4
+N	false	London - UK2	fd_hi	6
+N	false	Rome, Italy	fd_lo	1
+N	false	UK	fd_lo	1
+N	false	Bengaluru, KA, IN; Mumbai, Maharashtra, India	fd_lo	1
+Y	false	US, WA, Seattle; US, CA, Santa Clara	td	3
+Y	false	Remote - Houston	td	2
+N	false	Hamilton, Bermuda	fd_lo	2
+N	false	Japan, Tokyo	fd_hi	8
+N	false	Pune, India	fd_hi	46
+N	false	Auckland, New Zealand	fd_hi	6
+N	true	APAC - Remote	fd_lo	1
+Y	false	US, Arizona, Phoenix; US, Oregon, Hillsboro	td	1
+N	false	Bengaluru, Karnātaka, India; Kolkata, West Bengal, India; Kolkata, West Bengal	fd_lo	1
+N	false	Kuala Lumpur, Malaysia; Singapore, Singapore	fd_lo	1
+N	false	Pune or Bangalore, India	fd_hi	3
+N	false	Shijiazhuang, Hebei, China	fd_lo	1
+Y	false	San Francisco HQ	td	6
+Y	false	US, Canada	td	1
+Y	false	USA-CA San Jose Innovation Drive; USA-TX-Austin - River Place B7	td	1
+A	false	Americas or APAC	fd_lo	1
+N	false	China, Beijing; China, Shanghai; China, Shenzhen	fd_hi	3
+N	false	Remote - Netherlands	fd_hi	6
+N	true	Munich, Germany; Remote, Germany	fd_hi	4
+?	false	Remote	un	4230
+N	false	Remote (Canada)	fd_hi	35
+Y	false	San Francisco - SF9	td	8
+N	false	Montreal, QC, Canada	fd_hi	10
+?	false	$220K – $405K • Offers Equity	fd_hi	3
+Y	false	US, CA, Santa Clara; US, MA, Westford; US, TX, Austin; US, NC, Durham	td	5
+Y	false	New York, Seattle, San Francisco	td	1
+Y	false	Atlanta; Austin; Chicago; Dallas; Denver; Philadelphia; Raleigh	td	1
+Y	false	Memphis	fd_hi	5
+N	false	Krakow, Poland	fd_hi	3
+N	false	Remote - Singapore	fd_hi	22
+A	false	North America	fd_hi	3
+N	false	London, England	fd_hi	45
+Y	true	US-PA-Remote	td	1
+N	false	São Paulo, SP, Brasil	fd_hi	5
+?	false	Lovelace HQ	fd_hi	3
+N	false	Wiesbaden, HE, Germany	fd_hi	20
+N	false	Warsaw	fd_hi	38
+N	false	Bogotá, Colombia	fd_hi	4
+N	false	Annecy, Auvergne-Rhône-Alpes, France	fd_hi	19
+N	false	Italy	fd_hi	3
+N	false	Office - Japan - Tokyo	fd_hi	16
+N	false	Buenos Aires, Argentina	fd_hi	17
+Y	false	Office - USA - CyberArk Newton	td	1
+Y	false	New York, Seattle, South San Francisco HQ	td	2
+N	false	Schönkirchen, Germany	fd_hi	3
+Y	false	California - San Francisco; New York - New York City Metro - Remote; Washington - Seattle Metro - Remote	td	1
+N	false	Belfast, NIR, GB	fd_hi	52
+N	false	Luxembourg	fd_hi	6
+N	false	Hong Kong	fd_hi	48
+Y	true	US-GA-Remote	td	2
+Y	false	Washington - Seattle	td	5
+N	true	United Kingdom - London Office	fd_hi	3
+N	false	Ludwigshafen, RP, Germany	fd_hi	47
+Y	false	California - Palo Alto	td	4
+N	true	San Jose, Costa Rica	td	1
+A	true	Paris	fd_hi	87
+N	false	Freiburg, Germany	fd_hi	4
+N	false	CA-Ontario-Toronto	fd_hi	6
+Y	false	New York, Chicago, Seattle, San Francisco	td	1
+Y	false	San Francisco (Remote)	td	1
+Y	false	US, CA, Santa Clara; US, TX, Austin; US, OR, Hillsboro; US, NC, Durham	td	4
+N	false	London; Amsterdam	fd_hi	5
+Y	false	Boise, ID - SIG Building	td	1
+N	false	Remote Poland	fd_hi	20
+Y	false	Georgia - Atlanta; Illinois - Chicago; Washington - Seattle; Indiana - Indianapolis; California - San Francisco	td	1
+N	true	Netherlands	fd_hi	91
+Y	false	USA - New York (dbt)	td	6
+N	false	Amsterdam, NL	fd_hi	8
+N	false	Israel, Raanana; Israel, Tel Aviv	fd_hi	5
+Y	false	USA-CA Irvine Alton Parkway Bldg 2; USA-California-San Jose-1320 Ridder Park Drive	td	1
+Y	false	US - Hybrid	td	1
+Y	false	Montreal & Houston	td	1
+N	false	BENGALURU, KARNATAKA, India; India	fd_hi	3
+N	false	Sao Paulo, Sao Paulo, Brasil	fd_hi	52
+N	false	Saudi Arabia, Riyadh	fd_hi	3
+N	false	Office - Taiwan - Taipei City	fd_hi	4
+Y	false	Chicago, New York City	td	4
+Y	false	San Francisco; New York City	td	34
+Y	true	Scottsdale-AZ-N Scottsdale Rd	td	1
+Y	false	US-NYC; US-San Francisco	td	1
+Y	false	Washington - Bellevue; Georgia - Atlanta; Virginia - Mclean; California - San Francisco	td	2
+N	false	Toronto, Canada	fd_hi	126
+N	false	São Paulo, São Paulo, Brasil	fd_hi	3
+N	false	Norway	fd_hi	13
+Y	false	Watertown, MA USA	td	5
+Y	false	US, CA, Santa Clara; US, MA, Westford; US, WA, Seattle	td	1
+Y	false	Chicago, Atlanta, US-Remote, Toro	td	2
+N	false	Dublin, IE	fd_hi	21
+Y	false	(San Francisco, Chicago, NYC)	td	1
+Y	false	Indiana - Indianapolis; Georgia - Atlanta	td	1
+Y	true	San Francisco Remote	td	1
+N	false	Karachi	fd_hi	5
+N	true	Remote - Canada	fd_hi	22
+N	false	Finland	fd_hi	8
+N	true	Remote - EMEA	fd_hi	4
+N	false	Germany	fd_hi	55
+N	false	Brisbane, Australia	fd_hi	8
+N	true	Munich	fd_hi	17
+N	false	Bangalore, India	fd_hi	431
+N	false	Amsterdam, Netherlands; Remote - Europe	fd_hi	21
+N	false	Bristol - The Crescent	fd_hi	35
+N	false	London, England, United Kingdom	fd_hi	159
+N	false	Buenos Aires, AR	fd_hi	6
+N	false	São Paulo, São Paulo, Brazil	fd_hi	20
+N	false	Flex - Bogota, Colombia	fd_hi	3
+?	false	All Locations	un	1
+?	true	Remote - Multiple Locations	un	8
+?	false	Multiple Locations	un	2
+?	true	remote	un	1
+?	false	LOCATION	un	7
+?	false	In-Office	un	50
+?	false	Hybrid	un	446
+Y	false	US locations	un	1
+?	false	Hybrid; In-Office	un	8
+?	false	remote	un	16
+?	true	Remote	un	200
+?	false	N/A	un	27
+?	false	In-person	un	1
+Y	false	Multiple U.S. Data Center Locations	un	1
+?	true	Remote or Various	un	2
+?	false	na	un	3
+?	true	Hybrid/Remote	un	1
+?	false	All Locations - On Site	un	1

@@ -1,0 +1,123 @@
+# Held-out US-location set: 116 distinct board location strings from the live
+# ledger (2026-11-12), not in us_oracle.tsv, drawn by a seeded sample (seed 7)
+# AFTER the gazetteer and exclusion change, stratified over the fixed code's
+# exclude.only_locations ["United States"] verdict (kept 50, dropped 60,
+# unread 6), and hand-labelled without looking at the verdict. Same columns
+# and labels as us_oracle.tsv. Known miss: "Remote - EMEA, Remote - NA" ("NA"
+# is not read as North America, since a lone "NA" is the N/A placeholder).
+Y	false	Tempe, AZ, United States; Wilmington, DE, United States; Fort Worth, TX, United States; Tampa, FL, United States	heldout-kept	1
+Y	false	Austin; San Francisco	heldout-kept	1
+Y	false	Peoria, AZ	heldout-kept	1
+Y	true	North Carolina, United States	heldout-kept	1
+N	false	Remote - Poland	heldout-dropped	9
+Y	false	Plano, TX, United States; Wilmington, DE, United States	heldout-kept	4
+N	false	Amsterdam, Netherlands; Berlin, Germany; Germany; Israel; London, United Kingdom; Prague, Czech Republic; Remote - Europe; United Kingdom	heldout-dropped	1
+Y	false	San Francisco, CA; New York, NY; Los Angeles, CA; Seattle, WA; Chicago, IL; Austin, TX	heldout-kept	1
+N	true	Bengaluru, IND	heldout-dropped	6
+Y	false	Seattle, WA, United States; Palo Alto, CA, United States	heldout-kept	3
+N	false	Jigmeling, BT	heldout-dropped	1
+Y	false	San Francisco; Chicago	heldout-kept	1
+Y	false	Santa Clara, CA, United States	heldout-kept	12
+Y	false	San Francisco, CA; Sunnyvale, CA; Seattle, WA; NewYork, NY	heldout-kept	1
+Y	false	Sunnyvale, CA, USA	heldout-kept	30
+N	true	London, United Kingdom; Remote; Remote, UK	heldout-dropped	7
+Y	false	Norwood, Massachusetts; Clinical Development	heldout-kept	7
+Y	false	Irving, TX, US	heldout-kept	65
+Y	false	US, CA, Remote; US, MA, Westford; US, TX, Austin; US, WA, Remote; US, NC, Durham	heldout-kept	2
+N	false	Flex - Madrid, Spain	heldout-dropped	1
+Y	false	Mountain View, CA, USA; San Francisco, CA, USA	heldout-kept	51
+N	false	Carapicuiba, Sao Paulo, Brasil	heldout-dropped	1
+Y	false	Huntsville, AL; Greater Seattle Area	heldout-kept	23
+Y	false	US, CA, Santa Clara; US, MA, Westford; US, TX, Austin; US, NC, Durham; US, MI, Remote	heldout-kept	1
+Y	false	Chillicothe, OH	heldout-kept	1
+N	false	Jaragua Do Sul, Santa Catarina, Brasil	heldout-dropped	1
+Y	false	New York, San Francisco	heldout-kept	2
+N	false	Prague, CZ	heldout-dropped	1
+Y	false	Colorado Springs, CO; Los Angeles, CA; Washington, DC	heldout-kept	1
+?	false	Janelia Research Campus	heldout-dropped	8
+N	false	Taubate, Sao Paulo, Brasil	heldout-dropped	1
+Y	false	Spring, Texas, United States of America; Durham, North Carolina, United States of America; Ft. Collins, Colorado, United States of America	heldout-kept	2
+Y	false	Chicago, IL; Dallas, TX; Atlanta, GA; Los Angeles, CA; New York City, NY	heldout-kept	1
+N	false	England, United Kingdom	heldout-dropped	7
+N	false	United Kingdom; DUBLIN, Ireland	heldout-dropped	1
+Y	false	Pasadena, California, USA	heldout-kept	2
+Y	false	Atlanta, Georgia, USA	heldout-kept	7
+N	true	Gdańsk, Poland; Remote	heldout-dropped	2
+Y	true	Charlotte, NC	heldout-kept	2
+Y	false	US: SF, NYC, Seattle and Remote	heldout-kept	1
+N	false	Taipei, TW	heldout-dropped	17
+Y	false	Bay Point, CA; Petaluma, CA	heldout-kept	1
+Y	false	Chicago, IL, US; Remote, US	heldout-kept	1
+Y	false	San Francisco, CA, Seattle WA, New York, NY	heldout-kept	1
+N	true	Katowice, Silesian Voivodeship, Poland	heldout-dropped	1
+Y	false	Marietta, GA	heldout-kept	1
+Y	false	Toronto Canada, San Francisco, Remote in US, Remote in Canada	heldout-kept	1
+Y	false	Southaven, MS	heldout-kept	3
+Y	false	Tempe, Arizona, USA; Seattle, Washington, USA	heldout-kept	1
+N	false	Amsterdam, The Netherlands; Dublin, Ireland; Paris, France	heldout-dropped	1
+Y	false	San Diego, California, United States of America; Austin, Texas, United States of America; Folsom, California, United States of America; Raleigh, North Carolina, United States of America; Santa Clara, California, United States of America	heldout-kept	1
+Y	true	Columbus, Ohio, United States	heldout-kept	1
+N	false	Ramat-Gan, Israel	heldout-dropped	1
+Y	false	SF, NY, Remote	heldout-kept	1
+N	false	France, Remote; UK, Reading	heldout-dropped	1
+Y	false	New York, NY; San Francisco, CA; Seattle, WA; Chicago, IL - Remote	heldout-kept	1
+Y	false	United States, California, Mountain View; United States, Massachusetts, Boston; United States, Washington, Redmond	heldout-kept	1
+Y	false	San Francisco, CA ; Mountain View, CA	heldout-kept	1
+Y	false	Redwood City, United States OR San Francisco, United States	heldout-kept	1
+N	false	Saudi Arabia - Riyadh	heldout-dropped	1
+N	false	Foz Do Iguacu, Parana, Brasil	heldout-dropped	1
+N	false	United Kingdom - Remote; Spain - Remote; Romania - Remote	heldout-dropped	1
+Y	true	US-IL-Remote	heldout-kept	1
+Y	false	Poway, CA, US	heldout-kept	2
+N	false	Bogotá, CO	heldout-dropped	17
+N	false	Amsterdam,Netherlands	heldout-dropped	2
+Y	false	Esparto, California, USA; Half Moon Bay, California, USA; South San Francisco, California, USA	heldout-kept	1
+Y	false	Los Angeles, California, United States of America	heldout-kept	12
+Y	false	US - Bellevue, WA	heldout-kept	4
+Y	false	Albuquerque, NM	heldout-kept	4
+Y	false	Tampa, FL	heldout-kept	10
+Y	false	Hawthorne, CA	heldout-kept	789
+Y	false	Manassas, VA - Fab 6	heldout-kept	1
+Y	false	Renton, WA	heldout-kept	1
+N	true	Amsterdam, Netherlands; Remote, Netherlands	heldout-dropped	2
+N	false	Israel, Yokneam; Israel, Raanana	heldout-dropped	5
+N	false	Finland; France; Germany; Netherlands; Remote - Europe; Spain; Sweden; United Kingdom	heldout-dropped	1
+N	false	Australia- Melbourne	heldout-dropped	1
+N	false	Israel; Netherlands; Remote - Europe; United Kingdom	heldout-dropped	1
+Y	false	Remote - EMEA, Remote - NA	heldout-dropped	1
+N	false	Remote Ontario; Remote Canada	heldout-dropped	1
+N	false	Venlo, Netherlands	heldout-dropped	1
+N	false	South Korea, Seoul	heldout-dropped	1
+N	false	London,United Kingdom	heldout-dropped	1
+N	false	London, United Kingdom, UK	heldout-dropped	5
+N	false	India - Hyderabad; India - Bangalore	heldout-dropped	11
+N	false	Tampico, MX	heldout-dropped	1
+N	false	Czech Republic	heldout-dropped	3
+N	true	United Kingdom	heldout-dropped	295
+N	false	León, MX; San Luis Potosí City, San Luis Potosí, Mexico	heldout-dropped	1
+N	false	Canberra, Australia	heldout-dropped	3
+N	false	Office - New Zealand - Auckland	heldout-dropped	1
+N	false	Freiburg (Germany)	heldout-dropped	10
+N	true	Kuala Lumpur, MALAYSIA, Malaysia	heldout-dropped	1
+N	false	Acapulco de Juárez, MX	heldout-dropped	2
+N	false	Ecatepec, MX	heldout-dropped	1
+N	false	Sweden, Stockholm	heldout-dropped	3
+N	false	Taipei, Taiwan; Tokyo, Japan	heldout-dropped	1
+N	false	Ahmedabad, Gujarat, India	heldout-dropped	2
+N	false	Taipei	heldout-dropped	29
+N	false	Israel, Yokneam	heldout-dropped	30
+N	false	Canada, Toronto; Canada, Remote	heldout-dropped	2
+N	false	Mogi Guacu, Sao Paulo, Brasil	heldout-dropped	1
+N	false	Wroclaw	heldout-dropped	2
+N	false	Central and Western, Hong Kong Island, Hong Kong	heldout-dropped	6
+N	false	EG - Cairo, Egypt	heldout-dropped	1
+N	false	India - Pune	heldout-dropped	1
+N	false	Germany-Regensburg	heldout-dropped	3
+N	false	Warsaw, Poland	heldout-dropped	47
+N	false	Canada, Remote; Canada, Toronto	heldout-dropped	2
+A	false	Vancouver	heldout-unread	28
+A	false	Remote - Vancouver	heldout-unread	1
+A	false	Richmond	heldout-unread	4
+A	false	Athens	heldout-unread	2
+A	false	Portland	heldout-unread	1
+A	true	Vancouver	heldout-unread	2

@@ -8,11 +8,14 @@
 // change here can turn a Duplicate into a sibling or back. The input is
 // untrusted board text; it is bounded before it
 // is read and only ever produces strings, never anything that is followed or
-// executed. There is no city or metro table: an area is the place as the board
-// wrote it, and only US states (which the board abbreviates and spells
+// executed. Parse has no city or metro table: an area is the place as the
+// board wrote it, and only US states (which the board abbreviates and spells
 // inconsistently) and a short remote-scope vocabulary are normalised. The one
 // exception is a short list of foreign cities, used only to tell a country from
-// a state written the same way ("Tbilisi, Georgia", "Berlin, DE").
+// a state written the same way ("Tbilisi, Georgia", "Berlin, DE"). Whether a
+// place is in the US is answered once, by PlaceInUS (us.go), which reads a
+// table of US cities boards write without a state; InUS, Countries and the
+// exclusions all read that answer.
 package location
 
 import (
@@ -264,12 +267,24 @@ var workModeWords = map[string]bool{
 func parseSegment(seg string, remote bool) (Place, bool, string) {
 	var parts []string
 	for _, part := range strings.Split(partSep.Replace(seg), ",") {
-		if part = stripWorkMode(part); part != "" {
+		// Workday writes empty fields as "BLANK" ("BLANK,BLANK,Multiple
+		// Locations"); a field that is only that names nothing.
+		if part = stripWorkMode(part); part != "" && NormArea(part) != "blank" {
 			parts = append(parts, part)
 		}
 	}
-	if len(parts) == 0 || multipleLocations(parts) {
+	if len(parts) == 0 {
 		return Place{}, false, ""
+	}
+	if multipleLocations(parts) {
+		// "US locations", "Multiple U.S. Data Center Locations": a placeholder
+		// that still names its country is that country, as a remote scope or
+		// a place with only a region.
+		s := placeholderScope(parts[0])
+		if s == "" || remote {
+			return Place{}, false, s
+		}
+		return Place{Region: s}, true, s
 	}
 	// A remote segment that lists only scopes and US states is a scope list:
 	// "Remote (Continental US + Hawaii + Canada Only)" -> "US, Canada".
@@ -450,6 +465,27 @@ func multipleLocations(parts []string) bool {
 		return w[0] == "various" || w[0] == "multiple" || w[0] == "tbd"
 	}
 	return true
+}
+
+// placeholderScope is the one scope a placeholder such as "US locations" or
+// "Multiple U.S. Data Center Locations" names, or "" when it names none or
+// more than one.
+func placeholderScope(part string) string {
+	w := words(part)
+	found := ""
+	for i := range w {
+		for n := 1; n <= 3 && i+n <= len(w); n++ {
+			s, ok := scopes[strings.Join(w[i:i+n], " ")]
+			if !ok || s == found {
+				continue
+			}
+			if found != "" {
+				return ""
+			}
+			found = s
+		}
+	}
+	return found
 }
 
 func bounded(s string) string {

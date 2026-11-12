@@ -116,11 +116,12 @@ func (x Exclude) Match(p posting.Posting) (why string, ok bool) {
 
 // LocationUnreadable reports whether x has a location rule it cannot apply to
 // p: the location names no place and no remote work, or, with only_locations
-// set, is remote with no place and no scope. Match keeps such a posting, but
-// it has not judged it, so the caller counts it as kept unchecked. A rule on
-// another field never makes a posting unreadable here: a blank title or
-// description is already counted by the stage that reads it (title_unread,
-// empty_description).
+// set, is remote with no place and no scope, or names only places that are
+// ambiguous (location.AmbiguousPlace: "Cambridge") besides ones outside the
+// list. Match keeps such a posting, but it has not judged it, so the caller
+// counts it as kept unchecked. A rule on another field never makes a posting
+// unreadable here: a blank title or description is already counted by the
+// stage that reads it (title_unread, empty_description).
 func (x Exclude) LocationUnreadable(p posting.Posting) bool {
 	if len(x.Locations) == 0 && len(x.OnlyLocations) == 0 {
 		return false
@@ -129,7 +130,10 @@ func (x Exclude) LocationUnreadable(p posting.Posting) bool {
 	if !o.read {
 		return true
 	}
-	return len(x.OnlyLocations) > 0 && o.remote && o.scope == "" && len(o.places) == 0
+	if len(x.OnlyLocations) > 0 && o.remote && o.scope == "" && len(o.places) == 0 {
+		return true
+	}
+	return x.onlyUnjudged(p)
 }
 
 // locationOptions are the options a posting's location gives: its places,
@@ -197,25 +201,50 @@ func (x Exclude) outsideOnly(p posting.Posting) bool {
 		return false
 	}
 	for _, pl := range o.places {
-		if placeMatch(x.OnlyLocations, pl) != "" {
+		// A bare name that is as likely a US place as a foreign one
+		// ("Cambridge", "Portland") is not judged: the posting is kept.
+		if placeMatch(x.OnlyLocations, pl) != "" || location.AmbiguousPlace(pl) {
 			return false
 		}
 	}
 	return !o.remote || remoteMatch(x.OnlyLocations, o.scope, false) == ""
 }
 
-// usPlace is matched by an entry naming the country of a place with a US
-// state, which the board need not have written.
+// onlyUnjudged reports whether only_locations keeps p only because a place it
+// names is ambiguous (location.AmbiguousPlace) and no option matched an entry:
+// kept, but not checked.
+func (x Exclude) onlyUnjudged(p posting.Posting) bool {
+	if len(x.OnlyLocations) == 0 {
+		return false
+	}
+	o := optionsOf(p)
+	ambiguous := false
+	for _, pl := range o.places {
+		if placeMatch(x.OnlyLocations, pl) != "" {
+			return false
+		}
+		ambiguous = ambiguous || location.AmbiguousPlace(pl)
+	}
+	if !ambiguous {
+		return false
+	}
+	return !o.remote || remoteMatch(x.OnlyLocations, o.scope, false) == ""
+}
+
+// usPlace is matched by an entry naming the country of a place in the US,
+// which the board need not have written.
 const usPlace = "united states usa us"
 
 // placeMatch returns the first entry that matches pl, or "". A state entry
 // ("TX", "Washington") compares with a US place's state code only, so
 // "Washington" is not Washington, DC; on a place with no state (a foreign
 // one) it is read as words like any other entry. "remote" never matches a
-// place.
+// place. A place location.PlaceInUS reads as the US ("San Francisco",
+// "California - Palo Alto", "US, CA, Santa Clara") matches an entry naming
+// the US whether or not Parse found its state.
 func placeMatch(entries []string, pl location.Place) string {
 	parts := []string{pl.Area, pl.Region}
-	if pl.State != "" {
+	if location.PlaceInUS(pl) {
 		parts = append(parts, usPlace)
 	}
 	text := location.NormArea(strings.Join(parts, " "))
@@ -253,8 +282,15 @@ func remoteMatch(entries []string, scope string, all bool) string {
 	first := ""
 	for _, part := range strings.Split(scope, ",") {
 		s := location.NormArea(part)
-		if s == "us" { // location.Parse's name for every US scope
+		switch {
+		case s == "us": // location.Parse's name for every US scope
 			s = usPlace
+		case !all && (s == "anywhere" || s == "north america" || s == "americas"):
+			// A remote role open anywhere, or across the Americas, can be
+			// done from the US: only_locations naming the US keeps it, as
+			// location.InUS reads it. exclude.locations (all) does not widen
+			// this way, so excluding the US never drops a worldwide role.
+			s += " " + usPlace
 		}
 		m := ""
 		for _, e := range entries {
