@@ -513,7 +513,8 @@ Built, in two commits:
 Not kept, and why: the weights file (none in the live config: nothing to save); the marks (3 ms,
 and the keys above are computed from them); the config (5 ms, but `config.Config` holds maps and
 slices that request code could change); the profile (its rkb run reads files Vani cannot list,
-the reason the resume pool is not cached either; question 3 below).
+the reason the resume pool is not cached either; the owner chose to keep running it, decision 3
+below).
 
 Tests: `TestJobsServeKeepsTheReadAndAnswersAsTheCommand` (a live posting saved and hidden, which
 rebuild nothing; a dropped posting, a mark bringing it into scope, cleared and marked again with
@@ -550,21 +551,18 @@ selection, the places count, the sort, the page) and the profile (rkb and the ba
 ### Open questions for the owner
 
 1. **The 200 ms target.** After A–E, the levers left are the owner's choice:
-   - *Keep the profile:* rkb's claims export (~60 ms of child CPU and ~70 ms of wall time per
-     request) and the bank parse (~12 ms). See question 3.
    - *A smaller page:* the app asks for fewer than 1,000 rows and pages through the rest.
+   - *`BuildList`:* the selection, the places count, the sort and the page (~138 ms in the
+     profile).
    - Or the target moves to about 300 ms.
 2. **Memory.** Accept about 450–500 MiB of heap and a ~1 GB peak, or cap serve (D) at the cost of
    CPU.
-3. **rkb per request.** Every view runs `rkb claims export` for the knowledge-base profile. Its
-   output depends on files Vani does not name: the claims file and verification log rkb's config
-   lists, and rkb's own binary and config. Three ways:
-   - keep running it (exact, ~60 ms of child CPU and ~70 ms of wall time per view);
-   - key a kept profile on stats of the bank, the selections, the rkb binary, rkb's config and the
-     files that config lists, running rkb again on any change (exact only while that list is
-     complete);
-   - rkb reports its inputs (a list of the files a claims export read, with their stamps), and
-     serve keys on that.
+3. **rkb per request (decided 2026-11-11: keep running it).** Every view runs `rkb claims export`
+   for the knowledge-base profile, about 60 ms of child CPU and 70 ms of wall time. Its output
+   depends on files Vani does not name (the claims file and verification log rkb's config lists,
+   rkb's own binary and config), so the owner chose to keep running it, which is exact, over
+   keying a kept profile on file stats (exact only while that list of files is complete) or
+   having rkb report the files it read. That cost stays in every view's time.
 
 Language: Go throughout. This is the existing ranking and view code. No kernel here is CPU-bound
 enough to justify a Rust core behind gusset (each step is map lookups and small arithmetic per
