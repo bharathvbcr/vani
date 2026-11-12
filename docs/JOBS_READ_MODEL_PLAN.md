@@ -753,6 +753,25 @@ Each phase ships on its own and is useful by itself.
 
    Nothing was deleted outright. The removed lines are the old full-text fold and per-call
    derivation in the jobs path, replaced in place.
+F. **The app keeps its page vani's own (Swift only). Done.** It closes the gaps the Phase 1 patch
+   left, now that a warm list is cheap.
+   - **After a write.** A mark, stage or note still patches the row at once. Once the writes stop
+     (`JobsModel.reconcileDelay`, 0.5 s), one quiet list (no progress shown) replaces the page with
+     vani's. That restores what a patch cannot redo:
+     - the row's own ranking;
+     - the company factor on its company's other rows;
+     - rows past the limit;
+     - exclusions on a cleared mark.
+
+     A quiet list started before a later write is stopped, so it never lands over that write's
+     patch. A list the owner starts after a write takes the waiting reconcile's place. A failed
+     reconcile shows its error and keeps the patched page.
+   - **On activation.** Coming to the front re-lists every time. The Phase 1 file stamp
+     (`JobsListInputs`, five files) is deleted. It could not be complete: a list also reads the
+     semantic, kbmatch and resume stores, logos, and the rkb profile, whose inputs Vani cannot name.
+   - **Tests.** `JobsListCostTests` covers both, against the fake `vani`. A mutation run put back
+     six old behaviours one at a time. Five failed tests. The sixth removed a condition that could
+     never be false, which is now gone.
 
 Targets, to be confirmed by Phase 0: cold CLI `jobs list` under 1 s; serve's warm sort, filter and
 view changes under 200 ms; serve's resident memory under 300 MB.

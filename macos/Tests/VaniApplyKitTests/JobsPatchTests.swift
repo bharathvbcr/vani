@@ -216,38 +216,6 @@ final class JobsPatchTests: XCTestCase {
         XCTAssertEqual(out.pending, PendingTriage(total: 2, matching: 2, companies: [.init(company: "Acme", n: 1), .init(company: "Zeta", n: 1)]))
     }
 
-    // MARK: List inputs
-
-    func testListInputsChangeWithContentAndPresence() throws {
-        let dir = try tempDir(self)
-        let client = JobsClient(vaniBinary: dir.appendingPathComponent("vani"), configPath: dir.appendingPathComponent("c.json").path,
-                                stateDir: dir.path)
-        let paths = client.listInputPaths(ledgerDir: nil)
-        XCTAssertEqual(paths, [dir.path + "/ledger/events.jsonl", dir.path + "/marks/marks.jsonl", dir.path + "/marks/stages.jsonl",
-                               dir.path + "/retriage/readings.jsonl", dir.path + "/c.json"])
-        let other = client.listInputPaths(ledgerDir: "/elsewhere/state/ledger")
-        XCTAssertEqual(other.first, "/elsewhere/state/ledger/events.jsonl", "the folder vani reported wins")
-
-        let none = try XCTUnwrap(JobsListInputs.read(paths))
-        XCTAssertEqual(JobsListInputs.read(paths), none, "absent files read the same twice")
-        try FileManager.default.createDirectory(at: dir.appendingPathComponent("marks"), withIntermediateDirectories: true)
-        let marks = dir.appendingPathComponent("marks/marks.jsonl")
-        try Data("a\n".utf8).write(to: marks)
-        let one = try XCTUnwrap(JobsListInputs.read(paths))
-        XCTAssertNotEqual(one, none, "a file appearing is a change")
-        XCTAssertEqual(JobsListInputs.read(paths), one)
-        // Same size, same mtime second, new content written by replacing the file: the inode or the
-        // nanoseconds tell it apart.
-        try Data("b\n".utf8).write(to: marks, options: .atomic)
-        XCTAssertNotEqual(JobsListInputs.read(paths), one)
-    }
-
-    /// A file that cannot be looked at (a path through a regular file is ENOTDIR, read as absent;
-    /// one too long is ENAMETOOLONG) is doubt, never "unchanged".
-    func testAnUnreadableInputIsNeverUnchanged() {
-        XCTAssertNil(JobsListInputs.read(["/" + String(repeating: "x", count: 5000)]))
-    }
-
     // MARK: Cancellation
 
     /// A cancelled list stops its child and throws `VaniCallCancelled`, not a timeout.

@@ -3,12 +3,15 @@ import Observation
 import VaniApplyKit
 
 /// State for the Jobs tab. Every read and write is a `vani jobs` call off the
-/// main thread. A list re-reads the whole ledger: on 62,734 postings it takes
-/// 15–23 s, some 8 s of CPU and over a gigabyte of memory. So the model lists as
-/// little as it can: a mark, stage or note write patches the page from vani's
-/// reply (`JobsPage.patched`, which says what it cannot redo), a list a newer
-/// one supersedes is stopped, and coming to the front re-lists only when the
-/// files a list reads have changed (`JobsListInputs`).
+/// main thread; list, stats, gaps and show go to the resident `vani jobs serve`
+/// when it can answer (a warm list is about a third of a second of CPU on the
+/// owner's ledger), else to the command (about 2 s; docs/JOBS_READ_MODEL_PLAN.md).
+/// A mark, stage or note write patches the page from vani's reply at once
+/// (`JobsPage.patched`), then re-lists quietly once the writes stop, so what a
+/// patch cannot redo (ranking, the company factor, rows past the limit,
+/// exclusions) is vani's own again. A list a newer one supersedes is stopped.
+/// Coming to the front re-lists: no stamp of files can say a list would read the
+/// same, because the ranking reads files Vani cannot name (rkb's profile).
 @MainActor
 @Observable
 final class JobsModel {
@@ -102,10 +105,14 @@ final class JobsModel {
     private var searchesGeneration = 0
     private var listGeneration = 0
     /// Stops the newest list's `vani` children; set (and replaced) when a newer list supersedes it.
+    /// Non-nil while that list runs.
     private var listFlag: CancelFlag?
-    /// The files the newest list reads, as they were when it started. Nil when it failed, when they
-    /// could not be looked at, or when they were not the files vani reported reading.
-    private var listedInputs: JobsListInputs?
+    /// Counts writes; a reconcile waits for the writes to stop, and runs only if none came after it.
+    private var reconcileGeneration = 0
+    /// How long after the last write the quiet re-list starts, so a burst of writes costs one list.
+    var reconcileDelay: TimeInterval = 0.5
+    /// A quiet re-list (one that shows no progress) is waiting or running.
+    private(set) var reconciling = false
     private var detailGeneration = 0
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
@@ -233,22 +240,13 @@ final class JobsModel {
     }
 
     /// The app came to the front: a mark may have been written meanwhile (the browser
-    /// extension marks a job Applied through `vani jobs mark`), or a run may have added
-    /// postings, so re-list when a file a list reads changed since the newest list began,
-    /// and re-read the open job rather than show the state from before. This app's own
-    /// writes change the marks too, so the next activation after one re-lists, which also
-    /// brings in what a patched page leaves for the next list.
+    /// extension marks a job Applied through `vani jobs mark`), a run may have added
+    /// postings, or a store the ranking reads may have changed, so re-list and re-read
+    /// the open job rather than show the state from before.
     func reloadAfterActivation() {
-        if listInputsChanged() { reload() }
+        reload()
         if showSearches { reloadSearches() }
         if selection != nil { loadDetail() }
-    }
-
-    /// False only when the newest list (landed or in flight) read files that are as they were
-    /// when it began; any doubt (no such list, a failed one, a file that cannot be looked at) is true.
-    func listInputsChanged() -> Bool {
-        guard let last = listedInputs else { return true }
-        return JobsListInputs.read(last.paths) != last
     }
 
     /// Why the label table is the built-in fallback (vani's could not be read), or
@@ -274,22 +272,23 @@ final class JobsModel {
         }
     }
 
-    func refresh() async {
+    /// Re-list (with stats and gaps while Insights shows them). A `quiet` list shows no progress: it
+    /// is the reconcile after writes, over a page the owner is already working in.
+    func refresh(quiet: Bool = false) async {
         await loadLabels()
         listGeneration += 1
         let gen = listGeneration
+        // A list starting now reads every write made so far: a reconcile still waiting is not needed.
+        reconcileGeneration += 1
         // The list this one supersedes is stopped rather than left to run to its timeout; its
         // result (cancelled) is dropped by the generation check below.
         listFlag?.set()
         let flag = CancelFlag()
         listFlag = flag
-        loading = true
+        if !quiet { loading = true }
         // Stats and gaps chart fit, relevance and priority, which postings awaiting
         // triage have none of: vani refuses them, so they are not asked.
         let c = client(), v = view, q = query, s = sort, f = filter, wantStats = showInsights && view.isRanked
-        // Stamped before the list starts, so a write that lands while it runs reads as a change.
-        let inputs = JobsListInputs.read(c.listInputPaths(ledgerDir: page?.ledger))
-        listedInputs = inputs
         async let listed = BlockingWork.run { try c.list(v, query: q, sort: s, filter: f, cancellation: flag) }
         async let counted: Result<JobsStats, Error>? = wantStats
             ? BlockingWork.run { try c.stats(v, query: q, filter: f, cancellation: flag) }
@@ -301,12 +300,13 @@ final class JobsModel {
         guard gen == listGeneration else { return } // a newer list superseded this one
         loading = false
         listFlag = nil
+        // The newest list read every write: a write made while it ran stopped it (`applyWrite`) or
+        // started a newer one, so a list that lands here began after the last write.
+        reconciling = false
         switch result {
         case let .success(p):
             page = p
             error = nil
-            // The stamp counts only if it looked at the files vani says it read.
-            if inputs?.paths != c.listInputPaths(ledgerDir: p.ledger) { listedInputs = nil }
             // Only ranked roles were put in front of the owner to pass over; an
             // unranked posting awaiting triage is not "seen and passed".
             if v.isRanked {
@@ -314,7 +314,6 @@ final class JobsModel {
             }
         case let .failure(err):
             error = String(describing: err)
-            listedInputs = nil
         }
         switch statsResult {
         case let .success(st)?:
@@ -435,15 +434,41 @@ final class JobsModel {
     }
 
     /// Put a successful mark, stage or note write into the list. The page is patched from vani's reply
-    /// when `JobsPage.patched` can say exactly what a re-list would show for that row and the counts.
-    /// It re-lists instead when it cannot, when a list is in flight (it may have read the marks before
-    /// the write and would land over the patch), and while Insights is open (its charts are over the
-    /// selection, and only vani can recount them).
+    /// at once when `JobsPage.patched` can place it, and re-listed quietly once the writes stop
+    /// (`reconcileDelay`): the patch leaves the row's ranking, the company factor on its company's
+    /// other rows, rows past the limit and exclusions as they were listed, and the re-list makes the
+    /// page vani's own again. It re-lists at once and visibly instead when the patch cannot place the
+    /// write, when a visible list is in flight (it may have read the marks before the write and would
+    /// land over the patch), and while Insights is open (its charts are over the selection, and only
+    /// vani can recount them).
     private func applyWrite(_ reply: Job) async {
         let next = page?.patched(with: reply, minRelevance: filter.minRelevance)
         if let next { page = next }
         if next == nil || loading || (showInsights && view.isRanked) {
             await refresh()
+            return
+        }
+        // A quiet list started before this write may have read the marks before it: stop it, so its
+        // page does not land over the patch, and reconcile after this write instead.
+        if listFlag != nil {
+            listGeneration += 1
+            listFlag?.set()
+            listFlag = nil
+        }
+        scheduleReconcile()
+    }
+
+    /// Re-list quietly `reconcileDelay` after the last write, unless another write or any list
+    /// starts first (a list started after a write reads it).
+    private func scheduleReconcile() {
+        reconcileGeneration += 1
+        let gen = reconcileGeneration
+        reconciling = true
+        let delay = reconcileDelay
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            guard gen == reconcileGeneration else { return }
+            await refresh(quiet: true)
         }
     }
 
