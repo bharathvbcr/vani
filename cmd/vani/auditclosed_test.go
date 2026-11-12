@@ -131,23 +131,65 @@ func TestAuditClassesExclusionDropsApart(t *testing.T) {
 	}
 }
 
-// An inherited drop (a reading copied from an identical posting) is drawn,
-// and classed by the copied reading: the audit samples the dropped population,
-// and the copy was dropped by today's policy on that reading. The label queue
-// (eval.Queue) leaves copies out because there a copy would be a second
-// observation of one backend reading; the would_apply audit asks about the
-// posting, so leaving copies out would shrink the population it stands for.
-func TestAuditDrawsInheritedDropsUnderTheirReading(t *testing.T) {
-	_, state := setup(t)
-	mustCode(t, 0, "init")
-	seedAudit(t, state, 10, 0, 0)
-	seedMore(t, state, "gh:inh", 2, posting.Dropped, map[string]string{
-		"triage.backend": "d1-ultra", "triage.role_fit": "mismatch_domain", ledger.AnnTriageInheritedFrom: "gh:src:1",
-	})
-	got := drawn(t, "--seed", "w1")
-	if len(got["dropped:model:other"]) != 2 {
-		t.Errorf("inherited drops: %v", got)
+// An inherited drop (a reading copied from an identical posting) is NOT drawn.
+// This reverses the earlier expectation, which held that the would_apply audit
+// asks about the posting and so should keep copies in the population it stands
+// for. The reversal (owner decision pending, see the commit message) is that a
+// copied reading is not one this posting's model made: an audited inherited
+// drop counts as evidence about a reading it never made, and the label queue
+// (eval.Queue) already leaves copies out through eval.Inherited.
+func TestAuditLeavesInheritedPostingsOut(t *testing.T) {
+	inh := map[string]string{"triage.backend": "d1-ultra", "triage.role_fit": "mismatch_domain", ledger.AnnTriageInheritedFrom: "gh:src:1"}
+	keys := func(got map[string][]string) (out []string) {
+		for _, ks := range got {
+			out = append(out, ks...)
+		}
+		return out
 	}
+	t.Run("mixed", func(t *testing.T) {
+		_, state := setup(t)
+		mustCode(t, 0, "init")
+		seedAudit(t, state, 10, 0, 3)
+		seedMore(t, state, "gh:inh", 4, posting.Dropped, inh)
+		for _, seed := range []string{"w1", "w2", "w3"} {
+			got := drawn(t, "--seed", seed, "--dropped", "7")
+			if n := len(got["dropped:model:other"]); n != 3 {
+				t.Errorf("seed %s: %d model drops drawn, want the 3 uninherited: %v", seed, n, got)
+			}
+			for _, k := range keys(got) {
+				if strings.HasPrefix(k, "gh:inh:") {
+					t.Errorf("seed %s: inherited %s drawn", seed, k)
+				}
+			}
+		}
+	})
+	t.Run("all inherited", func(t *testing.T) {
+		_, state := setup(t)
+		mustCode(t, 0, "init")
+		seedAudit(t, state, 10, 0, 0)
+		seedMore(t, state, "gh:inh", 2, posting.Dropped, inh)
+		if got := drawn(t, "--seed", "w1"); len(got["dropped:model:other"]) != 0 {
+			t.Errorf("all-inherited drops drawn: %v", got)
+		}
+	})
+	t.Run("kept and closed", func(t *testing.T) {
+		_, state := setup(t)
+		mustCode(t, 0, "init")
+		seedAudit(t, state, 0, 0, 0)
+		seedMore(t, state, "gh:ik", 6, posting.Digested, map[string]string{ledger.AnnRank: "1", ledger.AnnTriageInheritedFrom: "gh:src:1"})
+		seedMore(t, state, "gh:dead", 3, posting.Dead, map[string]string{ledger.AnnTriageInheritedFrom: "gh:src:1"})
+		got := drawn(t, "--seed", "w1")
+		for src, ks := range got {
+			for _, k := range ks {
+				if strings.HasPrefix(k, "gh:ik:") {
+					t.Errorf("inherited kept %s drawn in %s", k, src)
+				}
+			}
+		}
+		if len(got["closed:dead"]) != 2 { // the closed quota, all from the one stratum
+			t.Errorf("a closed posting is closed by the engine, not by a reading, so it is still drawn: %v", got)
+		}
+	})
 }
 
 func TestRelevanceJSONCarriesTheRecallEstimate(t *testing.T) {
