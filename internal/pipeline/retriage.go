@@ -85,8 +85,10 @@ func RetriageTitleDrops(ctx context.Context, l ledger.Ledger, now time.Time, p D
 }
 
 const (
-	reasonTitleDrop = "retriage: the title rules no longer drop it"
-	reasonModelDrop = "retriage: the drop rules no longer drop its reading"
+	reasonTitleDrop   = "retriage: the title rules no longer drop it"
+	reasonModelDrop   = "retriage: the drop rules no longer drop its reading"
+	reasonFreshDrop   = "retriage: the drop rules no longer drop its reading, but its title, location or description moved since it was read"
+	reasonRefreshDrop = "retriage: its reading cannot be judged and no drop rule names its values; read again"
 )
 
 // ReopenScope is what a drop reopen needs besides the drop policy: what the
@@ -112,7 +114,36 @@ type ReopenScope struct {
 	// TitleOnly reopens title drops alone (RetriageTitleDrops): model drops
 	// are neither reopened nor counted.
 	TitleOnly bool
+	// Defer names the keys whose reopen waits for their board's next full
+	// listing to show them (a pending reopen, kept in Pending and applied by
+	// Reconciler.ReopenOnSighting): a dropped posting is closed, so the ledger
+	// cannot say whether its board still lists it. The retriage command
+	// defers every watched board's drops. Nil defers nothing: a key is
+	// reopened at once, as one with no full listing to wait for (an inbox
+	// page posting) always is.
+	Defer func(posting.Key) bool
+	// Pending is where deferred reopens are kept. A scope with Defer and no
+	// Pending is refused.
+	Pending *PendingReopens
+	// RefreshUnjudged sends an unjudged model drop back to Live for a fresh
+	// read when no current drop rule names a value of its stored reading
+	// (were the reading trusted, nothing would drop it). One a rule would
+	// still drop on its value stays dropped and counted. At most
+	// MaxRefreshUnjudged per call.
+	RefreshUnjudged bool
 }
+
+// reachable reports whether a reopened k would be in a listing's care: on a
+// watched board, whose next listing ages it, or weakly keyed (an inbox page
+// posting or a fallback key), which no listing ages while live either. A
+// scope whose Watched is nil reaches nothing: a check that could not run is
+// not a pass.
+func (sc ReopenScope) reachable(k posting.Key) bool {
+	return sc.Watched != nil && (sc.Watched(k) || weakKey(k))
+}
+
+// deferred reports whether k's reopen waits for a sighting.
+func (sc ReopenScope) deferred(k posting.Key) bool { return sc.Defer != nil && sc.Defer(k) }
 
 // WatchedBy is the ReopenScope.Watched of a watchlist: a key is watched when
 // it falls under one of the boards' key prefixes, the same test the absence
@@ -137,7 +168,9 @@ func WatchedBy(boards []sources.Board) func(posting.Key) bool {
 }
 
 // PolicyReopen is what RetriagePolicyDrops returned (or, in a dry run, would
-// return), by the class of the drop, and what it left dropped and why.
+// return), by the class of the drop, and what it left dropped and why. The
+// class lists hold every posting let back, reopened now or deferred (see
+// Deferred).
 type PolicyReopen struct {
 	// Title were dropped on their title alone. They go back to Live, since no
 	// backend read them, and the next run asks the backends.
@@ -147,6 +180,22 @@ type PolicyReopen struct {
 	// or Unsure as DropPolicy.Evaluate now says, and the next run scores them
 	// without asking a backend again.
 	Model []posting.Key
+	// Fresh are model drops the current rules no longer drop whose title,
+	// location or description moved since the reading (triage.*_sha256): the
+	// reading is of other text, so they go back to Live for a fresh read.
+	Fresh []posting.Key
+	// Refresh are unjudged model drops sent for a fresh read
+	// (ReopenScope.RefreshUnjudged): back to Live.
+	Refresh []posting.Key
+	// Deferred are the ones among those that wait, still dropped, for their
+	// board to list them again (ReopenScope.Defer).
+	Deferred []posting.Key
+	// AlreadyPending counts drops already waiting with the same class; they
+	// are not marked again.
+	AlreadyPending int
+	// OverCap counts drops left out because a bound was reached: the pending
+	// set's (MaxPendingReopens) or the fresh reads' (MaxRefreshUnjudged).
+	OverCap int
 	// Unjudged counts model drops the current policy cannot judge (see
 	// ReopenScope.judged): the reading was made under another model id or
 	// question, or names a slot or value today's question does not ask, or a
@@ -165,8 +214,14 @@ type PolicyReopen struct {
 	Unreadable int
 }
 
-// Returned is how many postings came back (or would, in a dry run).
-func (r PolicyReopen) Returned() int { return len(r.Title) + len(r.Model) }
+// Returned is how many postings were let back, now or deferred (or would
+// be, in a dry run).
+func (r PolicyReopen) Returned() int {
+	return len(r.Title) + len(r.Model) + len(r.Fresh) + len(r.Refresh)
+}
+
+// Reopened is how many of them came back at once (or would, in a dry run).
+func (r PolicyReopen) Reopened() int { return r.Returned() - len(r.Deferred) }
 
 // RetriagePolicyDrops returns every dropped posting that p would no longer
 // drop, title drops and model drops alike: a drop rule lost a value or a slot,
@@ -179,34 +234,99 @@ func (r PolicyReopen) Returned() int { return len(r.Title) + len(r.Model) }
 // ledger order.
 func RetriagePolicyDrops(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, sc ReopenScope, dryRun bool) (PolicyReopen, error) {
 	var out PolicyReopen
+	if sc.Defer != nil && sc.Pending == nil {
+		return out, errors.New("pipeline: a deferring reopen needs somewhere to keep its pending reopens")
+	}
 	class := map[posting.Key]dropClass{}
+	refreshLeft := MaxRefreshUnjudged
+	added := 0 // pending reopens this call adds (a dry run adds none to Pending)
+	add := func(k posting.Key, c dropClass) {
+		switch c {
+		case dropTitle:
+			out.Title = append(out.Title, k)
+		case dropModel:
+			out.Model = append(out.Model, k)
+		case dropFresh:
+			out.Fresh = append(out.Fresh, k)
+		case dropRefresh:
+			out.Refresh = append(out.Refresh, k)
+		}
+	}
 	keys, unreadable, err := reopenEach(ctx, l, dryRun, func(r ledger.Record) (ledger.Event, bool) {
 		c := planPolicyDrop(l, r, p, sc)
 		switch c {
-		case dropTitle:
-			class[r.Key] = c
-			return reopenEvent(r, now, reasonTitleDrop), true
-		case dropModel:
-			class[r.Key] = c
-			return keepReadingEvent(r, p, now), true
+		case dropTitle, dropModel, dropFresh, dropRefresh:
 		case dropUnjudged:
 			out.Unjudged++
+			return ledger.Event{}, false
 		case dropStale:
 			out.Stale++
+			return ledger.Event{}, false
 		case dropUnreadable:
 			out.Unreadable++
+			return ledger.Event{}, false
+		default:
+			return ledger.Event{}, false
 		}
-		return ledger.Event{}, false
+		if sc.deferred(r.Key) {
+			name := reopenClassOf(c)
+			if prev, ok := sc.Pending.Items[r.Key]; ok && prev.Class == name {
+				out.AlreadyPending++
+				return ledger.Event{}, false
+			}
+			if _, ok := sc.Pending.Items[r.Key]; !ok && sc.Pending.Len()+added >= MaxPendingReopens {
+				out.OverCap++
+				return ledger.Event{}, false
+			}
+			if c == dropRefresh {
+				if refreshLeft == 0 {
+					out.OverCap++
+					return ledger.Event{}, false
+				}
+				refreshLeft--
+			}
+			add(r.Key, c)
+			out.Deferred = append(out.Deferred, r.Key)
+			if dryRun {
+				added++
+			} else {
+				sc.Pending.Items[r.Key] = PendingReopen{Class: name, At: now.UTC(), Reason: reasonOf(c)}
+			}
+			return ledger.Event{}, false
+		}
+		if c == dropRefresh {
+			if refreshLeft == 0 {
+				out.OverCap++
+				return ledger.Event{}, false
+			}
+			refreshLeft--
+		}
+		class[r.Key] = c
+		switch c {
+		case dropModel:
+			return keepReadingEvent(r, p, now), true
+		default:
+			return reopenEvent(r, now, reasonOf(c)), true
+		}
 	})
 	out.Unreadable += unreadable
 	for _, k := range keys {
-		if class[k] == dropTitle {
-			out.Title = append(out.Title, k)
-		} else {
-			out.Model = append(out.Model, k)
-		}
+		add(k, class[k])
 	}
 	return out, err
+}
+
+// reasonOf is the ledger reason of a reopen of class c.
+func reasonOf(c dropClass) string {
+	switch c {
+	case dropTitle:
+		return reasonTitleDrop
+	case dropFresh:
+		return reasonFreshDrop
+	case dropRefresh:
+		return reasonRefreshDrop
+	}
+	return reasonModelDrop
 }
 
 // dropClass is what planPolicyDrop makes of one record.
@@ -219,6 +339,8 @@ const (
 	dropUnjudged                    // a model drop whose stored reading p cannot judge
 	dropStale                       // p would let it back, but its board is not watched
 	dropUnreadable                  // p would let it back, but its stored body cannot be read
+	dropFresh                       // a model drop p no longer drops whose text moved since its reading
+	dropRefresh                     // an unjudged model drop no rule names a value of, read again
 )
 
 // planPolicyDrop classifies r under p and sc. It is the one selector for both
@@ -240,33 +362,80 @@ func planPolicyDrop(l ledger.Ledger, r ledger.Record, p DropPolicy, sc ReopenSco
 	case sc.TitleOnly:
 		return dropStays
 	default:
-		if !sc.judged(p, r.Annotations) {
+		switch {
+		case sc.judged(p, r.Annotations):
+			if st, _ := p.Evaluate(answerFromAnnotations(r.Annotations)); st == posting.Dropped {
+				return dropStays
+			}
+			c = dropModel
+		case sc.RefreshUnjudged && !p.namesAValueOf(answerFromAnnotations(r.Annotations)):
+			c = dropRefresh
+		default:
 			return dropUnjudged
 		}
-		if st, _ := p.Evaluate(answerFromAnnotations(r.Annotations)); st == posting.Dropped {
-			return dropStays
-		}
-		c = dropModel
-	}
-	if sc.Watched == nil || !sc.Watched(r.Key) {
-		return dropStale
 	}
 	// Reopening to a status that keeps its body needs the body back, and an
 	// exclusion may read it; a dropped record keeps it out of memory. One that
-	// cannot be read back stays dropped and is counted, never judged on an
-	// empty description.
+	// cannot be read back is never judged on an empty description: a deferred
+	// reopen is judged at its sighting, on the listed text; any other stays
+	// dropped and is counted.
 	full := ledger.Full(l, r)
 	if full.BodyEvicted {
+		switch {
+		case !sc.reachable(r.Key):
+			return dropStale
+		case sc.deferred(r.Key):
+			return c
+		}
 		return dropUnreadable
 	}
 	// A fresh triage applies the exclusions and title rules before any
-	// backend: what they drop now stays dropped.
-	if c == dropModel {
-		if _, _, dropped := p.EvaluatePosting(full.Posting); dropped {
-			return dropStays
-		}
+	// backend: what they drop now stays dropped, title drops included.
+	if _, _, dropped := p.EvaluatePosting(full.Posting); dropped {
+		return dropStays
+	}
+	// Only now, with the rules agreed it may come back, does its board count:
+	// a drop the rules still hold is not stale.
+	if !sc.reachable(r.Key) {
+		return dropStale
+	}
+	if c == dropModel && textMoved(full.Posting, r.Annotations) {
+		c = dropFresh
 	}
 	return c
+}
+
+// textMoved reports whether a reading's bound text (triage.*_sha256, written
+// on the event of a triage that asked the backends) differs from the
+// posting's now. A binding that is absent (a copied reading, or one made
+// before readings were bound) says nothing, and is not a move.
+func textMoved(p posting.Posting, ann map[string]string) bool {
+	for k, v := range map[string]string{
+		ledger.AnnTriageDescSHA256:     p.Description,
+		ledger.AnnTriageTitleSHA256:    p.Title,
+		ledger.AnnTriageLocationSHA256: p.Location,
+	} {
+		if h := ann[k]; h != "" && h != posting.RawSHA256(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesAValueOf reports whether a drop rule that can drop (a threshold set)
+// names the value a's reading gives its slot, whatever the calibration: were
+// the reading trusted, the rule could drop it. An unjudged reading is sent for
+// a fresh read only when no rule does.
+func (p DropPolicy) namesAValueOf(a decide.Answer) bool {
+	for _, rule := range p.Rules {
+		if rule.MinOpenRouterProb <= 0 && rule.MinLappiScore <= 0 {
+			continue
+		}
+		if sr, ok := a.Slots[rule.Slot]; ok && sr.Reading == decide.Answered && contains(rule.Values, sr.Value) {
+			return true
+		}
+	}
+	return false
 }
 
 // judged reports whether a model drop's stored reading (its triage
@@ -387,9 +556,12 @@ func reopenEach(ctx context.Context, l ledger.Ledger, dryRun bool, plan func(led
 		if ctx.Err() != nil || len(evs) == 0 {
 			return keys, unreadable, err
 		}
-		// The refused batch is all-or-nothing: write it one event at a time,
-		// up to the end of the batch appendBatched would have made, then go
-		// back to batching the rest.
+		// The refused batch is all-or-nothing, and appendBatched does not say
+		// how many events it held (its byte budget may have cut it short of
+		// MaxBatchEvents), so the next MaxBatchEvents events, at least the
+		// refused batch, are written one at a time before batching resumes.
+		// appendBatched's own refusals (an event it cannot encode, one over
+		// the byte budget) land here too and are tried singly the same way.
 		n := min(len(evs), ledger.MaxBatchEvents)
 		for _, e := range evs[:n] {
 			if cerr := ctx.Err(); cerr != nil {

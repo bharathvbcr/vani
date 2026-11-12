@@ -173,6 +173,8 @@ Any strong_fit or partial_fit there is a false drop. It never writes the ledger.
 
 A title drop is reversible. After narrowing a list, removing a value from a drop rule, or removing
 the `read` entries, run `vani retriage --title-drops` (add `--dry-run` to see the count first). It
-returns to live every posting dropped on a title that the current rules no longer drop, and
-forgets its title reading. The next run triages those postings with the models. A posting the
-current rules still drop stays dropped, and a posting a model dropped is never touched.
+lets back every posting dropped on a title that the current rules no longer drop. One on a
+watched board waits, still dropped, until the board's next listing shows it (a closed role costs
+nothing), and then returns to live with its title reading forgotten; the next run triages it with
+the models. An inbox or page posting returns at once. A posting the current rules still drop
+stays dropped. `vani retriage --policy-drops` does the same for title and model drops together.

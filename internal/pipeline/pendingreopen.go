@@ -1,0 +1,283 @@
+package pipeline
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"strings"
+	"time"
+
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/posting"
+)
+
+// A pending reopen is a dropped posting the current rules would let back,
+// kept dropped until its board lists it again. A dropped posting is closed, so
+// no listing ages it and the ledger holds no sign that its board still lists
+// it: reopening it at once would put a long-closed role through scoring, the
+// paid notes call and the digest before two missed listings killed it. Waiting
+// for the board's next full listing to show it costs nothing for a role that
+// is gone, and the reopen is judged again then, on the listed text.
+//
+// The set is a state file beside the ledger, not ledger annotations: an event
+// on a dropped record moves its last event, and the digest footer counts a
+// drop on the day of that event (cmd/vani countsFor), so marking thousands of
+// drops would report them all as dropped today. The ledger lock serialises the
+// file's writers: the retriage command and the run's listing both hold it.
+
+const (
+	// PendingReopenFile is where the set is kept, under the state dir.
+	PendingReopenFile = "reopen/pending.json"
+	// PendingReopenExpiry is how long a pending reopen waits for its board to
+	// list it. Once a full listing of its board has left it out for this long
+	// it is cleared and counted: absence from two weeks of daily listings is
+	// far past the two misses and 20 hours a live posting dies on, and long
+	// enough to ride out a board that fails or is rate limited for days (a
+	// failed listing never clears anything; only a full one that left it out).
+	PendingReopenExpiry = 14 * 24 * time.Hour
+	// pendingReopenMaxAge clears an entry on load whatever its board did: a
+	// board removed from the watchlist, or one that has not listed for that
+	// long, never sees its postings again.
+	pendingReopenMaxAge = 2 * PendingReopenExpiry
+	// MaxPendingReopens bounds the set. The live ledger holds about 34,000
+	// drops, and a mark beyond the bound is counted, never silently lost.
+	MaxPendingReopens = 40_000
+	// MaxRefreshUnjudged bounds how many unjudged drops one retriage sends for
+	// a fresh read (ReopenScope.RefreshUnjudged): each costs a decision-model
+	// call when it comes back.
+	MaxRefreshUnjudged = 500
+	// maxPendingReopenBytes bounds the file read.
+	maxPendingReopenBytes = 16 << 20
+	pendingReopenVersion  = 1
+)
+
+// The classes of a pending reopen: what the drop was, and so how it comes
+// back at the sighting.
+const (
+	reopenClassTitle   = "title"   // a title drop: back to Live
+	reopenClassModel   = "model"   // a model drop on a reading still bound to its text: back on that reading
+	reopenClassFresh   = "fresh"   // a model drop whose text moved since its reading: back to Live
+	reopenClassRefresh = "refresh" // an unjudged model drop the owner asked to re-read: back to Live
+)
+
+func reopenClassOf(c dropClass) string {
+	switch c {
+	case dropTitle:
+		return reopenClassTitle
+	case dropModel:
+		return reopenClassModel
+	case dropFresh:
+		return reopenClassFresh
+	case dropRefresh:
+		return reopenClassRefresh
+	}
+	return ""
+}
+
+func validReopenClass(s string) bool {
+	switch s {
+	case reopenClassTitle, reopenClassModel, reopenClassFresh, reopenClassRefresh:
+		return true
+	}
+	return false
+}
+
+// PendingReopen is one posting's pending reopen.
+type PendingReopen struct {
+	Class  string    `json:"class"`
+	At     time.Time `json:"at"`
+	Reason string    `json:"reason,omitempty"`
+}
+
+// PendingReopens is the set, by posting key.
+type PendingReopens struct {
+	Items map[posting.Key]PendingReopen
+	// Expired counts entries LoadPendingReopens cleared for age.
+	Expired int
+}
+
+// NewPendingReopens returns an empty set.
+func NewPendingReopens() *PendingReopens {
+	return &PendingReopens{Items: map[posting.Key]PendingReopen{}}
+}
+
+// Len is how many reopens are pending.
+func (s *PendingReopens) Len() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.Items)
+}
+
+type pendingReopenFile struct {
+	V       int                           `json:"v"`
+	Updated time.Time                     `json:"updated"`
+	Items   map[posting.Key]PendingReopen `json:"items"`
+}
+
+// LoadPendingReopens reads the set at path. A missing file is an empty set.
+// A file that is oversized, malformed, of another version or holds an entry
+// it cannot read is an error, so a set that could not be read is never taken
+// for an empty one. Entries older than twice PendingReopenExpiry are cleared
+// and counted in Expired.
+func LoadPendingReopens(path string, now time.Time) (*PendingReopens, error) {
+	f, err := atomicfile.OpenRead(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return NewPendingReopens(), nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pending reopens: %w", err)
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxPendingReopenBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("pending reopens: read: %w", err)
+	}
+	if len(raw) > maxPendingReopenBytes {
+		return nil, fmt.Errorf("pending reopens: %s is over %d bytes", path, maxPendingReopenBytes)
+	}
+	var pf pendingReopenFile
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&pf); err != nil {
+		return nil, fmt.Errorf("pending reopens: %s: %w", path, err)
+	}
+	if pf.V != pendingReopenVersion {
+		return nil, fmt.Errorf("pending reopens: %s: version %d, want %d", path, pf.V, pendingReopenVersion)
+	}
+	if len(pf.Items) > MaxPendingReopens {
+		return nil, fmt.Errorf("pending reopens: %s holds %d entries, over %d", path, len(pf.Items), MaxPendingReopens)
+	}
+	s := NewPendingReopens()
+	for k, e := range pf.Items {
+		if k.ATS() == "" || !validReopenClass(e.Class) || e.At.IsZero() {
+			return nil, fmt.Errorf("pending reopens: %s: entry %q is not readable", path, k)
+		}
+		if now.Sub(e.At) >= pendingReopenMaxAge {
+			s.Expired++
+			continue
+		}
+		s.Items[k] = e
+	}
+	return s, nil
+}
+
+// Save writes the set to path atomically.
+func (s *PendingReopens) Save(path string, now time.Time) error {
+	if len(s.Items) > MaxPendingReopens {
+		return fmt.Errorf("pending reopens: %d entries, over %d", len(s.Items), MaxPendingReopens)
+	}
+	for k, e := range s.Items {
+		if k.ATS() == "" || !validReopenClass(e.Class) || e.At.IsZero() {
+			return fmt.Errorf("pending reopens: entry %q is not writable", k)
+		}
+	}
+	b, err := json.MarshalIndent(pendingReopenFile{V: pendingReopenVersion, Updated: now.UTC(), Items: s.Items}, "", " ")
+	if err != nil {
+		return fmt.Errorf("pending reopens: encode: %w", err)
+	}
+	if len(b) > maxPendingReopenBytes {
+		return fmt.Errorf("pending reopens: encodes to %d bytes, over %d", len(b), maxPendingReopenBytes)
+	}
+	if err := atomicfile.Write(path, b); err != nil {
+		return fmt.Errorf("pending reopens: %w", err)
+	}
+	return nil
+}
+
+// SightingReopen applies pending reopens as a run's full listings show their
+// postings again (Reconciler.ReopenOnSighting). Each is judged again under
+// Policy and Scope, on the listed text, exactly as a reopen at the time of
+// marking would have been: what the rules now drop stays dropped and its
+// pending reopen is cleared. It counts what it did.
+type SightingReopen struct {
+	Policy  DropPolicy
+	Scope   ReopenScope
+	Pending *PendingReopens
+	// Applied reopened at a sighting; Cleared were judged again and stay
+	// dropped; Expired were left out of their board's full listings for
+	// PendingReopenExpiry.
+	Applied, Cleared, Expired int
+	changed                   bool
+}
+
+// Changed reports whether the set changed and needs saving.
+func (s *SightingReopen) Changed() bool { return s != nil && s.changed }
+
+func (s *SightingReopen) pending(k posting.Key) (PendingReopen, bool) {
+	if s == nil || s.Pending == nil {
+		return PendingReopen{}, false
+	}
+	e, ok := s.Pending.Items[k]
+	return e, ok
+}
+
+func (s *SightingReopen) forget(k posting.Key) {
+	delete(s.Pending.Items, k)
+	s.changed = true
+}
+
+// event is what a full listing that shows rec (dropped, with a pending
+// reopen) again writes: the reopen, judged again on listed, or nothing. In
+// both cases the pending reopen is spent.
+func (s *SightingReopen) event(l ledger.Ledger, rec ledger.Record, listed posting.Posting, hash string, now time.Time) (ledger.Event, bool) {
+	e, _ := s.pending(rec.Key)
+	s.forget(rec.Key)
+	r := rec
+	r.Posting, r.BodyEvicted = listed, false
+	sc := s.Scope
+	sc.Defer, sc.Pending = nil, nil
+	sc.Watched = func(posting.Key) bool { return true } // its board just listed it
+	sc.TitleOnly = e.Class == reopenClassTitle
+	sc.RefreshUnjudged = e.Class == reopenClassRefresh
+	var ev ledger.Event
+	switch c := planPolicyDrop(l, r, s.Policy, sc); c {
+	case dropTitle:
+		ev = reopenEvent(r, now, reasonTitleDrop+", listed again")
+	case dropFresh:
+		ev = reopenEvent(r, now, reasonFreshDrop+", listed again")
+	case dropRefresh:
+		ev = reopenEvent(r, now, reasonRefreshDrop+", listed again")
+	case dropModel:
+		ev = keepReadingEvent(r, s.Policy, now)
+		ev.Reason += ", listed again"
+	default:
+		s.Cleared++
+		return ledger.Event{}, false
+	}
+	// The listing is the posting's text now: the event carries it, so the
+	// record takes it back with its body and a clean miss count.
+	ev.Posting = &listed
+	if ev.Annotations == nil {
+		ev.Annotations = map[string]string{}
+	}
+	ev.Annotations[DescHashKey] = hash
+	s.Applied++
+	return ev, true
+}
+
+// expire clears the pending reopens of prefix's board that a full listing left
+// out (not in seen) for PendingReopenExpiry, and those whose record is no
+// longer dropped (a changed description already reopened it).
+func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting.Key]bool, now time.Time) {
+	if s == nil || s.Pending == nil || prefix == "" {
+		return
+	}
+	for k, e := range s.Pending.Items {
+		if !strings.HasPrefix(string(k), prefix) {
+			continue
+		}
+		if r, ok := l.Get(k); !ok || r.Status != posting.Dropped {
+			s.forget(k)
+			continue
+		}
+		if !seen[k] && now.Sub(e.At) >= PendingReopenExpiry {
+			s.forget(k)
+			s.Expired++
+		}
+	}
+}

@@ -50,7 +50,7 @@ func TestRetriageLeavesAnUnwatchedBoardsDropAndSaysSo(t *testing.T) {
 	l.Close()
 	for _, flag := range []string{"--title-drops", "--policy-drops"} {
 		o, _ := mustCode(t, 0, "retriage", "--dry-run", flag)
-		if !strings.Contains(o, "0 posting(s) would return") || !strings.Contains(o, "left dropped, on a board no longer watched: 1") {
+		if !strings.Contains(o, "0 posting(s) would be let back") || !strings.Contains(o, "left dropped, on a board no longer watched: 1") {
 			t.Errorf("%s:\n%s", flag, o)
 		}
 		o, _ = mustCode(t, 0, "--json", "retriage", "--dry-run", flag)

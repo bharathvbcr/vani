@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // seedDrops writes one posting dropped by each route the policy reopen tells
@@ -79,7 +81,8 @@ func TestRetriagePolicyDropsCommand(t *testing.T) {
 	}
 	o, e := mustCode(t, 0, "retriage", "--dry-run", "--policy-drops")
 	for _, want := range []string{
-		"2 posting(s) would return (dropped on a rule the current drop policy no longer drops)",
+		"2 posting(s) would be let back (dropped on a rule the current drop policy no longer drops)",
+		"waiting for their board to list them again: 2",
 		"title drops, back to live for the backends to read: 1",
 		"model drops, back on their stored reading (no model asked): 1",
 		"model drops not judged, left dropped: 1",
@@ -105,12 +108,31 @@ func TestRetriagePolicyDropsCommand(t *testing.T) {
 
 	mustCode(t, 2, "retriage", "--title-drops", "--policy-drops")
 
+	// Their board (gh:d) is watched: both wait, still dropped, for its next
+	// listing, which lets them back.
 	mustCode(t, 0, "retriage", "--policy-drops")
 	l, err := ledger.Open(filepath.Join(stateDir, "ledger"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	for _, r := range l.All() {
+		if r.Status != posting.Dropped {
+			t.Fatalf("%s is %s before its board listed it", r.Key, r.Status)
+		}
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &wired{cfg: cfg, stateDir: stateDir, led: l, warn: io.Discard}
+	rec := pipeline.NewReconciler(l)
+	finish := w.reopenOnSighting(rec, jobsT0)
+	listed := []posting.Posting{ledger.Full(l, mustGet(t, l, model)).Posting, ledger.Full(l, mustGet(t, l, title)).Posting}
+	if _, err := rec.Reconcile(context.Background(), sources.Board{ATS: posting.Greenhouse, Token: "d", Company: "Acme"}, listed, jobsT0); err != nil {
+		t.Fatal(err)
+	}
+	finish()
 	want := map[posting.Key]posting.Status{model: posting.Triaged, oldName: posting.Dropped, title: posting.Live, excluded: posting.Dropped}
 	for k, st := range want {
 		r, ok := l.Get(k)

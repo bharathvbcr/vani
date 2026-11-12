@@ -9,6 +9,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -140,7 +141,7 @@ func TestRetriageTitleDropsCommand(t *testing.T) {
 	l.Close()
 
 	out, _ := mustCode(t, 0, "retriage", "--title-drops", "--dry-run")
-	if !strings.Contains(out, "0 posting(s) would return to live") {
+	if !strings.Contains(out, "0 posting(s) would be let back") {
 		t.Fatalf("rules still drop it: %q", out)
 	}
 	// The unread retriage leaves it alone.
@@ -151,15 +152,22 @@ func TestRetriageTitleDropsCommand(t *testing.T) {
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if out, _ = mustCode(t, 0, "retriage", "--title-drops", "--dry-run"); !strings.Contains(out, "1 posting(s) would return to live") {
+	if out, _ = mustCode(t, 0, "retriage", "--title-drops", "--dry-run"); !strings.Contains(out, "1 posting(s) would be let back") {
 		t.Fatalf("dry run: %q", out)
 	}
-	if out, _ = mustCode(t, 0, "retriage", "--title-drops"); !strings.Contains(out, "1 posting(s) returned to live") {
+	// Its board is watched, so it waits, still dropped, for the board's next
+	// listing to show it (a pending reopen; the listing applies it).
+	if out, _ = mustCode(t, 0, "retriage", "--title-drops"); !strings.Contains(out, "1 posting(s) let back") ||
+		!strings.Contains(out, "waiting for their board to list them again: 1") {
 		t.Fatalf("run: %q", out)
 	}
 	snap, err := ledger.ReadSnapshot(filepath.Join(stateDir, "ledger"))
-	if err != nil || len(snap.Records) != 1 || snap.Records[0].Status != posting.Live || snap.Records[0].Annotations["triage.backend"] != "" {
+	if err != nil || len(snap.Records) != 1 || snap.Records[0].Status != posting.Dropped {
 		t.Fatalf("after: %+v (%v)", snap.Records, err)
+	}
+	pending, err := pipeline.LoadPendingReopens(filepath.Join(stateDir, pipeline.PendingReopenFile), jobsT0)
+	if err != nil || pending.Items[p.Key].Class != "title" {
+		t.Fatalf("pending: %+v (%v)", pending, err)
 	}
 }
 

@@ -59,7 +59,10 @@ type Summary struct {
 	// Revived duplicates were listed again while their survivor was gone
 	// (reviveDuplicate): live again, or a duplicate of another live record.
 	Revived int
-	Invalid int // listed postings skipped for a missing or malformed key
+	// Reopened dropped postings had a pending reopen (SightingReopen) that
+	// this full listing, showing them again, applied.
+	Reopened int
+	Invalid  int // listed postings skipped for a missing or malformed key
 }
 
 // staleAnnotations lists the derived results a changed description invalidates.
@@ -72,6 +75,12 @@ func staleAnnotations(a map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// hasPendingReopen reports whether k waits for a sighting.
+func (rc *Reconciler) hasPendingReopen(k posting.Key) bool {
+	_, ok := rc.reopen.pending(k)
+	return ok
 }
 
 // Reconcile folds one board's full listing into the ledger. A run with many
@@ -194,6 +203,19 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				return s, err
 			}
 			s.Changed++
+		case full && rec.Status == posting.Dropped && rc.hasPendingReopen(p.Key):
+			// The board lists a drop that waits to be let back: judged again on
+			// this text, it comes back now or stays dropped, and either way
+			// the pending reopen is spent.
+			e, ok := rc.reopen.event(l, rec, relist, hash, now)
+			if !ok {
+				s.Unchanged++
+				break
+			}
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Reopened++
 		case rec.Status == posting.Dead:
 			// Same content, listed again: its annotations still hold, so it goes
 			// back to the status it died in (a digested posting is not triaged or
@@ -261,6 +283,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	if !full {
 		return s, nil
 	}
+	rc.reopen.expire(l, prefix, seen, now)
 	var absent []posting.Key
 	for _, k := range idx.board(prefix) { // in key order
 		if !closed(idx.info[k].status) && !seen[k] {

@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -128,6 +129,11 @@ type ledgerFacet struct {
 	ByStatus map[string]int `json:"by_status"`
 	// Torn means a writer was mid-append: the counts are complete up to it.
 	Torn bool `json:"torn,omitempty"`
+	// PendingReopens counts dropped postings that come back when their board
+	// lists them again (`vani retriage`); nil when the set could not be read,
+	// with PendingReopensError saying why.
+	PendingReopens      *int   `json:"pending_reopens"`
+	PendingReopensError string `json:"pending_reopens_error,omitempty"`
 	// liveUS is how many live postings are in the US, counted from the same
 	// snapshot as ByStatus; nil when the ledger was not read. It is not part of
 	// the ledger facet's wire shape: the schedule facet reports it.
@@ -345,7 +351,30 @@ func (e *env) ledgerFacet() ledgerFacet {
 		f.ByStatus = statusCounts(snap.Records)
 		f.liveUS = new(liveInUS(snap.Records))
 	}
+	f.PendingReopens, f.PendingReopensError = e.pendingReopens()
 	return f
+}
+
+// pendingReopens counts the pending reopens, read without the ledger lock;
+// nil and why when the set cannot be read.
+func (e *env) pendingReopens() (*int, string) {
+	s, err := pipeline.LoadPendingReopens(filepath.Join(e.stateDir, pipeline.PendingReopenFile), now())
+	if err != nil {
+		return nil, oneLine(err.Error(), 300)
+	}
+	return new(s.Len()), ""
+}
+
+// pendingReopenLine is the status line for the pending reopens, empty when
+// there are none.
+func pendingReopenLine(n *int, why string) string {
+	switch {
+	case n == nil:
+		return "pending reopen: unknown (" + why + ")"
+	case *n > 0:
+		return fmt.Sprintf("pending reopen: %d dropped posting(s) come back when their board lists them again", *n)
+	}
+	return ""
 }
 
 func (e *env) lastRunFacet(at time.Time) lastRunFacet {

@@ -361,6 +361,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// ledger here (the adapters read it), as Reconciler requires.
 	rec := pipeline.NewReconciler(w.led)
 	rec.Protect(protect)
+	defer w.reopenOnSighting(rec, now())()
 	reconcile := func(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
 		prefixMu.Lock()
 		dirtyPrefix[b.KeyPrefix()] = true

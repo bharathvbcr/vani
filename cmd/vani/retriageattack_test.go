@@ -69,7 +69,19 @@ func TestRetriageDryRunMatchesTheLockedRun(t *testing.T) {
 			t.Errorf("%v: no torn-tail notice: %q", flags, derr)
 		}
 		real, _ := mustCode(t, 0, append([]string{"retriage"}, flags...)...)
-		if got := strings.Replace(dry, "would return to live", "returned to live", 1); got != real {
+		// The verb differs, and a drop reopen's dry run says it cannot check
+		// the stored bodies (it reads the event log, where every body is
+		// whole); the real run checks them and says nothing when all read back.
+		got := strings.Replace(dry, "would return to live", "returned to live", 1)
+		got = strings.Replace(got, "would be let back", "let back", 1)
+		if flags != nil {
+			const unchecked = "  stored descriptions: not checked in a dry run (it reads the event log, where every body is whole)\n"
+			if !strings.Contains(got, unchecked) {
+				t.Errorf("%v: the dry run does not say the bodies were not checked: %q", flags, dry)
+			}
+			got = strings.Replace(got, unchecked, "", 1)
+		}
+		if got != real {
 			t.Errorf("%v: dry %q vs real %q", flags, dry, real)
 		}
 		if strings.HasPrefix(real, "0 ") {

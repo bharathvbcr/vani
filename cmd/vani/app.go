@@ -773,6 +773,9 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	for _, s := range statuses {
 		fmt.Fprintf(e.stdout, "  %-10s %d\n", s, by[s])
 	}
+	if line := pendingReopenLine(e.pendingReopens()); line != "" {
+		fmt.Fprintln(e.stdout, line)
+	}
 	fmt.Fprintf(e.stdout, "schedule: %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
 	// Whether anything fires that schedule: the same answer `status --json` gives.
 	at := now()
