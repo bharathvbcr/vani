@@ -396,13 +396,59 @@ func (c CurrentReadings) Reading(key string) (map[string]string, bool) {
 	return nil, false
 }
 
+// Latest returns the newest stored row of key by model for task (empty for
+// jd_triage), whatever prompt or fixture it was asked under. It is for a
+// comparison that wants a model's last word on a posting even after the target
+// summary changed; Current is for anything that must match the question asked
+// now. Callers report how many rows were under the current prompt.
+func (s *TeacherStore) Latest(key posting.Key, task, model string) (TeacherRow, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows := s.byKey[key]
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Task == task && rows[i].Model == model {
+			return rows[i], true
+		}
+	}
+	return TeacherRow{}, false
+}
+
+// ModelsOf counts, over keys, the postings each model has a row of for task.
+func (s *TeacherStore) ModelsOf(keys []posting.Key, task string) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]int{}
+	for _, k := range keys {
+		seen := map[string]bool{}
+		for _, r := range s.byKey[k] {
+			if r.Task == task && !seen[r.Model] {
+				seen[r.Model] = true
+				out[r.Model]++
+			}
+		}
+	}
+	return out
+}
+
 // ErrTeacherBusy means another run holds the readings log.
 var ErrTeacherBusy = errors.New("eval: another teacher run is using the readings log")
 
-// LockTeacher takes the exclusive run lock beside path, waiting at most wait
-// (and until ctx ends), so two runs never read the same store and ask twice.
+// LockFileFor is the run lock beside a readings log: its name with ".jsonl"
+// replaced by ".lock", so the teacher's log keeps its teacher_readings.lock and
+// another log (eval.AuditorFile) gets a lock of its own instead of sharing it.
+func LockFileFor(path string) string {
+	base := filepath.Base(path)
+	if stem, ok := strings.CutSuffix(base, ".jsonl"); ok && stem != "" {
+		return filepath.Join(filepath.Dir(path), stem+".lock")
+	}
+	return filepath.Join(filepath.Dir(path), base+".lock")
+}
+
+// LockTeacher takes the exclusive run lock beside path (LockFileFor), waiting
+// at most wait (and until ctx ends), so two runs never read the same store and
+// ask twice.
 func LockTeacher(ctx context.Context, path string, wait time.Duration) (unlock func(), err error) {
-	f, _, err := atomicfile.OpenAppend(filepath.Join(filepath.Dir(path), teacherLockFile), 0)
+	f, _, err := atomicfile.OpenAppend(LockFileFor(path), 0)
 	if err != nil {
 		return nil, fmt.Errorf("teacher: open lock: %w", err)
 	}
@@ -561,14 +607,30 @@ type TeacherRun struct {
 	Concurrency int
 	// Timeout bounds one question; zero is no extra bound beyond D's own.
 	Timeout time.Duration
-	// LimitNano is the most this run may add to Spent, in nano-USD; Spent reads
-	// the metered total now (the daily budget ledger's committed amount), and
-	// Worst bounds what one question for q can cost. A question is sent only
-	// when what was spent, plus every question in flight at its worst, plus
-	// this one at its worst, fits the limit.
+	// LimitNano is the most this run may add to Spent, in nano-USD, and Worst
+	// bounds what one question for q can cost. A question is sent only when
+	// what Spent grew by since the run began, plus every question in flight at
+	// its worst, plus this one at its worst, fits the limit.
+	//
+	// Spent must read a total that never falls and that each of the run's
+	// questions is resolved into before its Decide returns (the budget ledger's
+	// settled plus retained spend, leaving out attempts still in flight). Its
+	// growth is then never less than what the run spent, only more when other
+	// callers resolved spend meanwhile. A total that counts other callers'
+	// in-flight reservations (the ledger's committed amount) can fall when one
+	// of them settles for less, and would let the run spend past its limit.
 	LimitNano int64
 	Spent     func(context.Context) (int64, error)
 	Worst     func(decide.Question) int64
+	// OnSpent, when set, is told after every question that was sent (answered
+	// or not) and once more at the end what Spent has grown by since the run
+	// began, so a caller can record spend as it settles instead of once after
+	// the run: a run that dies part-way has still recorded what its finished
+	// questions cost. Calls are serialized, and the value never falls between
+	// them. An error, or a Spent that cannot be read for it, stops the run as
+	// fatal: questions must not go on being sent when their spend cannot be
+	// recorded.
+	OnSpent func(ctx context.Context, sinceBase int64) error
 	// Now stamps rows; nil is time.Now.
 	Now func() time.Time
 }
@@ -581,7 +643,9 @@ type TeacherResult struct {
 	Unusable            int // stored with at least one slot that was not an answer or an abstention
 	// Stopped is why the run ended early; empty when every posting was handled.
 	Stopped string
-	// SpentNano is what the metered total grew by, when it could be read.
+	// SpentNano is what the metered total grew by during the run. When it could
+	// not be read after the run, Run returns an error rather than a 0 that would
+	// read as "spent nothing".
 	SpentNano int64
 }
 
@@ -716,6 +780,22 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 			return false
 		}
 	}
+	// record tells OnSpent what the run has spent so far (mu held). It reads
+	// past cancellation: an interrupted question may still have been paid for.
+	record := func() {
+		if r.OnSpent == nil {
+			return
+		}
+		rc := context.WithoutCancel(ctx)
+		spent, err := r.Spent(rc)
+		if err == nil {
+			err = r.OnSpent(rc, spent-base)
+		}
+		if err != nil {
+			fatal = errors.Join(fatal, fmt.Errorf("eval: recording the spend: %w", err))
+			stop("the spend could not be recorded")
+		}
+	}
 	jobs := make(chan TeacherCandidate)
 	for range r.Concurrency {
 		wg.Add(1)
@@ -756,6 +836,9 @@ func (r TeacherRun) Run(ctx context.Context, cands []TeacherCandidate) (TeacherR
 						}
 					}
 				}
+				if !errors.Is(err, errTeacherLimit) {
+					record() // a question refused at the limit was never sent
+				}
 				mu.Unlock()
 			}
 		}()
@@ -773,8 +856,15 @@ feed:
 	close(jobs)
 	wg.Wait()
 
-	if spent, serr := r.Spent(context.WithoutCancel(ctx)); serr == nil {
+	if spent, serr := r.Spent(context.WithoutCancel(ctx)); serr != nil {
+		fatal = errors.Join(fatal, fmt.Errorf("eval: the spend could not be read after the run, so what it cost is unknown: %w", serr))
+	} else {
 		res.SpentNano = spent - base
+		if r.OnSpent != nil {
+			if herr := r.OnSpent(context.WithoutCancel(ctx), res.SpentNano); herr != nil {
+				fatal = errors.Join(fatal, fmt.Errorf("eval: recording the spend: %w", herr))
+			}
+		}
 	}
 	if fatal != nil {
 		res.Stopped = stopped

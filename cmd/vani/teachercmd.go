@@ -101,13 +101,29 @@ var (
 		return lb, nil
 	}
 	// teacherSpent reads the day's committed llm spend (nano-USD) from the
-	// budget ledger at path, which every llm call is metered into.
+	// budget ledger at path, which every llm call is metered into: everything
+	// counted against the daily cap, so the cap's headroom is the cap less it.
 	teacherSpent = func(ctx context.Context, path string) (int64, error) {
 		s, err := budget.Inspect(ctx, path)
 		if err != nil {
 			return 0, err
 		}
 		return s.CommittedNanoUSD(), nil
+	}
+	// teacherResolved reads the day's resolved llm spend (nano-USD): what the
+	// ledger settled from provider usage plus the reservations it kept
+	// unproven, leaving out attempts still in flight. It is a run's own meter
+	// (eval.TeacherRun.Spent). Each of the run's attempts is resolved into it
+	// before its question returns and it never falls, so its growth over a run
+	// is at least what the run spent. The committed total is not: it counts
+	// other callers' in-flight reservations, and one settling for less during
+	// the run made its growth understate the run's spend.
+	teacherResolved = func(ctx context.Context, path string) (int64, error) {
+		s, err := budget.Inspect(ctx, path)
+		if err != nil {
+			return 0, err
+		}
+		return s.SpentNanoUSD + s.RetainedNanoUSD, nil
 	}
 	// teacherSettled reads the budget ledger at path as it stands, for the
 	// run's report (settled spend, kept reservations).
@@ -509,11 +525,11 @@ func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
 	if err != nil {
 		return err
 	}
-	spent := func(c context.Context) (int64, error) { return teacherSpent(c, ledgerPath) }
-	committed, err := spent(ctx)
+	committed, err := teacherSpent(ctx, ledgerPath)
 	if err != nil {
 		return fmt.Errorf("teacher: reading today's llm spend: %w", err)
 	}
+	spent := func(c context.Context) (int64, error) { return teacherResolved(c, ledgerPath) }
 	before, beforeErr := teacherSettled(ctx, ledgerPath)
 	limit := min(int64(o.budgetUSD*1e9), capNano-committed)
 	if limit <= 0 {
@@ -552,7 +568,7 @@ func (e *env) teacherSummary(res eval.TeacherResult, already, planned int, befor
 		res.Asked, res.Stored, res.Unusable, res.Unread, res.Skipped+already)
 	if err := cmp.Or(beforeErr, afterErr); err != nil {
 		out.MeteredUSD, out.LedgerError = dollars(res.SpentNano), err.Error()
-		fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (committed delta, not settled) %s\n", err, usd(res.SpentNano))
+		fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (resolved delta: settled plus kept reservations, at least this run's own) %s\n", err, usd(res.SpentNano))
 	} else {
 		out.SettledUSD, out.RetainedUSD = dollars(after.SpentNanoUSD-before.SpentNanoUSD), dollars(after.RetainedNanoUSD-before.RetainedNanoUSD)
 		out.RemainingTodayUSD = dollars(max(capNano-after.CommittedNanoUSD(), 0))

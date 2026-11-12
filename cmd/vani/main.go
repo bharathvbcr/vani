@@ -169,6 +169,25 @@ commands:
                              for Lappi's agreement filter; --dry-run prices it and asks nothing;
                              a real run needs --budget-usd and stops at the lesser of it and the
                              daily llm cap's headroom
+  auditor calibrate [--json] [--dry-run] [--budget-usd N] [--model M] [--concurrency N]
+                    [--no-identifying-words-file] [--show-terms]
+                             ask the llm (default llm.triage_model) "would the job seeker apply?"
+                             about every posting you judged in the audit or marked, and keep the
+                             answers in auditor_readings.jsonl (never your labels; nothing in the
+                             pipeline reads them). --dry-run prices it and asks nothing; a real run
+                             needs --budget-usd and stops at the least of it, the auditor's own
+                             $15 daily cap (budget/auditor.json, charged as questions settle) and
+                             the daily llm cap's headroom. It refuses while the text it would send
+                             holds an identifying term (counts only; --show-terms names them on a
+                             terminal's stderr) or your identifying-words list is missing or empty
+                             (--no-identifying-words-file sends anyway)
+  auditor report [--json] [--model M] [--teacher-model M] [--teacher-current-only] [--seed N]
+                             the auditor's agreement with your answers (AUC with bootstrap
+                             intervals) within the kept and within the dropped postings, against
+                             the teacher's triage reading and the relevance score, and the gate:
+                             "passes" only when it clearly beats both in both groups, with how
+                             many labels the gate needs before it can decide. --teacher-current-only
+                             takes the teacher's readings under the current question only
   impressions log --surface jobs|audit --slate ID [--section S] [--json]
                              record the rows a screen shows ({"rows":[{"key","position"}]} on
                              stdin), once per slate; keys and positions only, never a title
@@ -537,6 +556,8 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdReasons(args[1:])
 	case "teacher":
 		cmdErr = e.cmdTeacher(args[1:])
+	case "auditor":
+		cmdErr = e.cmdAuditor(args[1:])
 	case "kbmatch":
 		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":
