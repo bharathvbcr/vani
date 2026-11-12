@@ -101,6 +101,9 @@ type Config struct {
 	// Funnel tunes the triage funnel's spend (funnel.go): the thin-description
 	// skip, the notes relevance floor and the notes' own daily cap.
 	Funnel Funnel `json:"funnel,omitzero"`
+	// Liveness tunes when a posting a board stops listing dies (liveness.go):
+	// the mass-absence share, floor and hold.
+	Liveness Liveness `json:"liveness,omitzero"`
 	// KB locates the canonical career knowledge base (rkb's bank.json) that
 	// `vani kb sync` copies one way into DevPrism.
 	KB KB `json:"kb,omitzero"`
@@ -1699,6 +1702,7 @@ func (c Config) Validate() error {
 	c.TitleSignals.validate(add)
 	c.Exclude.validate(add)
 	c.Funnel.validate(add)
+	c.Liveness.validate(add)
 
 	if len(errs) == 0 {
 		return nil
