@@ -356,9 +356,28 @@ type boardsReport struct {
 	MassMarked int `json:"mass_marked,omitempty"`
 	Held       int `json:"held,omitempty"`
 	// ClockBehind counts read boards whose full listing aged nothing because
-	// the clock read behind the ledger's own history. A failure: nothing is
-	// being aged until the clock is right. Additive.
+	// the ledger holds events stamped ahead of the run's clock (pipeline
+	// liveness.go "The clock"): the clock is behind, or those events came from a
+	// clock that ran ahead. A failure: those boards age nothing until the clock
+	// passes the events. Additive.
 	ClockBehind int `json:"clock_behind,omitempty"`
+	// MassDead is postings a mass absence had marked that died this run, their
+	// mass hold over and their board still not listing them. A failure, so the
+	// owner sees them: a mass hold usually ends in its postings coming back.
+	// Counted in the items' dead too. Additive.
+	MassDead int `json:"mass_dead,omitempty"`
+	// DeathsDeferred is deaths that waited one more read because more than
+	// pipeline.ClockWindow had passed since the posting's last event (a gap a
+	// jumped clock would also make). Shown, not a failure. Additive.
+	DeathsDeferred int `json:"deaths_deferred,omitempty"`
+	// MassHeld names the boards whose postings wait out a mass hold after this
+	// run (from the ledger, not only this run's listings), with when the holds
+	// end, at most maxStaleListed; MassHeldCount is all such boards and
+	// MassHeldPostings all such postings. An attention line every run while any
+	// is held, not a failure. Additive.
+	MassHeld         []massHeldBoard `json:"mass_held,omitempty"`
+	MassHeldCount    int             `json:"mass_held_count,omitempty"`
+	MassHeldPostings int             `json:"mass_held_postings,omitempty"`
 	// Items holds one entry per tried board, in watchlist order. When the
 	// bounds cut it, failed, skipped, mass and clock-behind boards are kept
 	// before read ones.
@@ -441,13 +460,19 @@ type reconcileCounts struct {
 	// many of them it left out (pipeline.Summary); Held is the absent ones past
 	// the miss count that were kept alive inside their hold. Mass says the
 	// listing was a mass absence, MassMarked how many postings it newly marked,
-	// ClockBehind that it aged nothing because the clock read behind the ledger.
-	Open        int  `json:"open,omitempty"`
-	Absent      int  `json:"absent,omitempty"`
-	Held        int  `json:"held,omitempty"`
-	Mass        bool `json:"mass,omitempty"`
-	MassMarked  int  `json:"mass_marked,omitempty"`
-	ClockBehind bool `json:"clock_behind,omitempty"`
+	// ClockBehind that it aged nothing because the ledger holds events stamped
+	// ahead of the clock, ClockAhead the newest such event. Deferred is deaths
+	// that waited a read for a gap of more than pipeline.ClockWindow; MassDead
+	// is deaths of mass-marked postings.
+	Open        int       `json:"open,omitempty"`
+	Absent      int       `json:"absent,omitempty"`
+	Held        int       `json:"held,omitempty"`
+	Mass        bool      `json:"mass,omitempty"`
+	MassMarked  int       `json:"mass_marked,omitempty"`
+	ClockBehind bool      `json:"clock_behind,omitempty"`
+	ClockAhead  time.Time `json:"clock_ahead,omitzero"`
+	Deferred    int       `json:"deaths_deferred,omitempty"`
+	MassDead    int       `json:"mass_dead,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {

@@ -21,6 +21,8 @@ type recInfo struct {
 	// are kept here, not recomputed from the record, so remove deletes exactly
 	// what add inserted.
 	urls []string
+	// last is the record's last event time (clockEvidence).
+	last time.Time
 }
 
 // ledgerIndex is the ledger as reconcile reads it at the start of a board:
@@ -37,14 +39,15 @@ type ledgerIndex struct {
 	byURL map[string][]posting.Key
 	// touched holds the keys written since the index was last refreshed.
 	touched map[posting.Key]bool
-	// events is every record's last event time, sorted, as the ledger stood
-	// when the index was built: the history a clock behind it is judged against
-	// (clockBehind). Not kept current: this run's own writes are not history.
+	// events is every record's last event time (zero ones left out), sorted:
+	// the history a clock is judged against (clockEvidence). Kept current like
+	// the rest, so the index equals a fresh scan; this run's own writes are
+	// stamped now and never read as ahead of it.
 	events []time.Time
 }
 
 func infoOf(r ledger.Record) recInfo {
-	in := recInfo{status: r.Status, weak: weakKey(r.Key), firstSeen: r.FirstSeen, urls: urlKeys(r.Posting)}
+	in := recInfo{status: r.Status, weak: weakKey(r.Key), firstSeen: r.FirstSeen, urls: urlKeys(r.Posting), last: r.LastEvent}
 	if r.Posting.Company != "" && r.Posting.Title != "" {
 		if fk, err := posting.FallbackKey(r.Posting.Company, r.Posting.Title, r.Posting.Location); err == nil {
 			in.tuple = fk
@@ -122,14 +125,37 @@ func (x *ledgerIndex) refresh(l ledger.Ledger) {
 		if !ok {
 			continue // the write failed and the ledger never had it
 		}
-		if _, had := x.info[k]; had {
+		if old, had := x.info[k]; had {
 			x.remove(k)
+			x.events = dropTime(x.events, old.last)
 		} else {
 			x.keys = insertSorted(x.keys, k)
 		}
-		x.add(k, infoOf(r))
+		in := infoOf(r)
+		x.add(k, in)
+		x.events = insertTime(x.events, in.last)
 	}
 	clear(x.touched)
+}
+
+// insertTime adds t to the sorted ts (a zero time is not history).
+func insertTime(ts []time.Time, t time.Time) []time.Time {
+	if t.IsZero() {
+		return ts
+	}
+	i, _ := slices.BinarySearchFunc(ts, t, time.Time.Compare)
+	return slices.Insert(ts, i, t)
+}
+
+// dropTime removes one instant equal to t from the sorted ts.
+func dropTime(ts []time.Time, t time.Time) []time.Time {
+	if t.IsZero() {
+		return ts
+	}
+	if i, found := slices.BinarySearchFunc(ts, t, time.Time.Compare); found {
+		return slices.Delete(ts, i, i+1)
+	}
+	return ts
 }
 
 // atsFor is the ATS-keyed record a weak posting with this tuple repeats: the

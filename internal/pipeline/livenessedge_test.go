@@ -70,29 +70,47 @@ func TestRecordAlreadyMissedOnceAtInstallDoesNotDieEarly(t *testing.T) {
 }
 
 // TestFutureEventsFreezeOnlyWhatIsNotAClockAheadBurst: events in the ledger's
-// future decide whether a full listing ages anything. Bounded both ways: a
-// clock that ran ahead for one run (a single burst with history before it) does
-// not freeze the board, and a clock that is behind does, only until real time
-// passes the events.
+// future decide whether a full listing ages anything. Bounded both ways: events
+// further ahead than ClockWindow (a clock that ran ahead) do not freeze the
+// board however many runs wrote them, and events within it do, only until real
+// time passes them. Events of another board count once there are ClockQuorum of
+// them: a clock set back puts a run's whole burst ahead, one stray event does
+// not stop every board.
+//
+// Changed 2026-11-12 (review F1, F2): "far-future burst spread over a day" was
+// behind (two runs' burst read as a clock set back, which froze aging until
+// real time reached it, a month here, a year in the review's case); "two days
+// ahead, one burst" on another board was behind (one stray event froze every
+// board). Both now age; the same events on the board's own records, or on
+// three records elsewhere, still freeze it.
 func TestFutureEventsFreezeOnlyWhatIsNotAClockAheadBurst(t *testing.T) {
 	cases := []struct {
 		name   string
 		events []time.Duration // event times, after t0
+		own    bool            // the events are on the read board's own records
 		now    time.Duration   // the read, after t0
 		behind bool
 	}{
-		{"one far-future burst, history before it", []time.Duration{5 * 365 * 24 * time.Hour}, 24 * time.Hour, false},
-		{"far-future burst spread over a day", []time.Duration{30 * 24 * time.Hour, 31 * 24 * time.Hour}, 24 * time.Hour, true},
-		{"two days ahead, one burst: a clock set back", []time.Duration{72 * time.Hour}, 24 * time.Hour, true},
-		{"the event is now in the past", []time.Duration{72 * time.Hour}, 74 * time.Hour, false},
-		{"within the one-hour allowance", []time.Duration{24*time.Hour + 30*time.Minute}, 24 * time.Hour, false},
+		{"one far-future burst, history before it", []time.Duration{5 * 365 * 24 * time.Hour}, false, 24 * time.Hour, false},
+		{"far-future burst spread over a day", []time.Duration{30 * 24 * time.Hour, 31 * 24 * time.Hour}, false, 24 * time.Hour, false},
+		{"far-future burst on the board's own records", []time.Duration{30 * 24 * time.Hour, 31 * 24 * time.Hour}, true, 24 * time.Hour, false},
+		{"two days ahead, one stray event on another board", []time.Duration{72 * time.Hour}, false, 24 * time.Hour, false},
+		{"two days ahead, on the board's own record: a clock set back", []time.Duration{72 * time.Hour}, true, 24 * time.Hour, true},
+		{"two days ahead, a burst of three elsewhere: a clock set back", []time.Duration{72 * time.Hour, 72 * time.Hour, 73 * time.Hour}, false, 24 * time.Hour, true},
+		{"three days ahead exactly, own record", []time.Duration{96 * time.Hour}, true, 24 * time.Hour, true},
+		{"just past the window, own record", []time.Duration{96*time.Hour + time.Second}, true, 24 * time.Hour, false},
+		{"the event is now in the past", []time.Duration{72 * time.Hour}, true, 74 * time.Hour, false},
+		{"within the one-hour allowance", []time.Duration{24*time.Hour + 30*time.Minute}, true, 24 * time.Hour, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			l := openLedger(t)
 			b := probeBoard("future")
 			ps := seedBoard(t, l, b, 20)
-			other := probeBoard("elsewhere") // events of another board count: the clock is the ledger's
+			other := probeBoard("elsewhere")
+			if tc.own {
+				other = b
+			}
 			op := probePost(t, other, 1)
 			for i, d := range tc.events {
 				op.Key = probeKey(t, other, 100+i)
@@ -172,7 +190,15 @@ func TestFirstReadsAndAReAddedBoard(t *testing.T) {
 			t.Fatalf("%s died a day into a mass hold", p.Key)
 		}
 	}
-	if _, err := Reconcile(ctx, l, b, renumbered, back.Add(14*24*time.Hour)); err != nil {
+	// Changed 2026-11-12 (review F3): the read 14 days on comes 13 days after the
+	// postings' last event, more than ClockWindow; the hold is over only by
+	// counting that whole unwitnessed gap (a clock that jumped looks the same),
+	// so the deaths wait one more read, which kills them.
+	s, err = Reconcile(ctx, l, b, renumbered, back.Add(14*24*time.Hour))
+	if err != nil || s.Dead != 0 || s.Deferred != 20 {
+		t.Fatalf("the read after a 13-day gap: %+v %v", s, err)
+	}
+	if _, err := Reconcile(ctx, l, b, renumbered, back.Add(14*24*time.Hour+time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range ps {

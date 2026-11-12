@@ -96,6 +96,9 @@ func indexEqual(t *testing.T, got, want *ledgerIndex) {
 	if !reflect.DeepEqual(got.byURL, want.byURL) {
 		t.Fatalf("index links\ngot  %v\nwant %v", got.byURL, want.byURL)
 	}
+	if !slices.EqualFunc(got.events, want.events, time.Time.Equal) {
+		t.Fatalf("index events\ngot  %v\nwant %v", got.events, want.events)
+	}
 }
 
 // Reconciler, which reads the ledger once per run, must leave exactly the
@@ -111,7 +114,7 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 		// on each path and not only on the easy ones.
 		if total.New == 0 || total.Changed == 0 || total.Rerendered == 0 || total.Redated == 0 || total.Reappeared == 0 ||
 			total.Missed == 0 || total.Dead == 0 || total.Duplicate == 0 || total.Unchanged == 0 || total.Revived == 0 ||
-			total.Refreshed == 0 {
+			total.Refreshed == 0 || total.Held == 0 || total.Deferred == 0 || total.MassMarked == 0 || total.MassDead == 0 || !total.ClockBehind {
 			t.Errorf("the seeds did not cover every outcome: %+v", total)
 		}
 	}()
@@ -131,13 +134,28 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 			defer subject.Close()
 			ctx := context.Background()
 			start := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-			for run := range 6 {
-				now := start.Add(time.Duration(run) * 24 * time.Hour)
+			// 24 daily runs. One board lists nothing from run 3 to run 19, a mass
+			// absence held 14 days that ends in deaths; then it lists again. Some
+			// runs, and some boards within a run, read under a wrong clock (both
+			// ways, inside and past ClockWindow), so the freeze, the restarts and the
+			// deferred deaths are compared too.
+			empty := int(seed % 5)
+			skews := []time.Duration{2 * time.Hour, 20 * time.Hour, 2 * 24 * time.Hour, 5 * 24 * time.Hour, 365 * 24 * time.Hour,
+				-2 * time.Hour, -2 * 24 * time.Hour, -5 * 24 * time.Hour, -400 * 24 * time.Hour}
+			for run := range 24 {
+				runNow := start.Add(time.Duration(run) * 24 * time.Hour)
+				if rng.IntN(6) == 0 {
+					runNow = runNow.Add(skews[rng.IntN(len(skews))])
+				}
 				rc := NewReconciler(subject)
 				for bi, b := range boards {
+					now := runNow
+					if rng.IntN(20) == 0 { // the clock jumps between two boards of one run
+						now = now.Add(skews[rng.IntN(len(skews))])
+					}
 					var listed []posting.Posting
 					for _, pp := range pool {
-						if pp.board != bi || rng.IntN(4) == 0 { // a quarter missing this run
+						if pp.board != bi || rng.IntN(4) == 0 || (bi == empty && run >= 3 && run < 20) { // a quarter missing this run
 							continue
 						}
 						p := pp.p
@@ -181,6 +199,11 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 					total.Duplicate += got.Duplicate
 					total.Unchanged += got.Unchanged
 					total.Revived += got.Revived
+					total.Held += got.Held
+					total.Deferred += got.Deferred
+					total.MassMarked += got.MassMarked
+					total.MassDead += got.MassDead
+					total.ClockBehind = total.ClockBehind || got.ClockBehind
 				}
 			}
 			for _, r := range subject.All() {

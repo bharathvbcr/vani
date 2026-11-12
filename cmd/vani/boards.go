@@ -214,7 +214,14 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 				b.ATS, b.Token, n, sum.Absent, sum.Open, sum.MassMarked)
 		}
 		if sum.ClockBehind {
-			warnf("board %s/%s: the clock reads behind the ledger; %d open postings absent from this listing were not aged", b.ATS, b.Token, sum.Absent)
+			warnf("board %s/%s: %d open postings absent from this listing were not aged: the ledger holds events stamped ahead of this clock, up to %s",
+				b.ATS, b.Token, sum.Absent, sum.ClockAhead.UTC().Format(time.RFC3339))
+		}
+		if sum.MassDead > 0 {
+			warnf("board %s/%s: %d postings held by a mass absence died: the mass hold ended and the board still does not list them", b.ATS, b.Token, sum.MassDead)
+		}
+		if sum.Deferred > 0 {
+			warnf("board %s/%s: %d deaths wait one more read: more than %s passed since those postings' last event", b.ATS, b.Token, sum.Deferred, pipeline.ClockWindow)
 		}
 	}
 	return report(), nil
@@ -578,7 +585,8 @@ func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Kept: s.Kept, Redated: s.Redated,
 		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
 		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, Invalid: s.Invalid,
-		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind}
+		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind,
+		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead}
 }
 
 // recordFirst is whether a board's entry is kept before plain read ones when
@@ -587,7 +595,7 @@ func recordFirst(e boardReport) bool {
 	if e.Outcome != boardRead {
 		return true
 	}
-	return e.Reconcile != nil && (e.Reconcile.MassMarked > 0 || e.Reconcile.ClockBehind)
+	return e.Reconcile != nil && (e.Reconcile.MassMarked > 0 || e.Reconcile.ClockBehind || e.Reconcile.MassDead > 0)
 }
 
 // boardsReportOf totals the tried boards out of configured and keeps as many
@@ -608,6 +616,8 @@ func boardsReportOf(configured int, tried []boardReport) boardsReport {
 			if e.Reconcile.ClockBehind {
 				r.ClockBehind++
 			}
+			r.MassDead += e.Reconcile.MassDead
+			r.DeathsDeferred += e.Reconcile.Deferred
 		}
 		switch e.Outcome {
 		case boardRead:

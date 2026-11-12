@@ -55,8 +55,14 @@ type Summary struct {
 	Missed     int // absent, below the death threshold
 	// Held postings are absent with enough misses to die but inside their
 	// hold (liveness.go): OrdinaryHold, or the mass hold when mass marked.
-	Held int
-	Dead int
+	// Deferred of them were due only by counting more than ClockWindow of the
+	// gap since their last event, and wait one more read (liveness.go "The
+	// clock").
+	Held     int
+	Deferred int
+	Dead     int
+	// MassDead of Dead were mass marked: they waited out the mass hold.
+	MassDead int
 	// Open counts the board's open postings before a full listing; Absent how
 	// many of them it left out. Zero for a partial listing.
 	Open, Absent int
@@ -65,9 +71,13 @@ type Summary struct {
 	// still absent are Held, not counted again).
 	MassMarked int
 	Mass       bool
-	// ClockBehind: the clock read behind the ledger's own history, so this
-	// full listing that left postings absent aged nothing.
+	// ClockBehind: the ledger holds events stamped ahead of this read's clock
+	// (liveness.go "The clock"), so this full listing that left postings absent
+	// aged nothing. ClockAhead is the event that says so: aging resumes once the
+	// clock passes it. Either the clock is behind or those events were written
+	// under a clock that ran ahead; the ledger cannot tell which.
 	ClockBehind bool
+	ClockAhead  time.Time
 	Duplicate   int
 	// Revived duplicates were listed again while their survivor was gone
 	// (reviveDuplicate): live again, or a duplicate of another live record.
@@ -282,7 +292,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			open = append(open, k)
 		}
 	}
-	a, err := ageAbsent(ctx, l, rc.live, open, seen, clockBehind(idx.events, now), now)
+	a, err := ageAbsent(ctx, l, rc.live, open, seen, idx.clockEvidence(prefix, now), now)
 	s.addAbsence(a)
 	return s, err
 }
@@ -293,10 +303,15 @@ func (s *Summary) addAbsence(a absence) {
 	s.Absent += a.absent
 	s.Missed += a.missed
 	s.Held += a.held
+	s.Deferred += a.deferred
 	s.Dead += a.dead
+	s.MassDead += a.massDead
 	s.MassMarked += a.massMarked
 	s.Mass = s.Mass || a.mass
 	s.ClockBehind = s.ClockBehind || a.clockBehind
+	if a.clockAhead.After(s.ClockAhead) {
+		s.ClockAhead = a.clockAhead
+	}
 }
 
 // batchByteBudget is how much encoded event data appendBatched puts in one

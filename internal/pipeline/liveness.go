@@ -7,6 +7,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -32,12 +33,48 @@ import (
 //     reappearing does.
 //   - A mass-marked posting dies only after MissesToDead misses and MassHold
 //     since its own first miss.
-//   - A partial listing ages nothing. A full listing taken while the clock reads
-//     behind the ledger's own history ages nothing either (Summary.ClockBehind):
-//     a clock behind would date a first miss in the past and kill early. That
-//     errs toward keeping, and is reported.
-//   - A stamp more than MaxStampAhead past now is unreadable (a clock that ran
-//     ahead) and restarts the episode at now.
+//   - A partial listing ages nothing.
+//
+// The clock. The rule measures holds with the clock of each read, so a clock
+// that is wrong in a way the ledger cannot see could end a hold early. Three
+// guards, each of which only ever keeps a posting longer:
+//
+//   - Events ahead (clockEvidence). A full listing ages nothing
+//     (Summary.ClockBehind) while the ledger holds events stamped between
+//     MaxStampAhead and ClockWindow past now on one of the board's own records,
+//     or on at least ClockQuorum records anywhere. Stamping a first miss under
+//     a clock set back would date it before the posting's own history. The
+//     freeze is bounded: events further than ClockWindow ahead are
+//     not read as a clock behind at all (a clock that ran ahead wrote them, or
+//     the clock is set back by more than ClockWindow, which the next guard
+//     handles), so a freeze lasts from when real time comes within ClockWindow
+//     of the events until it passes them (ClockWindow plus the span of the runs
+//     that wrote them), and names the newest event it saw (Summary.ClockAhead).
+//     One or two stray records on another board do not freeze this one.
+//   - Unreadable stamps. A stamp more than MaxStampAhead past now, or before
+//     the posting was first seen (a clock set back past its history), is
+//     unreadable and restarts the episode at now: later, never earlier.
+//   - Unwitnessed gaps. A death due at a read more than ClockWindow after the
+//     posting's last event (its previous miss) waits one more read
+//     (Summary.Deferred): a clock that jumped ahead between two reads, or came
+//     back from being set back, looks exactly like a long gap, and the next
+//     read either confirms the time (the posting dies then) or shows it was
+//     the clock (the jump's stamps are then unreadable or its events ahead).
+//     A board read after a gap that long (a laptop asleep, a board failing for
+//     days) pays one read.
+//
+// What remains, and is not detectable from the ledger: a clock error of at most
+// ClockWindow that does not put now behind any recorded event (a clock jumping
+// ahead by that little between two reads, or set back by less than the time
+// since the board's last write) is indistinguishable from reads that far apart,
+// and can end a hold early by up to that error. An ordinary hold (20h) is
+// shorter than ClockWindow, so a jump of 20 hours or more between two reads an
+// hour apart ends it. A clock set back, with nothing in the ledger within
+// ClockWindow ahead of it, stamps first misses early by the set-back for
+// postings first seen longer ago than that (a younger posting's stamp predates
+// it and restarts); if the set-back is more than ClockWindow its correction is
+// a long gap and costs them one read, no more. A clock that stays wrong after
+// jumping ahead is seen for one read only.
 //
 // The rule keeps its state in pipeline-owned annotations beside missed_runs, not
 // in ledger fields.
@@ -55,23 +92,27 @@ const (
 	// before it can kill: a daily run kills on its second miss, two runs an hour
 	// apart cannot.
 	OrdinaryHold = 20 * time.Hour
-	// MaxStampAhead is how far past now a stamp may sit and still be read, and
-	// how far the clock may sit behind the ledger's newest event before a
-	// listing is refused for aging.
+	// MaxStampAhead is how far past now a stamp or an event may sit and still
+	// agree with the clock.
 	MaxStampAhead = time.Hour
 	// EmptyListingMinOpen is the fewest open postings from which a listing that
 	// shows none of them is a mass absence whatever the floor.
 	EmptyListingMinOpen = 2
-	// ClockPollutionSkew and ClockPollutionSpan tell a clock that ran AHEAD for
-	// one run from a clock now BEHIND. Events in the ledger's future are read as
-	// the first only when the newest is at least ClockPollutionSkew past now and
-	// all of them fall within ClockPollutionSpan of each other (one run's burst);
-	// a clock set back leaves the whole history since the jump in the future,
-	// which spans days. Anything else is a clock behind, and a behind clock ages
-	// nothing: a clock set back less than ClockPollutionSkew, or events ahead
-	// over a longer span, freeze aging only until real time passes them.
-	ClockPollutionSkew = 7 * 24 * time.Hour
-	ClockPollutionSpan = 6 * time.Hour
+	// ClockWindow is how much time the rule takes on trust: events further
+	// ahead than this are not read as a clock behind (so a clock that once ran
+	// ahead freezes nothing for longer than this), and a death that needs more
+	// than this much of the gap since the posting's last event waits one more
+	// read. The two halves meet: a clock set back by more than ClockWindow is
+	// not frozen for, and its correction is a gap of more than ClockWindow.
+	// Longer than a day's run plus a missed one, so daily runs are never
+	// deferred.
+	ClockWindow = 72 * time.Hour
+	// ClockQuorum is how many records anywhere in the ledger must carry events
+	// within ClockWindow ahead for a board none of whose own records do to be
+	// frozen: a clock set back puts the last run's whole burst ahead; one or two
+	// stray events (a hand-written event, a write under another clock) do not
+	// stop every board.
+	ClockQuorum = 3
 	// MaxMassHold bounds the mass hold setting.
 	MaxMassHold = 365 * 24 * time.Hour
 )
@@ -178,14 +219,16 @@ func clearMissMarks(ann map[string]string) map[string]string {
 }
 
 // readStamp parses a stamp annotation; ok is false when it is missing,
-// malformed or more than MaxStampAhead past now.
+// malformed, more than MaxStampAhead past now, or before the record was first
+// seen (no posting is missed before it exists: the stamp was taken under a
+// clock set back past the posting's history).
 func readStamp(r ledger.Record, key string, now time.Time) (time.Time, bool) {
 	v := r.Annotations[key]
 	if v == "" {
 		return time.Time{}, false
 	}
 	t, err := time.Parse(time.RFC3339Nano, v)
-	if err != nil || t.After(now.Add(MaxStampAhead)) {
+	if err != nil || t.After(now.Add(MaxStampAhead)) || t.Before(r.FirstSeen) {
 		return time.Time{}, false
 	}
 	return t, true
@@ -193,22 +236,38 @@ func readStamp(r ledger.Record, key string, now time.Time) (time.Time, bool) {
 
 func stampOf(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-// clockBehind reports whether now reads behind the ledger's history (events
-// sorted, as the index holds them): some event lies more than MaxStampAhead in
-// the future and they are not the single burst of a run taken under a clock
-// that ran ahead (ClockPollutionSkew, ClockPollutionSpan) with history before it
-// that agrees with now.
-func clockBehind(events []time.Time, now time.Time) bool {
-	cut := now.Add(MaxStampAhead)
-	i := sort.Search(len(events), func(i int) bool { return events[i].After(cut) })
-	if i == len(events) {
-		return false
+// clockEvidence is what the ledger's history says about a full listing taken
+// at now: behind when it holds events that read as a clock behind, and ahead the
+// newest event that says so. Aging resumes once the clock passes it.
+type clockEvidence struct {
+	behind bool
+	ahead  time.Time
+}
+
+// clockEvidence reads the board under prefix (liveness.go "The clock"): an
+// event of the board's own records, or of at least ClockQuorum records
+// anywhere, more than MaxStampAhead and at most ClockWindow past now. A ledger
+// whose every event lies further ahead is no evidence either: a run under a
+// clock that ran ahead may have touched every record of a small ledger, and
+// a clock set back past the whole history stamps nothing readable (a stamp
+// before a posting was first seen restarts).
+func (x *ledgerIndex) clockEvidence(prefix string, now time.Time) clockEvidence {
+	lo, hi := now.Add(MaxStampAhead), now.Add(ClockWindow)
+	ev := x.events
+	i := sort.Search(len(ev), func(i int) bool { return ev[i].After(lo) })
+	if i == len(ev) {
+		return clockEvidence{}
 	}
-	if i == 0 {
-		return true // the whole history is ahead of now: no witness that the clock is right
+	var c clockEvidence
+	if j := sort.Search(len(ev), func(j int) bool { return ev[j].After(hi) }); j-i >= ClockQuorum {
+		c = clockEvidence{behind: true, ahead: ev[j-1]}
 	}
-	oldest, newest := events[i], events[len(events)-1]
-	return !(newest.Sub(now) >= ClockPollutionSkew && newest.Sub(oldest) <= ClockPollutionSpan)
+	for _, k := range x.board(prefix) {
+		if t := x.info[k].last; t.After(lo) && !t.After(hi) && t.After(c.ahead) {
+			c = clockEvidence{behind: true, ahead: t}
+		}
+	}
+	return c
 }
 
 // absence is what one full listing's absence pass did.
@@ -216,15 +275,17 @@ type absence struct {
 	open, absent       int
 	missed, held, dead int
 	massMarked         int // postings this listing newly marked
+	deferred           int // deaths that waited a read for an unwitnessed gap (in held)
+	massDead           int // deaths of mass-marked postings (in dead)
 	mass, clockBehind  bool
+	clockAhead         time.Time
 }
 
 // ageAbsent is the absence pass of a full listing: open is the board's open
-// keys before the listing, seen the keys it listed, behind whether the clock
-// reads behind the ledger. It writes the miss, hold and death events in one
-// batched append; its counts say what was written, so a pass that failed
-// reports none of them.
-func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, behind bool, now time.Time) (absence, error) {
+// keys before the listing, seen the keys it listed, clock what the ledger says
+// about now. It writes the miss, hold and death events in one batched append;
+// its counts say what was written, so a pass that failed reports none of them.
+func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, clock clockEvidence, now time.Time) (absence, error) {
 	lv = lv.resolved()
 	var a absence
 	a.open = len(open)
@@ -238,8 +299,8 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 	if len(absent) == 0 {
 		return a, nil
 	}
-	if behind {
-		a.clockBehind = true
+	if clock.behind {
+		a.clockBehind, a.clockAhead = true, clock.ahead
 		return a, nil
 	}
 	mass := massAbsence(lv, len(open), len(absent))
@@ -254,16 +315,22 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		if !ok || closed(cur.Status) {
 			continue
 		}
-		e, outcome, newMark := absenceEvent(lv, cur, mass, now)
-		switch outcome {
+		e, o := absenceEvent(lv, cur, mass, now)
+		switch o.outcome {
 		case absentDead:
 			w.dead++
+			if o.massed {
+				w.massDead++
+			}
 		case absentHeld:
 			w.held++
+			if o.deferred {
+				w.deferred++
+			}
 		default:
 			w.missed++
 		}
-		if newMark {
+		if o.newMark {
 			w.massMarked++
 		}
 		evs = append(evs, e)
@@ -272,6 +339,7 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		return a, err
 	}
 	a.missed, a.held, a.dead, a.massMarked, a.mass = w.missed, w.held, w.dead, w.massMarked, mass
+	a.deferred, a.massDead = w.deferred, w.massDead
 	return a, nil
 }
 
@@ -279,13 +347,20 @@ type absentOutcome int
 
 const (
 	absentMissed absentOutcome = iota // below MissesToDead
-	absentHeld                        // enough misses, hold not yet over
+	absentHeld                        // enough misses, hold not yet over (or deferred)
 	absentDead
 )
 
-// absenceEvent is the event one more full-listing absence writes for cur, and
-// whether it newly mass-marks the posting.
-func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Time) (ledger.Event, absentOutcome, bool) {
+// absenceResult is what one absence did to a posting.
+type absenceResult struct {
+	outcome  absentOutcome
+	newMark  bool // this listing mass-marked it
+	massed   bool // it is mass marked (after this listing)
+	deferred bool // its death was due only by an unwitnessed gap, and waits a read
+}
+
+// absenceEvent is the event one more full-listing absence writes for cur.
+func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Time) (ledger.Event, absenceResult) {
 	misses := cur.MissedRuns + 1
 	ongoing := cur.MissedRuns > 0
 	first, ok := readStamp(cur, MissedSinceKey, now)
@@ -318,8 +393,18 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Tim
 	if massSince != "" {
 		e.Reason = fmt.Sprintf("absent from board (%d), mass absence", misses)
 	}
+	res := absenceResult{newMark: newMark, massed: massSince != ""}
+	due := misses >= MissesToDead && !now.Before(first.Add(hold))
+	// An unwitnessed gap: more than ClockWindow since the posting's last event
+	// (its previous miss). A clock that jumped ahead, or came back from being set
+	// back, looks the same as that long a gap, so the next read decides: this
+	// one writes the miss, and that read's gap is its own.
+	gap := now.Sub(cur.LastEvent)
+	if due && !cur.LastEvent.IsZero() && gap > ClockWindow {
+		due, res.deferred = false, true
+	}
 	switch {
-	case misses >= MissesToDead && !now.Before(first.Add(hold)):
+	case due:
 		e.Status = posting.Dead
 		ann[DiedFromKey] = string(cur.Status)
 		if massSince != "" {
@@ -327,10 +412,68 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Tim
 		} else {
 			e.Reason = fmt.Sprintf("absent from board %d times over %s", misses, OrdinaryHold)
 		}
-		return e, absentDead, newMark
+		res.outcome = absentDead
+	case res.deferred:
+		e.Reason += fmt.Sprintf(", held one more read: %s since its last event is more than the %s the rule takes on trust (a clock that jumped looks the same)",
+			gap.Round(time.Hour), ClockWindow)
+		res.outcome = absentHeld
 	case misses >= MissesToDead:
 		e.Reason += fmt.Sprintf(", held until %s", first.Add(hold).UTC().Format(time.RFC3339))
-		return e, absentHeld, newMark
+		res.outcome = absentHeld
+	default:
+		res.outcome = absentMissed
 	}
-	return e, absentMissed, newMark
+	return e, res
+}
+
+// MassHold is one board's open postings that a mass absence marked and that
+// are still absent: waiting out the mass hold.
+type MassHold struct {
+	Prefix string // the board's key prefix (sources.Board.KeyPrefix)
+	Held   int
+	// Until is when the first of them can die, at the earliest: its first miss
+	// plus the mass hold. Last is the same for the last of them. A death also
+	// needs a read that ages the board then.
+	Until, Last time.Time
+}
+
+// MassHeld lists the boards in recs that hold mass-marked postings, by prefix,
+// with when their holds end under lv. A posting whose miss stamp is unreadable
+// at now is counted from now: its episode restarts at its next miss.
+func MassHeld(recs []ledger.Record, lv Liveness, now time.Time) []MassHold {
+	lv = lv.resolved()
+	byPrefix := map[string]*MassHold{}
+	for _, r := range recs {
+		if closed(r.Status) || r.MissedRuns == 0 || r.Annotations[MassMissedSinceKey] == "" {
+			continue
+		}
+		k := string(r.Key)
+		i := strings.LastIndexByte(k, ':')
+		if i < 0 {
+			continue
+		}
+		first, ok := readStamp(r, MissedSinceKey, now)
+		if !ok {
+			first = now
+		}
+		end := first.Add(lv.MassHold)
+		h := byPrefix[k[:i+1]]
+		if h == nil {
+			h = &MassHold{Prefix: k[:i+1], Until: end, Last: end}
+			byPrefix[h.Prefix] = h
+		}
+		h.Held++
+		if end.Before(h.Until) {
+			h.Until = end
+		}
+		if end.After(h.Last) {
+			h.Last = end
+		}
+	}
+	out := make([]MassHold, 0, len(byPrefix))
+	for _, h := range byPrefix {
+		out = append(out, *h)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Prefix < out[j].Prefix })
+	return out
 }

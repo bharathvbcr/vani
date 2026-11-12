@@ -296,7 +296,9 @@ func TestRunReportNamesMassAbsenceClockBehindAndRunningRuns(t *testing.T) {
 		t.Fatal("a clock behind the ledger was silent: nothing is being aged")
 	}
 	text = (&env{stateDir: t.TempDir(), stderr: &bytes.Buffer{}}).runReportOf(runRef{ID: runID(behind), Rec: behind}, histT0, true)
-	if !strings.Contains(text.Text, "Not aged (1)") || !strings.Contains(text.Text, "clock reads behind") {
+	// Changed 2026-11-12 (review F1): the report says what it saw, events stamped
+	// ahead of the clock (and which), not that the clock reads behind now.
+	if !strings.Contains(text.Text, "Not aged (1)") || !strings.Contains(text.Text, "events stamped ahead of the run's clock") {
 		t.Fatalf("report:\n%s", text.Text)
 	}
 

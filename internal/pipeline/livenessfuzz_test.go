@@ -1,18 +1,36 @@
 package pipeline
 
-// The death rule's two promises, checked over random listing sequences against
-// an oracle written from the owner's text alone (it reads the ledger only for
-// each posting's status, and uses none of liveness.go's functions or constants):
+// The death rule, checked over random sequences of reads of one to three boards
+// sharing a ledger, under default or random settings, with clocks that are
+// sometimes wrong for one read. An oracle written from the owner's text alone
+// (it reads the ledger only for each posting's status, keeps its own copy of
+// every record's stamps and last event, and uses none of liveness.go's
+// functions or constants) predicts every read, and the reconciler must match
+// it exactly: which postings die, are held, wait a read or are missed, and
+// whether the read froze. On top of that, in TRUE time:
 //
-//	(a) no posting dies before its applicable hold since its OWN first miss:
-//	    20 hours, or 14 days if any listing during its absence episode was a
-//	    mass absence, and in both cases not before its second miss;
-//	(b) no posting outlives that hold while it stays continuously absent: at the
-//	    first full read at or after first miss + hold it is dead.
+//	(a) no posting dies before its second miss, nor before its hold (20 hours,
+//	    or the mass hold once any listing in its absence episode was a mass
+//	    absence) has passed since the read that stamped its first miss, less
+//	    only the clock errors the rule documents it cannot see: a stamp taken
+//	    under a clock set back (by the set-back), and a death read under a clock
+//	    ahead that the gap guard did not catch (by that error);
+//	(b) a posting continuously absent dies at the first read that ages it at or
+//	    after its first miss + hold, unless that read comes more than 3 days
+//	    after its last event (it then waits exactly one read) or the read froze
+//	    on events ahead of its clock;
+//	(c) a read whose clock is more than 3 days ahead never kills a posting
+//	    whose last event was written under a right clock.
 //
-// A mass absence is a full listing that leaves at least a quarter of the
-// board's open postings (distinct keys, as the ledger held them before the
-// listing) absent with at least 10 open, or shows none of at least 2 open.
+// The owner's text, as the oracle reads it: a posting absent from a full
+// listing is missed; its first miss is stamped; a stamp more than an hour
+// ahead of the clock, or before the posting was first seen, restarts at the
+// clock. A full listing that leaves at least the share of the board's open
+// postings (distinct keys, before the listing) absent with at least the floor
+// open, or shows none of at least 2 open, is a mass absence and marks every
+// absent posting until it reappears. A listing ages nothing while the ledger
+// holds events between 1 hour and 3 days ahead of its clock on one of the
+// board's own records, or on at least 3 records anywhere.
 
 import (
 	"fmt"
@@ -26,11 +44,13 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 const (
-	fuzzSequences = 250 // VANI_FUZZ_SEQUENCES=2000 is the full run (about 8 minutes under load)
-	fuzzReads     = 30
+	fuzzSequences = 250 // VANI_FUZZ_SEQUENCES=2000 is the full run
+	fuzzReads     = 40
+	specWindow    = 72 * time.Hour // the 3 days the owner's text takes on trust
 )
 
 // fuzzGaps are the spacings between reads: hourly retries, daily runs, a
@@ -40,80 +60,138 @@ var fuzzGaps = []time.Duration{
 	30 * time.Hour, 48 * time.Hour, 5 * 24 * time.Hour, 15 * 24 * time.Hour,
 }
 
+// fuzzSkews are the clock errors of a wrong read: short and long, both ways.
+var fuzzSkews = []time.Duration{
+	2 * time.Hour, 20 * time.Hour, 2 * 24 * time.Hour, 4 * 24 * time.Hour, 30 * 24 * time.Hour, 365 * 24 * time.Hour,
+	-2 * time.Hour, -20 * time.Hour, -2 * 24 * time.Hour, -4 * 24 * time.Hour, -30 * 24 * time.Hour, -365 * 24 * time.Hour,
+}
+
 type fuzzRead struct {
-	at      time.Time
+	board   int
+	at      time.Time     // true time
+	off     time.Duration // the clock reads at+off
 	listed  []int
 	partial bool
 }
 
-// fuzzSequence builds one board's reads from rng: a universe of ids, each read a
-// healthy listing, a few missing, a mass drop, an empty answer, a renumbered
-// board, repeated rows or a partial listing.
-func fuzzSequence(rng *rand.Rand) []fuzzRead {
-	universe := 2 + rng.IntN(29)
-	next := universe // ids a renumbered board brings
-	at := t0
-	cur := make([]int, universe)
-	for i := range cur {
-		cur[i] = i
+// fuzzRule is a sequence's settings: Liveness for the reconciler, and the same
+// values as the oracle reads them (the share as a fraction).
+type fuzzRule struct {
+	lv       Liveness
+	num, den int
+	floor    int
+	hold     time.Duration
+}
+
+func fuzzRuleOf(rng *rand.Rand) fuzzRule {
+	if rng.IntN(2) == 0 {
+		return fuzzRule{num: 1, den: 4, floor: 10, hold: specMassHold} // the defaults, left unset
 	}
+	shares := [][2]int{{1, 10}, {1, 4}, {1, 2}, {1, 1}}
+	sh := shares[rng.IntN(len(shares))]
+	floor := []int{1, 3, 10, 20}[rng.IntN(4)]
+	hold := []time.Duration{specOrdinaryHold, 72 * time.Hour, specMassHold, 30 * 24 * time.Hour}[rng.IntN(4)]
+	return fuzzRule{lv: Liveness{MassShare: float64(sh[0]) / float64(sh[1]), MassMinOpen: floor, MassHold: hold},
+		num: sh[0], den: sh[1], floor: floor, hold: hold}
+}
+
+// fuzzBoardState is one board's listing story.
+type fuzzBoardState struct {
+	universe, next int
+	cur            []int
+}
+
+// fuzzSequence builds the reads of nb boards from rng: each read picks a board
+// and is a healthy listing, a few missing, a mass drop, an empty answer, a
+// renumbered board, repeated rows or a partial listing. One read in eight on a
+// board is under a wrong clock, never two in a row on the same board (a clock
+// wrong for one read, then right).
+func fuzzSequence(rng *rand.Rand, nb int) []fuzzRead {
+	st := make([]fuzzBoardState, nb)
+	for i := range st {
+		u := 2 + rng.IntN(29)
+		st[i] = fuzzBoardState{universe: u, next: 1000 * (i + 1)}
+		for id := range u {
+			st[i].cur = append(st[i].cur, id)
+		}
+	}
+	skewedLast := make([]bool, nb)
+	at := t0
 	out := make([]fuzzRead, 0, fuzzReads)
 	for range fuzzReads {
+		bi := rng.IntN(nb)
+		s := &st[bi]
 		var ids []int
 		partial := false
 		switch m := rng.IntN(20); {
 		case m < 9: // healthy, a role or two closes
-			if len(cur) > 0 && rng.IntN(3) == 0 {
-				i := rng.IntN(len(cur))
-				cur = append(cur[:i:i], cur[i+1:]...)
+			if len(s.cur) > 0 && rng.IntN(3) == 0 {
+				i := rng.IntN(len(s.cur))
+				s.cur = append(s.cur[:i:i], s.cur[i+1:]...)
 			}
-			ids = append(ids, cur...)
+			ids = append(ids, s.cur...)
 		case m < 11: // a few missing this read only
-			for _, id := range cur {
+			for _, id := range s.cur {
 				if rng.IntN(10) != 0 {
 					ids = append(ids, id)
 				}
 			}
 		case m < 13: // a mass drop that may or may not recover
-			keep := rng.IntN(len(cur) + 1)
-			ids = append(ids, cur[:keep]...)
+			ids = append(ids, s.cur[:rng.IntN(len(s.cur)+1)]...)
 		case m < 14: // empty answer
 		case m < 15: // renumbered: the old ids never come back
-			cur = cur[:0]
-			for range universe {
-				cur = append(cur, next)
-				next++
+			s.cur = s.cur[:0]
+			for range s.universe {
+				s.cur = append(s.cur, s.next)
+				s.next++
 			}
-			ids = append(ids, cur...)
+			ids = append(ids, s.cur...)
 		case m < 16: // one row repeated
-			if len(cur) > 0 {
-				id := cur[rng.IntN(len(cur))]
+			if len(s.cur) > 0 {
+				id := s.cur[rng.IntN(len(s.cur))]
 				for range 1 + rng.IntN(20) {
 					ids = append(ids, id)
 				}
 			}
 		case m < 17: // a partial listing: ages nothing
 			partial = true
-			for _, id := range cur {
+			for _, id := range s.cur {
 				if rng.IntN(2) == 0 {
 					ids = append(ids, id)
 				}
 			}
 		default: // the board is back at full strength
-			ids = append(ids, cur...)
+			ids = append(ids, s.cur...)
 		}
 		rng.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
 		at = at.Add(fuzzGaps[rng.IntN(len(fuzzGaps))])
-		out = append(out, fuzzRead{at: at, listed: ids, partial: partial})
+		var off time.Duration
+		if !skewedLast[bi] && rng.IntN(8) == 0 {
+			off = fuzzSkews[rng.IntN(len(fuzzSkews))]
+		}
+		skewedLast[bi] = off != 0
+		out = append(out, fuzzRead{board: bi, at: at, off: off, listed: ids, partial: partial})
 	}
 	return out
 }
 
-// fuzzState is the oracle's memory of one posting's absence episode.
-type fuzzState struct {
-	misses int
-	first  time.Time
-	massed bool
+// fuzzPost is the oracle's copy of one record: its clock-time stamps as the
+// ledger holds them, and the true time and clock error of the read that set
+// its current first miss.
+type fuzzPost struct {
+	board           int
+	firstSeen, last time.Time // clock times
+	lastOff         time.Duration
+	misses          int
+	first           time.Time // clock time of the current first miss
+	firstTrue       time.Time // true time of the read that set first
+	firstOff        time.Duration
+	massed          bool
+}
+
+// fuzzTally is what the sequences reached.
+type fuzzTally struct {
+	deaths, held, massReads, deferred, frozen, skewed, settings, multi atomic.Int64
 }
 
 func TestDeathRuleBoundsFuzz(t *testing.T) {
@@ -125,16 +203,15 @@ func TestDeathRuleBoundsFuzz(t *testing.T) {
 		n = min(v, 20000) // 2000 is the full run
 	}
 	base := t.TempDir()
-	var deaths, held, massReads atomic.Int64
+	var tally fuzzTally
 	const shards = 8
 	t.Run("shards", func(t *testing.T) {
 		for sh := 1; sh <= shards; sh++ {
 			t.Run(fmt.Sprint(sh), func(t *testing.T) {
 				t.Parallel()
-				d, h, m := fuzzSeeds(t, base, sh, n, shards)
-				deaths.Add(d)
-				held.Add(h)
-				massReads.Add(m)
+				for seed := sh; seed <= n; seed += shards {
+					fuzzOne(t, base, seed, &tally)
+				}
 			})
 		}
 	})
@@ -142,107 +219,208 @@ func TestDeathRuleBoundsFuzz(t *testing.T) {
 		return
 	}
 	// The sequences reached what they are for.
-	if deaths.Load() == 0 || held.Load() == 0 || massReads.Load() == 0 {
-		t.Fatalf("sequences did not reach the rule: %d deaths, %d held reads, %d mass reads", deaths.Load(), held.Load(), massReads.Load())
+	for name, v := range map[string]int64{"deaths": tally.deaths.Load(), "held reads": tally.held.Load(), "mass reads": tally.massReads.Load(),
+		"deferred deaths": tally.deferred.Load(), "frozen reads": tally.frozen.Load(), "skewed reads": tally.skewed.Load(),
+		"non-default settings": tally.settings.Load(), "multi-board sequences": tally.multi.Load()} {
+		if v == 0 {
+			t.Errorf("the sequences reached no %s", name)
+		}
 	}
-	t.Logf("%d sequences x %d reads: %d deaths, %d held postings-reads, %d mass reads", n, fuzzReads, deaths.Load(), held.Load(), massReads.Load())
+	t.Logf("%d sequences x %d reads: %d deaths, %d held posting-reads, %d mass reads, %d deferred, %d frozen reads, %d skewed reads",
+		n, fuzzReads, tally.deaths.Load(), tally.held.Load(), tally.massReads.Load(), tally.deferred.Load(), tally.frozen.Load(), tally.skewed.Load())
 }
 
-// fuzzSeeds runs the sequences first, first+step, ... up to n.
-func fuzzSeeds(t *testing.T, base string, first, n, step int) (deaths, held, massReads int64) {
-	board := probeBoard("fuzz")
-	for seed := first; seed <= n; seed += step {
-		reads := fuzzSequence(rand.New(rand.NewPCG(uint64(seed), 99)))
-		l, err := ledger.Open(filepath.Join(base, fmt.Sprint(seed)))
+// fuzzOne runs one sequence against the oracle.
+func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
+	rng := rand.New(rand.NewPCG(uint64(seed), 99))
+	nb := 1 + rng.IntN(3)
+	rule := fuzzRuleOf(rng)
+	reads := fuzzSequence(rng, nb)
+	if rule.lv != (Liveness{}) {
+		tally.settings.Add(1)
+	}
+	if nb > 1 {
+		tally.multi.Add(1)
+	}
+	boards := make([]sources.Board, nb)
+	for i := range boards {
+		boards[i] = probeBoard(fmt.Sprintf("fuzz%d", i))
+	}
+	l, err := ledger.Open(filepath.Join(base, fmt.Sprint(seed)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	known := map[posting.Key]*fuzzPost{}
+	failf := func(i int, format string, a ...any) {
+		t.Helper()
+		t.Fatalf("seed %d read %d: %s", seed, i, fmt.Sprintf(format, a...))
+	}
+	isClosed := func(s posting.Status) bool { return s == "dead" || s == "duplicate" || s == "dropped" }
+	for i, r := range reads {
+		b := boards[r.board]
+		clock := r.at.Add(r.off)
+		if r.off != 0 {
+			tally.skewed.Add(1)
+		}
+		var listed []posting.Posting
+		distinct := map[posting.Key]bool{}
+		for _, id := range r.listed {
+			listed = append(listed, probePost(t, b, id))
+			distinct[probeKey(t, b, id)] = true
+		}
+		// The ledger before the listing, as the owner's text reads it: the
+		// board's open postings, and every record's last event.
+		var open []posting.Key
+		for _, rec := range l.All() {
+			if known[rec.Key] != nil && known[rec.Key].board == r.board && !isClosed(rec.Status) {
+				open = append(open, rec.Key)
+			}
+		}
+		lo, hi := clock.Add(time.Hour), clock.Add(specWindow)
+		inWindow, own := 0, false
+		for _, p := range known {
+			if p.last.After(lo) && !p.last.After(hi) {
+				inWindow++
+				own = own || p.board == r.board
+			}
+		}
+
+		rc := NewReconciler(l)
+		if err := rc.SetLiveness(rule.lv); err != nil {
+			failf(i, "settings %+v: %v", rule.lv, err)
+		}
+		var s Summary
+		if r.partial {
+			s, err = rc.ReconcilePartial(ctx, b, listed, clock)
+		} else {
+			s, err = rc.Reconcile(ctx, b, listed, clock)
+		}
 		if err != nil {
-			t.Fatal(err)
+			failf(i, "reconcile: %v", err)
 		}
-		episode := map[posting.Key]*fuzzState{}
-		failf := func(i int, format string, a ...any) {
-			l.Close()
-			t.Fatalf("seed %d read %d: %s", seed, i, fmt.Sprintf(format, a...))
-		}
-		for i, r := range reads {
-			var listed []posting.Posting
-			distinct := map[posting.Key]bool{}
-			for _, id := range r.listed {
-				listed = append(listed, probePost(t, board, id))
-				distinct[probeKey(t, board, id)] = true
-			}
-			// The ledger as it stood before the listing, as the owner's rule reads it.
-			var open []posting.Key
-			for _, rec := range l.All() {
-				if rec.Status != posting.Dead && rec.Status != posting.Duplicate && rec.Status != posting.Dropped {
-					open = append(open, rec.Key)
-				}
-			}
-			rc := NewReconciler(l)
-			var err error
-			if r.partial {
-				_, err = rc.ReconcilePartial(ctx, board, listed, r.at)
-			} else {
-				_, err = rc.Reconcile(ctx, board, listed, r.at)
-			}
-			if err != nil {
-				failf(i, "reconcile: %v", err)
-			}
-			if r.partial { // ages nothing, but a posting it shows has reappeared
-				for k := range distinct {
-					delete(episode, k)
-				}
+
+		// The listing: a new posting is first seen now; a listed posting with
+		// misses, or dead, has reappeared and its episode ends.
+		for k := range distinct {
+			p := known[k]
+			if p == nil {
+				known[k] = &fuzzPost{board: r.board, firstSeen: clock, last: clock, lastOff: r.off}
 				continue
 			}
-			absent := 0
-			for _, k := range open {
-				if !distinct[k] {
-					absent++
-				}
-			}
-			mass := (len(open) >= 2 && absent == len(open)) || (len(open) >= 10 && 4*absent >= len(open))
-			if mass {
-				massReads++
-			}
-			for k := range distinct { // a listed posting's episode ends
-				delete(episode, k)
-			}
-			for _, k := range open {
-				if distinct[k] {
-					continue
-				}
-				st := episode[k]
-				if st == nil {
-					st = &fuzzState{first: r.at}
-					episode[k] = st
-				}
-				st.misses++
-				st.massed = st.massed || mass
-				hold := specOrdinaryHold
-				if st.massed {
-					hold = specMassHold
-				}
-				rec, _ := l.Get(k)
-				overdue := st.misses >= 2 && !r.at.Before(st.first.Add(hold))
-				switch {
-				case rec.Status == posting.Dead && !overdue:
-					failf(i, "%s died with %d misses, %s after its first miss, hold %s (massed %v)", k, st.misses, r.at.Sub(st.first), hold, st.massed)
-				case rec.Status != posting.Dead && overdue:
-					failf(i, "%s alive with %d misses, %s after its first miss, hold %s (massed %v)", k, st.misses, r.at.Sub(st.first), hold, st.massed)
-				case rec.Status == posting.Dead:
-					deaths++
-					delete(episode, k)
-				case st.misses >= 2:
-					held++
-				}
-			}
-			for _, k := range open { // everything the listing showed is open or revived
-				if distinct[k] {
-					if rec, _ := l.Get(k); rec.Status == posting.Dead {
-						failf(i, "%s was listed and is dead", k)
-					}
-				}
+			if p.misses > 0 || p.dead() {
+				*p = fuzzPost{board: p.board, firstSeen: p.firstSeen, last: clock, lastOff: r.off}
 			}
 		}
-		l.Close()
+		if r.partial {
+			continue
+		}
+		var absent []posting.Key
+		for _, k := range open {
+			if !distinct[k] {
+				absent = append(absent, k)
+			}
+		}
+		if s.Open != len(open) || s.Absent != len(absent) {
+			failf(i, "open %d absent %d, oracle %d %d", s.Open, s.Absent, len(open), len(absent))
+		}
+		frozen := len(absent) > 0 && (own || inWindow >= 3)
+		if s.ClockBehind != frozen {
+			failf(i, "ClockBehind %v, oracle %v (own %v, %d records in the window, clock %+v)", s.ClockBehind, frozen, own, inWindow, r.off)
+		}
+		if frozen {
+			tally.frozen.Add(1)
+			for _, k := range absent {
+				if rec, _ := l.Get(k); rec.MissedRuns != known[k].misses || rec.Status == posting.Dead {
+					failf(i, "%s was aged by a frozen read: %+v", k, rec)
+				}
+			}
+			continue
+		}
+		nOpen, nAbsent := len(open), len(absent)
+		mass := (nOpen >= 2 && nAbsent == nOpen) || (nOpen >= rule.floor && nAbsent*rule.den >= rule.num*nOpen)
+		if mass && nAbsent > 0 {
+			tally.massReads.Add(1)
+		}
+		var want Summary
+		for _, k := range absent {
+			p := known[k]
+			if p.misses == 0 {
+				p.massed = false
+			}
+			p.misses++
+			if p.misses == 1 || p.first.After(clock.Add(time.Hour)) || p.first.Before(p.firstSeen) {
+				p.first, p.firstTrue, p.firstOff = clock, r.at, r.off
+			}
+			if mass && !p.massed {
+				want.MassMarked++
+			}
+			p.massed = p.massed || mass
+			hold := specOrdinaryHold
+			if p.massed {
+				hold = rule.hold
+			}
+			due := p.misses >= 2 && !clock.Before(p.first.Add(hold))
+			gap := clock.Sub(p.last)
+			waits := due && gap > specWindow
+			lastOff := p.lastOff
+			p.last, p.lastOff = clock, r.off
+			rec, _ := l.Get(k)
+			switch {
+			case due && !waits:
+				if rec.Status != posting.Dead {
+					failf(i, "(b) %s alive with %d misses, %s (clock) after its first miss, hold %s", k, p.misses, clock.Sub(p.first), hold)
+				}
+				// (a) in true time, less the errors the rule cannot see.
+				allow := max(0, -p.firstOff) + max(0, r.off)
+				if r.at.Sub(p.firstTrue) < hold-allow {
+					failf(i, "(a) %s died %s (true) after the read that stamped its first miss, hold %s, clock errors stamp %s death %s",
+						k, r.at.Sub(p.firstTrue), hold, p.firstOff, r.off)
+				}
+				// (c) a clock far ahead never kills against a last event written
+				// under a right clock.
+				if r.off > specWindow && lastOff == 0 {
+					failf(i, "(c) %s died under a clock %s ahead", k, r.off)
+				}
+				want.Dead++
+				if p.massed {
+					want.MassDead++
+				}
+				p.misses = -1 // dead: the next listing of it is a reappearance
+				tally.deaths.Add(1)
+			case due:
+				if rec.Status == posting.Dead {
+					failf(i, "(b) %s died though %s passed since its last event", k, gap)
+				}
+				want.Held++
+				want.Deferred++
+				tally.deferred.Add(1)
+				tally.held.Add(1)
+			case p.misses >= 2:
+				if rec.Status == posting.Dead {
+					failf(i, "(a) %s died inside its hold: %d misses, %s (clock) after its first miss, hold %s", k, p.misses, clock.Sub(p.first), hold)
+				}
+				want.Held++
+				tally.held.Add(1)
+			default:
+				if rec.Status == posting.Dead {
+					failf(i, "(a) %s died on its first miss", k)
+				}
+				want.Missed++
+			}
+		}
+		if s.Missed != want.Missed || s.Held != want.Held || s.Deferred != want.Deferred || s.Dead != want.Dead ||
+			s.MassDead != want.MassDead || s.MassMarked != want.MassMarked || s.Mass != (mass && nAbsent > 0) {
+			failf(i, "summary %+v, oracle missed %d held %d deferred %d dead %d mass dead %d marked %d mass %v",
+				s, want.Missed, want.Held, want.Deferred, want.Dead, want.MassDead, want.MassMarked, mass)
+		}
+		for k := range distinct { // everything the listing showed is open or revived
+			if rec, _ := l.Get(k); rec.Status == posting.Dead {
+				failf(i, "%s was listed and is dead", k)
+			}
+		}
 	}
-	return deaths, held, massReads
 }
+
+// dead says the oracle holds the posting as dead (misses -1).
+func (p *fuzzPost) dead() bool { return p.misses < 0 }

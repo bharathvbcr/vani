@@ -126,7 +126,7 @@ func TestFooterSaysWhatAwaitsTriage(t *testing.T) {
 // prints when there is nothing to say.
 func TestFooterNamesStaleEmptyAndNotAgedBoards(t *testing.T) {
 	quiet, _ := Render(nil, nil, day, Counts{New: 1})
-	for _, s := range []string{"Boards not being read", "Boards that list nothing", "Not aged"} {
+	for _, s := range []string{"Boards not being read", "Boards that list nothing", "Not aged", "mass hold", "Mass hold"} {
 		if strings.Contains(quiet, s) {
 			t.Fatalf("nothing to say, but the footer has %q:\n%s", s, quiet)
 		}
@@ -137,14 +137,19 @@ func TestFooterNamesStaleEmptyAndNotAgedBoards(t *testing.T) {
 	}
 	stale[0] = "gh:evil: <script>alert(1)</script> error"
 	md, _ := Render(nil, nil, day, Counts{New: 1, StaleBoards: stale, StaleCount: 25, EmptyBoards: []string{"gh:closed: lists no postings now"},
-		EmptyCount: 1, ClockBehind: 2})
+		EmptyCount: 1, ClockBehind: 2, MassDead: 7,
+		MassHeld: "Mass hold (attention, not a failure): 3 posting(s) on 1 board(s) are kept: Snap (gh:snap) 3 until 2026-11-26 <b>"})
 	for _, want := range []string{"Boards not being read: their roles here are not refreshed and new ones are not found (25)", "…and 15 more (`vani status`)",
-		"Boards that list nothing now though they listed before (1)", `gh\:closed\: lists no postings now`, "Not aged: the clock reads behind the ledger, so 2 board(s)"} {
+		"Boards that list nothing now though they listed before (1)", `gh\:closed\: lists no postings now`,
+		// Changed 2026-11-12 (review F1): the line says what was seen, events
+		// stamped ahead of the clock, not that the clock is wrong now.
+		"Not aged: the ledger holds events stamped ahead of this run's clock, so 2 board(s)",
+		"Died after a mass hold: 7 posting(s)", `Mass hold \(attention, not a failure\)\: 3 posting\(s\) on 1 board\(s\)`} {
 		if !strings.Contains(md, want) {
 			t.Errorf("footer missing %q:\n%s", want, md)
 		}
 	}
-	if strings.Contains(md, "<script>") {
+	if strings.Contains(md, "<script>") || strings.Contains(md, "<b>") {
 		t.Fatalf("a board line was not escaped:\n%s", md)
 	}
 	if strings.Contains(md, "b10") {

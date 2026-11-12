@@ -181,15 +181,18 @@ func rowOf(id, source string, r runRecord, at time.Time) runRow {
 }
 
 // runHasFailures says whether a run has anything to report: a failed or
-// interrupted run, a run error, a board that failed to list, a pay fetch that
+// interrupted run, a run error, a board that failed to list, a listing that
+// newly mass-marked postings, one that aged nothing on events stamped ahead of
+// the clock, postings that died at the end of a mass hold, a pay fetch that
 // failed, a backend error, or a stage that could not finish its check
 // (impressions, the per-run log, the shadow, exclusions that could not read a
 // posting, logos, a partial near-duplicate pass, a cosine that did not load,
 // a knowledge-base warm that did not run, a digest warning, notes that were
 // off or paused, a fail-open keep other than coverage unknown, a note whose
 // relevance could not be computed). A skipped slot is not a failure. Coverage
-// unknown, a notes floor or budget, deferred or gone details, and a pay fetch
-// that was skipped are shown and are not failures. The Mac app's button
+// unknown, a notes floor or budget, deferred or gone details, a pay fetch
+// that was skipped, postings carried through a mass hold and deaths that wait a
+// read are shown and are not failures. The Mac app's button
 // follows the same rule (LastRun.hasFailures); a contract test holds the two
 // together.
 func runHasFailures(r runRecord, at time.Time) bool {
@@ -200,7 +203,7 @@ func runHasFailures(r runRecord, at time.Time) bool {
 	if st == outcomeFailed || st == outcomeInterrupted || r.Error != "" {
 		return true
 	}
-	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0 || r.Boards.Mass > 0 || r.Boards.ClockBehind > 0) {
+	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0 || r.Boards.Mass > 0 || r.Boards.ClockBehind > 0 || r.Boards.MassDead > 0) {
 		return true
 	}
 	if r.ImpressionsError != "" || r.LogDropped > 0 {
@@ -585,13 +588,16 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		if len(detailLines) > 0 {
 			detailLines = append([]string{fmt.Sprintf("Failed boards (%d of %d):", r.Boards.Failed, r.Boards.Configured)}, detailLines...)
 		}
-		var mass, behind []string
+		var mass, behind, massDead []string
 		for _, it := range r.Boards.Items {
 			if it.Outcome != boardRead || it.Reconcile == nil {
 				continue
 			}
 			if it.Reconcile.MassMarked > 0 {
 				mass = append(mass, b.clean(massLine(it)))
+			}
+			if it.Reconcile.MassDead > 0 {
+				massDead = append(massDead, b.clean(massDeadLine(it)))
 			}
 			if it.Reconcile.ClockBehind {
 				behind = append(behind, b.clean(clockBehindLine(it)))
@@ -608,8 +614,21 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 			behind = append(behind, fmt.Sprintf("(%d more board(s) not aged are not in the record: it keeps a bounded number)", hidden))
 		}
 		if len(behind) > 0 {
-			detailLines = append(detailLines, fmt.Sprintf("Not aged (%d): the clock reads behind the ledger, so nothing absent was aged; fix the clock:", r.Boards.ClockBehind))
+			detailLines = append(detailLines, fmt.Sprintf("Not aged (%d): the ledger holds events stamped ahead of this run's clock, so nothing absent was aged until the clock passes them (the clock is behind, or those events came from a clock that ran ahead):", r.Boards.ClockBehind))
 			detailLines = append(detailLines, behind...)
+		}
+		if hidden := r.Boards.MassDead; hidden > 0 {
+			shown := 0
+			for _, it := range r.Boards.Items {
+				if it.Reconcile != nil {
+					shown += it.Reconcile.MassDead
+				}
+			}
+			if shown < hidden {
+				massDead = append(massDead, fmt.Sprintf("(%d more posting(s) that died after a mass hold are on boards not in the record: it keeps a bounded number)", hidden-shown))
+			}
+			detailLines = append(detailLines, fmt.Sprintf("Died after a mass hold (%d): their boards stopped listing them at once and never listed them again before the hold ended; check the boards still list their roles:", r.Boards.MassDead))
+			detailLines = append(detailLines, massDead...)
 		}
 		if r.Boards.HealthError != "" {
 			detailLines = append(detailLines, b.clean("Board health not saved: "+r.Boards.HealthError+" (its stale list is this run's view only)"))
@@ -730,6 +749,14 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		}
 		detailLines = append(detailLines, b.clean(line))
 	}
+	// An attention line, not a failure: postings carried through a mass hold,
+	// named every run while any is held, so an outage that goes on is not
+	// "no failures" alone from its second day.
+	if r.Boards != nil {
+		if l := massHeldLine(r.Boards.MassHeld, r.Boards.MassHeldCount, r.Boards.MassHeldPostings); l != "" {
+			b.add(b.clean(l))
+		}
+	}
 	if len(detailLines) == 0 && !has {
 		b.add("No failures in this run.")
 	}
@@ -828,7 +855,16 @@ func boardFetchSummary(b *boardsReport) string {
 		parts = append(parts, fmt.Sprintf("%d absent posting(s) held alive", b.Held))
 	}
 	if b.ClockBehind > 0 {
-		parts = append(parts, fmt.Sprintf("%d board(s) not aged: clock behind the ledger", b.ClockBehind))
+		parts = append(parts, fmt.Sprintf("%d board(s) not aged: events stamped ahead of the clock", b.ClockBehind))
+	}
+	if b.MassDead > 0 {
+		parts = append(parts, fmt.Sprintf("%d posting(s) died after a mass hold", b.MassDead))
+	}
+	if b.DeathsDeferred > 0 {
+		parts = append(parts, fmt.Sprintf("%d death(s) wait one more read (over %s since their last event)", b.DeathsDeferred, pipeline.ClockWindow))
+	}
+	if b.MassHeldPostings > 0 {
+		parts = append(parts, fmt.Sprintf("%d posting(s) on %d board(s) in a mass hold", b.MassHeldPostings, b.MassHeldCount))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -851,17 +887,37 @@ func massLine(it boardReport) string {
 		name, listed, absent, open, marked)
 }
 
-// clockBehindLine is one board whose full listing aged nothing.
+// clockBehindLine is one board whose full listing aged nothing: what it saw.
 func clockBehindLine(it boardReport) string {
 	name := it.ATS + ":" + it.Token
 	if it.Company != "" {
 		name += " (" + it.Company + ")"
 	}
 	absent := 0
-	if it.Reconcile != nil {
-		absent = it.Reconcile.Absent
+	ahead := ""
+	if rc := it.Reconcile; rc != nil {
+		absent = rc.Absent
+		if !rc.ClockAhead.IsZero() {
+			ahead = ", up to " + rc.ClockAhead.UTC().Format(time.RFC3339)
+		}
 	}
-	return fmt.Sprintf("%s: %d open posting(s) absent were not aged because the clock reads behind the ledger's own history", name, absent)
+	return fmt.Sprintf("%s: %d open posting(s) absent were not aged: the ledger holds events stamped ahead of the run's clock%s", name, absent, ahead)
+}
+
+// massDeadLine is one board whose mass-held postings died this run.
+func massDeadLine(it boardReport) string {
+	name := it.ATS + ":" + it.Token
+	if it.Company != "" {
+		name += " (" + it.Company + ")"
+	}
+	listed, dead := 0, 0
+	if it.Listed != nil {
+		listed = *it.Listed
+	}
+	if it.Reconcile != nil {
+		dead = it.Reconcile.MassDead
+	}
+	return fmt.Sprintf("%s: listed %d; %d posting(s) held after a mass absence died at the end of the hold", name, listed, dead)
 }
 
 func failOpenSummary(c pipeline.FailOpenCounts) string {

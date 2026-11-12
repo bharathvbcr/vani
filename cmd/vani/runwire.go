@@ -395,9 +395,16 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	}
 	// A board that listed nothing though the ledger holds postings of its that
 	// died or wait out a mass hold: named from the ledger, not from health.
-	boards.Empty, boards.EmptyCount = emptyBoardsOf(w.led.All(), boards.all)
+	recs := w.led.All()
+	boards.Empty, boards.EmptyCount = emptyBoardsOf(recs, boards.all)
 	for _, b := range boards.Empty {
 		w.warnf("empty board: %s", emptyBoardLine(b))
+	}
+	// Postings waiting out a mass hold, on any board, named every run while any
+	// is held (an attention line, not a failure).
+	boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings = massHeldOf(recs, w.watchedBoards(), rec.Liveness(), at)
+	if l := massHeldLine(boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings); l != "" {
+		w.warnf("%s", l)
 	}
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)

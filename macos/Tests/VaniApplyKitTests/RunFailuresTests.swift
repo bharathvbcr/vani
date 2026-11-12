@@ -59,6 +59,9 @@ final class RunFailuresTests: XCTestCase {
             // Postings held through an earlier mass absence, and rows the drop policy
             // rejected before a detail request, are shown and are not failures.
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"held":42,"prefiltered":9,"stale_count":0}}"#,
+            // Postings still in a mass hold (an attention line) and deaths that wait a read
+            // after a long gap are shown and are not failures.
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"held":20,"mass_held_count":1,"mass_held_postings":20,"deaths_deferred":4,"mass_held":[{"ats":"gh","token":"snap","held":20,"until":"2026-11-26T09:00:00Z"}]}}"#,
             #"{"ok":true,"state":"ok","near_dup":{"similarity_note":"vector cache off"}}"#,
             #"{"ok":true,"state":"ok","shadow":{"errors":0,"busy_skips":0}}"#,
             #"{"ok":true,"state":"ok","explain":{}}"#,
@@ -111,6 +114,8 @@ final class RunFailuresTests: XCTestCase {
             // the clock read behind the ledger: both need a look.
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":0,"mass":1,"mass_marked":42,"items":[{"ats":"wd","token":"snap/snap","outcome":"read","listed":0}]}}"#,
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":5,"clock_behind":1}}"#,
+            // Postings that died at the end of a mass hold: the owner should see them.
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":0,"mass_dead":20}}"#,
         ]
         for json in failing {
             XCTAssertTrue(try decodeRun(json).hasFailures, json)

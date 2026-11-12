@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
@@ -105,4 +106,73 @@ func emptyBoardLines(boards []emptyBoard) []string {
 		out = append(out, emptyBoardLine(b))
 	}
 	return out
+}
+
+// massHeldBoard is a board whose postings wait out a mass hold: a mass absence
+// marked them and they are still absent. Until is when the first of them can
+// die, Last when the last can (each also needs a read that ages the board).
+type massHeldBoard struct {
+	ATS     string    `json:"ats"`
+	Token   string    `json:"token"`
+	Company string    `json:"company,omitempty"`
+	Held    int       `json:"held"`
+	Until   time.Time `json:"until"`
+	Last    time.Time `json:"last,omitzero"`
+}
+
+// massHeldOf names the boards whose postings recs holds in a mass hold, named
+// from watched where it has them (a board off the watchlist is named by its key
+// prefix: nothing reads it, so its holds do not end). At most maxStaleListed,
+// earliest end first, with the exact count of boards and of postings.
+func massHeldOf(recs []ledger.Record, watched []sources.Board, lv pipeline.Liveness, now time.Time) (out []massHeldBoard, boards, postings int) {
+	names := map[string]sources.Board{}
+	for _, b := range watched {
+		names[b.KeyPrefix()] = b
+	}
+	for _, h := range pipeline.MassHeld(recs, lv, now) {
+		mb := massHeldBoard{Held: h.Held, Until: h.Until.UTC(), Last: h.Last.UTC()}
+		if b, ok := names[h.Prefix]; ok {
+			mb.ATS, mb.Token, mb.Company = string(b.ATS), b.Token, b.Company
+		} else {
+			ats, token, _ := strings.Cut(strings.TrimSuffix(h.Prefix, ":"), ":")
+			mb.ATS, mb.Token = ats, token
+		}
+		if mb.Last.Equal(mb.Until) {
+			mb.Last = time.Time{}
+		}
+		out = append(out, mb)
+		postings += h.Held
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Until.Before(out[j].Until) })
+	boards = len(out)
+	if len(out) > maxStaleListed {
+		out = out[:maxStaleListed]
+	}
+	return out, boards, postings
+}
+
+// massHeldLine is the attention line a run carries while any posting is in a
+// mass hold: not a failure, but the owner should know which boards are being
+// carried and until when.
+func massHeldLine(held []massHeldBoard, boards, postings int) string {
+	if boards == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(held)+1)
+	for _, b := range held {
+		name := b.ATS + ":" + b.Token
+		if b.Company != "" {
+			name = b.Company + " (" + name + ")"
+		}
+		when := b.Until.Format("2006-01-02")
+		if !b.Last.IsZero() && b.Last.Format("2006-01-02") != when {
+			when += ".." + b.Last.Format("2006-01-02")
+		}
+		parts = append(parts, fmt.Sprintf("%s %d until %s", name, b.Held, when))
+	}
+	if hidden := boards - len(held); hidden > 0 {
+		parts = append(parts, fmt.Sprintf("%d more board(s)", hidden))
+	}
+	return fmt.Sprintf("Mass hold (attention, not a failure): %d posting(s) on %d board(s) are kept though their boards stopped listing them, and die at the end of the hold if still absent: %s",
+		postings, boards, strings.Join(parts, "; "))
 }

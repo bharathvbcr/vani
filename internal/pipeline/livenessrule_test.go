@@ -14,8 +14,9 @@ package pipeline
 //     marked; the mark only clears when the posting reappears.
 //   - A mass-marked posting dies only after at least 2 misses AND the mass hold
 //     (14 days by default) since its own first miss.
-//   - A partial listing ages nothing. A listing taken with the clock behind the
-//     ledger ages nothing.
+//   - A partial listing ages nothing. A listing taken while the ledger holds
+//     events between 1 hour and 3 days ahead of the clock (on the board's own
+//     records, or on 3 records anywhere) ages nothing.
 //
 // Each probe below is a case a reviewer found that killed postings early under
 // an earlier design. The expectation is written from the text above, not from

@@ -71,9 +71,16 @@ type Counts struct {
 	EmptyBoards []string
 	EmptyCount  int
 	// ClockBehind is how many boards' full listings aged nothing because the
-	// clock read behind the ledger (pipeline.Summary.ClockBehind): no absent
+	// ledger holds events stamped ahead of the run's clock
+	// (pipeline.Summary.ClockBehind): no absent
 	// posting was missed or marked dead for them this run.
 	ClockBehind int
+	// MassDead is postings that died at the end of a mass hold this run (their
+	// boards stopped listing them at once and never listed them again).
+	// MassHeld is the attention line for postings still in a mass hold (one
+	// line naming the boards and when the holds end; empty when none).
+	MassDead int
+	MassHeld string
 }
 
 // Unchecked is one cause a posting was kept unchecked and how many were.
@@ -576,7 +583,13 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
 	}
 	if c.ClockBehind > 0 {
-		fmt.Fprintf(&b, "\nNot aged: the clock reads behind the ledger, so %d board(s) left the postings they no longer list as they were (none was missed or marked dead); fix the clock\n", c.ClockBehind)
+		fmt.Fprintf(&b, "\nNot aged: the ledger holds events stamped ahead of this run's clock, so %d board(s) left the postings they no longer list as they were (none was missed or marked dead) until the clock passes them; the clock is behind, or those events came from a clock that ran ahead\n", c.ClockBehind)
+	}
+	if c.MassDead > 0 {
+		fmt.Fprintf(&b, "\nDied after a mass hold: %d posting(s) whose boards stopped listing them at once and never listed them again (`vani runs failures` names the boards)\n", c.MassDead)
+	}
+	if c.MassHeld != "" {
+		fmt.Fprintf(&b, "\n%s\n", Escape(c.MassHeld, 4*maxFieldRunes))
 	}
 	boardSection := func(title string, lines []string, total int) {
 		n := max(total, len(lines))
