@@ -18,12 +18,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
@@ -187,27 +184,41 @@ var builtinWords = []string{
 	"cap-exempt", "cap exempt", "nonprofit", "non-profit",
 }
 
-// Words is the identifying-word list Check applies.
+// Words is the identifying-word list Check applies and Redact removes: the
+// built-in terms (whole words) and the owner's (matched loosely; see match.go).
 type Words struct {
-	terms []string
+	builtin []string
+	owner   []string
+	c       *compiled
 	// Personal is true when the owner's WordsFile supplied at least one term; false
 	// (missing, empty or comment-only file) means only the built-in list was checked.
 	Personal bool
 	// Missing is true when WordsFile does not exist at all, as against an
 	// empty or comment-only file. A caller that sends the owner's own text to a
-	// provider refuses on it (see kbmatch); trackcmd only reports Personal.
+	// provider refuses on either (see kbmatch); trackcmd only reports Personal.
 	Missing bool
+}
+
+// compiled is the scan-ready form of w, built once by LoadWords and
+// BuiltinWords. A Words made any other way compiles on each call.
+func (w Words) compiled() *compiled {
+	if w.c != nil {
+		return w.c
+	}
+	return compile(w.builtin, w.owner)
 }
 
 // LoadWords reads <dir>/identifying-words.txt (one term per line, '#'
 // comments) on top of the built-in list. A missing file is not an error:
 // Words.Personal and Words.Missing report it so the caller can say the check
-// was partial, or refuse.
+// was partial, or refuse. An error names a line by number and size, never by
+// content, because the error can reach a JSON reply or a log.
 func LoadWords(dir string) (Words, error) {
-	w := Words{terms: slices.Clone(builtinWords)}
+	w := Words{builtin: slices.Clone(builtinWords)}
 	f, err := os.OpenInRoot(dir, WordsFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		w.Missing = true
+		w.c = compile(w.builtin, nil)
 		return w, nil
 	}
 	if err != nil {
@@ -222,174 +233,75 @@ func LoadWords(dir string) (Words, error) {
 		return Words{}, fmt.Errorf("track: %s exceeds %d bytes", WordsFile, maxWordsBytes)
 	}
 	sc := bufio.NewScanner(bytes.NewReader(data))
-	n := 0
+	line, n := 0, 0
 	for sc.Scan() {
+		line++
 		t := strings.ToLower(strings.Join(strings.Fields(sc.Text()), " "))
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
 		if len(t) > maxWordBytes {
-			return Words{}, fmt.Errorf("track: %s line %q exceeds %d bytes", WordsFile, t[:20], maxWordBytes)
+			return Words{}, fmt.Errorf("track: %s line %d is %d bytes, over the %d-byte limit", WordsFile, line, len(t), maxWordBytes)
+		}
+		if _, ok := newOwnerTerm(t); !ok {
+			return Words{}, fmt.Errorf("track: %s line %d has no visible characters", WordsFile, line)
 		}
 		if n++; n > maxWords {
 			return Words{}, fmt.Errorf("track: %s has more than %d terms", WordsFile, maxWords)
 		}
-		w.terms = append(w.terms, t)
+		w.owner = append(w.owner, t)
 	}
 	if err := sc.Err(); err != nil {
 		return Words{}, fmt.Errorf("track: %s: %w", WordsFile, err)
 	}
 	w.Personal = n > 0
+	w.c = compile(w.builtin, w.owner)
 	return w, nil
 }
 
 // BuiltinWords returns the built-in list alone (Personal false).
-func BuiltinWords() Words { return Words{terms: slices.Clone(builtinWords)} }
+func BuiltinWords() Words {
+	w := Words{builtin: slices.Clone(builtinWords)}
+	w.c = compile(w.builtin, nil)
+	return w
+}
 
-// Found returns the terms of w that occur in s as whole words: the check Check
-// applies to a track's target summary, for any other text bound for a provider.
-func (w Words) Found(s string) []string { return w.found(s) }
+// Found returns the terms of w that occur in s, as Redact would find them: the
+// check Check applies to a track's target summary, and any other text bound for
+// a provider. It folds and matches exactly as Redact does (match.go), so it
+// reports whatever Redact would remove and nothing Redact would leave.
+func (w Words) Found(s string) []string {
+	f := foldString(s)
+	terms, at := w.compiled().found(&f)
+	if at {
+		terms = append([]string{"@"}, terms...)
+	}
+	return terms
+}
 
 // Redacted is what Redact puts in place of a term.
 const Redacted = "[redacted]"
 
-// Redact replaces every whole-word occurrence of w's terms in s with Redacted
-// and reports how many it replaced. It matches as found does, so that found
-// finds nothing Redact left: case-insensitively, a term bounded on both sides
-// by anything but an ASCII letter (so "gemma-metal", "manvi's", "manvi-cli" and
-// "(lappi)" are all caught and "optimize" is not a match for "opt"). At each
-// position the longest term wins, so "gemma-metal" is removed whole rather than
-// leaving "-metal" after "gemma". The built-in "@" removes the whole
-// whitespace-delimited token holding it (an address or a handle), not the
-// sign alone. Text between matches is copied unchanged.
+// Redact replaces every occurrence of w's terms in s with Redacted and reports
+// how many it replaced. It matches as Found does (see match.go for what counts
+// as an occurrence: folding of case, accents, spacing, look-alike and invisible
+// characters; whole words for the built-in terms; plurals, suffixes, camelCase
+// and joins for the owner's), and repeats while a removal leaves a new term
+// behind, so Found finds nothing in the result. At each position the longest
+// term wins. The built-in "@" removes the whole whitespace-delimited token
+// holding it (an address or a handle), not the sign alone. Text between matches
+// is copied unchanged.
 func (w Words) Redact(s string) (string, int) {
-	if s == "" {
-		return s, 0
+	c := w.compiled()
+	total := 0
+	for range maxRedactPasses {
+		out, n := c.redactOnce(s)
+		if n == 0 {
+			break
+		}
+		s, total = out, total+n
 	}
-	terms := make([]string, 0, len(w.terms))
-	at := false
-	for _, t := range w.terms {
-		if t == "@" {
-			at = true
-			continue
-		}
-		if t != "" {
-			terms = append(terms, t)
-		}
-	}
-	// Longest first, so the first term that matches at a position is the longest.
-	sort.SliceStable(terms, func(i, j int) bool {
-		return utf8.RuneCountInString(terms[i]) > utf8.RuneCountInString(terms[j])
-	})
-	var b strings.Builder
-	n := 0
-	prevLetter := false
-	for i := 0; i < len(s); {
-		if !prevLetter {
-			if m := matchAt(s[i:], terms); m > 0 && !asciiLetterAt(s, i+m) {
-				b.WriteString(Redacted)
-				n++
-				i += m
-				prevLetter = false
-				continue
-			}
-		}
-		r, size := utf8.DecodeRuneInString(s[i:])
-		b.WriteString(s[i : i+size])
-		prevLetter = isASCIILetter(r)
-		i += size
-	}
-	out := b.String()
-	if at && strings.Contains(out, "@") {
-		var ob strings.Builder
-		for _, tok := range splitKeepSpace(out) {
-			if strings.Contains(tok, "@") {
-				ob.WriteString(Redacted)
-				n++
-				continue
-			}
-			ob.WriteString(tok)
-		}
-		out = ob.String()
-	}
-	return out, n
-}
-
-// matchAt returns the byte length in s of the first term (longest first) that s
-// begins with, compared case-insensitively rune by rune, or 0.
-func matchAt(s string, terms []string) int {
-	for _, t := range terms {
-		j := 0
-		ok := true
-		for _, tr := range t {
-			if j >= len(s) {
-				ok = false
-				break
-			}
-			sr, size := utf8.DecodeRuneInString(s[j:])
-			if sr != tr && !strings.EqualFold(string(sr), string(tr)) {
-				ok = false
-				break
-			}
-			j += size
-		}
-		if ok && j > 0 {
-			return j
-		}
-	}
-	return 0
-}
-
-func isASCIILetter(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }
-
-// asciiLetterAt reports whether s has an ASCII letter at byte i.
-func asciiLetterAt(s string, i int) bool {
-	if i >= len(s) {
-		return false
-	}
-	r, _ := utf8.DecodeRuneInString(s[i:])
-	return isASCIILetter(r)
-}
-
-// splitKeepSpace splits s into runs of whitespace and runs of anything else,
-// in order, so joining them gives s back.
-func splitKeepSpace(s string) []string {
-	var out []string
-	start := 0
-	for i, r := range s {
-		if i == start {
-			continue
-		}
-		prev, _ := utf8.DecodeLastRuneInString(s[:i])
-		if unicode.IsSpace(prev) != unicode.IsSpace(r) {
-			out = append(out, s[start:i])
-			start = i
-		}
-	}
-	if start < len(s) {
-		out = append(out, s[start:])
-	}
-	return out
-}
-
-// found returns the terms that occur in s as whole words: bounded on both
-// sides by a non-letter or the end of the text.
-func (w Words) found(s string) []string {
-	low := strings.ToLower(s)
-	var out []string
-	for _, t := range w.terms {
-		if t == "@" {
-			if strings.Contains(low, "@") {
-				out = append(out, t)
-			}
-			continue
-		}
-		re := regexp.MustCompile(`(^|[^a-z])` + regexp.QuoteMeta(t) + `([^a-z]|$)`)
-		if re.MatchString(low) {
-			out = append(out, t)
-		}
-	}
-	return out
+	return s, total
 }
 
 // Bank is the set of knowledge-base entry ids evidence may cite.
@@ -455,7 +367,7 @@ func Check(d Decider, w Words, bank Bank) []string {
 	case summary == "":
 		add("target_summary is empty")
 	default:
-		for _, t := range w.found(summary) {
+		for _, t := range w.Found(summary) {
 			add("target_summary contains the identifying term %q", t)
 		}
 	}

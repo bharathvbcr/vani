@@ -96,6 +96,18 @@ Ported from the drafting validator (`build/check-deciders.js`):
     comments. It holds names, employers, schools and project names, so it is personal and lives
     only beside the track files. **Without it, the command prints that personal names were not
     checked**; it never reports that as a pass.
+  - One matcher serves this check and the redactor that removes the same terms from knowledge-base
+    text bound for a model (`internal/track/match.go`). Both fold text first: case, accents (a
+    bounded Latin table, no dependency), zero-width and other invisible characters, every kind of
+    space and dash, fullwidth and math letters, and Cyrillic/Greek look-alikes of Latin letters.
+    The built-in terms are then whole words. The owner's terms are looser: a plural or suffix
+    (`kernel` finds `kernels`, `kernelized`; a term under four letters takes only a plural), a
+    camelCase join (`ZephyrnetApp`, `myZephyrnet`), and optional spaces, hyphens, underscores,
+    dots or slashes at a term's word joins (`decode-latency` finds `decode latency`,
+    `DecodeLatency`) and, for terms of five or more letters, between any two letters
+    (`Zephyr-net`). A term that starts in the middle of a lowercase word (`rezephyrnet`) is not
+    found. A knowledge-base send refuses when the list is missing or has no terms, unless
+    `--allow-missing-identifying-words`.
 - Drop rules name a triage slot and legal values from `internal/decide/jdtriage/fixture.json`;
   no sponsorship rule (it stays in the main config); one rule per slot; `min_openrouter_prob` in (0, 1] (the old name `min_jev_prob` still loads).
 - `seniority` want/stretch/drop partition the seniority levels, and `drop` equals the seniority

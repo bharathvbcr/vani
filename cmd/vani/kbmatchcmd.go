@@ -183,7 +183,8 @@ func (e *env) kbmatchSetup(send, allowMissing bool) (cfg config.Config, prof sem
 
 // The identifying-words file's state, as kb_match replies record it
 // (identifying_words): loaded (the owner's terms and the built-in list),
-// empty (the file has no terms: the built-in list alone), missing (no file:
+// empty (the file has no terms: the built-in list alone; a send path refuses it
+// as it does a missing file, and with the flag records empty_allowed), missing (no file:
 // the built-in list alone; a send path refuses it unless
 // --allow-missing-identifying-words, and then records missing_allowed).
 const (
@@ -191,10 +192,11 @@ const (
 	kbWordsEmpty          = "empty"
 	kbWordsMissing        = "missing"
 	kbWordsMissingAllowed = "missing_allowed"
+	kbWordsEmptyAllowed   = "empty_allowed"
 )
 
 // kbAllowMissingFlag is the flag a send path takes to send with the built-in
-// list alone when the owner's file does not exist. It never lifts an unreadable,
+// list alone when the owner's file does not exist or has no terms. It never lifts an unreadable,
 // oversized or malformed file: that refuses whatever the flag says, since the
 // file may be the owner's list cut short.
 const kbAllowMissingFlag = "allow-missing-identifying-words"
@@ -211,18 +213,25 @@ func kbmatchWords(cfg config.Config, stateDir string, send, allowMissing bool) (
 	if err != nil {
 		return track.Words{}, "", fmt.Errorf("kbmatch: the identifying-words list: %w; the knowledge base is not sent without it", err)
 	}
+	// A file that exists but holds no terms (blank, or only comments) removes
+	// exactly what a missing one does, so a send path treats the two alike.
 	switch {
-	case w.Missing && send && !allowMissing:
+	case w.Personal:
+		return w, kbWordsLoaded, nil
+	case send && !allowMissing && w.Missing:
 		return track.Words{}, kbWordsMissing, fmt.Errorf("kbmatch: there is no %s in %s, so the owner's identifying terms cannot be removed from the knowledge base; nothing is sent (add the file, or pass --%s to send with the built-in list alone)",
 			track.WordsFile, dir, kbAllowMissingFlag)
-	case w.Missing && send:
+	case send && !allowMissing:
+		return track.Words{}, kbWordsEmpty, fmt.Errorf("kbmatch: %s in %s has no terms (blank or only comments), so the owner's identifying terms cannot be removed from the knowledge base; nothing is sent (add the terms, or pass --%s to send with the built-in list alone)",
+			track.WordsFile, dir, kbAllowMissingFlag)
+	case send && w.Missing:
 		return w, kbWordsMissingAllowed, nil
+	case send:
+		return w, kbWordsEmptyAllowed, nil
 	case w.Missing:
 		return w, kbWordsMissing, nil
-	case !w.Personal:
-		return w, kbWordsEmpty, nil
 	}
-	return w, kbWordsLoaded, nil
+	return w, kbWordsEmpty, nil
 }
 
 // kbmatchDigest is the knowledge base as a kb_match question carries it, read
@@ -317,7 +326,7 @@ func (e *env) kbmatchRun(args []string) error {
 	backendFlag := fs.String("backend", "", "llm, or openrouter for the decision model (default kbmatch.backend, else llm)")
 	modelFlag := fs.String("model", "", "the llm model that answers (default kbmatch.model, else llm.triage_model, else llm.model)")
 	noRetrieve := fs.Bool("no-retrieve", false, "do not have the embedding model pick the closest knowledge-base lines; send the full digest")
-	allowMissing := fs.Bool(kbAllowMissingFlag, false, "send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+" (without it, a missing file refuses)")
+	allowMissing := fs.Bool(kbAllowMissingFlag, false, "send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+", or one with no terms (without it, either refuses)")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what was asked (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
 		return err
@@ -467,7 +476,11 @@ func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag
 
 	var inBytes int
 	for _, c := range cands {
-		q, _ := kbmatch.Question(c.rec.Posting, summary, digest, nil)
+		// Prepare, like a send: the estimate is of the bytes that would go.
+		q, _, perr := kbmatch.Prepare(c.rec.Posting, summary, digest, nil)
+		if perr != nil {
+			return perr
+		}
 		inBytes += len(q.Context) + len(q.Prompt) + kbMatchOverhead
 	}
 	inTok := int64(inBytes / kbMatchBytesPerTok)

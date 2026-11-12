@@ -87,7 +87,7 @@ func TestQuestionStaysInsideTheContextBoundAndNamesNoOne(t *testing.T) {
 		Key: "gh:acme:1", Company: "SecretCo", Title: "Software Engineer", Location: "Austin",
 		Description: strings.Repeat("Design services. ", 20000),
 	}
-	q, truncated := Question(p, "early-career ML systems roles", d, nil)
+	q, truncated := question(p, "early-career ML systems roles", d, nil)
 	if err := decide.ValidateQuestion(q); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestQuestionStaysInsideTheContextBoundAndNamesNoOne(t *testing.T) {
 			t.Errorf("option %q is reserved by the LLM backend", o)
 		}
 	}
-	short, _ := Question(posting.Posting{Title: "T", Description: "short"}, "s", d, nil)
+	short, _ := question(posting.Posting{Title: "T", Description: "short"}, "s", d, nil)
 	if strings.Contains(short.Facts[jdtriage.FactContextTruncated], "true") {
 		t.Errorf("a short posting reported truncation")
 	}
@@ -116,7 +116,7 @@ func TestQuestionStaysInsideTheContextBoundAndNamesNoOne(t *testing.T) {
 
 func TestQuestionCutsOnRuneBoundaries(t *testing.T) {
 	d, _ := DigestOf(testProfile(), noTerms)
-	q, _ := Question(posting.Posting{Title: "T", Description: strings.Repeat("é", jdtriage.MaxContextBytes)}, "s", d, nil)
+	q, _ := question(posting.Posting{Title: "T", Description: strings.Repeat("é", jdtriage.MaxContextBytes)}, "s", d, nil)
 	if !utf8.Valid(q.Context) {
 		t.Errorf("the cut split a rune")
 	}

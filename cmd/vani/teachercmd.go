@@ -135,7 +135,7 @@ func (e *env) cmdTeacher(args []string) error {
 	readingsOf := fs.String("with-readings-of", "", "keep only postings that already have a current reading by this model (this task, fixture and prompt, and for kb_match this knowledge-base digest), applied before --sample")
 	taskFlag := fs.String("task", teacherTaskJD, fmt.Sprintf("the question asked: %s (the triage question) or %s (does the work match your knowledge base; the full digest is sent)", teacherTaskJD, teacherTaskKB))
 	keysFile := fs.String("keys", "", "ask only about the posting keys this file lists, one per line (an unknown or duplicate key is refused); without --sample they are asked in the file's order")
-	allowMissing := fs.Bool(kbAllowMissingFlag, false, "with --task kb_match: send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+" (without it, a missing file refuses)")
+	allowMissing := fs.Bool(kbAllowMissingFlag, false, "with --task kb_match: send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+", or one with no terms (without it, either refuses)")
 	drawOut := fs.String("draw-out", "", "save the drawn keys, in the order they are asked, to this file (default: a new file under the state directory's teacher_draws/); pass it back with --keys to resume the same sample")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what the run did (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
@@ -223,15 +223,20 @@ func teacherKBMatchFixture() string {
 // empty posting and an empty digest, so the frame, the section headings, the
 // options and the target summary are all in it, and the summary once more, as
 // eval.PromptHash does.
-func teacherKBMatchPromptHash(summary string) string {
-	q, _ := kbmatch.Question(posting.Posting{}, summary, kbmatch.Digest{}, nil)
+func teacherKBMatchPromptHash(d kbmatch.Digest, summary string) (string, error) {
+	// Frame, not a question built from a digest: it carries no knowledge-base text,
+	// and refuses a digest the redactor did not make or a summary holding a term.
+	q, err := d.Frame(summary)
+	if err != nil {
+		return "", err
+	}
 	sys, user := llmbackend.Messages(q)
 	h := sha256.New()
 	for _, s := range []string{sys, user, summary} {
 		fmt.Fprintf(h, "%d:", len(s))
 		io.WriteString(h, s)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // teacherKBMatchTask is the kb_match question in full-digest mode (`vani
@@ -239,11 +244,15 @@ func teacherKBMatchPromptHash(summary string) string {
 // posting, never the compact digest with embedding-picked lines, so every
 // question for one digest shares one head. The model's answer is kept as it
 // is, an abstention included (kbmatch.Judge would turn that into an error).
-func teacherKBMatchTask(summary string, d kbmatch.Digest) eval.TeacherTask {
+func teacherKBMatchTask(summary string, d kbmatch.Digest) (eval.TeacherTask, error) {
+	prompt, err := teacherKBMatchPromptHash(d, summary)
+	if err != nil {
+		return eval.TeacherTask{}, err
+	}
 	return eval.TeacherTask{
-		Name: kbmatch.Task, Fixture: teacherKBMatchFixture(), Prompt: teacherKBMatchPromptHash(summary), Digest: d.SHA256,
+		Name: kbmatch.Task, Fixture: teacherKBMatchFixture(), Prompt: prompt, Digest: d.SHA256,
 		Ask: func(ctx context.Context, dc decide.Decider, p posting.Posting) (decide.Answer, error) {
-			// Prepare, not Question: a digest not built through the redactor, or a
+			// Prepare, the only way to a question: a digest not built through the redactor, or a
 			// term that survived it, is refused here, per posting, as well as once
 			// before the run (teacherRun).
 			q, _, err := kbmatch.Prepare(p, summary, d, nil)
@@ -252,7 +261,7 @@ func teacherKBMatchTask(summary string, d kbmatch.Digest) eval.TeacherTask {
 			}
 			return dc.Decide(ctx, q)
 		},
-	}
+	}, nil
 }
 
 // teacherReply is `vani teacher --json`. Plan is what would be asked and what
@@ -371,7 +380,11 @@ func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
 		if cerr := kbmatch.CheckOwner(s, d); cerr != nil {
 			return fmt.Errorf("teacher: %w", cerr)
 		}
-		summary, task, digestBytes = s, teacherKBMatchTask(s, d), len(d.Text)
+		kt, terr := teacherKBMatchTask(s, d)
+		if terr != nil {
+			return fmt.Errorf("teacher: %w", terr)
+		}
+		summary, task, digestBytes = s, kt, len(d.Text)
 	}
 	var keys []posting.Key
 	if o.keys != "" {

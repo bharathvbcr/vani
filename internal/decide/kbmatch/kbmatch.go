@@ -108,7 +108,7 @@ const MaxFocus = 8
 
 // Digest is the knowledge base as the model sees it. Only DigestOf makes a
 // usable one: it redacts the owner's identifying terms (Redactor) out of every
-// line, and keeps the redactor so Question redacts the focus lines too and
+// line, and keeps the redactor so Prepare redacts the focus lines too and
 // Prepare can check the assembled bytes. A Digest built any other way (a
 // literal) has no redactor, and Prepare refuses it.
 type Digest struct {
@@ -225,8 +225,48 @@ func DigestOf(p semantic.Profile, r Redactor) (Digest, error) {
 	if sb.Len() == 0 {
 		return Digest{}, errors.New("kbmatch: the knowledge base has no titles, skills or bullets to describe")
 	}
-	sum := sha256.Sum256([]byte(sb.String()))
-	return Digest{Text: sb.String(), SHA256: hex.EncodeToString(sum[:]), Compact: compact.String(), Redactions: n, r: r}, nil
+	// One more pass over each assembled text: a term can run across two lines
+	// ("Quillbridge" ending one skill line, "Labs" starting the next), which no
+	// per-line pass sees but the check over the assembled text does.
+	text, k := r.Redact(sb.String())
+	n += k
+	text = fitLines(text, MaxDigestBytes)
+	compactText, _ := r.Redact(compact.String())
+	compactText = fitLines(compactText, MaxCompactBytes)
+	if text == "" {
+		return Digest{}, errors.New("kbmatch: the knowledge base has no titles, skills or bullets to describe")
+	}
+	sum := sha256.Sum256([]byte(text))
+	return Digest{Text: text, SHA256: hex.EncodeToString(sum[:]), Compact: compactText, Redactions: n, r: r}, nil
+}
+
+// fitLines drops whole trailing lines of s until it is at most max bytes.
+func fitLines(s string, max int) string {
+	for len(s) > max {
+		i := strings.LastIndexByte(strings.TrimSuffix(s, "\n"), '\n')
+		if i < 0 {
+			return ""
+		}
+		s = s[:i+1]
+	}
+	return s
+}
+
+// Frame is the question for an empty posting and an empty digest: the frame
+// every question shares (the prompt, the section headings, the options and the
+// target summary), for hashing it. It carries no knowledge-base text. It
+// refuses a Digest DigestOf did not make and a summary the redactor finds a
+// term in, like Prepare.
+func (d Digest) Frame(summary string) (decide.Question, error) {
+	if d.r == nil {
+		return decide.Question{}, ErrNoRedactor
+	}
+	empty := Digest{r: d.r}
+	if err := checkOwner(summary, empty, nil); err != nil {
+		return decide.Question{}, err
+	}
+	q, _ := question(posting.Posting{}, summary, empty, nil)
+	return q, nil
 }
 
 // cutRuneCount cuts s to at most n runes and reports whether it cut.
@@ -297,7 +337,9 @@ func TextSHA256Of(prefix []byte, summary string, d Digest) (string, error) {
 // writeField writes one length-prefixed field of TextSHA256's input.
 func writeField(w io.Writer, s string) { fmt.Fprintf(w, "%d:%s\x00", len(s), s) }
 
-// Question renders the question for p. The context stays within
+// question renders the question for p. It is not exported: a question that is
+// sent comes from Prepare, which refuses a digest the redactor did not make and
+// checks the bytes, so no sender can skip the guard. The context stays within
 // jdtriage.MaxContextBytes: the title and location are cut to draft.MaxTitleRunes
 // and MaxLocationRunes, the posting body to what the target summary and
 // knowledge base leave, the whole to the cap, and truncated says whether
@@ -309,8 +351,8 @@ func writeField(w io.Writer, s string) { fmt.Fprintf(w, "%d:%s\x00", len(s), s) 
 // that bear on this posting rather than the first few of each entry.
 //
 // The digest's redactor (DigestOf) also redacts the focus lines, before they are
-// cut. Question itself checks nothing: Prepare is what a sender calls.
-func Question(p posting.Posting, summary string, d Digest, focus []Focus) (q decide.Question, truncated bool) {
+// cut. question itself checks nothing: Prepare is what a sender calls.
+func question(p posting.Posting, summary string, d Digest, focus []Focus) (q decide.Question, truncated bool) {
 	var head strings.Builder
 	owner, _ := ownerHead(summary, d, focus)
 	head.WriteString(owner)
@@ -382,8 +424,13 @@ func ownerHead(summary string, d Digest, focus []Focus) (string, ownerSections) 
 			fb.WriteString(cutRunes(text, maxBulletBytes))
 			fb.WriteByte('\n')
 		}
-		head.WriteString(fb.String())
-		sec.focus = fb.String()
+		block := fb.String()
+		if d.r != nil {
+			// A term can run across two lines, as in DigestOf.
+			block, _ = d.r.Redact(block)
+		}
+		head.WriteString(block)
+		sec.focus = block
 	}
 	return head.String(), sec
 }
@@ -404,7 +451,7 @@ func Prepare(p posting.Posting, summary string, d Digest, focus []Focus) (decide
 	if err := checkOwner(summary, d, focus); err != nil {
 		return decide.Question{}, false, err
 	}
-	q, truncated := Question(p, summary, d, focus)
+	q, truncated := question(p, summary, d, focus)
 	return q, truncated, nil
 }
 

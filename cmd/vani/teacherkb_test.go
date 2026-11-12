@@ -143,7 +143,7 @@ func TestTeacherKBMatchDryRunPricesFromTheTableAndAsksNothing(t *testing.T) {
 		t.Fatalf("priced from %q typical %v max %v", p.PriceSource, p.TypicalUSD, p.MaxUSD)
 	}
 	// The worst case is the table's rates over every prompt at its byte ceiling
-	// plus every reply at its full budget: recompute it from kbmatch.Question.
+	// plus every reply at its full budget: recompute it from kbmatch.Prepare.
 	_, summary := tkDigest(t, e)
 	snap, err := ledger.ReadSnapshot(filepath.Join(e.state, "ledger"))
 	if err != nil {
@@ -152,7 +152,10 @@ func TestTeacherKBMatchDryRunPricesFromTheTableAndAsksNothing(t *testing.T) {
 	var want int64
 	for _, rec := range snap.Records {
 		if rec.Key == "gh:a:1" || rec.Key == "gh:a:2" {
-			q, _ := kbmatch.Question(rec.Posting, summary, d, nil)
+			q, _, perr := kbmatch.Prepare(rec.Posting, summary, d, nil)
+			if perr != nil {
+				t.Fatal(perr)
+			}
 			want += teacherWorstNano(table, q)
 		}
 	}
@@ -176,6 +179,10 @@ func TestTeacherKBMatchSendsTheFullDigestHeadFirstAndStoresItsIdentity(t *testin
 		t.Fatalf("output:\n%s", o)
 	}
 	d, summary := tkDigest(t, e)
+	wantPrompt, perr := teacherKBMatchPromptHash(d, summary)
+	if perr != nil {
+		t.Fatal(perr)
+	}
 	for _, s := range f.sent {
 		ctx := strings.TrimPrefix(s, kbmatch.Prompt+"\n")
 		if !strings.HasPrefix(s, kbmatch.Prompt+"\n") || !strings.HasPrefix(ctx, "JOB SEEKER'S TARGET ROLES:\n"+summary+"\n\nJOB SEEKER'S EXPERIENCE:\n"+d.Text) {
@@ -193,7 +200,7 @@ func TestTeacherKBMatchSendsTheFullDigestHeadFirstAndStoresItsIdentity(t *testin
 		t.Fatalf("%d rows", len(rows))
 	}
 	for _, r := range rows {
-		if r.Task != kbmatch.Task || r.DigestSHA != d.SHA256 || r.FixtureSHA != teacherKBMatchFixture() || r.PromptHash != teacherKBMatchPromptHash(summary) || r.Model != tcHaiku {
+		if r.Task != kbmatch.Task || r.DigestSHA != d.SHA256 || r.FixtureSHA != teacherKBMatchFixture() || r.PromptHash != wantPrompt || r.Model != tcHaiku {
 			t.Fatalf("row identity %+v", r)
 		}
 		if r.FixtureSHA == eval.FixtureSHA() || r.PromptHash == eval.PromptHash(summary) {

@@ -36,8 +36,9 @@ func TestRedactRemovesEveryTermFoundFinds(t *testing.T) {
 		{"the Quill Mark editor", "the [redacted] editor"},
 		// Unicode term, case-folded.
 		{"at the ZÜRICH LAB", "at the [redacted]"},
-		// Not inside an ordinary word, either side.
-		{"zephyrkits rezephyrkit", "zephyrkits rezephyrkit"},
+		// An owner term takes a plural or suffix (F1), but is not found inside the
+		// middle of a word: the left side stays a word boundary (or a camelCase one).
+		{"zephyrkits rezephyrkit", "[redacted]s rezephyrkit"},
 		{"optimize the kernel", "optimize the kernel"},
 		// The built-in list too.
 		{"code on GitHub, visa: none", "code on [redacted], [redacted]: none"},
