@@ -38,16 +38,22 @@ func (s snapshotLedger) Get(k posting.Key) (ledger.Record, bool) {
 // cmdRetriage returns postings that were triaged while no decision backend
 // could read them (budget spent, provider down, a broken build) to live, so
 // the next run triages them. With --title-drops it instead returns postings
-// dropped on their title that the configured title readings no longer drop.
+// dropped on their title that the configured title readings no longer drop;
+// with --policy-drops, every dropped posting the current drop policy would no
+// longer drop, title and model drops alike (pipeline.RetriagePolicyDrops).
 // It spends nothing and calls no backend. --dry-run reads the ledger without
 // its lock (as rescore --dry-run does) and changes nothing.
 func (e *env) cmdRetriage(args []string) error {
 	flags := e.newFlags("retriage")
 	dry := flags.Bool("dry-run", false, "list what would be returned to live; read the ledger only, change nothing")
 	titles := flags.Bool("title-drops", false, "return postings dropped on their title that title_signals.read and the drop rules no longer drop")
-	asJSON := e.jsonFlag(flags, `{"dry_run","title_drops","returned","keys"} on stdout`)
+	policy := flags.Bool("policy-drops", false, "return postings dropped on their title or on a decision model's reading that the current drop rules no longer drop")
+	asJSON := e.jsonFlag(flags, `{"dry_run","title_drops","policy_drops","returned","keys","title_returned","model_returned","unjudged"} on stdout`)
 	if err := parse(flags, args); err != nil {
 		return err
+	}
+	if *titles && *policy {
+		return usagef("retriage: --title-drops and --policy-drops are exclusive (--policy-drops includes the title drops)")
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
@@ -77,6 +83,25 @@ func (e *env) cmdRetriage(args []string) error {
 	if *dry {
 		verb = "would return to live"
 	}
+	if *policy {
+		got, err := pipeline.RetriagePolicyDrops(ctx, l, now(), dropPolicy(cfg, cfg.Decide.OpenRouterName()), *dry)
+		keys := append(append([]posting.Key{}, got.Title...), got.Model...)
+		if *asJSON {
+			return e.reply(true, &retriageRunReply{DryRun: *dry, PolicyDrops: true, Returned: len(keys), Keys: keys,
+				TitleReturned: len(got.Title), ModelReturned: len(got.Model), Unjudged: got.Unjudged}, err, nil)
+		}
+		verb = "returned"
+		if *dry {
+			verb = "would return"
+		}
+		fmt.Fprintf(e.stdout, "%d posting(s) %s (dropped on a rule the current drop policy no longer drops)\n", len(keys), verb)
+		fmt.Fprintf(e.stdout, "  title drops, back to live for the backends to read: %d\n", len(got.Title))
+		fmt.Fprintf(e.stdout, "  model drops, back on their stored reading (no model asked): %d\n", len(got.Model))
+		if got.Unjudged > 0 {
+			fmt.Fprintf(e.stdout, "  model drops not judged, left dropped: %d (no calibrated reading from %q or lappi)\n", got.Unjudged, cfg.Decide.OpenRouterName())
+		}
+		return err
+	}
 	var keys []posting.Key
 	why := "triaged with no backend reading"
 	if *titles {
@@ -94,10 +119,17 @@ func (e *env) cmdRetriage(args []string) error {
 
 // retriageRunReply is `vani retriage --json`: the postings returned to live (or
 // that would be, in a dry run). A failure part way keeps the ones it returned.
+// With --policy-drops, title_returned and model_returned split returned by the
+// class of drop, and unjudged counts model drops the current rules could not
+// judge (left dropped).
 type retriageRunReply struct {
-	DryRun     bool          `json:"dry_run"`
-	TitleDrops bool          `json:"title_drops"`
-	Returned   int           `json:"returned"`
-	Keys       []posting.Key `json:"keys"`
+	DryRun        bool          `json:"dry_run"`
+	TitleDrops    bool          `json:"title_drops"`
+	PolicyDrops   bool          `json:"policy_drops"`
+	Returned      int           `json:"returned"`
+	Keys          []posting.Key `json:"keys"`
+	TitleReturned int           `json:"title_returned,omitempty"`
+	ModelReturned int           `json:"model_returned,omitempty"`
+	Unjudged      int           `json:"unjudged,omitempty"`
 	failure
 }
