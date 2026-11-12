@@ -154,13 +154,27 @@ func TestScheduleChangeExitsSoTheDaemonRestarts(t *testing.T) {
 	t.Cleanup(stop)
 	signalContext = func() (context.Context, context.CancelFunc) { return parent, func() {} }
 	daemonClock, inboxPollInterval = idleClock{}, 5*time.Millisecond
+	// The first poll parks inside PollInbox (holding the ledger lock, so no
+	// poll or config read overlaps the edit) until the test has saved the new
+	// schedule. Any poll that reaches PollInbox after the edit is counted.
 	var polls atomic.Int32
+	firstPoll := make(chan struct{})
+	release := make(chan struct{})
 	buildApp = func(config.Config, string, io.Writer) (*App, error) {
 		return &App{
-			Ledger:    fixture(),
-			Reload:    func(config.Config) {},
-			RunOnce:   func(context.Context) error { return nil },
-			PollInbox: func(context.Context) error { polls.Add(1); return nil },
+			Ledger:  fixture(),
+			Reload:  func(config.Config) {},
+			RunOnce: func(context.Context) error { return nil },
+			PollInbox: func(ctx context.Context) error {
+				if polls.Add(1) == 1 {
+					close(firstPoll)
+					select {
+					case <-release:
+					case <-ctx.Done():
+					}
+				}
+				return nil
+			},
 		}, nil
 	}
 	type result struct {
@@ -172,19 +186,17 @@ func TestScheduleChangeExitsSoTheDaemonRestarts(t *testing.T) {
 		code, _, stderr := do(t, "daemon")
 		done <- result{code, stderr}
 	}()
-	deadline := time.Now().Add(2 * time.Second)
-	for polls.Load() < 1 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if polls.Load() < 1 {
+	select {
+	case <-firstPoll:
+	case <-time.After(10 * time.Second):
 		stop()
 		<-done
 		t.Fatal("the inbox poll never ran")
 	}
-	seen := polls.Load()
 	edited := start
 	edited.Schedule.DailyAt = "03:15"
 	writeConfig(t, cfgPath, edited)
+	close(release)
 	select {
 	case r := <-done:
 		if r.code != exitConfigRestart {
@@ -196,14 +208,14 @@ func TestScheduleChangeExitsSoTheDaemonRestarts(t *testing.T) {
 		if strings.Contains(r.stderr, "job failed") {
 			t.Fatalf("a schedule change was logged as a failed job:\n%s", r.stderr)
 		}
-		if polls.Load() > seen+1 {
-			t.Fatalf("poll kept running after the schedule change: %d then %d", seen, polls.Load())
+		if n := polls.Load(); n != 1 {
+			t.Fatalf("poll kept running after the schedule change: %d polls reached PollInbox, want only the one before it", n)
 		}
 		rec, rerr := readRunRecord(stateDir)
 		if rerr != nil || rec != nil {
 			t.Fatalf("a schedule change wrote a run record: %v %+v", rerr, rec)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		stop()
 		<-done
 		t.Fatal("the daemon stayed up after the schedule changed")
