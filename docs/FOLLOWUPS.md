@@ -1215,6 +1215,9 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     (`TestEmptyPageStopsLoopWhenTotalOverstates`). If the service returns an empty page part-way
     through by mistake, the postings it did not reach count as missed. This was an earlier choice,
     kept because a live `total` that overstates would otherwise fail the board on every run.
+    Since 2026-11-12 the gap is counted instead of passing silently: `workday.Stats.Short` (per
+    query, summed) reaches the run record as `boards.short` and `items[].short`, and `vani runs
+    show` prints a "Listed short" line per board. It is still not a failure.
   - Jibe (`jb`, AMD) fails the board when a page adds nothing before `totalCount` is reached,
     as Eightfold does. Live on 2026-10-19 the unsearched AMD listing read 1278 of 1278 in 13
     pages, so an overstated total has not been seen.
