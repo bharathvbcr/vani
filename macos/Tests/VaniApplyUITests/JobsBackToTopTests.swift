@@ -53,14 +53,31 @@ final class JobsBackToTopTests: XCTestCase {
         XCTAssertNil(try s.state().selection, "scrolling back selects nothing")
     }
 
-    func testDetailButtonAppearsOnceTheHeaderScrollsOffAndReturnsToTheTop() throws {
-        let s = try start()
+    /// Opens the Filler Role 03 row as VoiceOver would (a click on a row selects only while the
+    /// window is key, which the host cannot count on: JobsTabHost).
+    private func openFiller03(_ s: JobsTabSession) throws -> String {
         let key = "fx:filler:03"
         let list = try s.element("the job list") { $0.role == kAXOutlineRole || $0.role == kAXTableRole }
-        let row = try XCTUnwrap(list.all(limit: 2000) { $0.role == kAXStaticTextRole && (($0.attribute(kAXValueAttribute) as? String)?.hasPrefix("Filler Role 03,") ?? false) }.first,
-                                "no row for \(key)")
-        try s.click(row, "the Filler Role 03 row")
+        let text = try XCTUnwrap(list.all(limit: 2000) { $0.role == kAXStaticTextRole && (($0.attribute(kAXValueAttribute) as? String)?.hasPrefix("Filler Role 03,") ?? false) }.first,
+                                 "no row for \(key)")
+        let row = try XCTUnwrap(text.ancestor(role: kAXRowRole), "the Filler Role 03 text is in no row")
+        try s.select(row, "the Filler Role 03 row")
         try s.waitForState("\(key) open") { $0.selection == key }
+        return key
+    }
+
+    /// The flake this guards against: another app held the user's focus, the host's window was not
+    /// key, and the click that was to open a row only brought the window forward.
+    func testARowOpensWhileTheWindowIsNotKey() throws {
+        let s = try start()
+        XCTAssertFalse(try s.isKey(unkey: true), "another host window took key")
+        _ = try openFiller03(s)
+        XCTAssertFalse(try s.isKey(), "opening the row did not depend on taking key back")
+    }
+
+    func testDetailButtonAppearsOnceTheHeaderScrollsOffAndReturnsToTheTop() throws {
+        let s = try start()
+        let key = try openFiller03(s)
         // The pane appears once the role opens, and its long description arrives with `jobs show`:
         // wait until it is on screen and can scroll.
         let deadline = Date().addingTimeInterval(JobsTabSession.waitTimeout)

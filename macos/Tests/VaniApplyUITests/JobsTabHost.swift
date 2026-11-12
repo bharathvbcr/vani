@@ -17,8 +17,17 @@ import VaniApplyKit
 /// coordinates: global, top-left origin), a mouse click this process sends
 /// itself, and `scroll PANE Y|end` and `offset PANE` (PANE is `list` or
 /// `detail`; replies `OFFSET <points from the top>`, or `NOPANE PANE` while that pane is not on screen), which move and read the
-/// pane's AppKit scroll view as a trackpad would. Nothing is posted to the
+/// pane's AppKit scroll view as a trackpad would. `key` replies `KEY true|false`,
+/// whether the Jobs window is key, and `unkey` makes another host window key in
+/// its place, then replies the same. Nothing is posted to the
 /// window server, so the user's cursor and keyboard are never touched.
+///
+/// The Jobs window is key only when this host's app could become active at
+/// launch, which macOS allows only while no other app holds the user's focus.
+/// A click on a non-key window is spent bringing it forward: SwiftUI controls
+/// take it anyway (`allowsWindowActivationEvents`), but a List row, an AppKit
+/// table row, does not. So a test opens a row by selecting it through
+/// accessibility (`JobsTabSession.select`), never by clicking it.
 final class JobsTabHost: XCTestCase {
     static let fixtureKey = "VANI_UI_HOST"
 
@@ -50,6 +59,8 @@ private final class HostController {
 
     let model: JobsModel
     let window: NSWindow
+    /// The window `unkey` makes key in place of the Jobs window.
+    private var helper: NSWindow?
     private var buffer = Data()
 
     init(vani: URL) {
@@ -96,6 +107,18 @@ private final class HostController {
         switch parts.first {
         case "state":
             print("STATE " + stateJSON())
+        case "key":
+            print("KEY \(window.isKeyWindow)")
+        case "unkey":
+            // Another window of this host takes key, as another app's would: the Jobs window is then
+            // not key, and AppKit spends a click on it on bringing it forward.
+            let other = helper ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+                                           styleMask: [.titled], backing: .buffered, defer: false)
+            other.isReleasedWhenClosed = false
+            helper = other
+            other.orderFrontRegardless()
+            other.makeKey()
+            print("KEY \(window.isKeyWindow)")
         case "click":
             guard parts.count == 3, let x = Double(parts[1]), let y = Double(parts[2]), x.isFinite, y.isFinite else {
                 print("ERROR bad click: \(line.prefix(80))")

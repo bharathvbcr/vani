@@ -174,7 +174,25 @@ final class JobsTabSession {
         guard err == .success else { throw Failure(description: "AXPress on \(what) failed: \(err.rawValue)") }
     }
 
-    /// Clicks the middle of `el` (a mouse down and up the host sends itself).
+    /// Selects `el` (a List row) as VoiceOver does, by setting its AXSelected. Unlike a click, it
+    /// selects whether or not the Jobs window is key (see JobsTabHost).
+    func select(_ el: AX, _ what: String) throws {
+        guard el.role == kAXRowRole else { throw Failure(description: "\(what) is a \(el.role), not a row") }
+        let err = AXUIElementSetAttributeValue(el.ref, kAXSelectedAttribute as CFString, kCFBooleanTrue)
+        guard err == .success else { throw Failure(description: "selecting \(what) failed: AXError \(err.rawValue)") }
+    }
+
+    /// Whether the Jobs window is key; with `unkey`, after another host window took key.
+    func isKey(unkey: Bool = false) throws -> Bool {
+        send(unkey ? "unkey" : "key")
+        guard let line = lines.next(prefixes: ["KEY ", "ERROR "], timeout: Self.waitTimeout), line.hasPrefix("KEY ") else {
+            throw Failure(description: "the host did not say whether its window is key")
+        }
+        return line == "KEY true"
+    }
+
+    /// Clicks the middle of `el` (a mouse down and up the host sends itself). A click on a List
+    /// row selects it only while the Jobs window is key; use `select` for rows.
     func click(_ el: AX, _ what: String) throws {
         guard let f = el.frame, f.width > 0, f.height > 0 else { throw Failure(description: "\(what) has no frame") }
         try click(at: CGPoint(x: f.midX, y: f.midY))
@@ -207,6 +225,23 @@ struct AX {
     var label: String { attribute(kAXDescriptionAttribute) as? String ?? "" }
     var identifier: String { attribute(kAXIdentifierAttribute) as? String ?? "" }
     var children: [AX] { ((attribute(kAXChildrenAttribute) as? [AXUIElement]) ?? []).map(AX.init) }
+
+    var parent: AX? {
+        guard let p = attribute(kAXParentAttribute), CFGetTypeID(p) == AXUIElementGetTypeID() else { return nil }
+        // The type ID was checked above, so this cast cannot fail.
+        return AX(p as! AXUIElement)
+    }
+
+    /// The nearest element above this one (itself included) with `role`, at most `limit` levels up.
+    func ancestor(role: String, limit: Int = 8) -> AX? {
+        var at: AX? = self
+        for _ in 0...limit {
+            guard let el = at else { return nil }
+            if el.role == role { return el }
+            at = el.parent
+        }
+        return nil
+    }
 
     var frame: CGRect? {
         guard let pv = attribute(kAXPositionAttribute), let sv = attribute(kAXSizeAttribute),
