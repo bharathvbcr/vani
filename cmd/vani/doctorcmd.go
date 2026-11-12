@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
@@ -76,6 +77,8 @@ type doctorPlanJSON struct {
 	RunsRead       int               `json:"runs_read"`
 	RunProblems    []string          `json:"run_problems,omitempty"`
 	BoardsSignaled int               `json:"boards_signaled"`
+	Recovered      int               `json:"board_reads_recovered_from_logs"`
+	LogMissing     int               `json:"runs_with_unnamed_boards_and_no_log,omitempty"`
 	Drops          int               `json:"drops_sampled"`
 	Strata         []doctor.Stratum  `json:"strata,omitempty"`
 	LeftOut        map[string]int    `json:"drops_left_out,omitempty"`
@@ -137,14 +140,14 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 	}
 	redact := doctorRedactor()
 
-	in, runFiles, problems := e.doctorHistory(cfg, o.runs, redact)
+	in, runFiles, problems, logs := e.doctorHistory(cfg, o.runs, redact)
 	plan.RunsRead, plan.RunProblems = len(runFiles), problems
 	plan.BoardsSignaled = len(in.Boards)
-	logs := e.doctorLogs(runFiles)
+	plan.Recovered, plan.LogMissing = in.Recovered, in.LogMissing
 	in.Logs = doctor.Digest(logs, redact)
 	doctor.AttachDetails(in.Boards, doctor.Details(logs))
-	fmt.Fprintf(out, "doctor: %d run records read (%d unreadable); %d boards tripped a signal; %d log trouble lines (%d distinct)\n",
-		len(runFiles), len(problems), len(in.Boards), in.Logs.LinesSeen, in.Logs.Distinct)
+	fmt.Fprintf(out, "doctor: %d run records read (%d unreadable); %d board reads the records left unnamed recovered from run logs (%d runs with unnamed boards had no log); %d boards tripped a signal; %d log trouble lines (%d distinct)\n",
+		len(runFiles), len(problems), in.Recovered, in.LogMissing, len(in.Boards), in.Logs.LinesSeen, in.Logs.Distinct)
 
 	if o.sample > 0 {
 		seed := o.seed
@@ -266,15 +269,22 @@ func doctorWorst(p budget.Prices, rq doctor.Requests) (int64, map[string]string,
 	return total, sizes, nil
 }
 
-// doctorHistory reads the newest n run records into the doctor's input.
-func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string) (doctor.Input, []historyFile, []string) {
-	var in doctor.Input
-	var problems []string
+// doctorRun is one read run record as the log recovery needs it.
+type doctorRun struct {
+	id         string
+	at         time.Time
+	unrecorded int
+	named      map[string]bool
+}
+
+// doctorHistory reads the newest n run records, and their logs, into the
+// doctor's input. logs are the logs read (doctorLogs), for the digest.
+func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string) (in doctor.Input, read []historyFile, problems []string, logs []doctor.Log) {
 	files, _, err := listRunHistory(e.stateDir, n)
 	if err != nil {
-		return in, nil, []string{"history: " + oneLine(err.Error(), doctorMaxRunRecordErr)}
+		return in, nil, []string{"history: " + oneLine(err.Error(), doctorMaxRunRecordErr)}, e.doctorLogs(nil)
 	}
-	var read []historyFile
+	var runs []doctorRun
 	var history []doctor.BoardRun
 	var summaries []doctor.RunSummary
 	for _, f := range files {
@@ -295,9 +305,11 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 		if b := r.Boards; b != nil && len(read) == 1 { // files are newest first
 			in.Unrecorded = b.Unrecorded
 		}
+		named := map[string]bool{}
 		if b := r.Boards; b != nil {
 			s.Configured, s.Read, s.Failed, s.Unrecorded, s.Listed = b.Configured, b.Read, b.Failed, b.Unrecorded, b.Listed
 			for _, it := range b.Items {
+				named[it.ATS+":"+it.Token] = true
 				br := doctor.BoardRun{RunID: f.ID, At: r.StartedAt, Board: it.ATS + ":" + it.Token, Company: it.Company,
 					Outcome: it.Outcome, Listed: it.Listed, Error: redact(it.Error)}
 				if c := it.Reconcile; c != nil {
@@ -313,6 +325,30 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 				"coverage_unknown": fo.CoverageUnknown, "other": fo.Other}
 		}
 		summaries = append(summaries, s)
+		runs = append(runs, doctorRun{id: f.ID, at: r.StartedAt, unrecorded: s.Unrecorded, named: named})
+	}
+	// The boards a record left unnamed are read back from the run's own log,
+	// which writes a reconcile line for every board the run read.
+	logs = e.doctorLogs(read)
+	byName := map[string]doctor.Log{}
+	for _, l := range logs {
+		byName[l.Name] = l
+	}
+	for _, run := range runs {
+		if run.unrecorded == 0 {
+			continue
+		}
+		l, ok := byName[run.id+".log"]
+		if !ok {
+			in.LogMissing++
+			continue
+		}
+		for _, br := range doctor.LogBoardRuns(l, run.id, run.at) {
+			if !run.named[br.Board] {
+				history = append(history, br)
+				in.Recovered++
+			}
+		}
 	}
 	watch := make([]string, 0, len(cfg.Watchlist))
 	for _, b := range cfg.Watchlist {
@@ -325,7 +361,7 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 	}
 	in.Boards = doctor.Signals(history, watch)
 	in.Trend = doctor.RunTrend(summaries)
-	return in, read, problems
+	return in, read, problems, logs
 }
 
 // doctorLogs are the tails of each read run's own log and of the daemon's

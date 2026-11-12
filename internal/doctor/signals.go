@@ -44,6 +44,9 @@ type BoardRun struct {
 	Missed  int
 	Dead    int
 	Error   string
+	// FromLog is a read recovered from the run's own log (LogBoardRuns)
+	// because the run's record left the board unnamed.
+	FromLog bool
 }
 
 // RunSummary is one run's board totals.
@@ -93,10 +96,11 @@ type BoardSignal struct {
 	Board     string   `json:"board"`
 	Company   string   `json:"company,omitempty"`
 	Signals   []string `json:"signals"`
-	Runs      int      `json:"runs"`       // runs whose items name it
-	Reads     int      `json:"reads"`      // of which read
-	ZeroReads int      `json:"zero_reads"` // of which listed nothing
-	Failures  int      `json:"failures"`   // failed or rate limited
+	Runs      int      `json:"runs"`                    // runs whose record or log names it
+	FromLog   int      `json:"runs_from_log,omitempty"` // of which recovered from the run's log (the record left it unnamed)
+	Reads     int      `json:"reads"`                   // of which read
+	ZeroReads int      `json:"zero_reads"`              // of which listed nothing
+	Failures  int      `json:"failures"`                // failed or rate limited
 	Median    int      `json:"median_listed"`
 	Latest    *int     `json:"latest_listed,omitempty"`
 	Series    []int    `json:"listed_series,omitempty"` // oldest first; -1 is a run that did not read it
@@ -157,6 +161,9 @@ func boardSignal(board string, runs []BoardRun) (BoardSignal, bool) {
 	for i, r := range runs {
 		if r.Company != "" {
 			s.Company = r.Company
+		}
+		if r.FromLog {
+			s.FromLog++
 		}
 		if r.Outcome == OutcomeFailed || r.Outcome == OutcomeRateLimited {
 			s.Failures++

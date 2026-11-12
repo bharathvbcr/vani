@@ -83,8 +83,11 @@ func Markdown(r Report, drops []DropCase) string {
 	if len(r.NotExamined) > 0 {
 		fmt.Fprintf(&b, "Not examined (signalled, but not judged; not a clean bill): %s\n\n", strings.Join(r.NotExamined, ", "))
 	}
-	if r.Unrecorded > 0 {
-		fmt.Fprintf(&b, "Not examined: %d boards the newest run read but its record left unnamed (the record's size bound). Their history here is partial; a board missing from the table above is not thereby healthy.\n\n", r.Unrecorded)
+	if r.Recovered > 0 {
+		fmt.Fprintf(&b, "%d board reads that the run records left unnamed were recovered from the runs' own logs.\n\n", r.Recovered)
+	}
+	if r.LogMissing > 0 {
+		fmt.Fprintf(&b, "Not examined: the unnamed boards of %d runs that left no log. Their history here is partial; a board missing from the table above is not thereby healthy.\n\n", r.LogMissing)
 	}
 	patterns(&b, r.Boards.Patterns)
 

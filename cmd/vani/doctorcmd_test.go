@@ -78,12 +78,15 @@ func doctorSetup(t *testing.T) (state string, home string) {
 	zero := 0
 	for i := range 3 {
 		r := runRecord{V: 1, PID: 100 + i, StartedAt: time.Date(2026, 11, 10+i, 9, 0, 0, 0, time.UTC), Outcome: "ok"}
-		r.Boards = &boardsReport{Configured: 2, Read: 1, Items: []boardReport{{ATS: "gh", Token: "acme", Company: "Acme", Outcome: boardRead, Listed: &zero}}}
+		// gh:quiet was read but the record's size bound left it unnamed.
+		r.Boards = &boardsReport{Configured: 2, Read: 2, Unrecorded: 1, Items: []boardReport{{ATS: "gh", Token: "acme", Company: "Acme", Outcome: boardRead, Listed: &zero}}}
 		if err := writeRunHistory(state, r); err != nil {
 			t.Fatal(err)
 		}
 		log := "vani: board gh/acme: details {Listed:0 Requests:1 Prefiltered:0}\n" +
-			"vani: board gh/acme: failed reading " + filepath.Join(home, "Library", "x.json") + ": permission denied\n"
+			"vani: board gh/acme: failed reading " + filepath.Join(home, "Library", "x.json") + ": permission denied\n" +
+			"vani: board gh/acme: {New:0 Unchanged:0 Missed:0 Dead:0}\n" +
+			"vani: board gh/quiet: {New:1 Unchanged:11 Missed:0 Dead:0}\n"
 		if err := os.WriteFile(filepath.Join(state, runRecordDir, runHistoryDir, runID(r)+".log"), []byte(log), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -128,7 +131,13 @@ func TestDoctorDryRunSendsAndWritesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(state, doctorReportDir)); !os.IsNotExist(err) {
 		t.Fatalf("a dry run wrote a report: %v", err)
 	}
-	for _, want := range []string{"3 run records read", "boards tripped a signal", "dropped postings sampled", "worst case", "zero_every_run", "Listed:0 Requests:1 Prefiltered:0"} {
+	// gh:quiet, unnamed by every record, is read back from the logs (3 runs),
+	// so it is not reported as a board no run reached; gh:acme, which the
+	// records name, is not read back twice.
+	if strings.Contains(out, `"board":"gh:quiet"`) {
+		t.Errorf("a board recovered from the logs was signalled:\n%s", out)
+	}
+	for _, want := range []string{"3 board reads the records left unnamed recovered from run logs", "boards tripped a signal", "dropped postings sampled", "worst case", "zero_every_run", "Listed:0 Requests:1 Prefiltered:0"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, out)
 		}

@@ -6,7 +6,9 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Bounds on the log digest.
@@ -186,6 +188,61 @@ var detailsRE = regexp.MustCompile(`board ([a-z]{2,4})/(\S+?): details (\{[^{}]{
 
 // MaxDetails bounds the raw details lines kept per board.
 const MaxDetails = 3
+
+// reconcileRE is a run log's per-board reconcile line, written for every
+// board the run read, including those its record leaves unnamed:
+// "vani: board ab/Clera: {New:30 Changed:0 ... Missed:20 Dead:0 ...}".
+var (
+	reconcileRE = regexp.MustCompile(`board ([a-z]{2,4})/(\S+?): (\{New:\d+[^{}]{0,400}\})`)
+	countRE     = regexp.MustCompile(`([A-Za-z]+):(\d{1,9})`)
+)
+
+// LogBoardRuns is the boards one run's own log says it read, as BoardRuns of
+// that run, for the boards its record left unnamed. A board's listed count is
+// every reconcile count but Missed and Dead (the postings absent from the
+// listing), which is how the record counts it: checked against the record on
+// 2026-11-12 for boards it does name (670 = Unchanged 670; 461 = New 2 +
+// Refreshed 1 + Revived 1 + Unchanged 457). Within a log a board's last line
+// is its own.
+func LogBoardRuns(l Log, runID string, at time.Time) []BoardRun {
+	if l.Err != nil {
+		return nil
+	}
+	last := map[string]string{}
+	var order []string
+	for _, m := range reconcileRE.FindAllSubmatch(l.Body, -1) {
+		b := string(m[1]) + ":" + string(m[2])
+		if _, seen := last[b]; !seen {
+			order = append(order, b)
+		}
+		last[b] = string(m[3])
+	}
+	out := make([]BoardRun, 0, len(order))
+	for _, b := range order {
+		br := BoardRun{RunID: runID, At: at, Board: b, Outcome: OutcomeRead, FromLog: true}
+		listed := 0
+		for _, c := range countRE.FindAllStringSubmatch(last[b], -1) {
+			n, err := strconv.Atoi(c[2])
+			if err != nil {
+				continue
+			}
+			switch c[1] {
+			case "Missed":
+				br.Missed = n
+			case "Dead":
+				br.Dead = n
+			case "New":
+				br.New = n
+				listed += n
+			default:
+				listed += n
+			}
+		}
+		br.Listed = &listed
+		out = append(out, br)
+	}
+	return out
+}
 
 // DetailLine is one board's raw listing line in one log.
 type DetailLine struct {

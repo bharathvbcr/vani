@@ -2,8 +2,10 @@ package doctor
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDigestFoldsCountsAndIDsIntoOneLine(t *testing.T) {
@@ -103,6 +105,41 @@ func TestDigestKeepsTroubleNotRoutine(t *testing.T) {
 	}
 	if d.LinesSeen != 6 {
 		t.Errorf("%d trouble lines, want 6:\n%s", d.LinesSeen, got)
+	}
+}
+
+// A board the record left unnamed is read back from the run's log, counted as
+// the record counts it: every reconcile count but Missed and Dead.
+func TestLogBoardRunsCountsAsTheRecordDoes(t *testing.T) {
+	body := strings.Join([]string{
+		`vani: board ab/Clera: reading (456 of 467)`,
+		`vani: board az/amazon: {New:2 Changed:0 Rerendered:0 Kept:0 Redated:0 Refreshed:1 Unchanged:457 Reappeared:0 Missed:1 Dead:2 Duplicate:0 Revived:1 Invalid:0}`,
+		`vani: board ab/Clera: {New:30 Changed:0 Rerendered:0 Kept:0 Redated:0 Refreshed:0 Unchanged:223 Reappeared:0 Missed:20 Dead:0 Duplicate:0 Revived:0 Invalid:0}`,
+		`vani: board wd/snapchat/snap: {New:0 Changed:0 Unchanged:0 Missed:42 Dead:0}`,
+		`vani: board ab/Clera: {New:31 Unchanged:223 Missed:20}`, // a later line for the board is its own
+		`vani: board gh/x: details {Listed:5}`, // not a reconcile line
+	}, "\n")
+	got := LogBoardRuns(Log{Name: "r1.log", Body: []byte(body)}, "r1", t0)
+	want := map[string][3]int{"az:amazon": {461, 1, 2}, "ab:Clera": {254, 20, 0}, "wd:snapchat/snap": {0, 42, 0}}
+	if len(got) != len(want) {
+		t.Fatalf("%d boards: %+v", len(got), got)
+	}
+	for _, br := range got {
+		w, ok := want[br.Board]
+		if !ok || br.Listed == nil || *br.Listed != w[0] || br.Missed != w[1] || br.Dead != w[2] ||
+			br.Outcome != OutcomeRead || !br.FromLog || br.RunID != "r1" || !br.At.Equal(t0) {
+			t.Errorf("%+v listed %v, want %v", br, br.Listed, w)
+		}
+	}
+	// Recovered reads feed the signals like recorded ones, and are counted.
+	h := append(runs("wd:snapchat/snap", 46, 46), got[2])
+	h[2].RunID, h[2].At = "r9", t0.Add(10*time.Hour)
+	s := signalOf(t, Signals(h, nil), "wd:snapchat/snap")
+	if s.FromLog != 1 || !slices.Contains(s.Signals, SigMassMissed) {
+		t.Fatalf("%+v", s)
+	}
+	if LogBoardRuns(Log{Name: "x", Err: errors.New("gone")}, "x", t0) != nil {
+		t.Fatal("an unreadable log yielded boards")
 	}
 }
 
