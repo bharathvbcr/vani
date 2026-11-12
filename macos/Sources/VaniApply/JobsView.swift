@@ -317,7 +317,21 @@ struct ExportPanels {
         save: { jobs, scope in
             let panel = NSSavePanel()
             if let xlsx = UTType(filenameExtension: "xlsx") { panel.allowedContentTypes = [xlsx] }
-            panel.nameFieldStringValue = JobsExport.suggestedName(view: jobs.view, scope, on: Date())
+            let suggested = JobsExport.suggestedName(view: jobs.view, scope, on: Date())
+            // Downloads, not the panel's last folder. The name is chosen from that directory
+            // before the panel sees it: a taken name with parentheses is rewritten to
+            // "Vani jobs 1(new, …).xlsx". The file is whatever the panel returns, so choosing
+            // another folder still saves only there.
+            if let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first {
+                panel.directoryURL = downloads
+                if let names = try? FileManager.default.contentsOfDirectory(atPath: downloads.path) {
+                    panel.nameFieldStringValue = JobsExport.availableName(suggested, existing: names)
+                } else {
+                    panel.nameFieldStringValue = suggested
+                }
+            } else {
+                panel.nameFieldStringValue = suggested
+            }
             guard panel.runModal() == .OK, let url = panel.url else { return nil }
             return url
         }

@@ -1151,6 +1151,34 @@ public struct JobsExport: Codable, Equatable, Sendable {
         let date = day.formatted(Date.ISO8601FormatStyle(timeZone: zone).year().month().day())
         return "Vani jobs (\(view.rawValue), \(size)) \(date).xlsx"
     }
+
+    /// The first of `suggested` or `suggested` with ` 2`, ` 3`, … before the extension that is not
+    /// already in `existing`. Comparison is case-insensitive, as the save panel's directory is.
+    ///
+    /// The panel must be given a free name. When the name it is handed already exists, it inserts
+    /// the counter in front of the first parenthesis (`Vani jobs 1(new, …).xlsx`) instead of before
+    /// `.xlsx`. This function never does that: the counter is `stem N.ext`.
+    public static func availableName(_ suggested: String, existing: some Sequence<String>) -> String {
+        let taken = Array(existing)
+        func occupied(_ name: String) -> Bool {
+            taken.contains { $0.caseInsensitiveCompare(name) == .orderedSame }
+        }
+        if !occupied(suggested) { return suggested }
+        let (stem, ext) = stemAndExtension(suggested)
+        var n = 2
+        while n < 10_000 {
+            let candidate = "\(stem) \(n)\(ext)"
+            if !occupied(candidate) { return candidate }
+            n += 1
+        }
+        return "\(stem) \(n)\(ext)"
+    }
+
+    /// The extension is the substring from the last dot, unless the dot is the first character.
+    private static func stemAndExtension(_ name: String) -> (String, String) {
+        guard let dot = name.lastIndex(of: "."), dot > name.startIndex else { return (name, "") }
+        return (String(name[..<dot]), String(name[dot...]))
+    }
 }
 
 /// The question an export asks before writing roles again. The answers: skip them (the default),

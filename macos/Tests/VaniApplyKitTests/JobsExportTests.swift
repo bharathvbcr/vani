@@ -156,6 +156,26 @@ final class JobsExportTests: XCTestCase {
                        "Vani jobs (saved, 2 selected) 2026-10-28.xlsx", "the owner's own day")
     }
 
+    /// A second export the same day must not become `Vani jobs 1(new, …).xlsx`. The counter goes
+    /// before `.xlsx`, and a free base name stays the base name even if a later copy exists.
+    func testAvailableName() {
+        let base = "Vani jobs (new, top 250) 2026-11-11.xlsx"
+        let second = "Vani jobs (new, top 250) 2026-11-11 2.xlsx"
+        let third = "Vani jobs (new, top 250) 2026-11-11 3.xlsx"
+        XCTAssertEqual(JobsExport.availableName(base, existing: []), base)
+        XCTAssertEqual(JobsExport.availableName(base, existing: [second]), base,
+                       "a later copy does not retire the base name")
+        XCTAssertEqual(JobsExport.availableName(base, existing: [base]), second)
+        XCTAssertEqual(JobsExport.availableName(base, existing: [base, second]), third)
+        XCTAssertEqual(JobsExport.availableName(base, existing: [base.uppercased()]), second,
+                       "Downloads is case-insensitive, and so is the save panel")
+        let mangled = "Vani jobs 1(new, top 250) 2026-11-11.xlsx"
+        let chosen = JobsExport.availableName(base, existing: [base, mangled])
+        XCTAssertEqual(chosen, second)
+        XCTAssertNil(chosen.range(of: #"\d\("#, options: .regularExpression),
+                     "the counter is never glued in front of the parenthesis: \(chosen)")
+    }
+
     func testDecodesTheReply() throws {
         let reply = #"{"path":"/x/a.xlsx","rows":2,"total":3,"view":"new","sort":"priority","missing":["gh:a:9"],"ledger":"/s/ledger","records":9}"#
         let r = try JobsClient.decoder.decode(JobsExport.self, from: Data(reply.utf8))
