@@ -322,6 +322,7 @@ struct ResumeOutline: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let draft = editor.draft {
+                ForEach(editor.issues(for: .page)) { IssueText(issue: $0) }
                 ForEach(Array(draft.sections.enumerated()), id: \.element.id) { _, section in
                     ResumeSectionBlock(editor: editor, section: section)
                 }

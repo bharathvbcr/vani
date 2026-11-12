@@ -35,6 +35,7 @@ type fakeResumeRKB struct {
 	// reason against it); usedErr: the used-in export cannot run.
 	unverified bool
 	usedErr    error
+	lintFn     func(sel string) (int, string)
 }
 
 // usedIn counts the `claims export --used-in` runs recorded so far.
@@ -73,20 +74,25 @@ func (f *fakeResumeRKB) Run(_ context.Context, c rkbresume.Command, _ time.Durat
 	case "claims":
 		// Like real rkb, an export of no selection judges no claim double-verified (and
 		// says nothing against it); one of a selection judges it for that selection.
-		view := `{"claims":{"clmLat":{"value":"42%","double_verified":false}}}`
+		view := `{"claims":{"clmLat":{"value":"42%","double_verified":false},"clmCnt":{"value":"12","double_verified":false}}}`
 		if sel := val("--used-in"); sel != "" {
 			if f.usedErr != nil {
 				return rkbresume.Output{}, f.usedErr
 			}
 			b, _ := os.ReadFile(sel)
 			f.sels = append(f.sels, string(b))
-			view = `{"claims":{"clmLat":{"value":"42%","double_verified":true}}}`
+			view = `{"claims":{"clmLat":{"value":"42%","double_verified":true},"clmCnt":{"value":"12","double_verified":true}}}`
 			if f.unverified {
-				view = `{"claims":{"clmLat":{"value":"42%","double_verified":false,"problems":["pass 2 missing for: a sentence"]}}}`
+				view = `{"claims":{"clmLat":{"value":"42%","double_verified":false,"problems":["pass 2 missing for: a sentence"]},"clmCnt":{"value":"12","double_verified":true}}}`
 			}
 		}
 		return rkbresume.Output{}, os.WriteFile(val("--out"), []byte(view), 0o600)
 	case "lint":
+		if f.lintFn != nil {
+			b, _ := os.ReadFile(c.Args[1])
+			code, out := f.lintFn(string(b))
+			return rkbresume.Output{Exit: code, Stdout: out}, nil
+		}
 		return rkbresume.Output{Exit: f.lint, Stdout: "ERROR b1: weak verb\n"}, nil
 	case "render":
 		dir := val("--out-dir")
@@ -493,6 +499,58 @@ func TestResumeVMReportIsConfiguredOrNamedInTheNote(t *testing.T) {
 	cfg.KB.VMReport = cv // a folder is not a report
 	if _, _, err := resumeVMReport(cfg, now); err == nil {
 		t.Error("a folder must not pass as the report")
+	}
+}
+
+func TestResumeVMReportSkipsQuietFallbackForBankDirReportAndFailsWhenOnlyFallbackIsBroken(t *testing.T) {
+	now := time.Now()
+	root := t.TempDir()
+	cv := filepath.Join(root, "career", "CurriculumVitae")
+	resumeDir := filepath.Join(cv, "resume")
+	if err := os.MkdirAll(resumeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	quietFull := filepath.Join(cv, "vm_report_full.txt")
+	const quietBody = "[FAIL   ] broken edge\n  PRIMARY (recomputed from artifacts) : 102\n  LEDGER  (CV agrees with results doc): 29\n  FAIL                                : 1\nRESULT: PROBLEMS FOUND\n"
+	if err := os.WriteFile(quietFull, []byte(quietBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{KB: config.KB{CodeRoot: root, Bank: filepath.Join(resumeDir, "bank.json")}}
+
+	// Unset kb.vm_report with ONLY a broken/quiet fallback must fail closed, never pretend no report existed.
+	if got, _, err := resumeVMReport(cfg, now); err == nil {
+		t.Fatalf("broken-only fallback succeeded with %q; want error", got)
+	}
+
+	// Unset kb.vm_report with a quiet cv/vm_report_full.txt and a valid resume/vm_report.txt beside kb.bank
+	// skips the quiet report, picks resume/vm_report.txt, and records both in the note.
+	goodBankRep := filepath.Join(resumeDir, "vm_report.txt")
+	const goodBody = "# rkb-vm-report generated=2026-10-01T00:00:00Z\n[PRIMARY] c1 40%\n  PRIMARY (recomputed from artifacts) : 1\n  LEDGER  (CV agrees with results doc): 0\nRESULT: PASSED\n"
+	if err := os.WriteFile(goodBankRep, []byte(goodBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, note, err := resumeVMReport(cfg, now)
+	if err != nil || got != goodBankRep {
+		t.Fatalf("got (%q, %q, %v), want %q", got, note, err, goodBankRep)
+	}
+	if !strings.Contains(note, "vm_report.txt") || !strings.Contains(note, "vm_report_full.txt") {
+		t.Errorf("note = %q; want both chosen vm_report.txt and skipped vm_report_full.txt named", note)
+	}
+
+	// Explicitly configured kb.vm_report pointing to quietFull must NEVER silently fall back to goodBankRep.
+	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+	resumeSetup(t, goodResumeReq, f, nil)
+	c2, err := config.Load(os.Getenv("VANI_CONFIG"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.KB.VMReport = quietFull
+	if err := config.Save(os.Getenv("VANI_CONFIG"), c2); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _ := mustCode(t, 1, "resume")
+	if r := resumeOut(t, stdout); r.Code != "config" || !strings.Contains(r.Error, "131") {
+		t.Errorf("explicit broken kb.vm_report reply = %+v; want code=config naming 131 passing checks", r)
 	}
 }
 

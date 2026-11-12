@@ -482,4 +482,46 @@ final class ResumeEditTests: XCTestCase {
         XCTAssertNil(ResumeWords.costChip(ResumeCost(usd: nil, complete: false, turns: 2)), "unknown is never $0")
         XCTAssertNil(ResumeWords.costChip(nil))
     }
+
+    func testFigureShareWarningsGuideTheEditorWithoutBlockingWhenPoolCarriesFigureMetadata() throws {
+        let rkbPoolJSON = """
+        {"summary":[
+          {"id":"s1","text":"Cut latency 40%.","text_hash":"aaaaaaaaaaaa","figure_kind":"impact"},
+          {"id":"s2","text":"Architected engine.","text_hash":"bbbbbbbbbbbb","figure_kind":"none","unquantified_ok":true}],
+         "summary_sections":["Summary"],
+         "reorderable_sections":[],
+         "headings":[{"section":"Experience","entry":"job1"}],
+         "entries":[
+           {"id":"job1","title":"Engineer","org":"Acme","dates":"2022 – 2024","sections":["Experience"],
+            "bullets":[
+              {"id":"i1","text":"Raised throughput 2.4x.","text_hash":"111111111111","figure_kind":"impact"},
+              {"id":"i2","text":"Cut memory 35%.","text_hash":"222222222222","figure_kind":"impact"},
+              {"id":"i3","text":"Served 18k req/s.","text_hash":"333333333333","figure_kind":"impact"},
+              {"id":"i4","text":"Cut tail 12 ms.","text_hash":"444444444444","figure_kind":"impact"},
+              {"id":"c1","text":"Shipped 12 services.","text_hash":"555555555555","figure_kind":"count"},
+              {"id":"c2","text":"Ran 8 regions.","text_hash":"666666666666","figure_kind":"count"},
+              {"id":"u1","text":"Built harness.","text_hash":"777777777777","figure_kind":"none","unquantified_ok":true}]}]}
+        """
+        let p = try XCTUnwrap(ResumePool(try json(rkbPoolJSON)))
+        // Balanced choice: s1 + i1..i4 + c1 + u1 is 5 impact + 1 count + 1 unquantified_ok = 6/7 (85.7% >= 85%) figured, 5/6 (83.3% >= 75%) impact.
+        let goodSel = """
+        {"sections":[
+          {"title":"Summary","bullets":["s1"]},
+          {"title":"Experience","entries":[{"entry":"job1","bullets":["i1","i2","i3","i4","c1","u1"]}]}]}
+        """
+        let goodDraft = try XCTUnwrap(ResumeDraft.parse(selection: try json(goodSel), pool: p))
+        XCTAssertEqual(goodDraft.issues(pool: p), [], "a draft meeting 85% figured and 75% impact has no issues")
+
+        // Turn on s2 and c2, turn off i3 and i4: now 4 impact + 2 count + 2 unquantified -> 6/8 = 75% < 85%, 4/6 = 67% < 75%!
+        var badDraft = goodDraft
+        badDraft.addBullet("s2", to: .summary("Summary"), pool: p)
+        badDraft.addBullet("c2", to: .entry("job1"), pool: p)
+        badDraft.setIncluded("i3", false, in: .entry("job1"), pool: p)
+        badDraft.setIncluded("i4", false, in: .entry("job1"), pool: p)
+        let issues = badDraft.issues(pool: p)
+        XCTAssertEqual(issues.count, 2, "both <85% figured and <75% impact should surface as non-blocking page issues: \(issues)")
+        XCTAssertTrue(issues.allSatisfy { $0.target == .page && !$0.blocking }, "\(issues)")
+        XCTAssertTrue(issues.contains { $0.message.contains("85%") }, "\(issues)")
+        XCTAssertTrue(issues.contains { $0.message.contains("75%") }, "\(issues)")
+    }
 }

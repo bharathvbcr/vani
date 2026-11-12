@@ -64,10 +64,11 @@ const maxOrigins = 64
 // still carries {{clm...}} tokens until Resolve. CautionOK and Review feed
 // Eligible (eligible.go).
 type Bullet struct {
-	Text      string              `json:"text"`
-	Author    string              `json:"author"`
-	CautionOK map[string]string   `json:"caution_ok"`
-	Review    map[string][]Review `json:"review"`
+	Text           string              `json:"text"`
+	Author         string              `json:"author"`
+	UnquantifiedOK string              `json:"unquantified_ok"`
+	CautionOK      map[string]string   `json:"caution_ok"`
+	Review         map[string][]Review `json:"review"`
 }
 
 // Review is one reader verdict rkb recorded on a bullet's wording (rkb/bank.go

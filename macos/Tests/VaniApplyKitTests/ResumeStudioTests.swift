@@ -547,6 +547,13 @@ final class ResumeWordsTests: XCTestCase {
         XCTAssertEqual(ResumeWords.costLine(moved.version.cost), "Charged $0.310 over 2 turns")
         XCTAssertNil(ResumeWords.costLine(ResumeCost(usd: 0, complete: true, turns: 0)), "no model, no cost line")
     }
+
+    func testLintAndRenderFailureWordsDoNotDoublePrefixResumeOrTruncateMultiRuleDiagnostics() throws {
+        let rawMsg = "resume: the edited resume could not be built (lint: only 7/10 bullets carry a figure (70%); target 85%; lint: only 4/7 quantified bullets carry a percentage, multiple, time or rate (57%); target 75%; left off as unverified: exp-b1, exp-b2, exp-b3, exp-b4)"
+        let text = try XCTUnwrap(ResumeWords.failure(ResumeFailure(code: "lint", message: rawMsg)))
+        XCTAssertFalse(text.message.contains(": resume: "), "must not stutter 'rkb's lint refused the page: resume: ...': \(text.message)")
+        XCTAssertTrue(text.message.contains("left off as unverified: exp-b1, exp-b2, exp-b3, exp-b4"), "must not clip multi-rule lint + dropped IDs at 240 chars: \(text.message)")
+    }
 }
 
 final class ResumeCardTests: XCTestCase {

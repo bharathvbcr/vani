@@ -26,6 +26,11 @@ extension ResumeJSON {
         return nil
     }
 
+    public var boolValue: Bool? {
+        if case let .bool(b) = self { return b }
+        return nil
+    }
+
     public var arrayValue: [ResumeJSON]? {
         if case let .array(a) = self { return a }
         return nil
@@ -38,12 +43,32 @@ extension ResumeJSON {
 /// rkbresume.PoolView). Built only from a reply that has the whole shape: a pool this app cannot read is
 /// no pool, never an empty one.
 public struct ResumePool: Equatable, Sendable {
+    public enum FigureKind: String, Equatable, Sendable {
+        case impact
+        case count
+        case none
+    }
+
     public struct Bullet: Equatable, Sendable, Identifiable {
         public var id: String
         public var text: String
         public var textHash: String
         /// The bullet this one must directly follow, under the same entry.
         public var follows: String?
+        /// How rkb classifies the bullet's figures (`impact`, `count`, or `none`), when the pool reports it.
+        public var figureKind: FigureKind?
+        /// Whether the bank explicitly permits this bullet to carry no figure (`unquantified_ok`).
+        public var unquantifiedOK: Bool
+
+        public init(id: String, text: String, textHash: String, follows: String? = nil,
+                    figureKind: FigureKind? = nil, unquantifiedOK: Bool = false) {
+            self.id = id
+            self.text = text
+            self.textHash = textHash
+            self.follows = follows
+            self.figureKind = figureKind
+            self.unquantifiedOK = unquantifiedOK
+        }
     }
 
     public struct Entry: Equatable, Sendable, Identifiable {
@@ -89,8 +114,11 @@ public struct ResumePool: Equatable, Sendable {
             list.compactMap { b in
                 guard let id = b["id"]?.stringValue, !id.isEmpty else { return nil }
                 let follows = b["follows"]?.stringValue
+                let kind = b["figure_kind"]?.stringValue.flatMap(FigureKind.init(rawValue:))
+                let unquantOK = b["unquantified_ok"]?.boolValue ?? false
                 return Bullet(id: id, text: b["text"]?.stringValue ?? "", textHash: b["text_hash"]?.stringValue ?? "",
-                              follows: (follows?.isEmpty ?? true) ? nil : follows)
+                              follows: (follows?.isEmpty ?? true) ? nil : follows,
+                              figureKind: kind, unquantifiedOK: unquantOK)
             }
         }
         func strings(_ v: ResumeJSON?) -> [String] { (v?.arrayValue ?? []).compactMap(\.stringValue) }
@@ -142,6 +170,18 @@ public struct ResumePool: Equatable, Sendable {
         case .summary: summary.first { $0.id == id }
         case let .entry(e): entry(e)?.bullets.first { $0.id == id }
         }
+    }
+
+    /// Whether every bullet in the pool carries rkb figure metadata and holds unquantified bullets to `unquantified_ok`.
+    public var enforcesFigureShares: Bool {
+        let all = summary + entries.flatMap(\.bullets)
+        var hasImpact = false
+        for b in all {
+            guard let kind = b.figureKind else { return false }
+            if kind == .impact { hasImpact = true }
+            if kind == .none && !b.unquantifiedOK { return false }
+        }
+        return hasImpact
     }
 }
 
@@ -659,7 +699,29 @@ public struct ResumeDraft: Equatable, Sendable {
                 }
             }
         }
-        if !any { add(.page, "Nothing is on the page. Add a bullet or an entry.") }
+        if !any {
+            add(.page, "Nothing is on the page. Add a bullet or an entry.")
+        } else if let pool, pool.enforcesFigureShares {
+            let byID = Dictionary((pool.summary + pool.entries.flatMap(\.bullets)).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            var total = 0, quant = 0, impact = 0
+            for id in seenBullets {
+                guard let kind = byID[id]?.figureKind else { continue }
+                total += 1
+                switch kind {
+                case .impact: quant += 1; impact += 1
+                case .count: quant += 1
+                case .none: break
+                }
+            }
+            if total > 0, Double(quant) / Double(total) < 0.85 {
+                let pct = Int((100 * Double(quant) / Double(total)).rounded())
+                add(.page, "Only \(quant) of \(total) bullets carry a figure (\(pct)%); rkb's lint requires at least 85%.", blocking: false)
+            }
+            if quant > 0, Double(impact) / Double(quant) < 0.75 {
+                let pct = Int((100 * Double(impact) / Double(quant)).rounded())
+                add(.page, "Only \(impact) of \(quant) quantified bullets carry a percentage, multiple, time or rate (\(pct)%); rkb's lint requires at least 75%.", blocking: false)
+            }
+        }
         return out
     }
 

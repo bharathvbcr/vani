@@ -77,14 +77,22 @@ type poolEntry struct {
 }
 
 // poolBullet is one bullet offered. follows is set for a continuation: the
-// bullet it must directly follow.
-type poolBullet struct{ id, text, follows string }
+// bullet it must directly follow; figTag marks count-only or unquantified
+// bullets when figure-share rules apply.
+type poolBullet struct{ id, text, follows, figTag string }
 
 // line is the bullet as the model reads it: `id: text`, or `id [must directly
-// follow X]: text` for a continuation.
+// follow X; count figure]: text` when annotated.
 func (b poolBullet) line() string {
+	var notes []string
 	if b.follows != "" {
-		return fmt.Sprintf("%s [must directly follow %s]: %s", b.id, b.follows, b.text)
+		notes = append(notes, "must directly follow "+b.follows)
+	}
+	if b.figTag != "" {
+		notes = append(notes, b.figTag)
+	}
+	if len(notes) > 0 {
+		return fmt.Sprintf("%s [%s]: %s", b.id, strings.Join(notes, "; "), b.text)
 	}
 	return b.id + ": " + b.text
 }
@@ -112,11 +120,20 @@ func (b *builder) buildPoolSized(keep func(id string) bool, max int) pool {
 	p := pool{allowed: map[string]map[string]bool{}}
 	size := 0
 	add := func(entry, id string, text string) bool {
-		if max > 0 && size+len(text)+len(id)+8 > max {
+		extra := 0
+		switch b.figureKind(id) {
+		case FigureCount:
+			extra = 16
+		case FigureNone:
+			if b.bank.Bullets[id].UnquantifiedOK != "" {
+				extra = 13
+			}
+		}
+		if max > 0 && size+len(text)+len(id)+8+extra > max {
 			p.omitted++
 			return false
 		}
-		size += len(text) + len(id) + 8
+		size += len(text) + len(id) + 8 + extra
 		if p.allowed[entry] == nil {
 			p.allowed[entry] = map[string]bool{}
 		}
@@ -144,7 +161,7 @@ func (b *builder) buildPoolSized(keep func(id string) bool, max int) pool {
 			}
 			t := plain(id)
 			if add("", id, t) {
-				p.summary = append(p.summary, poolBullet{id, t, follows})
+				p.summary = append(p.summary, poolBullet{id: id, text: t, follows: follows})
 			}
 		}
 	}
@@ -181,11 +198,31 @@ func (b *builder) buildPoolSized(keep func(id string) bool, max int) pool {
 			}
 			t := plain(id)
 			if add(eid, id, t) {
-				pe.bullets = append(pe.bullets, poolBullet{id, t, follows})
+				pe.bullets = append(pe.bullets, poolBullet{id: id, text: t, follows: follows})
 			}
 		}
 		if len(pe.bullets) > 0 {
 			p.entries = append(p.entries, pe)
+		}
+	}
+	if max > 0 && (b.enforcesFigureShares(p) || (b.rd != nil && len(b.rd.full.entries) > 0 && b.enforcesFigureShares(b.rd.full))) {
+		tagFor := func(id string) string {
+			switch b.figureKind(id) {
+			case FigureCount:
+				return "count figure"
+			case FigureNone:
+				return "no figure"
+			default:
+				return ""
+			}
+		}
+		for i := range p.summary {
+			p.summary[i].figTag = tagFor(p.summary[i].id)
+		}
+		for i := range p.entries {
+			for j := range p.entries[i].bullets {
+				p.entries[i].bullets[j].figTag = tagFor(p.entries[i].bullets[j].id)
+			}
 		}
 	}
 	return p
@@ -278,6 +315,10 @@ func (b *builder) prompt(p pool, req Request, baseBullets int) string {
 		s.WriteString("- Leave \"jd_keywords\" out of your answer: the page's keywords are kept.\n")
 	} else {
 		fmt.Fprintf(&s, "- \"jd_keywords\": %d to %d words or short phrases that occur verbatim in the posting.\n", MinKeywords, MaxKeywords)
+	}
+	if b.enforcesFigureShares(p) || (b.rd != nil && len(b.rd.full.entries) > 0 && b.enforcesFigureShares(b.rd.full)) {
+		fmt.Fprintf(&s, "- At least %.0f%% of chosen bullets must carry a figure (bullets marked `[no figure]` carry none), and at least %.0f%% of figured bullets must carry a percentage, multiple, time or rate (bullets marked `[count figure]` carry only a count).\n",
+			100*b.minQuantShare(), 100*minImpactShare)
 	}
 	s.WriteString("\n")
 	if blk := b.previousBlock(p); blk != "" {
@@ -737,6 +778,35 @@ func (b *builder) checkSteering(r reply, ch choice, p pool) error {
 	// With a scope the page's keywords stand, and the model was not asked for any.
 	if n := len(ch.keywords); !b.rd.scopedRun() && (n < MinKeywords || n > MaxKeywords) {
 		return fmt.Errorf("%d keywords, want %d to %d", n, MinKeywords, MaxKeywords)
+	}
+	canQuant, canImpact := b.poolCanMeetShares(p)
+	if canQuant || canImpact {
+		total, quant, impact := b.choiceShares(ch)
+		var prevTotal, prevQuant, prevImpact int
+		if b.rd.keeps() {
+			prevTotal, prevQuant, prevImpact = b.choiceShares(b.rd.prev)
+		}
+		if canQuant && total > 0 {
+			minQ := b.minQuantShare()
+			floorQ := minQ
+			if b.rd.keeps() && prevTotal > 0 {
+				floorQ = min(floorQ, float64(prevQuant)/float64(prevTotal))
+			}
+			if float64(quant)/float64(total)+1e-9 < floorQ {
+				return fmt.Errorf("only %d/%d bullets carry a figure (%.0f%%); need at least %.0f%% (replace [no figure] bullets with figured ones)",
+					quant, total, 100*float64(quant)/float64(total), 100*minQ)
+			}
+		}
+		if canImpact && quant > 0 {
+			floorI := minImpactShare
+			if b.rd.keeps() && prevQuant > 0 {
+				floorI = min(floorI, float64(prevImpact)/float64(prevQuant))
+			}
+			if float64(impact)/float64(quant)+1e-9 < floorI {
+				return fmt.Errorf("only %d/%d quantified bullets carry a percentage, multiple, time or rate (%.0f%%); need at least %.0f%% (replace [count figure] bullets with impact ones)",
+					impact, quant, 100*float64(impact)/float64(quant), 100*minImpactShare)
+			}
+		}
 	}
 	return nil
 }

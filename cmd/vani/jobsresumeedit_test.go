@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -471,5 +472,102 @@ func TestDropBulletsKeepsEverythingElse(t *testing.T) {
 		if _, err := dropBullets(json.RawMessage(bad), nil); err == nil {
 			t.Errorf("%q was accepted", bad)
 		}
+	}
+}
+
+func TestJobsResumeRevalidateRebalancesSharesAndWordsFailureAsRevalidated(t *testing.T) {
+	f := &fakeResumeRKB{pages: 2, pdf: testPDF}
+	_, _ = jrSetup(t, f, nil)
+
+	// Build v1 with 6 impact bullets (i1..i6), 2 count-only bullets (c1, c2), and 1 unquantified_ok bullet (u1):
+	// 8/9 = 88.9% >= 85% figured; 6/8 = 75.0% >= 75% impact.
+	allIDs := []string{"i1", "i2", "i3", "i4", "i5", "i6", "c1", "c2", "u1"}
+	extra := map[string]map[string]any{}
+	for k := 1; k <= 6; k++ {
+		id := fmt.Sprintf("i%d", k)
+		raw := fmt.Sprintf("Cut latency {{clmLat}} on path %d.", k)
+		extra[id] = reviewedBullet(raw, strings.ReplaceAll(raw, "{{clmLat}}", "42%"))
+	}
+	for k := 1; k <= 2; k++ {
+		id := fmt.Sprintf("c%d", k)
+		raw := fmt.Sprintf("Shipped {{clmCnt}} services in tier %d.", k)
+		extra[id] = reviewedBullet(raw, strings.ReplaceAll(raw, "{{clmCnt}}", "12"))
+	}
+	u1 := reviewedBullet("Architected deterministic execution harness.", "Architected deterministic execution harness.")
+	u1["unquantified_ok"] = "architecture scope"
+	extra["u1"] = u1
+	jrBankDoc(t, allIDs, extra)
+
+	f.lintFn = func(sel string) (int, string) {
+		var doc struct {
+			Sections []struct {
+				Entries []struct {
+					Bullets []string `json:"bullets"`
+				} `json:"entries"`
+			} `json:"sections"`
+		}
+		_ = json.Unmarshal([]byte(sel), &doc)
+		var ids []string
+		for _, s := range doc.Sections {
+			for _, e := range s.Entries {
+				ids = append(ids, e.Bullets...)
+			}
+		}
+		n, quant, impact := len(ids), 0, 0
+		for _, id := range ids {
+			switch {
+			case strings.HasPrefix(id, "i"):
+				quant++
+				impact++
+			case strings.HasPrefix(id, "c"):
+				quant++
+			}
+		}
+		var errs []string
+		if n > 0 && float64(quant)/float64(n) < 0.85 {
+			errs = append(errs, fmt.Sprintf("ERROR only %d/%d bullets carry a figure; target 85%%", quant, n))
+		}
+		if quant > 0 && float64(impact)/float64(quant) < 0.75 {
+			errs = append(errs, fmt.Sprintf("ERROR only %d/%d quantified bullets carry a percentage, multiple, time or rate; target 75%%", impact, quant))
+		}
+		if len(errs) > 0 {
+			return 1, strings.Join(errs, "\n") + "\n"
+		}
+		return 0, "0 error(s)\n"
+	}
+
+	out, _ := jrRun(t, 0, jrEditOf("alpha-job", allIDs...), "render", "--json", "--fit", jrKey)
+	v1 := jrSaved(t, out)
+	if v1.Version != 1 || len(v1.Bullets) != 9 {
+		t.Fatalf("v1 = %+v", v1.Meta)
+	}
+
+	// Reword i4, i5, i6 in the bank -> dropping stale i4,i5,i6 leaves 3 impact + 2 count + 1 u1
+	// (5/6 = 83.3% < 85% figured, 3/5 = 60% < 75% impact). Revalidate must rebalance and pass lint!
+	for k := 4; k <= 6; k++ {
+		id := fmt.Sprintf("i%d", k)
+		raw := fmt.Sprintf("Cut latency {{clmLat}} across rewritten path %d.", k)
+		extra[id] = reviewedBullet(raw, strings.ReplaceAll(raw, "{{clmLat}}", "42%"))
+	}
+	jrBankDoc(t, allIDs, extra)
+
+	out, _ = jrRun(t, 0, "", "revalidate", "--json", jrKey, "v1")
+	v2 := jrSaved(t, out)
+	if v2.Source != "revalidated" || strings.Join(v2.DroppedStale, ",") != "i4,i5,i6" {
+		t.Fatalf("v2 = %+v dropped=%v", v2.Meta, v2.DroppedStale)
+	}
+	if got := strings.Join(bulletIDsOf(v2.Bullets), ","); got != "i1,i2,i3,c1" {
+		t.Errorf("revalidated bullets = %q, want \"i1,i2,i3,c1\" (4/4 = 100%% figured, 3/4 = 75%% impact)", got)
+	}
+
+	// When revalidate fails layout/fit, its error must say "the revalidated resume could not be built", not "edited".
+	f.pages = 3
+	raw := "Cut latency {{clmLat}} across rewritten path 3."
+	extra["i3"] = reviewedBullet(raw, strings.ReplaceAll(raw, "{{clmLat}}", "42%"))
+	jrBankDoc(t, allIDs, extra)
+	out, _ = jrRun(t, 1, "", "revalidate", "--json", jrKey, "v2")
+	rf := jrFail(t, out)
+	if !strings.Contains(rf.Error, "the revalidated resume could not be built") || strings.Contains(rf.Error, "edited resume") {
+		t.Errorf("revalidate failure wording = %q", rf.Error)
 	}
 }

@@ -300,7 +300,7 @@ public enum ResumeWords {
 
     /// Plain words for a failure; nil for a `cancelled` that cost nothing (the owner stopped it).
     public static func failure(_ f: ResumeFailure) -> ResumeFailureText? {
-        let detail = clipped(f.message)
+        let detail = detailText(f.message)
         var message: String
         var retry = false
         var offer: ResumeOffer?
@@ -404,5 +404,16 @@ public enum ResumeWords {
     public static func clipped(_ s: String, _ max: Int = 240) -> String {
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.count <= max ? t : String(t.prefix(max)) + "…"
+    }
+
+    static func detailText(_ s: String, _ max: Int = 600) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["jobs resume: ", "resume: "] {
+            if t.hasPrefix(prefix) {
+                t = String(t.dropFirst(prefix.count))
+                break
+            }
+        }
+        return clipped(t, max)
     }
 }

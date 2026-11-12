@@ -169,13 +169,13 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 	if err := b.resolveTailor(req); err != nil {
 		return Result{}, err
 	}
-	baseCh := b.base.baseChoice(b.el.Allowed, b.isCont)
+	baseCh := b.baseChoice()
 	if baseCh.count() == 0 {
 		return Result{}, fail(CodeKB, "no bullet of the base selection is eligible (%d listed bullets are not)", len(b.el.Why))
 	}
 	// One export of the base: it proves rkb runs before a model turn is spent,
-	// and names the figures rkb has not verified, so the model is not offered
-	// bullets that would be dropped (badFigures).
+	// and names the bullets/figures rkb has not verified, so the model is not
+	// offered bullets that would be dropped.
 	probeDir := filepath.Join(b.dir, "probe")
 	if err := os.MkdirAll(probeDir, 0o700); err != nil {
 		return Result{}, fail(CodeRender, "no private temp folder: %v", err)
@@ -184,7 +184,7 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 	if err != nil {
 		return Result{}, err
 	}
-	badClaims := b.badFigures(cf, baseCh)
+	keepBullet := b.probeKeep(cf, baseCh)
 
 	// noModel: the model could not run at all (none configured, no time for a
 	// turn, the budget refused it, it could not be reached or timed out before
@@ -202,7 +202,7 @@ func (b *builder) run(ctx context.Context, req Request) (Result, *Error) {
 		noModel = true
 		reason = "not enough time was left for a model turn"
 	default:
-		res, why, err := b.tailor(ctx, req, baseCh, badClaims)
+		res, why, err := b.tailor(ctx, req, baseCh, keepBullet)
 		if err != nil {
 			return Result{}, err
 		}
@@ -279,6 +279,40 @@ func (b *builder) badFigures(cf claimsFile, baseCh choice) map[string]bool {
 	return bad
 }
 
+// probeKeep decides per bullet whether the probe export vouches for offering it
+// to the model. When two base bullets share a claim and only one sentence is
+// Pass-2-confirmed, only the unconfirmed sentence is hidden while its confirmed
+// sibling remains available.
+func (b *builder) probeKeep(cf claimsFile, baseCh choice) func(id string) bool {
+	bad := b.badFigures(cf, baseCh)
+	inBaseBullet := map[string]bool{}
+	for _, id := range baseCh.bulletIDs() {
+		inBaseBullet[id] = true
+	}
+	return func(id string) bool {
+		raw := b.bank.Bullets[id].Text
+		for _, t := range tokens(raw) {
+			c, known := cf.Claims[t]
+			if !known {
+				return false
+			}
+			if c.DoubleVerified {
+				continue
+			}
+			if len(c.ConfirmedSentences) > 0 && !hasPass1Problem(c.Problems) {
+				if inBaseBullet[id] && !slices.Contains(c.ConfirmedSentences, sentenceHash(raw, t)) {
+					return false
+				}
+				continue
+			}
+			if bad[t] {
+				return false
+			}
+		}
+		return true
+	}
+}
+
 func summarize(ps []problem) string {
 	var parts []string
 	for i, p := range ps {
@@ -313,13 +347,20 @@ func (b *builder) load(ctx context.Context) *Error {
 	b.fp.RKB = rkbFingerprint(b.cfg.RKB)
 	if b.cfg.VMReport != "" {
 		// The validator report decides which figures count as verified, and rkb reads
-		// it itself: a version must name what it was judged on, so an unreadable
-		// report is no build.
-		sum, err := fileSHA256(b.cfg.VMReport, kbsync.MaxClaimsBytes)
+		// it itself: an unreadable, truncated, crashed or quiet (problems-only)
+		// report fails closed before rkb treats every figure as unverified.
+		st, err := os.Stat(b.cfg.VMReport)
+		if err != nil || !st.Mode().IsRegular() {
+			return fail(CodeConfig, "the validator report %s cannot be read (it must be a readable file of at most %d bytes)", filepath.Base(b.cfg.VMReport), kbsync.MaxClaimsBytes)
+		}
+		vmRaw, err := readCapped(b.cfg.VMReport, kbsync.MaxClaimsBytes)
 		if err != nil {
 			return fail(CodeConfig, "the validator report %s cannot be read (it must be a readable file of at most %d bytes)", filepath.Base(b.cfg.VMReport), kbsync.MaxClaimsBytes)
 		}
-		b.fp.VMReport = sum
+		if why := CheckVMReport(vmRaw); why != "" {
+			return fail(CodeConfig, "the validator report %s is not usable (%s)", filepath.Base(b.cfg.VMReport), why)
+		}
+		b.fp.VMReport = sha256Hex(vmRaw)
 	}
 	// The base comes before the first rkb call so the owner's header strings are
 	// known to the scrubber for everything rkb says from here on.
@@ -358,7 +399,7 @@ func (b *builder) load(ctx context.Context) *Error {
 // tailor asks the model for a choice and builds it, with at most one retry that
 // tells the model what was wrong. It returns the result, or why the base
 // selection is used instead; a non-nil error ends the build.
-func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badClaims map[string]bool) (*Result, string, *Error) {
+func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, keepBullet func(string) bool) (*Result, string, *Error) {
 	var onKept map[string]bool
 	if b.rd.keeps() {
 		onKept = b.keptBullets()
@@ -367,12 +408,7 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, badCla
 		if onKept[id] {
 			return false // a kept part already uses it, and an id is used once
 		}
-		for _, t := range tokens(b.bank.Bullets[id].Text) {
-			if badClaims[t] {
-				return false
-			}
-		}
-		return true
+		return keepBullet(id)
 	})
 	if b.rd.keeps() {
 		p = b.restrictPool(p)
@@ -479,14 +515,19 @@ func keywordText(r Request) string {
 	return strings.Join([]string{oneLine(r.Company, 300), oneLine(r.Title, 300), runesPrefix(strings.TrimSpace(r.Description), MaxPostingRunes)}, "\n")
 }
 
+// exportedClaim is one claim's verification status from `rkb claims export`.
+type exportedClaim struct {
+	DoubleVerified     bool     `json:"double_verified"`
+	ConfirmedSentences []string `json:"confirmed_sentences"`
+	// Problems are rkb's reasons against the claim. Their prefixes ("pass 1 ",
+	// "validator ") say whether Pass 1 failed; they are never echoed out because
+	// Pass 2 messages quote the owner's sentences.
+	Problems []string `json:"problems"`
+}
+
 // claimsFile is the part of `rkb claims export` this package reads.
 type claimsFile struct {
-	Claims map[string]struct {
-		DoubleVerified bool `json:"double_verified"`
-		// Problems are rkb's reasons against the claim. Only their number is read:
-		// they quote the owner's sentences.
-		Problems []string `json:"problems"`
-	} `json:"claims"`
+	Claims map[string]exportedClaim `json:"claims"`
 }
 
 // rkb runs one rkb command. A runner error is classified; a non-zero exit is
@@ -604,13 +645,15 @@ func readCapped(path string, max int) ([]byte, error) {
 }
 
 // unverifiedBullets lists the chosen bullets that use a figure rkb has not
-// double-verified for this selection.
+// double-verified for this selection (or whose specific sentence is not
+// Pass-2-confirmed when siblings share a claim).
 func (b *builder) unverifiedBullets(ch choice, cf claimsFile) []string {
 	var bad []string
 	seen := map[string]bool{}
 	for _, id := range ch.bulletIDs() {
-		for _, t := range tokens(b.bank.Bullets[id].Text) {
-			if c, ok := cf.Claims[t]; (!ok || !c.DoubleVerified) && !seen[id] {
+		raw := b.bank.Bullets[id].Text
+		for _, t := range tokens(raw) {
+			if c, ok := cf.Claims[t]; (!ok || !sentenceVerified(raw, t, c)) && !seen[id] {
 				seen[id] = true
 				bad = append(bad, id)
 			}
@@ -677,6 +720,14 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 			out.checks.Figures = checkDropped
 			out.problems = append(out.problems, problem{"figures", "figures in " + strings.Join(bad, ", ") + " are not double-verified in rkb"})
 			return out, nil
+		}
+		// Dropping unverified impact bullets can leave count-only or unquantified_ok
+		// bullets past rkb lint's >=75% impact and >=85% figured thresholds; trim
+		// excess ones before round 1 exports sel.json and claims.json.
+		rebalanced, trimmed := b.rebalanceShares(ch)
+		ch = rebalanced
+		if len(trimmed) > 0 {
+			out.notes = append(out.notes, "left off to keep figure shares: "+strings.Join(trimmed, ", "))
 		}
 	}
 	sort.Strings(out.dropped)

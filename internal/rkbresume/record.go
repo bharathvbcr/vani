@@ -20,11 +20,13 @@ import (
 
 // Sources of Result.Source. A version made from a model's choice is "tailored",
 // one built from the owner's base selection is "base", one the owner edited
-// and Render built is "edited".
+// and Render built is "edited", and one Revalidate rebuilt after dropping stale
+// bullets is "revalidated".
 const (
-	SourceTailored = "tailored"
-	SourceBase     = "base"
-	SourceEdited   = "edited"
+	SourceTailored    = "tailored"
+	SourceBase        = "base"
+	SourceEdited      = "edited"
+	SourceRevalidated = "revalidated"
 )
 
 // Check states. A check that did not run is never one that passed.

@@ -44,6 +44,18 @@ const (
 // The build lock is taken as Build takes it; the Chrome lock only when fitting.
 // The Result of an error carries what ran (Checks) and the fingerprints.
 func Render(ctx context.Context, cfg Config, req Request, edit []byte, fit bool) (Result, error) {
+	return renderEntry(ctx, cfg, req, edit, fit, false, SourceEdited, "edited")
+}
+
+// Revalidate rebuilds a stored choice after stale bullets (and their
+// continuations) were dropped. When droppedStale is true, excess count-only or
+// unquantified_ok bullets left behind by those drops are rebalanced before lint
+// and fit, and any failure names the "revalidated" resume rather than an edit.
+func Revalidate(ctx context.Context, cfg Config, req Request, edit []byte, droppedStale bool) (Result, error) {
+	return renderEntry(ctx, cfg, req, edit, true, droppedStale, SourceRevalidated, "revalidated")
+}
+
+func renderEntry(ctx context.Context, cfg Config, req Request, edit []byte, fit, rebalance bool, source, label string) (Result, error) {
 	cfg.Provider, cfg.NoModel, cfg.Model, cfg.Tailor = nil, "", "", Tailor{}
 	if cfg.Deadline == 0 {
 		cfg.Deadline = RenderDeadline
@@ -70,7 +82,7 @@ func Render(ctx context.Context, cfg Config, req Request, edit []byte, fit bool)
 	keep := false
 	defer func() { done(keep) }()
 
-	res, rerr := b.render(ctx, req, edit, r, fit)
+	res, rerr := b.render(ctx, req, edit, r, fit, rebalance, source, label)
 	if rerr != nil {
 		res = b.partial()
 		b.cost.stamp(&res)
@@ -83,8 +95,8 @@ func Render(ctx context.Context, cfg Config, req Request, edit []byte, fit bool)
 		_ = os.Remove(b.bankPath)
 		_ = os.RemoveAll(filepath.Join(b.dir, tmpDirName))
 		_ = os.RemoveAll(filepath.Join(b.dir, "probe"))
-		_ = os.Remove(filepath.Join(b.dir, "edited", "sel.json")) // carries the header
-		_ = os.Remove(filepath.Join(b.dir, "edited", "claims.json"))
+		_ = os.Remove(filepath.Join(b.dir, label, "sel.json")) // carries the header
+		_ = os.Remove(filepath.Join(b.dir, label, "claims.json"))
 		res.BuildDir = b.dir
 		keep = true
 	} else {
@@ -93,8 +105,8 @@ func Render(ctx context.Context, cfg Config, req Request, edit []byte, fit bool)
 	return res, nil
 }
 
-// render is Render's work inside a started build.
-func (b *builder) render(ctx context.Context, req Request, edit []byte, r reply, fit bool) (Result, *Error) {
+// render is Render and Revalidate's work inside a started build.
+func (b *builder) render(ctx context.Context, req Request, edit []byte, r reply, fit, rebalance bool, source, label string) (Result, *Error) {
 	if err := b.prepare(ctx, fit); err != nil {
 		return Result{}, err
 	}
@@ -109,15 +121,37 @@ func (b *builder) render(ctx context.Context, req Request, edit []byte, r reply,
 	if ch.count() == 0 {
 		return Result{}, fail(CodeEdit, "the edit puts no bullet on the page")
 	}
-	out, aerr := b.attempt(ctx, "edited", ch, true, fit)
+	var preTrimmed []string
+	if rebalance {
+		ch, preTrimmed = b.rebalanceShares(ch)
+	}
+	out, aerr := b.attempt(ctx, label, ch, true, fit)
 	if aerr != nil {
 		return Result{}, aerr
 	}
+	if len(preTrimmed) > 0 {
+		out.notes = append([]string{"left off to keep figure shares: " + joinIDs(preTrimmed)}, out.notes...)
+	}
 	if len(out.problems) > 0 {
 		pr := out.problems[0]
-		return Result{}, fail(pr.code(), "the edited resume could not be built (%s)", summarize(out.problems))
+		why := summarize(out.problems)
+		if len(out.dropped) > 0 {
+			why += "; left off as unverified: " + joinIDs(out.dropped)
+		}
+		return Result{}, fail(pr.code(), "the %s resume could not be built (%s)", label, why)
 	}
-	return b.finish(SourceEdited, "", out)
+	return b.finish(source, "", out)
+}
+
+func joinIDs(ids []string) string {
+	out := ""
+	for i, id := range ids {
+		if i > 0 {
+			out += ", "
+		}
+		out += id
+	}
+	return out
 }
 
 // refuseIneligible names the first bullet of the edit, in page order, that

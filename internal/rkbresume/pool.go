@@ -12,12 +12,15 @@ import (
 // and italic markers removed: kbsync.RKBPlain), so the editor shows what the
 // page will say; TextHash is that wording's 12-hex hash, the form a version
 // records. Follows is set for a continuation: the bullet it must directly follow,
-// under the same entry.
+// under the same entry. FigureKind classifies its figures ("impact", "count" or
+// "none") and UnquantifiedOK reports whether the bank explicitly allows no figure.
 type PoolBullet struct {
-	ID       string `json:"id"`
-	Text     string `json:"text"`
-	TextHash string `json:"text_hash"`
-	Follows  string `json:"follows,omitempty"`
+	ID             string `json:"id"`
+	Text           string `json:"text"`
+	TextHash       string `json:"text_hash"`
+	Follows        string `json:"follows,omitempty"`
+	FigureKind     string `json:"figure_kind,omitempty"`
+	UnquantifiedOK bool   `json:"unquantified_ok,omitempty"`
 }
 
 // PoolEntry is an entry with eligible bullets and where it may go: Sections are
@@ -135,7 +138,14 @@ func (b *builder) poolView() (PoolView, *Error) {
 	bullet := func(pb poolBullet) PoolBullet {
 		bl := b.bank.Bullets[pb.id]
 		plain := kbsync.RKBPlain(bl.Text, b.claims.Values)
-		return PoolBullet{ID: pb.id, Text: plain, TextHash: kbsync.WordingHash(plain), Follows: pb.follows}
+		return PoolBullet{
+			ID:             pb.id,
+			Text:           plain,
+			TextHash:       kbsync.WordingHash(plain),
+			Follows:        pb.follows,
+			FigureKind:     b.figureKind(pb.id),
+			UnquantifiedOK: bl.UnquantifiedOK != "",
+		}
 	}
 	v := PoolView{Summary: []PoolBullet{}, SummarySections: []string{}, Entries: []PoolEntry{}, ReorderableSections: []string{}, Headings: []PoolHeading{}, Fingerprints: b.fp}
 	for _, pb := range p.summary {
@@ -162,7 +172,7 @@ func (b *builder) poolView() (PoolView, *Error) {
 		v.ReorderableSections = append(v.ReorderableSections, b.base.sections[i].title)
 	}
 	v.Headings = b.headings(p)
-	base, err := b.base.baseChoice(b.el.Allowed, b.isCont).editJSON(b.base)
+	base, err := b.baseChoice().editJSON(b.base)
 	if err != nil {
 		return PoolView{}, fail(CodeKB, "the base choice cannot be written as an edit: %v", err)
 	}

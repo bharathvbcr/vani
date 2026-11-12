@@ -32,10 +32,7 @@ func figureBuilder(t *testing.T) *builder {
 func TestBadFiguresReadsWhatRkbSaysNotWhatItLeavesUnsaid(t *testing.T) {
 	b := figureBuilder(t)
 	baseCh := b.base.baseChoice(b.el.Allowed, b.isCont)
-	cf := claimsFile{Claims: map[string]struct {
-		DoubleVerified bool     `json:"double_verified"`
-		Problems       []string `json:"problems"`
-	}{
+	cf := claimsFile{Claims: map[string]exportedClaim{
 		"clmLat": {DoubleVerified: true},
 		"clmThr": {DoubleVerified: false},                                       // used by a2 (base), no reason given
 		"clmMem": {DoubleVerified: false},                                       // used by a4 (not in the base), nothing used it: unknown

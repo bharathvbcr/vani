@@ -19,8 +19,9 @@ import (
 
 // `jobs resume render` builds the resume the owner edited, with no model, and
 // `jobs resume revalidate` rebuilds a version without what the bank stopped
-// vouching for. Both go through rkbresume.Render, which holds the owner's edit
-// to the same page-safety rules as the model's choice; neither can spend money.
+// vouching for. They go through rkbresume.Render and rkbresume.Revalidate,
+// which hold the page to the same safety rules as the model's choice; neither
+// can spend money.
 
 const (
 	// maxResumeEdit caps the owner's edit read from stdin (rkbresume's own cap).
@@ -320,7 +321,7 @@ func (e *env) resumeRevalidate(ctx context.Context, rawKey, rawVersion string) (
 	if err != nil {
 		return resumeSaved{}, jrErr(jrDamaged, "jobs resume: v%d's choice cannot be read: %s", n, oneLine(err.Error(), 200))
 	}
-	res, err := rkbresume.Render(ctx, w.RC, job.req, edit, true)
+	res, err := rkbresume.Revalidate(ctx, w.RC, job.req, edit, len(drop) > 0)
 	if err != nil {
 		return resumeSaved{}, e.paidFailure(ctx, st, job.key, res, err)
 	}
@@ -328,7 +329,7 @@ func (e *env) resumeRevalidate(ctx context.Context, rawKey, rawVersion string) (
 		return resumeSaved{}, asResumeError(err)
 	}
 	dropped := droppedInOrder(meta, drop)
-	out, serr := e.saveVersion(ctx, st, job.key, res, n, "revalidated", revalidationReason(n, dropped, el))
+	out, serr := e.saveVersion(ctx, st, job.key, res, n, rkbresume.SourceRevalidated, revalidationReason(n, dropped, el))
 	if serr != nil {
 		return resumeSaved{}, serr
 	}

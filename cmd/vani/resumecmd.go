@@ -16,6 +16,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/resume"
 	"github.com/bharathvbcr/Vani/internal/rkbresume"
 )
@@ -260,11 +261,13 @@ func (e *env) resumeModel(ctx context.Context, cfg config.Config) (llm.Provider,
 
 // resumeVMReport is the validator report rkb's claims export reads, so figures
 // the validator backs count as verified: which bullets may print depends on
-// it. kb.vm_report names it; one that is set but missing is an error, never a
-// silent fallback. Unset, it falls back to rkb's CV folder under kb.code_root
-// (career/CurriculumVitae: vm_report_full.txt, else vm_report.txt), and note
-// says which file and how old, so the reply never hides the choice. Empty
-// path with a note when there is none.
+// it. kb.vm_report names it; one that is set but missing or unusable is an
+// error, never a silent fallback. Unset, it checks rkb's CV folder under
+// kb.code_root (career/CurriculumVitae) and the folder holding kb.bank for a
+// usable vm_report_full.txt or vm_report.txt, naming the chosen file and any
+// skipped unusable candidate in note so the reply never hides the choice. If
+// only unusable reports exist on disk, it fails closed rather than dropping
+// every validator-backed figure.
 func resumeVMReport(cfg config.Config, now time.Time) (path, note string, err error) {
 	if p := cfg.KB.VMReport; p != "" {
 		if st, serr := os.Stat(p); serr != nil || !st.Mode().IsRegular() {
@@ -272,15 +275,68 @@ func resumeVMReport(cfg config.Config, now time.Time) (path, note string, err er
 		}
 		return p, "", nil
 	}
+	var dirs []string
 	if cfg.KB.CodeRoot != "" {
-		for _, name := range []string{"vm_report_full.txt", "vm_report.txt"} {
-			p := filepath.Join(cfg.KB.CodeRoot, "career", "CurriculumVitae", name)
-			if st, serr := os.Stat(p); serr == nil && st.Mode().IsRegular() {
-				return p, fmt.Sprintf("kb.vm_report is not set: figures were checked against %s, modified %s ago", name, now.Sub(st.ModTime()).Round(time.Minute)), nil
-			}
+		dirs = append(dirs, filepath.Join(cfg.KB.CodeRoot, "career", "CurriculumVitae"))
+	}
+	if cfg.KB.Bank != "" {
+		bd := filepath.Dir(cfg.KB.Bank)
+		if len(dirs) == 0 || dirs[0] != bd {
+			dirs = append(dirs, bd)
 		}
 	}
+	var skipped []string
+	var firstBadName, firstBadWhy string
+	for _, dir := range dirs {
+		for _, name := range []string{"vm_report_full.txt", "vm_report.txt"} {
+			p := filepath.Join(dir, name)
+			st, serr := os.Stat(p)
+			if serr != nil || !st.Mode().IsRegular() {
+				continue
+			}
+			raw, rerr := readVMReportCapped(p, kbsync.MaxClaimsBytes)
+			if rerr != nil {
+				why := fmt.Sprintf("cannot be read: %v", rerr)
+				if firstBadName == "" {
+					firstBadName, firstBadWhy = name, why
+				}
+				skipped = append(skipped, fmt.Sprintf("%s (%s)", name, why))
+				continue
+			}
+			if why := rkbresume.CheckVMReport(raw); why != "" {
+				if firstBadName == "" {
+					firstBadName, firstBadWhy = name, why
+				}
+				skipped = append(skipped, fmt.Sprintf("%s (%s)", name, why))
+				continue
+			}
+			note := fmt.Sprintf("kb.vm_report is not set: figures were checked against %s, modified %s ago", name, now.Sub(st.ModTime()).Round(time.Minute))
+			if len(skipped) > 0 {
+				note += "; skipped unusable " + strings.Join(skipped, "; ")
+			}
+			return p, note, nil
+		}
+	}
+	if firstBadName != "" {
+		return "", "", fmt.Errorf("kb.vm_report is not set and %s is not usable (%s)", firstBadName, firstBadWhy)
+	}
 	return "", "kb.vm_report is not set and no validator report was found: a figure only the validator backs is left off", nil
+}
+
+func readVMReportCapped(path string, max int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > max {
+		return nil, fmt.Errorf("larger than %d bytes", max)
+	}
+	return raw, nil
 }
 
 // checkBuilt re-checks what the app and the extension rely on of a fitted
