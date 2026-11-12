@@ -107,6 +107,9 @@ type boardFetch struct {
 	PaySkipped int
 	Gone       int
 	PayError   string
+	// Prefiltered is new listed rows the drop policy rejected before any
+	// detail request (the adapter's Stats.Prefiltered): never stored.
+	Prefiltered int
 }
 
 type boardKey struct {
@@ -135,6 +138,7 @@ func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	prev.PayFailed += f.PayFailed
 	prev.PaySkipped += f.PaySkipped
 	prev.Gone += f.Gone
+	prev.Prefiltered += f.Prefiltered
 	if prev.PayError == "" {
 		prev.PayError = f.PayError
 	}
@@ -159,6 +163,7 @@ func (w *wired) applyFetchesLocked(rep *boardsReport) {
 		it.PayFailed = f.PayFailed
 		it.PaySkipped = f.PaySkipped
 		it.Gone = f.Gone
+		it.Prefiltered = f.Prefiltered
 		it.PayError = f.PayError
 		addFetch(rep, f)
 	}
@@ -175,6 +180,7 @@ func addFetch(rep *boardsReport, f boardFetch) {
 	rep.PayFailed += f.PayFailed
 	rep.PaySkipped += f.PaySkipped
 	rep.Gone += f.Gone
+	rep.Prefiltered += f.Prefiltered
 	if rep.PayError == "" {
 		rep.PayError = f.PayError
 	}

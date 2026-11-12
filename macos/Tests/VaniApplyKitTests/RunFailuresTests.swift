@@ -56,6 +56,9 @@ final class RunFailuresTests: XCTestCase {
             #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"fail_open":{"coverage_unknown":4}}}"#,
             #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"notes":{"below_floor":3,"budget_spent":2}}}"#,
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"deferred":4,"pay_skipped":2,"gone":1}}"#,
+            // Postings held through an earlier mass absence, and rows the drop policy
+            // rejected before a detail request, are shown and are not failures.
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"held":42,"prefiltered":9,"stale_count":0}}"#,
             #"{"ok":true,"state":"ok","near_dup":{"similarity_note":"vector cache off"}}"#,
             #"{"ok":true,"state":"ok","shadow":{"errors":0,"busy_skips":0}}"#,
             #"{"ok":true,"state":"ok","explain":{}}"#,
@@ -104,6 +107,10 @@ final class RunFailuresTests: XCTestCase {
             #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"fail_open":{"empty_description":1}}}"#,
             #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"notes":{"unknown_relevance":1}}}"#,
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"pay_failed":2}}"#,
+            // A listing that newly mass-marked postings, and one that aged nothing because
+            // the clock read behind the ledger: both need a look.
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":0,"mass":1,"mass_marked":42,"items":[{"ats":"wd","token":"snap/snap","outcome":"read","listed":0}]}}"#,
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":5,"clock_behind":1}}"#,
         ]
         for json in failing {
             XCTAssertTrue(try decodeRun(json).hasFailures, json)

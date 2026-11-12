@@ -960,7 +960,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             guard ok else { return false }
             if state == .failed || state == .interrupted { return true }
             if let e = error, !e.isEmpty { return true }
-            if let b = boards, b.failed > 0 || b.payFailed > 0 || b.items.contains(where: { $0.outcome == .failed || $0.outcome == .rateLimited }) { return true }
+            if let b = boards, b.failed > 0 || b.payFailed > 0 || b.mass > 0 || b.clockBehind > 0 || b.items.contains(where: { $0.outcome == .failed || $0.outcome == .rateLimited }) { return true }
             if let e = impressionsError, !e.isEmpty { return true }
             if logDropped > 0 { return true }
             if shadow?.isFailure == true { return true }
@@ -1142,9 +1142,33 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             /// New ledger rows every tried board wrote, including ones `items`
             /// left out. Nil when this vani did not report it; 0 is a real zero.
             public var added: Int?
+            /// Read boards whose listing newly mass-marked postings (an outage, a
+            /// moved board, a renumbering): their absent postings were kept and are
+            /// held before they can die. Counted in `read` too; 0 from a vani that
+            /// does not report it.
+            public var mass: Int
+            /// Postings those listings newly marked, and absent postings kept alive
+            /// inside a hold. 0 from a vani that does not report them.
+            public var massMarked: Int
+            public var held: Int
+            /// Read boards whose listing aged nothing because the clock read behind
+            /// the ledger: nothing absent was aged until the clock is right.
+            public var clockBehind: Int
+            /// New listed rows the drop policy rejected before any detail request:
+            /// never stored.
+            public var prefiltered: Int
+            /// Watched boards with no good read for over 36 hours, and boards that
+            /// read fine and list none though they listed before.
+            public var staleCount: Int
+            public var emptyCount: Int
 
             enum CodingKeys: String, CodingKey {
                 case configured, read, failed, skipped, listed, items, unrecorded, deferred, gone, added
+                case mass, held, prefiltered
+                case massMarked = "mass_marked"
+                case clockBehind = "clock_behind"
+                case staleCount = "stale_count"
+                case emptyCount = "empty_count"
                 case notReached = "not_reached"
                 case rateLimited = "rate_limited"
                 case payFailed = "pay_failed"
@@ -1169,11 +1193,27 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 items = try c.decodeIfPresent([Item].self, forKey: .items) ?? []
                 unrecorded = try c.decodeIfPresent(Int.self, forKey: .unrecorded) ?? 0
                 added = try c.decodeIfPresent(Int.self, forKey: .added)
+                mass = try c.decodeIfPresent(Int.self, forKey: .mass) ?? 0
+                massMarked = try c.decodeIfPresent(Int.self, forKey: .massMarked) ?? 0
+                held = try c.decodeIfPresent(Int.self, forKey: .held) ?? 0
+                clockBehind = try c.decodeIfPresent(Int.self, forKey: .clockBehind) ?? 0
+                prefiltered = try c.decodeIfPresent(Int.self, forKey: .prefiltered) ?? 0
+                staleCount = try c.decodeIfPresent(Int.self, forKey: .staleCount) ?? 0
+                emptyCount = try c.decodeIfPresent(Int.self, forKey: .emptyCount) ?? 0
             }
 
             public init(configured: Int, read: Int, failed: Int = 0, rateLimited: Int = 0, skipped: Int = 0, notReached: Int = 0,
                         listed: Int, items: [Item] = [], unrecorded: Int = 0, added: Int? = nil,
-                        deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, gone: Int = 0, payError: String? = nil) {
+                        deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, gone: Int = 0, payError: String? = nil,
+                        mass: Int = 0, massMarked: Int = 0, held: Int = 0, clockBehind: Int = 0, prefiltered: Int = 0,
+                        staleCount: Int = 0, emptyCount: Int = 0) {
+                self.mass = mass
+                self.massMarked = massMarked
+                self.held = held
+                self.clockBehind = clockBehind
+                self.prefiltered = prefiltered
+                self.staleCount = staleCount
+                self.emptyCount = emptyCount
                 self.configured = configured
                 self.read = read
                 self.failed = failed
@@ -1207,6 +1247,9 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 if payFailed > 0 { parts.append("\(payFailed) pay failed") }
                 if paySkipped > 0 { parts.append("\(paySkipped) pay skipped") }
                 if gone > 0 { parts.append("\(gone) gone") }
+                if prefiltered > 0 { parts.append("\(prefiltered) new rows prefiltered (never stored)") }
+                if mass > 0 { parts.append("\(mass) mass absence\(mass == 1 ? "" : "s"), \(massMarked) posting\(massMarked == 1 ? "" : "s") held") }
+                if clockBehind > 0 { parts.append("\(clockBehind) board\(clockBehind == 1 ? "" : "s") not aged: clock behind the ledger") }
                 guard !parts.isEmpty else { return nil }
                 return parts.joined(separator: ", ")
             }

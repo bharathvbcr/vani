@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/notify"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
+	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/decide"
 	"github.com/bharathvbcr/decide/jev"
 	"github.com/bharathvbcr/decide/lappi"
@@ -77,13 +79,14 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		warn = io.Discard
 	}
 	live := &liveNote{}
-	w := &wired{cfg: cfg, stateDir: stateDir, led: led, warn: warn, live: live}
+	w := &wired{cfg: cfg, stateDir: stateDir, led: led, warn: warn, live: live, watched: slices.Clone(cfg.Watchlist)}
 	appLock := notify.AppLockPath(stateDir)
 	return &App{
 		Ledger:    led,
 		RunOnce:   w.runOnce,
 		RunReport: w.runReport,
 		Reload:    w.reload,
+		Watch:     w.watch,
 		PollInbox: w.pollInbox,
 		Rescore:   w.rescore,
 		Tune:      w.tune,
@@ -95,6 +98,22 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		Closer:   w.close,
 		live:     live,
 	}, nil
+}
+
+// watch keeps the config file's whole watchlist (App.Watch), which board
+// health judges and prunes against: w.cfg holds a run's cut of it when the run
+// is limited to some boards.
+func (w *wired) watch(watchlist []sources.Board) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.watched = slices.Clone(watchlist)
+}
+
+// watchedBoards is the last whole watchlist watch kept.
+func (w *wired) watchedBoards() []sources.Board {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.watched)
 }
 
 // reload replaces the config the next run, inbox poll or rescore reads
@@ -115,7 +134,10 @@ func (w *wired) tune(opts runOptions) {
 }
 
 type wired struct {
-	cfg      config.Config
+	cfg config.Config
+	// watched is the config file's whole watchlist (watch); cfg.Watchlist may
+	// be a run's cut of it. Read under mu.
+	watched  []sources.Board
 	stateDir string
 	led      *ledger.File
 	warn     io.Writer

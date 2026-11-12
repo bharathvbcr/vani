@@ -74,6 +74,9 @@ type statusJSON struct {
 	LastSkip *skipFacet `json:"last_skip,omitempty"`
 	// Inbox is the last extension-spool poll. Absent when none has been recorded.
 	Inbox *inboxFacet `json:"inbox,omitempty"`
+	// BoardHealth is the stale, untracked and now-empty boards (boardhealth.go,
+	// boardsnone.go). Absent when the config could not be read.
+	BoardHealth *boardHealthFacet `json:"board_health,omitempty"`
 }
 
 // pathsJSON is config.Resolved for status --json.
@@ -286,6 +289,10 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
 	out.RunRequest = e.runRequestFacet(at)
+	if cfgErr == nil {
+		bh := e.boardHealthFacet(cfg, at)
+		out.BoardHealth = &bh
+	}
 	return out
 }
 

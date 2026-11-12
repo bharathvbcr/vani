@@ -39,6 +39,7 @@ const (
 	maxExplainLen = 2000
 	maxSameDay    = 50
 	maxSaved      = 50
+	maxStaleLines = 10
 )
 
 // TriageSlots are the triage annotations shown for every role, in order.
@@ -58,6 +59,21 @@ type Counts struct {
 	// that could not run is not a check that passed). Causes with no postings
 	// are not printed; none at all prints nothing.
 	CouldNotCheck []Unchecked
+	// StaleBoards names watched boards that have gone long without a good
+	// read (their roles are not being refreshed), one line each, at most a few;
+	// StaleCount is all of them. The lines carry adapter error text, so they
+	// are escaped like any board field.
+	StaleBoards []string
+	StaleCount  int
+	// EmptyBoards names boards that read fine and list none though they listed
+	// postings before (the ledger holds their closed or held postings), one line
+	// each; EmptyCount is all of them.
+	EmptyBoards []string
+	EmptyCount  int
+	// ClockBehind is how many boards' full listings aged nothing because the
+	// clock read behind the ledger (pipeline.Summary.ClockBehind): no absent
+	// posting was missed or marked dead for them this run.
+	ClockBehind int
 }
 
 // Unchecked is one cause a posting was kept unchecked and how many were.
@@ -559,6 +575,27 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	if c.AwaitingTriage > 0 {
 		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
 	}
+	if c.ClockBehind > 0 {
+		fmt.Fprintf(&b, "\nNot aged: the clock reads behind the ledger, so %d board(s) left the postings they no longer list as they were (none was missed or marked dead); fix the clock\n", c.ClockBehind)
+	}
+	boardSection := func(title string, lines []string, total int) {
+		n := max(total, len(lines))
+		if n == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "\n%s (%d)\n", title, n)
+		for i, l := range lines {
+			if i == maxStaleLines {
+				break
+			}
+			fmt.Fprintf(&b, "- %s\n", Escape(l, maxFieldRunes))
+		}
+		if shown := min(len(lines), maxStaleLines); n > shown {
+			fmt.Fprintf(&b, "- …and %d more (`vani status`)\n", n-shown)
+		}
+	}
+	boardSection("Boards not being read: their roles here are not refreshed and new ones are not found", c.StaleBoards, c.StaleCount)
+	boardSection("Boards that list nothing now though they listed before", c.EmptyBoards, c.EmptyCount)
 	return b.String(), keys, shown
 }
 

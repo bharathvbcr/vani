@@ -54,7 +54,9 @@ the listings they publish, and writes one digest.
   paced per host. Up to 16 boards are fetched at once, one at a time for each
   host, and one career page at a time.
 - **Duplicates and dead listings cost nothing.** The same posting on two
-  boards collapses. A listing absent twice is marked dead. No model call.
+  boards collapses. A listing absent twice, 20 hours apart, is marked dead; one that
+  most of a board stops showing at once (an outage, a renumbering) is held two weeks first.
+  No model call.
 - **Triage annotates. Rules drop.** `career.jd_triage` reads role fit,
   sponsorship, work mode, and seniority. An uncertain answer keeps the
   posting. A drop is a configured rule on that annotation, or an `exclude`

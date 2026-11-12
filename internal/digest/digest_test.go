@@ -1,6 +1,7 @@
 package digest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +118,37 @@ func TestFooterSaysWhatAwaitsTriage(t *testing.T) {
 		if !strings.Contains(md, "Awaiting triage: 2639 (not in this digest") {
 			t.Fatalf("footer:\n%s", md)
 		}
+	}
+}
+
+// The footer names boards that are not being read, boards that list none now,
+// and a clock that aged nothing, each bounded; the lines are escaped; none of it
+// prints when there is nothing to say.
+func TestFooterNamesStaleEmptyAndNotAgedBoards(t *testing.T) {
+	quiet, _ := Render(nil, nil, day, Counts{New: 1})
+	for _, s := range []string{"Boards not being read", "Boards that list nothing", "Not aged"} {
+		if strings.Contains(quiet, s) {
+			t.Fatalf("nothing to say, but the footer has %q:\n%s", s, quiet)
+		}
+	}
+	var stale []string
+	for i := 0; i < 2*maxStaleLines; i++ {
+		stale = append(stale, fmt.Sprintf("gh:b%02d: no good read for 40h", i))
+	}
+	stale[0] = "gh:evil: <script>alert(1)</script> error"
+	md, _ := Render(nil, nil, day, Counts{New: 1, StaleBoards: stale, StaleCount: 25, EmptyBoards: []string{"gh:closed: lists no postings now"},
+		EmptyCount: 1, ClockBehind: 2})
+	for _, want := range []string{"Boards not being read: their roles here are not refreshed and new ones are not found (25)", "…and 15 more (`vani status`)",
+		"Boards that list nothing now though they listed before (1)", `gh\:closed\: lists no postings now`, "Not aged: the clock reads behind the ledger, so 2 board(s)"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("footer missing %q:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "<script>") {
+		t.Fatalf("a board line was not escaped:\n%s", md)
+	}
+	if strings.Contains(md, "b10") {
+		t.Fatalf("more stale boards than the bound were listed:\n%s", md)
 	}
 }
 

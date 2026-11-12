@@ -200,7 +200,7 @@ func runHasFailures(r runRecord, at time.Time) bool {
 	if st == outcomeFailed || st == outcomeInterrupted || r.Error != "" {
 		return true
 	}
-	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0) {
+	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0 || r.Boards.Mass > 0 || r.Boards.ClockBehind > 0) {
 		return true
 	}
 	if r.ImpressionsError != "" || r.LogDropped > 0 {
@@ -585,6 +585,69 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		if len(detailLines) > 0 {
 			detailLines = append([]string{fmt.Sprintf("Failed boards (%d of %d):", r.Boards.Failed, r.Boards.Configured)}, detailLines...)
 		}
+		var mass, behind []string
+		for _, it := range r.Boards.Items {
+			if it.Outcome != boardRead || it.Reconcile == nil {
+				continue
+			}
+			if it.Reconcile.MassMarked > 0 {
+				mass = append(mass, b.clean(massLine(it)))
+			}
+			if it.Reconcile.ClockBehind {
+				behind = append(behind, b.clean(clockBehindLine(it)))
+			}
+		}
+		if hidden := r.Boards.Mass - len(mass); hidden > 0 {
+			mass = append(mass, fmt.Sprintf("(%d more mass absence(s) are not in the record: it keeps a bounded number)", hidden))
+		}
+		if len(mass) > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Mass absences (%d): the board answered, but a share of its open postings were missing, so they were kept and are held before they can die:", r.Boards.Mass))
+			detailLines = append(detailLines, mass...)
+		}
+		if hidden := r.Boards.ClockBehind - len(behind); hidden > 0 {
+			behind = append(behind, fmt.Sprintf("(%d more board(s) not aged are not in the record: it keeps a bounded number)", hidden))
+		}
+		if len(behind) > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Not aged (%d): the clock reads behind the ledger, so nothing absent was aged; fix the clock:", r.Boards.ClockBehind))
+			detailLines = append(detailLines, behind...)
+		}
+		if r.Boards.HealthError != "" {
+			detailLines = append(detailLines, b.clean("Board health not saved: "+r.Boards.HealthError+" (its stale list is this run's view only)"))
+		}
+		if r.Boards.StaleCount > 0 {
+			when := r.FinishedAt
+			if when.IsZero() {
+				when = at
+			}
+			detailLines = append(detailLines, fmt.Sprintf("Stale boards (%d): no good read for over %s, so their postings were not refreshed:",
+				r.Boards.StaleCount, boardStaleAfter))
+			for _, s := range r.Boards.Stale {
+				detailLines = append(detailLines, b.clean(staleBoardLine(s, when)))
+			}
+			if hidden := r.Boards.StaleCount - len(r.Boards.Stale); hidden > 0 {
+				detailLines = append(detailLines, fmt.Sprintf("(%d more stale board(s); vani status names them)", hidden))
+			}
+		}
+		if r.Boards.EmptyCount > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Boards that list nothing now though they listed before (%d):", r.Boards.EmptyCount))
+			for _, eb := range r.Boards.Empty {
+				detailLines = append(detailLines, b.clean(emptyBoardLine(eb)))
+			}
+			if hidden := r.Boards.EmptyCount - len(r.Boards.Empty); hidden > 0 {
+				detailLines = append(detailLines, fmt.Sprintf("(%d more such board(s); vani status names them)", hidden))
+			}
+		}
+	}
+	if r.Boards == nil && state == outcomeRunning {
+		// A run's record is saved when it starts and when it finishes, so a
+		// running run's board report is not in it yet (even when its listing
+		// is long done): say so, with what the live progress already counts,
+		// rather than "No failures", which no check has established yet.
+		detailLines = append(detailLines, "Failures are recorded when the run finishes; this run is still going.")
+		if pb := boardsFromProgress(e.stateDir, r, at); pb != nil {
+			detailLines = append(detailLines, fmt.Sprintf("So far (live progress): %d of %d boards done, %d read, %d failed (%d rate limited), %d skipped.",
+				pb.Unrecorded, pb.Configured, pb.Read, pb.Failed, pb.RateLimited, pb.Skipped))
+		}
 	}
 	if be := r.BackendErrors; be != nil && (len(be.Causes) > 0 || be.Unrecorded > 0) {
 		calls := be.Unrecorded
@@ -755,7 +818,50 @@ func boardFetchSummary(b *boardsReport) string {
 	if b.Gone > 0 {
 		parts = append(parts, fmt.Sprintf("%d gone", b.Gone))
 	}
+	if b.Prefiltered > 0 {
+		parts = append(parts, fmt.Sprintf("%d new rows prefiltered (never stored)", b.Prefiltered))
+	}
+	if b.Mass > 0 {
+		parts = append(parts, fmt.Sprintf("%d mass absence(s), %d posting(s) newly held", b.Mass, b.MassMarked))
+	}
+	if b.Held > 0 {
+		parts = append(parts, fmt.Sprintf("%d absent posting(s) held alive", b.Held))
+	}
+	if b.ClockBehind > 0 {
+		parts = append(parts, fmt.Sprintf("%d board(s) not aged: clock behind the ledger", b.ClockBehind))
+	}
 	return strings.Join(parts, ", ")
+}
+
+// massLine is one board whose listing newly mass-marked postings: what it
+// listed against what it held open.
+func massLine(it boardReport) string {
+	name := it.ATS + ":" + it.Token
+	if it.Company != "" {
+		name += " (" + it.Company + ")"
+	}
+	listed, open, absent, marked := 0, 0, 0, 0
+	if it.Listed != nil {
+		listed = *it.Listed
+	}
+	if rc := it.Reconcile; rc != nil {
+		open, absent, marked = rc.Open, rc.Absent, rc.MassMarked
+	}
+	return fmt.Sprintf("%s: listed %d; %d of %d open postings absent; %d newly held, not killed before the mass hold",
+		name, listed, absent, open, marked)
+}
+
+// clockBehindLine is one board whose full listing aged nothing.
+func clockBehindLine(it boardReport) string {
+	name := it.ATS + ":" + it.Token
+	if it.Company != "" {
+		name += " (" + it.Company + ")"
+	}
+	absent := 0
+	if it.Reconcile != nil {
+		absent = it.Reconcile.Absent
+	}
+	return fmt.Sprintf("%s: %d open posting(s) absent were not aged because the clock reads behind the ledger's own history", name, absent)
 }
 
 func failOpenSummary(c pipeline.FailOpenCounts) string {

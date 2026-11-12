@@ -252,7 +252,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	if err != nil {
@@ -267,7 +267,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st smartrecruiters.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	if err != nil {
@@ -294,7 +294,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st rippling.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Prefiltered: st.Prefiltered})
 		},
 	})
 	if err != nil {
@@ -309,7 +309,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st talentbrew.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	if err != nil {
@@ -324,7 +324,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	// Avature: a detail page per posting, bounded like Workday's (stored
@@ -335,7 +335,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	srcs[posting.Apple] = apple.NewWith(d, apple.Options{
@@ -359,7 +359,10 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 
 	// One index of the ledger for the whole loop: only Reconcile writes to the
 	// ledger here (the adapters read it), as Reconciler requires.
-	rec := pipeline.NewReconciler(w.led)
+	rec, err := newBoardReconciler(w.cfg, w.led)
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
 	rec.Protect(protect)
 	reconcile := func(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
 		prefixMu.Lock()
@@ -378,7 +381,24 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 			Outcome: tk.Outcome, InFlight: tk.InFlight,
 		})
 	})
+	health := openBoardHealth(w.stateDir, w.warnf) // reporting only: nothing below reads it back into reconcile
 	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
+	// Every board the listing finished feeds health, whether or not the run
+	// then ended on a cancel or a ledger error (those leave out only the board
+	// they ended on): a run that keeps ending early must not freeze health and
+	// read as "no stale board". Only a listing that reached every board prunes,
+	// and only against the config's whole watchlist, never this run's cut.
+	at := now()
+	boards.Stale, boards.StaleCount, boards.HealthError = health.record(w.watchedBoards(), boards.all, err == nil, at, w.warnf)
+	for _, s := range boards.Stale {
+		w.warnf("stale board: %s", staleBoardLine(s, at))
+	}
+	// A board that listed nothing though the ledger holds postings of its that
+	// died or wait out a mass hold: named from the ledger, not from health.
+	boards.Empty, boards.EmptyCount = emptyBoardsOf(w.led.All(), boards.all)
+	for _, b := range boards.Empty {
+		w.warnf("empty board: %s", emptyBoardLine(b))
+	}
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
 	w.boards = &boards

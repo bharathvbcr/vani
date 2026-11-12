@@ -1225,7 +1225,8 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     (`internal/pipeline/reconcile.go:31`, applied at `:258-264`); `died_from` restores the posting when
     its content is listed again (`reconcile.go:191-195`); and a floor would hide a board that was
     genuinely emptied. Revisit if an adapter is seen returning a well-formed empty list while the
-    service is down. Also recorded in "Audit 2026-10-19: criteria not built as written".
+    service is down. **Superseded 2026-11-12:** an empty or mass-short listing now holds its absent
+    postings 14 days from their own first miss (docs/RUNTIME.md "When a posting dies"). Also recorded in "Audit 2026-10-19: criteria not built as written".
 
 - **Jibe remote and pay rules are read from one tenant (2026-10-20).** The AMD payload has no
   remote field and no populated `salary_*_value`. `internal/sources/jibe` now marks a posting

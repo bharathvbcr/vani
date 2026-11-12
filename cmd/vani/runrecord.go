@@ -338,12 +338,53 @@ type boardsReport struct {
 	PaySkipped int    `json:"pay_skipped,omitempty"`
 	Gone       int    `json:"gone,omitempty"`
 	PayError   string `json:"pay_error,omitempty"`
+	// Prefiltered is new listed rows the drop policy (exclusions and title
+	// reads) rejected before any detail request, on the adapters that read a
+	// detail per posting. They were never stored, so no audit or retriage can
+	// see them; a later listing under a policy that no longer drops them
+	// stores them as new.
+	Prefiltered int `json:"prefiltered,omitempty"`
+	// Mass counts read boards whose full listing newly marked postings as a mass
+	// absence (a share of the board's open postings, or all of them, left it: an
+	// outage, a moved board, a renumbering; pipeline liveness.go). Their absent
+	// postings were kept, and die only after the mass hold. A later listing that
+	// only carries those marks is not counted. Counted in Read too.
+	// MassMarked is the postings those listings newly marked; Held is absent
+	// postings past the miss count that were kept alive inside a hold (an
+	// ordinary or a mass one). Additive.
+	Mass       int `json:"mass,omitempty"`
+	MassMarked int `json:"mass_marked,omitempty"`
+	Held       int `json:"held,omitempty"`
+	// ClockBehind counts read boards whose full listing aged nothing because
+	// the clock read behind the ledger's own history. A failure: nothing is
+	// being aged until the clock is right. Additive.
+	ClockBehind int `json:"clock_behind,omitempty"`
 	// Items holds one entry per tried board, in watchlist order. When the
-	// bounds cut it, failed and skipped boards are kept before read ones.
+	// bounds cut it, failed, skipped, mass and clock-behind boards are kept
+	// before read ones.
 	Items []boardReport `json:"items"`
 	// Unrecorded counts tried boards left out of Items by its bounds
 	// (maxRecordedBoards, maxBoardsBytes).
 	Unrecorded int `json:"unrecorded,omitempty"`
+	// Stale names watched boards that have gone more than boardStaleAfter
+	// without a good read (board health, boardhealth.go), most overdue first, at
+	// most maxStaleListed; StaleCount is all of them. Additive.
+	Stale      []staleBoard `json:"stale,omitempty"`
+	StaleCount int          `json:"stale_count,omitempty"`
+	// HealthError is why board health could not be saved this run (one line);
+	// the stale list above is then this run's view only. Additive.
+	HealthError string `json:"health_error,omitempty"`
+	// Empty names watched boards that read fine this run and listed nothing
+	// though the ledger holds postings of theirs that died or are held after an
+	// absence (boardsnone.go): a board that used to list and now lists none. At
+	// most maxStaleListed; EmptyCount is all of them. Derived from the ledger,
+	// not from board health. Additive.
+	Empty      []emptyBoard `json:"empty,omitempty"`
+	EmptyCount int          `json:"empty_count,omitempty"`
+
+	// all is every tried board, uncut, for this process (board health and the
+	// empty list). Never written.
+	all []boardReport
 }
 
 // boardReport is one board in one run.
@@ -371,6 +412,14 @@ type boardReport struct {
 	// Gone is details that answered 404 under a listing that succeeded, under
 	// the threshold that fails the board.
 	Gone int `json:"gone,omitempty"`
+	// Prefiltered is new listed rows the drop policy rejected before any
+	// detail request: never stored.
+	Prefiltered int `json:"prefiltered,omitempty"`
+
+	// endedRun marks the board whose failure ended the listing (the run was
+	// cancelled, or the ledger failed under it): its outcome says nothing
+	// about the board, so board health leaves it out. Never written.
+	endedRun bool
 }
 
 // reconcileCounts is pipeline.Summary as the run record writes it.
@@ -388,6 +437,17 @@ type reconcileCounts struct {
 	Dead       int `json:"dead,omitempty"`
 	Duplicate  int `json:"duplicate,omitempty"`
 	Invalid    int `json:"invalid,omitempty"`
+	// Open is the board's open postings when the listing began and Absent how
+	// many of them it left out (pipeline.Summary); Held is the absent ones past
+	// the miss count that were kept alive inside their hold. Mass says the
+	// listing was a mass absence, MassMarked how many postings it newly marked,
+	// ClockBehind that it aged nothing because the clock read behind the ledger.
+	Open        int  `json:"open,omitempty"`
+	Absent      int  `json:"absent,omitempty"`
+	Held        int  `json:"held,omitempty"`
+	Mass        bool `json:"mass,omitempty"`
+	MassMarked  int  `json:"mass_marked,omitempty"`
+	ClockBehind bool `json:"clock_behind,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {
