@@ -31,7 +31,7 @@ import (
 // the owner has said must not leave the machine at all) is matched loosely: its
 // separators (space, hyphen, underscore, dot, slash) are optional runs of
 // separators in the text, at the word joins of the term always and, for a term
-// of five letters or more, between any two letters ("Zephyr-net", "ker-nel"); a
+// of five letters or more, between any two letters but not by a space ("Zephyr-net"); a
 // continuation after the term counts (a plural, a suffix, "...App"), for a term
 // of four letters or more, and a plural ("s", "es") for a shorter one; and the
 // term may follow a lowercase letter where it starts a capital ("myZephyrnet").
@@ -228,13 +228,24 @@ func isASCIILetter(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= 'A' && 
 // isSep reports a folded rune that may stand between the words of an owner term.
 func isSep(r rune) bool { return r == ' ' || r == '-' || r == '_' || r == '.' || r == '/' }
 
+// Which separators may stand before an item of an owner term. gapJoin is a word
+// join the term itself lists (a space or hyphen in "decode-latency"): any run of
+// separators. gapIntra is inside a word of a term of five letters or more
+// ("Zephyr-net"): hyphens, underscores, dots and slashes, but not spaces, so
+// "met all" is not "metal".
+const (
+	gapNone uint8 = iota
+	gapIntra
+	gapJoin
+)
+
 // term is one compiled term.
 type term struct {
-	raw     string // as listed (lower-cased), for reports
-	items   []rune // folded runes; for an owner term, without separators
-	gap     []bool // owner term: separators may precede items[k]
-	loose   bool   // an owner term
-	letters int    // owner term: count of items
+	raw     string  // as listed (lower-cased), for reports
+	items   []rune  // folded runes; for an owner term, without separators
+	gap     []uint8 // owner term: which separators may precede items[k] (gapNone, gapIntra, gapJoin)
+	loose   bool    // an owner term
+	letters int     // owner term: count of items
 }
 
 // newOwnerTerm compiles one owner term. ok is false when nothing visible is left.
@@ -247,8 +258,12 @@ func newOwnerTerm(raw string) (t *term, ok bool) {
 			pending = true
 			continue
 		}
+		g := uint8(gapNone)
+		if pending && len(t.items) > 0 {
+			g = gapJoin
+		}
 		t.items = append(t.items, c)
-		t.gap = append(t.gap, pending && len(t.items) > 1)
+		t.gap = append(t.gap, g)
 		pending = false
 	}
 	if len(t.items) == 0 {
@@ -257,7 +272,9 @@ func newOwnerTerm(raw string) (t *term, ok bool) {
 	t.letters = len(t.items)
 	if t.letters >= 5 {
 		for k := 1; k < len(t.gap); k++ {
-			t.gap[k] = true
+			if t.gap[k] == gapNone {
+				t.gap[k] = gapIntra
+			}
 		}
 	}
 	return t, true
@@ -295,8 +312,13 @@ func (t *term) matchAt(f *folded, i int) int {
 	}
 	j := i
 	for k, c := range t.items {
-		if k > 0 && t.gap[k] {
+		switch t.gap[k] {
+		case gapJoin:
 			for j < len(r) && isSep(r[j]) {
+				j++
+			}
+		case gapIntra:
+			for j < len(r) && isSep(r[j]) && r[j] != ' ' {
 				j++
 			}
 		}
@@ -306,7 +328,9 @@ func (t *term) matchAt(f *folded, i int) int {
 		j++
 	}
 	if isASCIILetter(t.items[len(t.items)-1]) && j < len(r) && isASCIILetter(r[j]) {
-		camel := f.upper[j] && !f.upper[j-1]
+		// A capital starts a word after a lower-case letter ("ZephyrnetApp") or
+		// before a lower-case one ("MITLab").
+		camel := f.upper[j] && (!f.upper[j-1] || j+1 < len(r) && isASCIILetter(r[j+1]) && !f.upper[j+1])
 		plural := r[j] == 's' && (j+1 == len(r) || !isASCIILetter(r[j+1])) ||
 			r[j] == 'e' && j+2 <= len(r) && r[j+1] == 's' && (j+2 == len(r) || !isASCIILetter(r[j+2]))
 		if !camel && !plural && t.letters < 4 {
