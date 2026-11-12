@@ -128,6 +128,7 @@ directly would bypass that choice, so `vani` does not.
 | `vani run-request` | a terminal or the app | whatever the running daemon has | the same |
 | `vani watchlist discover` (boards to consider; `--profile` searches your `title_signals.include` and most-listed eligible KB skills) | you | `--profile` reads the eligible bank's stacks only | none; asks freehire.me keyless, which must be in `allowed_hosts` (`--allow-host` adds it); the config is otherwise written only by `--profile --add N` (boards, and with `--allow-board-hosts` their hosts) |
 | `vani daemon` (scheduled runs) | launchd, from `vani launchd plist` | `vani`'s own Keychain read at start (the plist pins only `VANI_CONFIG` and `VANI_STATE_DIR`) | none |
+| `vani doctor` (the pipeline doctor; report only) | you | not used | environment only; a real run needs `--budget-usd` covering both requests' worst case, `--dry-run --show` prints them first |
 | `vani` in a terminal | you | environment, else Keychain | environment only |
 | `vani` in an agent shell | an agent | none with `VANI_NO_KEYCHAIN=1` | environment only |
 
@@ -639,6 +640,31 @@ because a first list that derives every posting's facts runs above 800 MiB. `GOM
 no limit. It exits when the app closes its stdin. Until it has
 said hello, after it dies (it is restarted once, two seconds later), or when it is busy, the app
 runs the command instead.
+
+## The pipeline doctor (`vani doctor`)
+
+`vani doctor` has Claude (`llm.model`, Opus in the live config) say which boards fail in silence
+and which drops look wrong. Go computes and the model interprets (`internal/doctor`):
+
+- **Board signals** over the newest `--runs` records (default 30): `zero_every_run`,
+  `zero_after_nonzero`, `sharp_drop`, `mass_missed`, `chronic_failure`, `failing_now`, and
+  `never_recorded` (a watched board no record names, which includes the boards a record's size
+  bound left unnamed). Each signalled board carries its raw `details {Listed … Prefiltered …}`
+  lines from the run logs, anomalous runs first. A record's `listed` is counted after the board's
+  prefilter, so only the raw line separates an empty answer (`Listed:0 Prefiltered:0`) from a board
+  the prefilter emptied (`Listed:7 Prefiltered:7`).
+- **Log trouble lines**: the tails (2 MiB each) of the runs' own logs and `logs/vani.err.log`,
+  deduplicated with digits folded, the 60 most frequent. Secrets, the home directory and the user
+  name are removed before a line is kept.
+- **Drop sample**: `--sample` dropped postings (default 40) drawn with the weekly audit's sampler
+  (`eval.AuditDraw`, seeded by `--seed`, default the ISO week) across drop classes. Drops whose class
+  is about sponsorship are not sampled, and no sponsorship rule or reading is sent.
+
+Both requests frame their data as untrusted. A reply is decoded strictly: one that judges a board or
+posting it was not sent, repeats one, or leaves an enum is refused whole, and a reply cut off at
+`max_tokens` is refused. A part that fails is written into the report as failed and the command
+exits 1. The report is `<state dir>/doctor/<UTC time>.md` and `.json`. Nothing in the ledger, the
+rules or the watchlist is changed.
 
 ## Runtime state, cooldowns and locks
 
