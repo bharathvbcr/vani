@@ -73,7 +73,14 @@ func closedSource(c string) string {
 	if len(parts) == 0 {
 		return ClosedPrefix + "other"
 	}
-	return ClosedPrefix + strings.Join(parts, ":")
+	if src := ClosedPrefix + strings.Join(parts, ":"); validSource(src) {
+		return src
+	}
+	// Too long to be a label source (a runaway dup.method): keep the status.
+	if t := classToken(parts[0]); t != "" && validSource(ClosedPrefix+t) {
+		return ClosedPrefix + t + ":other"
+	}
+	return ClosedPrefix + "other"
 }
 
 // AuditCell is the cell c stands in for when labels are weighted up to the
@@ -124,8 +131,9 @@ type AuditPlan struct {
 // Within a group, places go round-robin to the non-empty strata; when the
 // places run out inside a round, the strata served are a window that walks
 // round the strata in name order, `places` further each ISO week (every
-// stratum is served within ceil(strata/places) weeks), or, for a seed that is
-// not a week, the first in a hash of seed and stratum name. Within a stratum the draw is uniform: the first members
+// stratum is served within ceil(strata/places) weeks while the set of strata
+// holds still), or, for a seed that is not a week, the first in a hash of seed
+// and stratum name. The scored deciles always use the hash order. Within a stratum the draw is uniform: the first members
 // in a hash of seed and key. Everything is a function of (candidates, labels,
 // seed), so the same week draws the same postings in any input order.
 //
@@ -139,7 +147,8 @@ func AuditSample(cands []AuditCandidate, labeled map[posting.Key]Entry, seed str
 }
 
 // AuditDraw is AuditSample with a third group: q.Closed places over the closed
-// statuses ("closed:dead", "closed:duplicate"), drawn as the drop classes are.
+// statuses ("closed:dead", "closed:duplicate:<method>"), drawn as the drop
+// classes are.
 // The scored and dropped groups draw exactly what AuditSample draws for the
 // same seed, whatever q.Closed is: each group spends only its own places.
 func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed string, q AuditQuotas) AuditPlan {
@@ -193,10 +202,10 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 	}
 
 	var plan AuditPlan
-	drawGroup(&plan, deciles, q.Scored, seed)
-	drawGroup(&plan, classes, q.Dropped, seed)
+	drawGroup(&plan, deciles, q.Scored, seed, false)
+	drawGroup(&plan, classes, q.Dropped, seed, true)
 	if q.Closed > 0 {
-		drawGroup(&plan, shut, q.Closed, seed)
+		drawGroup(&plan, shut, q.Closed, seed, true)
 	}
 	return plan
 }
@@ -252,7 +261,7 @@ func lessHash(a, b [sha256.Size]byte) bool {
 
 // drawGroup spends total places over the non-empty strata of one group and
 // appends the picks and strata to plan, in stratum-name order.
-func drawGroup(plan *AuditPlan, strata map[string][]posting.Key, total int, seed string) {
+func drawGroup(plan *AuditPlan, strata map[string][]posting.Key, total int, seed string, rotate bool) {
 	names := make([]string, 0, len(strata))
 	for n := range strata {
 		names = append(names, n)
@@ -270,6 +279,7 @@ func drawGroup(plan *AuditPlan, strata map[string][]posting.Key, total int, seed
 	taken := map[string]int{}
 	expected := map[string]float64{} // expected places over the seed
 	week, byWeek := weekIndex(seed)
+	byWeek = byWeek && rotate
 	for left := total; left > 0; {
 		var active []string
 		for _, n := range order {
