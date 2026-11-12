@@ -166,6 +166,18 @@ commands:
                              for Lappi's agreement filter; --dry-run prices it and asks nothing;
                              a real run needs --budget-usd and stops at the lesser of it and the
                              daily llm cap's headroom
+  auditor calibrate [--json] [--dry-run] [--budget-usd N] [--model M] [--concurrency N]
+                             ask the llm (default llm.triage_model) "would the job seeker apply?"
+                             about every posting you judged in the audit or marked, and keep the
+                             answers in auditor_readings.jsonl (never your labels; nothing in the
+                             pipeline reads them). --dry-run prices it and asks nothing; a real run
+                             needs --budget-usd and stops at the least of it, the auditor's own
+                             $15 daily cap (budget/auditor.json) and the daily llm cap's headroom
+  auditor report [--json] [--model M] [--teacher-model M] [--seed N]
+                             the auditor's agreement with your answers (AUC with bootstrap
+                             intervals) within the kept and within the dropped postings, against
+                             the teacher's triage reading and the relevance score, and the gate:
+                             "passes" only when it clearly beats both in both groups
   impressions log --surface jobs|audit --slate ID [--section S] [--json]
                              record the rows a screen shows ({"rows":[{"key","position"}]} on
                              stdin), once per slate; keys and positions only, never a title
@@ -534,6 +546,8 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdReasons(args[1:])
 	case "teacher":
 		cmdErr = e.cmdTeacher(args[1:])
+	case "auditor":
+		cmdErr = e.cmdAuditor(args[1:])
 	case "kbmatch":
 		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":

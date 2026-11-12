@@ -238,6 +238,10 @@ func LoadWords(dir string) (Words, error) {
 // BuiltinWords returns the built-in list alone (Personal false).
 func BuiltinWords() Words { return Words{terms: slices.Clone(builtinWords)} }
 
+// Found returns the terms of w that occur in s as whole words: the check Check
+// applies to a track's target summary, for any other text bound for a provider.
+func (w Words) Found(s string) []string { return w.found(s) }
+
 // found returns the terms that occur in s as whole words: bounded on both
 // sides by a non-letter or the end of the text.
 func (w Words) found(s string) []string {

@@ -361,13 +361,59 @@ func (c CurrentReadings) Reading(key string) (map[string]string, bool) {
 	return nil, false
 }
 
+// Latest returns the newest stored row of key by model for task (empty for
+// jd_triage), whatever prompt or fixture it was asked under. It is for a
+// comparison that wants a model's last word on a posting even after the target
+// summary changed; Current is for anything that must match the question asked
+// now. Callers report how many rows were under the current prompt.
+func (s *TeacherStore) Latest(key posting.Key, task, model string) (TeacherRow, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows := s.byKey[key]
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Task == task && rows[i].Model == model {
+			return rows[i], true
+		}
+	}
+	return TeacherRow{}, false
+}
+
+// ModelsOf counts, over keys, the postings each model has a row of for task.
+func (s *TeacherStore) ModelsOf(keys []posting.Key, task string) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]int{}
+	for _, k := range keys {
+		seen := map[string]bool{}
+		for _, r := range s.byKey[k] {
+			if r.Task == task && !seen[r.Model] {
+				seen[r.Model] = true
+				out[r.Model]++
+			}
+		}
+	}
+	return out
+}
+
 // ErrTeacherBusy means another run holds the readings log.
 var ErrTeacherBusy = errors.New("eval: another teacher run is using the readings log")
 
-// LockTeacher takes the exclusive run lock beside path, waiting at most wait
-// (and until ctx ends), so two runs never read the same store and ask twice.
+// LockFileFor is the run lock beside a readings log: its name with ".jsonl"
+// replaced by ".lock", so the teacher's log keeps its teacher_readings.lock and
+// another log (eval.AuditorFile) gets a lock of its own instead of sharing it.
+func LockFileFor(path string) string {
+	base := filepath.Base(path)
+	if stem, ok := strings.CutSuffix(base, ".jsonl"); ok && stem != "" {
+		return filepath.Join(filepath.Dir(path), stem+".lock")
+	}
+	return filepath.Join(filepath.Dir(path), base+".lock")
+}
+
+// LockTeacher takes the exclusive run lock beside path (LockFileFor), waiting
+// at most wait (and until ctx ends), so two runs never read the same store and
+// ask twice.
 func LockTeacher(ctx context.Context, path string, wait time.Duration) (unlock func(), err error) {
-	f, _, err := atomicfile.OpenAppend(filepath.Join(filepath.Dir(path), teacherLockFile), 0)
+	f, _, err := atomicfile.OpenAppend(LockFileFor(path), 0)
 	if err != nil {
 		return nil, fmt.Errorf("teacher: open lock: %w", err)
 	}
