@@ -79,10 +79,32 @@ var idRE = regexp.MustCompile(`^[0-9]{1,15}$`)
 type source struct {
 	d   egress.Doer
 	now func() time.Time
+	opt Options
+}
+
+// Stats counts what one List of a board did.
+type Stats struct {
+	Listed int `json:"listed"`
+	// Short is the hits the board's searches counted and did not list, within
+	// the allowance that keeps a search (shortfall), summed over its searches
+	// and never below zero per search. The IBM and Confluent boards share
+	// searches, so a missing hit may be the other board's role. Not in
+	// Listed: stored postings among them age as absent.
+	Short int `json:"short,omitempty"`
+}
+
+// Options are what NewWith adds to New.
+type Options struct {
+	// Report, when set, receives a listed board's counts; a board that fails
+	// is not reported.
+	Report func(sources.Board, Stats)
 }
 
 // New returns the IBM careers source, sending requests through d.
 func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+
+// NewWith is New with Options.
+func NewWith(d egress.Doer, o Options) sources.Source { return &source{d: d, now: time.Now, opt: o} }
 
 func (*source) ATS() posting.ATS { return posting.IBM }
 
@@ -169,11 +191,13 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	var out []posting.Posting
 	keys := map[posting.Key]bool{}
+	short := 0
 	for _, term := range terms {
-		jobs, err := s.search(ctx, term)
+		jobs, missed, err := s.search(ctx, term)
 		if err != nil {
 			return nil, fmt.Errorf("ibm %q: search %q: %w", b.Token, term, err)
 		}
+		short += missed
 		for _, j := range jobs {
 			if confluentTitle(j.Title) != (token == TokenConfluent) {
 				continue // the other board's role
@@ -191,6 +215,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("ibm %q: %w: the board's searches together list more than %d postings; narrow them",
 				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
 		}
+	}
+	if s.opt.Report != nil {
+		s.opt.Report(b, Stats{Listed: len(out), Short: short})
 	}
 	return out, nil
 }
@@ -220,43 +247,43 @@ func shortfall(total int) int { return max(1, total/100) }
 // hits or no new ones before that is an incomplete listing, and a listing over
 // MaxPostings fails before any paging. It never returns a short list as if it
 // were whole.
-func (s *source) search(ctx context.Context, term string) ([]job, error) {
+func (s *source) search(ctx context.Context, term string) (jobs []job, short int, err error) {
 	var out []job
 	ids := map[string]bool{}
 	total, from := -1, 0
 	for page := 0; page < maxPages; page++ {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		var resp response
 		if err := srcutil.PostJSON(ctx, s.d, apiURL, newRequest(term, from), nil, &resp); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		t, err := readTotal(resp)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if total < 0 {
 			if total = t; total > MaxPostings {
-				return nil, fmt.Errorf("%w: search matches %d postings, over the %d limit; use a narrower term",
+				return nil, 0, fmt.Errorf("%w: search matches %d postings, over the %d limit; use a narrower term",
 					srcutil.ErrTooManyPostings, total, MaxPostings)
 			}
 		}
 		if total == 0 {
-			return nil, nil
+			return nil, 0, nil
 		}
 		rows := resp.Hits.Hits
 		if len(rows) == 0 {
-			return nil, fmt.Errorf("%w: no hits at from=%d, with %d of %d read", ErrShape, from, from, total)
+			return nil, 0, fmt.Errorf("%w: no hits at from=%d, with %d of %d read", ErrShape, from, from, total)
 		}
 		added := 0
 		for _, h := range rows {
 			if h.Source == nil {
-				return nil, fmt.Errorf("%w: a hit has no _source", ErrShape)
+				return nil, 0, fmt.Errorf("%w: a hit has no _source", ErrShape)
 			}
 			id := h.Source.ID.String()
 			if !idRE.MatchString(id) {
-				return nil, fmt.Errorf("%w: field_text_01 %q", ErrShape, id)
+				return nil, 0, fmt.Errorf("%w: field_text_01 %q", ErrShape, id)
 			}
 			if ids[id] {
 				continue // paging shifted under a changing listing
@@ -268,15 +295,15 @@ func (s *source) search(ctx context.Context, term string) ([]job, error) {
 		from += len(rows)
 		if from >= total {
 			if len(out) < total-shortfall(total) {
-				return nil, fmt.Errorf("%w: listed %d of the %d postings it counts", ErrShape, len(out), total)
+				return nil, 0, fmt.Errorf("%w: listed %d of the %d postings it counts", ErrShape, len(out), total)
 			}
-			return out, nil
+			return out, max(0, total-len(out)), nil
 		}
 		if added == 0 {
-			return nil, fmt.Errorf("%w: the page at from=%d added nothing, with %d of %d read", ErrShape, from-len(rows), len(out), total)
+			return nil, 0, fmt.Errorf("%w: the page at from=%d added nothing, with %d of %d read", ErrShape, from-len(rows), len(out), total)
 		}
 	}
-	return nil, fmt.Errorf("%w: listing did not end within %d pages", ErrShape, maxPages)
+	return nil, 0, fmt.Errorf("%w: listing did not end within %d pages", ErrShape, maxPages)
 }
 
 // readTotal is the answer's total hit count: present, not negative, and exact.

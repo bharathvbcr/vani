@@ -145,6 +145,11 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone rows answered their detail with 404: closed since listing.
 	Gone int `json:"gone,omitempty"`
+	// Short is the postings the board's queries counted and did not list,
+	// within the allowance that keeps a query (shortfall), summed over its
+	// country queries and never below zero per query. Set only when List
+	// succeeds. Not in Listed: stored postings among them age as absent.
+	Short int `json:"short,omitempty"`
 }
 
 // Options turn on the bounded detail step (NewWith).
@@ -283,9 +288,11 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	var rows []listedRow
 	have := map[string]bool{}
 	st := Stats{}
+	listedShort := 0
 	for _, cc := range countries {
-		got, requests, err := s.list(ctx, pace, company, cc)
+		got, requests, short, err := s.list(ctx, pace, company, cc)
 		st.Requests += requests
+		listedShort += short
 		if err != nil {
 			return nil, fmt.Errorf("smartrecruiters %q: %s: %w", b.Token, queryName(cc), err)
 		}
@@ -308,6 +315,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err != nil {
 		return nil, fmt.Errorf("smartrecruiters %q: %w", b.Token, err)
 	}
+	// Set only for a board that lists: a failed one is not reconciled, so
+	// its unlisted rows age nothing.
+	st.Short = listedShort
 	return out, nil
 }
 
@@ -366,37 +376,37 @@ func listURL(company, country string, offset int) string {
 // ends short of its count each fail the query rather than truncate it. The
 // next offset is the rows read, not the page size, so a server that clamps a
 // page below the limit asked for is still walked to its end.
-func (s *source) list(ctx context.Context, pace *srcutil.Pacer, company, country string) (rows []listedRow, requests int, err error) {
+func (s *source) list(ctx context.Context, pace *srcutil.Pacer, company, country string) (rows []listedRow, requests, short int, err error) {
 	have := map[string]bool{}
 	count, read := -1, 0
 	ended := false
 	for pg := 0; pg < maxPages && !ended; pg++ {
 		if err := ctx.Err(); err != nil {
-			return nil, requests, err
+			return nil, requests, 0, err
 		}
 		if err := pace.Wait(ctx); err != nil {
-			return nil, requests, err
+			return nil, requests, 0, err
 		}
 		requests++
 		var lr listResponse
 		if err := srcutil.GetJSONLimit(ctx, s.d, listURL(company, country, read), listMaxBody, &lr); err != nil {
-			return nil, requests, err
+			return nil, requests, 0, err
 		}
 		if lr.TotalFound == nil || *lr.TotalFound < 0 {
-			return nil, requests, fmt.Errorf("%w: no totalFound", ErrShape)
+			return nil, requests, 0, fmt.Errorf("%w: no totalFound", ErrShape)
 		}
 		if lr.Content == nil {
-			return nil, requests, fmt.Errorf("%w: no content array at offset %d", ErrShape, read)
+			return nil, requests, 0, fmt.Errorf("%w: no content array at offset %d", ErrShape, read)
 		}
 		if pg == 0 {
 			if count = *lr.TotalFound; count > MaxPostings {
-				return nil, requests, fmt.Errorf("%w: %d postings, over the %d limit; narrow the board with the country filter",
+				return nil, requests, 0, fmt.Errorf("%w: %d postings, over the %d limit; narrow the board with the country filter",
 					srcutil.ErrTooManyPostings, count, MaxPostings)
 			}
 		}
 		if len(lr.Content) == 0 {
 			if pg == 0 && count > 0 {
-				return nil, requests, fmt.Errorf("%w: the first page is empty though the board counts %d postings", errIncomplete, count)
+				return nil, requests, 0, fmt.Errorf("%w: the first page is empty though the board counts %d postings", errIncomplete, count)
 			}
 			ended = true
 			break
@@ -405,10 +415,10 @@ func (s *source) list(ctx context.Context, pace *srcutil.Pacer, company, country
 		for _, r := range lr.Content {
 			if !idRE.MatchString(r.ID) {
 				// A row that cannot be fetched or keyed cannot be accounted for.
-				return nil, requests, fmt.Errorf("%w: posting id %q", ErrShape, r.ID)
+				return nil, requests, 0, fmt.Errorf("%w: posting id %q", ErrShape, r.ID)
 			}
 			if _, err := parseStamp(r.ReleasedDate); err != nil {
-				return nil, requests, fmt.Errorf("%w: posting %s: %v", ErrShape, r.ID, err)
+				return nil, requests, 0, fmt.Errorf("%w: posting %s: %v", ErrShape, r.ID, err)
 			}
 			if !have[r.ID] {
 				have[r.ID] = true
@@ -417,18 +427,20 @@ func (s *source) list(ctx context.Context, pace *srcutil.Pacer, company, country
 			}
 		}
 		if added == 0 {
-			return nil, requests, fmt.Errorf("%w: the board served a page with nothing new at offset %d, after %d postings (a wrap to the first page or a stuck offset)", errIncomplete, read, len(rows))
+			return nil, requests, 0, fmt.Errorf("%w: the board served a page with nothing new at offset %d, after %d postings (a wrap to the first page or a stuck offset)", errIncomplete, read, len(rows))
 		}
 		read += len(lr.Content)
 		ended = read >= count
 	}
 	if !ended {
-		return nil, requests, fmt.Errorf("%w: the listing did not end within %d pages", errIncomplete, maxPages)
+		return nil, requests, 0, fmt.Errorf("%w: the listing did not end within %d pages", errIncomplete, maxPages)
 	}
 	if len(rows) < count-shortfall(count) {
-		return nil, requests, fmt.Errorf("%w: the board counts %d postings and listed %d", errIncomplete, count, len(rows))
+		return nil, requests, 0, fmt.Errorf("%w: the board counts %d postings and listed %d", errIncomplete, count, len(rows))
 	}
-	return rows, requests, nil
+	// Within the allowance the query is kept; the rows it counted and did
+	// not list are returned (Stats.Short), never below zero.
+	return rows, requests, max(0, count-len(rows)), nil
 }
 
 // line is untrusted board text as one display line: srcutil.Title, then any

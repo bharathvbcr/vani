@@ -8,6 +8,9 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/ibm"
+	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
+	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -15,7 +18,7 @@ import (
 // the gap into the run record: per board, and in the total even when the board
 // is not among the kept items. Two reports for one board add.
 func TestBoardFetchCarriesShortListing(t *testing.T) {
-	w := &wired{}
+	w := &wired{warn: &bytes.Buffer{}}
 	acme := sources.Board{ATS: posting.Workday, Token: "acme/External"}
 	w.noteBoardFetch(acme, boardFetch{Short: 7})
 	w.noteBoardFetch(acme, boardFetch{Short: 3, Deferred: 1})
@@ -33,14 +36,52 @@ func TestBoardFetchCarriesShortListing(t *testing.T) {
 	}
 }
 
+// A board that failed after reporting its counts (an adapter reports before a
+// detail fails the board) is not reconciled, so nothing ages: its short rows
+// are neither named nor totalled. A board the record does not keep is counted,
+// as the cut keeps failed boards before read ones.
+func TestShortListingOnAFailedBoardIsNotCounted(t *testing.T) {
+	w := &wired{warn: &bytes.Buffer{}}
+	w.noteBoardFetch(sources.Board{ATS: posting.SmartRecruiters, Token: "broke"}, boardFetch{Short: 9, Gone: 1})
+	w.noteBoardFetch(sources.Board{ATS: posting.SmartRecruiters, Token: "fine"}, boardFetch{Short: 4})
+	w.noteBoardFetch(sources.Board{ATS: posting.SmartRecruiters, Token: "cut"}, boardFetch{Short: 2})
+	rep := &boardsReport{Items: []boardReport{
+		{ATS: string(posting.SmartRecruiters), Token: "broke", Outcome: boardFailed, Error: "detail 500"},
+		{ATS: string(posting.SmartRecruiters), Token: "fine", Outcome: boardRead},
+	}}
+	w.mu.Lock()
+	w.applyFetchesLocked(rep)
+	w.mu.Unlock()
+	if rep.Items[0].Short != 0 || rep.Items[0].Gone != 1 || rep.Items[1].Short != 4 || rep.Short != 6 {
+		t.Fatalf("items %+v, total short %d; want the failed board's 9 left out", rep.Items, rep.Short)
+	}
+}
+
+// Each adapter's counts reach the board fetch the run record keeps: deferred,
+// gone and short, whichever the adapter reports.
+func TestAdapterStatsReachTheBoardFetch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		got, want boardFetch
+	}{
+		"workday":         {workdayFetch(workday.Stats{Deferred: 2, Gone: 3, Short: 5}), boardFetch{Deferred: 2, Gone: 3, Short: 5}},
+		"smartrecruiters": {smartRecruitersFetch(smartrecruiters.Stats{Deferred: 2, Gone: 3, Short: 5}), boardFetch{Deferred: 2, Gone: 3, Short: 5}},
+		"oraclehcm":       {oracleFetch(oraclehcm.Stats{Deferred: 2, Gone: 3, Short: 5}), boardFetch{Deferred: 2, Gone: 3, Short: 5}},
+		"ibm":             {ibmFetch(ibm.Stats{Listed: 9, Short: 5}), boardFetch{Short: 5}},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s: %+v, want %+v", name, tc.got, tc.want)
+		}
+	}
+}
+
 // What a Workday listing reports reaches the run record: deferred, gone and
 // short together, and a short listing is said in the run log.
 func TestWorkdayStatsReachTheRunRecord(t *testing.T) {
 	warn := &bytes.Buffer{}
 	w := &wired{warn: warn}
 	b := sources.Board{ATS: posting.Workday, Token: "acme/External"}
-	w.noteWorkdayStats(b, workday.Stats{Listed: 40, Deferred: 2, Gone: 1, Short: 60})
-	w.noteWorkdayStats(sources.Board{ATS: posting.Workday, Token: "full/Site"}, workday.Stats{Listed: 5})
+	w.noteBoardFetch(b, workdayFetch(workday.Stats{Listed: 40, Deferred: 2, Gone: 1, Short: 60}))
+	w.noteBoardFetch(sources.Board{ATS: posting.Workday, Token: "full/Site"}, workdayFetch(workday.Stats{Listed: 5}))
 	rep := &boardsReport{Items: []boardReport{{ATS: string(posting.Workday), Token: "acme/External", Outcome: boardRead}}}
 	w.mu.Lock()
 	w.applyFetchesLocked(rep)
