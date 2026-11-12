@@ -118,7 +118,9 @@ type Stats struct {
 	// Short is how many rows the board counted but never listed: for each
 	// query under the window whose listing ended before the first page's total
 	// (walk keeps such a listing rather than failing the board), that total less
-	// the jobs the query listed, summed over search terms and split buckets. It
+	// the jobs the query listed, summed over search terms and split buckets;
+	// and for a split query, the jobs its count names that its buckets' union
+	// lacks within the split's allowance, less what the buckets counted. It
 	// counts rows, not distinct postings, and includes the query's stubs. A
 	// query whose total cannot be believed (pagedTotal) adds nothing, as it
 	// gives no count to fall short of. The postings behind these rows go unseen
