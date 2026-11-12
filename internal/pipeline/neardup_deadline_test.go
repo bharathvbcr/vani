@@ -125,6 +125,61 @@ func TestNearDupWritesAreNotCountedAgainstTheDeadline(t *testing.T) {
 	}
 }
 
+// slowSnapshot is a ledger whose All takes its time, as copying a large
+// ledger does on a loaded machine.
+type slowSnapshot struct {
+	slowLedger
+	read time.Duration
+}
+
+func (s *slowSnapshot) All() []ledger.Record {
+	time.Sleep(s.read)
+	return s.recs
+}
+
+// Reading the ledger is not charged to the comparing deadline either: a
+// snapshot slower than the deadline still leaves the comparing all of it. The
+// failing case of the old code, which started the clock before the read and
+// decided nothing (Examined 0, Partial) however few postings there were.
+func TestNearDupLedgerReadIsNotCountedAgainstTheDeadline(t *testing.T) {
+	const deadline = 100 * time.Millisecond
+	jd := words("duty", 100)
+	l := &slowSnapshot{read: 3 * deadline}
+	for j := range 2 {
+		k, err := posting.GreenhouseKey("acme", fmt.Sprint(j))
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.recs = append(l.recs, ledger.Record{Key: k, Status: posting.Live, Annotations: map[string]string{},
+			FirstSeen: t0.Add(time.Duration(j) * time.Second),
+			Posting:   posting.Posting{Key: k, Company: "Acme", Title: "Engineer", Location: "Remote", Description: jd}})
+	}
+	rep, err := AnnotateNearDuplicates(ctx, l, t1, NearDupOptions{Deadline: deadline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Partial || rep.Examined != 2 || rep.Duplicates != 1 || rep.Written != 1 {
+		t.Fatalf("a slow ledger read cut the comparing: %+v", rep)
+	}
+	if rep.SetupTook < l.read || rep.CompareTook >= deadline {
+		t.Fatalf("timings: setup %v (read alone %v), compare %v", rep.SetupTook, l.read, rep.CompareTook)
+	}
+}
+
+// A context cancelled while the ledger is read is an error, not a run that
+// compared nothing.
+func TestNearDupCancelDuringTheLedgerReadIsAnError(t *testing.T) {
+	l := &slowSnapshot{read: 100 * time.Millisecond}
+	k, _ := posting.GreenhouseKey("acme", "1")
+	l.recs = []ledger.Record{{Key: k, Status: posting.Live, Annotations: map[string]string{}, FirstSeen: t0,
+		Posting: posting.Posting{Key: k, Company: "Acme", Title: "Engineer", Description: words("duty", 100)}}}
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+	defer cancel()
+	if _, err := AnnotateNearDuplicates(cctx, l, t1, NearDupOptions{}); err == nil {
+		t.Fatal("a cancel during the read must be an error")
+	}
+}
+
 func TestNearDupCancelDuringWritesIsAnError(t *testing.T) {
 	jd := words("duty", 100)
 	l := &slowLedger{delay: time.Hour}

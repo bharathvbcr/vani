@@ -55,7 +55,8 @@ const (
 	NearDupMinWords = 30
 	// NearDupMaxCandidates bounds the postings one posting is scored against.
 	NearDupMaxCandidates = 50
-	// NearDupDeadline bounds the whole stage.
+	// NearDupDeadline bounds the stage's comparing: the pre-warm and the
+	// decisions, not the ledger read before them or the writes after.
 	NearDupDeadline = 2 * time.Second
 	// NearDupSimilarityShare is the share of the stage's deadline the optional
 	// similarity may spend, all its readings together: the shingle pass always
@@ -120,6 +121,11 @@ type NearDupReport struct {
 	SimilaritySkipped     int
 	SimilarityBudgetSpent bool
 	SimilarityBreakerOpen bool
+	// SetupTook is the ledger read and the per-posting preparation, which the
+	// deadline does not bound; CompareTook is the comparing it does bound (the
+	// pre-warm and the decisions), and SimilarityTook the part of that spent in
+	// readings. A Partial report says by these where its time went.
+	SetupTook, CompareTook, SimilarityTook time.Duration
 }
 
 // legalSuffixes are dropped from the end of a company name.
@@ -258,9 +264,10 @@ func better(a dupMatch, have dupMatch, haveOK bool) bool {
 // Descriptions under NearDupMinWords are not compared. A posting the user
 // protected is never demoted. Annotations are recomputed each run and only the
 // differences are written, so a rerun over an unchanged ledger writes nothing.
-// The comparing is bounded by NearDupDeadline; the events it decides are then
-// written, bounded by ctx alone (each is an fsync, which says nothing about how
-// much comparing is left). A deadline in the comparing is reported (Partial):
+// The comparing is bounded by NearDupDeadline; the ledger read and preparation
+// before it, linear in the ledger, and the writes of the events it decides
+// after it are bounded by ctx alone (neither says anything about how much
+// comparing is left). A deadline in the comparing is reported (Partial):
 // the newest postings are decided first, and those not reached keep what they
 // had. A cancelled ctx is an error.
 func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Time, opt NearDupOptions) (NearDupReport, error) {
@@ -272,8 +279,10 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 	if deadline == 0 {
 		deadline = NearDupDeadline
 	}
-	sctx, cancel := context.WithTimeout(ctx, deadline)
-	defer cancel()
+	// The ledger read and the preparation below are linear in the ledger and
+	// not charged to the deadline, as the writes are not: on a loaded machine
+	// copying a large ledger alone took a second of the two.
+	setupStart := time.Now()
 
 	var raw []ledger.Record
 	for _, r := range led.All() {
@@ -328,6 +337,13 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 			index[titleToken{a.company, h}] = append(index[titleToken{a.company, h}], i)
 		}
 	}
+	rep.SetupTook = time.Since(setupStart)
+	if err := ctx.Err(); err != nil {
+		return rep, err
+	}
+	compareStart := time.Now()
+	sctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
 
 	// Pre-compute titleMatches and pre-warm shingles across CPU cores in
 	// newest-first order, only for records that actually have an earlier title
@@ -387,6 +403,7 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 			break
 		}
 	}
+	rep.CompareTook, rep.SimilarityTook = time.Since(compareStart), d.simSpent
 	if d.cut {
 		if err := ctx.Err(); err != nil {
 			return rep, err
