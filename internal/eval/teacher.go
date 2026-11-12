@@ -335,6 +335,26 @@ func (s *TeacherStore) Current(model, summary string) CurrentReadings {
 	return s.CurrentOf(model, TeacherTask{Fixture: FixtureSHA(), Prompt: PromptHash(summary)})
 }
 
+// Len is how many rows of the store have the current identity (model, task,
+// fixture, prompt and digest), whatever their key. Zero on a store with rows
+// means every reading was made under another question or model.
+func (c CurrentReadings) Len() int {
+	if c.s == nil {
+		return 0
+	}
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	n := 0
+	for _, rows := range c.s.byKey {
+		for _, r := range rows {
+			if c.matches(r) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // Reading returns the newest current-identity reading of key: each slot the
 // teacher answered, with its value. Abstained, failed and valueless slots are
 // left out, so they are never a disagreement. ok is false when none exists.

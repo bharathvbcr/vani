@@ -52,8 +52,7 @@ func (e *env) cmdRelevance(args []string) error {
 		// The drop-candidate agreement needs no labels, only the ledger. If it
 		// cannot be read the reply says so: that is not "no data".
 		agree, err := e.dropAgreement(done)
-		recall := eval.DropRecall{Status: eval.RecallInsufficient, Reason: "no judged would_apply labels yet (run `vani audit`)",
-			Cells: []eval.RecallCell{}, Draws: eval.RecallDraws, MinJudged: eval.MinRecallCellJudged}
+		recall := eval.InsufficientDropRecall("no judged would_apply labels yet (run `vani audit`)")
 		out := relevanceReply{Relevance: rep, DropAgreement: agree, DropRecall: &recall}
 		if err != nil {
 			out.DropAgreement, out.DropAgreementError = nil, err.Error()
@@ -103,7 +102,7 @@ func (e *env) cmdRelevance(args []string) error {
 		rules = append(rules, eval.DropRule{Slot: s.Slot, Values: s.Values})
 	}
 	recall := eval.BuildDropRecall(done, b.recallMembers(rules))
-	proxy := eval.BuildTeacherDropProxy(b.snap.Records, rules, e.teacherReadings())
+	proxy := eval.BuildTeacherDropProxy(b.snap.Records, rules, e.openTeacherReadings())
 	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy}
 	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())

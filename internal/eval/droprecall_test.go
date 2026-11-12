@@ -96,7 +96,7 @@ func TestDropRecallEstimatesTheDroppedShareOfWantedPostings(t *testing.T) {
 		t.Errorf("title bound %v need %d, want %v 54", title.UpperBound, title.LabelsFor5pct, want)
 	}
 	model := cellOf(t, d, "dropped:model:role_fit")
-	if model.LabelsFor5pct != -1 || model.Wanted.K != 2 || model.Yes.K != 0 || !(model.UpperBound > 0.1 && model.UpperBound < 0.35) {
+	if model.LabelsFor5pct <= 0 || model.LabelsFor5pct != labelsForBound(2, 20) || model.Wanted.K != 2 || model.Yes.K != 0 || !(model.UpperBound > 0.1 && model.UpperBound < 0.35) {
 		t.Errorf("model cell %+v", model)
 	}
 	if len(d.ByClass) != 2 || len(d.ByClassYes) != 2 {
@@ -107,7 +107,7 @@ func TestDropRecallEstimatesTheDroppedShareOfWantedPostings(t *testing.T) {
 	}
 	md := d.Markdown()
 	for _, frag := range []string{"## Drop recall estimate", "Share of wanted (yes or maybe) postings dropped: median", "Share of yes only postings dropped",
-		"observed 14.3%", "| dropped:title:role_fit | 5 | 0 | 45.1% | 54 |", "n/a: 2 wanted found"} {
+		"observed 14.3%", "| dropped:title:role_fit | 5 | 0 | 45.1% | 54 |", fmt.Sprintf("| dropped:model:role_fit | 20 | 2 | %.1f%% | %d |", 100*model.UpperBound, model.LabelsFor5pct)} {
 		if !strings.Contains(md, frag) {
 			t.Errorf("markdown lacks %q:\n%s", frag, md)
 		}
@@ -268,7 +268,8 @@ func TestDropRecallAdversarialLabelsAndMembers(t *testing.T) {
 }
 
 func TestLabelsForBound(t *testing.T) {
-	for _, c := range []struct{ k, n, want int }{{0, 0, 59}, {0, 5, 54}, {0, 59, 0}, {0, 200, 0}, {1, 5, -1}} {
+	// A class with a miss still has a reachable bound (TestLabelsForBoundWithAMiss).
+	for _, c := range []struct{ k, n, want int }{{0, 0, 59}, {0, 5, 54}, {0, 59, 0}, {0, 200, 0}, {1, 93, 0}} {
 		if got := labelsForBound(c.k, c.n); got != c.want {
 			t.Errorf("labelsForBound(%d, %d) = %d, want %d", c.k, c.n, got, c.want)
 		}

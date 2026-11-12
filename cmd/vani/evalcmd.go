@@ -147,32 +147,54 @@ func (e *env) cmdLabel(args []string) error {
 // teacher: labelling is never blocked by it. Only an unreadable store or a
 // bad summary is worth a warning; a missing store is the normal case.
 func (e *env) teacherReadings() eval.TeacherReadings {
+	src := e.openTeacherReadings()
+	switch src.Status {
+	case eval.TeacherProxyAvailable:
+		return src.Readings
+	case eval.TeacherProxyBadConfig:
+		if src.Detail != "" { // an unloadable config is reported by evalNames
+			fmt.Fprintf(e.stderr, "vani: teacher readings not used for the queue: %s\n", src.Detail)
+		}
+	case eval.TeacherProxyUnreadable:
+		fmt.Fprintf(e.stderr, "vani: teacher readings unreadable, queueing without them: %s\n", src.Detail)
+	}
+	return nil
+}
+
+// openTeacherReadings is the second teacher's readings log as the default
+// teacher model and the configured target summary ask it now, with the reason
+// when there are none to use. It writes no warning: each caller words its own
+// (the label queue and `vani relevance` use it for different things). It reads
+// without the run lock, as teacherReadings says.
+func (e *env) openTeacherReadings() eval.TeacherSource {
 	path := filepath.Join(e.stateDir, eval.TeacherFile)
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return nil
+		return eval.TeacherSource{Status: eval.TeacherProxyMissing}
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
-		return nil // evalNames reports an unloadable config
+		return eval.TeacherSource{Status: eval.TeacherProxyBadConfig}
 	}
 	model := cfg.LLM.EffectiveTriageModel()
 	if model == "" {
-		return nil
+		return eval.TeacherSource{Status: eval.TeacherProxyNoModel}
 	}
 	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)
 	if err != nil {
-		fmt.Fprintf(e.stderr, "vani: teacher readings not used for the queue: %v\n", err)
-		return nil
+		return eval.TeacherSource{Status: eval.TeacherProxyBadConfig, Detail: err.Error()}
 	}
 	store, err := eval.OpenTeacherStore(path)
 	if err != nil {
-		fmt.Fprintf(e.stderr, "vani: teacher readings unreadable, queueing without them: %v\n", err)
-		return nil
+		return eval.TeacherSource{Status: eval.TeacherProxyUnreadable, Detail: err.Error()}
 	}
 	if store.Len() == 0 {
-		return nil
+		return eval.TeacherSource{Status: eval.TeacherProxyEmpty}
 	}
-	return store.Current(model, summary)
+	cur := store.Current(model, summary)
+	if cur.Len() == 0 {
+		return eval.TeacherSource{Status: eval.TeacherProxyNoCurrent}
+	}
+	return eval.TeacherSource{Readings: cur, Status: eval.TeacherProxyAvailable}
 }
 
 func (e *env) cmdEval(args []string) error {

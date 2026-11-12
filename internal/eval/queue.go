@@ -28,13 +28,40 @@ type DropRule struct {
 // names a rule's value: values can reveal the owner's work authorization, and a
 // class reaches the label file.
 func DropClass(r ledger.Record, rules []DropRule) string {
+	return dropClass(r, rules, true)
+}
+
+// LegacyDropClass is the class DropClass gave before exclusions had a class of
+// their own: an exclusion drop was filed under the backend and the readings it
+// carried ("model:other", or the model's earlier reading's slot). Labels drawn
+// before the rename carry these names; the drop-recall estimate maps them to
+// the posting's class now. For a record no exclusion dropped it equals
+// DropClass.
+func LegacyDropClass(r ledger.Record, rules []DropRule) string {
+	return dropClass(r, rules, false)
+}
+
+// LegacyDropCell is the audit cell a dropped record had under LegacyDropClass,
+// or "" when that is the cell it has now (RecallMember.LegacyCell).
+func LegacyDropCell(r ledger.Record, rules []DropRule) string {
+	if r.Status != posting.Dropped {
+		return ""
+	}
+	was, now := droppedSource(LegacyDropClass(r, rules)), droppedSource(DropClass(r, rules))
+	if was == now {
+		return ""
+	}
+	return was
+}
+
+func dropClass(r ledger.Record, rules []DropRule, exclusions bool) string {
 	if r.Status != posting.Dropped {
 		return ""
 	}
 	backend := r.Annotations[ledger.AnnTriagePrefix+"backend"]
 	// An exclusion is checked first: ApplyExclusions keeps the readings a
 	// model made before it, and those must not be credited with its drop.
-	if why := strings.TrimSpace(r.Annotations[AnnExcludeMatched]); why != "" || strings.TrimSpace(backend) == ExcludeBackend {
+	if why := strings.TrimSpace(r.Annotations[AnnExcludeMatched]); exclusions && (why != "" || strings.TrimSpace(backend) == ExcludeBackend) {
 		return "exclude:" + excludeField(why)
 	}
 	for _, rule := range rules {

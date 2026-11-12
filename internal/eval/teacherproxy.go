@@ -26,20 +26,54 @@ type TeacherDropRow struct {
 // reads only what it was asked to (the decision model's postings, not title
 // or exclusion drops).
 type TeacherDropProxy struct {
-	// Available is false when there is no current teacher reading to use (no
-	// log, an empty one, or a config that names no teacher model); the rows
-	// then say nothing.
-	Available bool             `json:"available"`
-	Rows      []TeacherDropRow `json:"rows"`
+	// Available is true only when Status is TeacherProxyAvailable; otherwise
+	// the rows are empty and Status says why.
+	Available bool `json:"available"`
+	// Status names why the proxy is or is not available (TeacherProxy*).
+	Status string `json:"status"`
+	// Detail is the error behind an unreadable log or a bad config, if any.
+	Detail string           `json:"detail,omitempty"`
+	Rows   []TeacherDropRow `json:"rows"`
+}
+
+// What the teacher proxy could use. Each cause of "no proxy" is named apart,
+// because a log written under an older question is not the same finding as no
+// log at all, and neither is a table of drops the teacher read and passed.
+const (
+	TeacherProxyAvailable  = "available"  // current readings exist
+	TeacherProxyMissing    = "missing"    // no teacher log was ever written
+	TeacherProxyEmpty      = "empty"      // the log holds no valid row
+	TeacherProxyUnreadable = "unreadable" // the log could not be opened or read
+	TeacherProxyNoModel    = "no_model"   // the config names no teacher model
+	TeacherProxyBadConfig  = "bad_config" // the config or target summary could not be read
+	TeacherProxyNoCurrent  = "no_current" // rows exist, none under the current model and question
+)
+
+// TeacherSource is what the proxy reads: current readings when Status is
+// TeacherProxyAvailable, else nil and the reason.
+type TeacherSource struct {
+	Readings TeacherReadings
+	Status   string
+	Detail   string
 }
 
 // BuildTeacherDropProxy counts, per DropClass, the dropped records with a
-// current teacher reading and the positive ones. teacher nil is not available.
-func BuildTeacherDropProxy(recs []ledger.Record, rules []DropRule, teacher TeacherReadings) TeacherDropProxy {
-	out := TeacherDropProxy{Available: teacher != nil, Rows: []TeacherDropRow{}}
-	if teacher == nil {
+// current teacher reading and the positive ones. A source whose Status is not
+// TeacherProxyAvailable, or that holds no readings, gives no rows: an
+// unavailable teacher is never a table of zeros.
+func BuildTeacherDropProxy(recs []ledger.Record, rules []DropRule, src TeacherSource) TeacherDropProxy {
+	out := TeacherDropProxy{Status: src.Status, Detail: src.Detail, Rows: []TeacherDropRow{}}
+	if out.Status == "" {
+		out.Status = TeacherProxyMissing
+	}
+	teacher := src.Readings
+	if out.Status != TeacherProxyAvailable || teacher == nil {
+		if out.Status == TeacherProxyAvailable {
+			out.Status = TeacherProxyMissing // "available" with nothing to read is not available
+		}
 		return out
 	}
+	out.Available = true
 	rows := map[string]*TeacherDropRow{}
 	seen := map[posting.Key]bool{}
 	for _, r := range recs {
@@ -74,12 +108,35 @@ func BuildTeacherDropProxy(recs []ledger.Record, rules []DropRule, teacher Teach
 	return out
 }
 
+// teacherProxyWhy says why the proxy is unavailable, in words.
+func teacherProxyWhy(status, detail string) string {
+	var s string
+	switch status {
+	case TeacherProxyEmpty:
+		s = "the teacher log holds no valid reading (run `vani teacher`)"
+	case TeacherProxyUnreadable:
+		s = "the teacher log is unreadable"
+	case TeacherProxyNoModel:
+		s = "the config names no teacher model (llm.triage_model or llm.model)"
+	case TeacherProxyBadConfig:
+		s = "the config or target summary could not be read for the teacher's question"
+	case TeacherProxyNoCurrent:
+		s = "the teacher log holds readings, but the question or model changed since they were made (target summary, prompt or model), so none is current; run `vani teacher` again"
+	default:
+		s = "no teacher log (run `vani teacher`)"
+	}
+	if detail != "" {
+		s += ": " + detail
+	}
+	return s
+}
+
 // Markdown renders the proxy.
 func (p TeacherDropProxy) Markdown() string {
 	var b strings.Builder
 	b.WriteString("\n## Teacher proxy: dropped postings another model reads as a fit\n\nModel against model, not the owner: a dropped posting the teacher (`vani teacher`, the llm tier asked the same question) read as strong_fit or partial_fit is a candidate miss worth opening. It is not recall, and the teacher reads only the decision model's postings under the current question.\n\n")
 	if !p.Available {
-		b.WriteString("not available: no current teacher readings (run `vani teacher`, or the question changed since they were made)\n")
+		b.WriteString("not available: " + teacherProxyWhy(p.Status, p.Detail) + "\n")
 		return b.String()
 	}
 	if len(p.Rows) == 0 {

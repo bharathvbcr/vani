@@ -172,18 +172,19 @@ func closedOrDropped(r ledger.Record, rules []eval.DropRule) (eval.AuditCandidat
 func (b *browsing) recallMembers(rules []eval.DropRule) []eval.RecallMember {
 	out := make([]eval.RecallMember, 0, len(b.snap.Records))
 	for _, r := range b.snap.Records {
-		var cell string
+		var cell, legacy string
 		switch {
 		case jobview.KeptStatus(r.Status):
 			cell = eval.CellKept
 		case r.Status == posting.Dropped:
 			c, _ := closedOrDropped(r, rules)
 			cell = eval.AuditCell(c)
+			legacy = eval.LegacyDropCell(r, rules)
 		default:
 			continue
 		}
 		mk := b.m[r.Key].Mark
-		out = append(out, eval.RecallMember{Key: r.Key, Cell: cell, Marked: mk != marks.None,
+		out = append(out, eval.RecallMember{Key: r.Key, Cell: cell, LegacyCell: legacy, Marked: mk != marks.None,
 			MarkedWanted: mk == marks.Saved || mk == marks.Applied})
 	}
 	return out

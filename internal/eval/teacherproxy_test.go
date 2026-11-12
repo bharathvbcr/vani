@@ -28,7 +28,7 @@ func TestTeacherDropProxyCountsCandidateMisses(t *testing.T) {
 		"gh:a:3": {"seniority": "mid"}, // read, but not role_fit: says nothing
 		"gh:a:5": {"role_fit": "strong_fit"},
 	}
-	p := BuildTeacherDropProxy(recs, classRules, teacher)
+	p := BuildTeacherDropProxy(recs, classRules, TeacherSource{Readings: teacher, Status: TeacherProxyAvailable})
 	want := map[string]TeacherDropRow{
 		"dropped:model:role_fit":  {Class: "dropped:model:role_fit", Dropped: 3, Read: 2, Positive: 1},
 		"dropped:title:seniority": {Class: "dropped:title:seniority", Dropped: 1},
@@ -47,11 +47,26 @@ func TestTeacherDropProxyCountsCandidateMisses(t *testing.T) {
 		t.Errorf("markdown:\n%s", md)
 	}
 	// No teacher: not available, never a table of zeros.
-	none := BuildTeacherDropProxy(recs, classRules, nil)
-	if none.Available || len(none.Rows) != 0 || !strings.Contains(none.Markdown(), "not available") {
+	none := BuildTeacherDropProxy(recs, classRules, TeacherSource{})
+	if none.Available || none.Status != TeacherProxyMissing || len(none.Rows) != 0 || !strings.Contains(none.Markdown(), "not available") {
 		t.Errorf("no teacher: %+v", none)
 	}
-	if empty := BuildTeacherDropProxy(nil, nil, teacher); !strings.Contains(empty.Markdown(), "no dropped postings") {
+	if empty := BuildTeacherDropProxy(nil, nil, TeacherSource{Readings: teacher, Status: TeacherProxyAvailable}); !strings.Contains(empty.Markdown(), "no dropped postings") {
 		t.Errorf("no drops: %s", empty.Markdown())
+	}
+	// A reason other than available never yields rows, even with readings
+	// handed in; and "available" with nothing to read is not available.
+	for _, src := range []TeacherSource{
+		{Readings: teacher, Status: TeacherProxyNoCurrent},
+		{Readings: teacher, Status: TeacherProxyUnreadable, Detail: "boom"},
+		{Status: TeacherProxyAvailable},
+	} {
+		got := BuildTeacherDropProxy(recs, classRules, src)
+		if got.Available || len(got.Rows) != 0 {
+			t.Errorf("%+v: %+v", src, got)
+		}
+	}
+	if md := BuildTeacherDropProxy(recs, classRules, TeacherSource{Status: TeacherProxyUnreadable, Detail: "boom"}).Markdown(); !strings.Contains(md, "unreadable: boom") {
+		t.Errorf("unreadable markdown: %s", md)
 	}
 }

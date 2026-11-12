@@ -61,8 +61,12 @@ const (
 // now (AuditCell) and, when the owner marked it, whether the mark says wanted
 // (saved or applied) or not (hidden).
 type RecallMember struct {
-	Key          posting.Key
-	Cell         string
+	Key  posting.Key
+	Cell string
+	// LegacyCell is the cell the posting had under a drop-class name since
+	// renamed (LegacyDropClass), when it differs from Cell: a label drawn
+	// from it was drawn from this posting's cause under its old name.
+	LegacyCell   string
 	Marked       bool
 	MarkedWanted bool
 }
@@ -99,11 +103,17 @@ type RecallCell struct {
 	Wanted RecallRate `json:"wanted"` // yes or maybe
 	Yes    RecallRate `json:"yes"`    // yes only
 	// For a drop class: the exact one-sided 95% upper bound on its wanted rate
-	// (1 when nothing is judged), and how many more labels, all of them not
-	// wanted, would bring it to RecallBoundTarget; -1 when a wanted one has
-	// been found (the zero-miss rule no longer applies).
+	// (1 when nothing is judged), counting KnownMisses (postings in the class
+	// the owner saved or applied to) as wanted observations beside the judged
+	// labels, and how many more labels, all of them not wanted, would bring it
+	// to RecallBoundTarget.
 	UpperBound    float64 `json:"upper_bound_95"`
 	LabelsFor5pct int     `json:"labels_for_5pct_bound"`
+	KnownMisses   int     `json:"known_misses"`
+	// PriorDominated is true when the Jeffreys prior alone would put a 0-of-n
+	// cell's mean at or above RecallBoundTarget (0.5/(Judged+1) >= target):
+	// its rate and count reflect the prior more than the labels.
+	PriorDominated bool `json:"prior_dominated"`
 }
 
 // RecallShare is a share of all wanted postings: the posterior median with
@@ -135,6 +145,8 @@ type DropRecall struct {
 	ByClassYes  []RecallShare `json:"by_class_yes,omitempty"`
 	OutOfPool   int           `json:"out_of_pool"` // posting closed, untriaged or gone
 	Moved       int           `json:"moved"`       // drawn from another stratum than it sits in now
+	Renamed     int           `json:"renamed"`     // drawn from its cell under an old class name; counted in the cell
+	NotAudit    int           `json:"not_audit"`   // drawn by Explore or another surface, not an audit stratum
 	Manual      int           `json:"manual"`      // no sampling stratum
 	MarkedOut   int           `json:"marked"`      // counted by the mark instead
 	Draws       int           `json:"draws"`
@@ -146,6 +158,13 @@ type DropRecall struct {
 // or dropped. Closed postings are neither kept nor dropped by a decision.
 func inRecallPool(cell string) bool {
 	return cell == CellKept || strings.HasPrefix(cell, DroppedPrefix)
+}
+
+// auditStratum reports whether source names a stratum the weekly audit draws
+// from: a score decile, a drop class or a closed status. Anything else (an
+// Explore row's "explore:…") was picked by another surface.
+func auditStratum(source string) bool {
+	return strings.HasPrefix(source, "decile:") || strings.HasPrefix(source, DroppedPrefix) || strings.HasPrefix(source, ClosedPrefix)
 }
 
 // drawnFrom reports whether a label drawn from source counts for cell: kept
@@ -162,12 +181,19 @@ type recallAcc struct {
 	nWanted, nYes int
 }
 
+// InsufficientDropRecall is an estimate that could not be made, for reason,
+// with the settings every reply carries (draws, the per-cell minimum, the bound
+// target). Every insufficient reply starts here, so none leaves them unset.
+func InsufficientDropRecall(reason string) DropRecall {
+	return DropRecall{Status: RecallInsufficient, Reason: reason, Cells: []RecallCell{}, Draws: RecallDraws,
+		MinJudged: MinRecallCellJudged, BoundTarget: RecallBoundTarget}
+}
+
 // BuildDropRecall estimates drop recall from the would_apply labels and the
 // pool as it stands now. members lists every kept and dropped posting (closed
 // ones are ignored); a key listed twice counts once.
 func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropRecall {
-	out := DropRecall{Status: RecallInsufficient, Cells: []RecallCell{}, Draws: RecallDraws,
-		MinJudged: MinRecallCellJudged, BoundTarget: RecallBoundTarget}
+	out := InsufficientDropRecall("")
 	cells := map[string]*recallAcc{}
 	where := map[posting.Key]RecallMember{}
 	for _, m := range members {
@@ -207,13 +233,19 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 		case e.Source == SourceManual || e.Source == "":
 			out.Manual++
 			continue
+		case !auditStratum(e.Source):
+			out.NotAudit++ // Explore or another surface: not a uniform draw of any cell
+			continue
 		case !in:
 			out.OutOfPool++
 			continue
 		case m.Marked:
 			out.MarkedOut++
 			continue
-		case !drawnFrom(e.Source, m.Cell):
+		case drawnFrom(e.Source, m.Cell):
+		case m.LegacyCell != "" && e.Source == m.LegacyCell:
+			out.Renamed++ // its cell under an old class name: the same cause
+		default:
 			out.Moved++
 			continue
 		}
@@ -242,10 +274,18 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 	for _, n := range names {
 		c := cells[n]
 		c.Known = c.Judged > 0 || c.Pool == 0
+		c.PriorDominated = c.Judged > 0 && priorDominated(c.Judged)
 		if strings.HasPrefix(n, DroppedPrefix) {
 			anyDropped = true
-			c.UpperBound = upperBound(c.nWanted, c.Judged, recallAlpha)
-			c.LabelsFor5pct = labelsForBound(c.nWanted, c.Judged)
+			// A saved or applied posting in a drop class is a miss the owner
+			// already found. It is counted as a wanted observation beside the
+			// judged labels, which can only raise the bound; hidden ones are
+			// not counted as not-wanted, since marks are picked from the top of
+			// a ranking, not drawn at random.
+			c.KnownMisses = c.MarkedWanted
+			k, n := c.nWanted+c.KnownMisses, c.Judged+c.KnownMisses
+			c.UpperBound = upperBound(k, n, recallAlpha)
+			c.LabelsFor5pct = labelsForBound(k, n)
 		}
 		if !c.Known {
 			unknown = append(unknown, n)
@@ -397,18 +437,45 @@ func upperBound(k, n int, alpha float64) float64 {
 	return 1 - lowerBound(n-k, n, alpha)
 }
 
+// maxBoundLabels caps labelsForBound's search: more labels than this in one
+// class is beyond any audit Vani runs, and the answer is reported as -1.
+const maxBoundLabels = 1_000_000
+
 // labelsForBound is how many more labels, none of them wanted, bring a class
-// with k wanted of n to a one-sided 95% upper bound of RecallBoundTarget:
-// n = ln(alpha) / ln(1 - target) in all, less those judged. -1 once a wanted
-// label is found: no number of further labels brings a class with a known miss
-// under the zero-miss bound.
+// with k wanted of n to a one-sided 95% upper bound of RecallBoundTarget: the
+// smallest total N >= n with upperBound(k, N) <= target, less n. With k = 0
+// that is ln(alpha) / ln(1 - target) = 59 in all; one miss needs about 93.
+// -1 only when no N up to maxBoundLabels reaches it.
 func labelsForBound(k, n int) int {
-	if k > 0 {
+	if k <= 0 {
+		need := int(math.Ceil(math.Log(recallAlpha) / math.Log(1-RecallBoundTarget)))
+		return max(0, need-n)
+	}
+	from := max(n, k) // a total below k cannot hold k misses
+	if upperBound(k, from, recallAlpha) <= RecallBoundTarget {
+		return max(0, from-n)
+	}
+	if upperBound(k, maxBoundLabels, recallAlpha) > RecallBoundTarget {
 		return -1
 	}
-	need := int(math.Ceil(math.Log(recallAlpha) / math.Log(1-RecallBoundTarget)))
-	return max(0, need-n)
+	lo, hi := from, maxBoundLabels // bound(lo) > target >= bound(hi); the bound falls as N grows
+	for hi-lo > 1 {
+		mid := lo + (hi-lo)/2
+		if upperBound(k, mid, recallAlpha) <= RecallBoundTarget {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return hi - n
 }
+
+// priorDominated reports whether a cell with n judged labels is ruled by its
+// Jeffreys prior: the prior alone puts a 0-of-n cell's mean, 0.5/(n+1), at or
+// above RecallBoundTarget, the miss rate the report is trying to bound (n <= 9
+// at 5%). Below that the cell's median says more about the prior than the
+// labels.
+func priorDominated(n int) bool { return 0.5/float64(n+1) >= RecallBoundTarget }
 
 // quantile is the q-quantile of xs by the nearest-rank method; xs is sorted in
 // place. NaN for an empty slice.
@@ -456,7 +523,7 @@ func gammaSample(r *rand.Rand, a float64) float64 {
 func (d DropRecall) Markdown() string {
 	var b strings.Builder
 	b.WriteString("\n## Drop recall estimate: postings you would apply to that the engine dropped\n\n")
-	fmt.Fprintf(&b, "Post-stratified: each cell's rate among the labels drawn from it (p_select is not used: it shrinks as the pool grows), times the cell's pool now; marked postings count by their mark. Jeffreys intervals, combined over %d seeded draws; figures are posterior medians with 95%% intervals. A cell with no labels is unknown, and nothing is combined while one exists. \"wanted\" is yes or maybe, \"yes\" is yes only.\n\n", d.Draws)
+	fmt.Fprintf(&b, "Post-stratified: each cell's rate among the labels drawn from it (p_select is not used: it shrinks as the pool grows), times the cell's pool now; marked postings count by their mark. Jeffreys intervals, combined over %d seeded draws; figures are posterior medians with 95%% intervals. A cell with no labels is unknown, and nothing is combined while one exists. \"wanted\" is yes or maybe, \"yes\" is yes only. A cell's labels are pooled across the weeks they were drawn in, which assumes its wanted rate is stable over those weeks; new boards or rule changes can break that. A cell marked prior-dominated has so few labels (%d or fewer) that the prior alone puts a 0-of-n mean at %.0f%% or more: its figures mostly reflect the prior, not the owner.\n\n", d.Draws, maxPriorDominatedJudged(), 100*RecallBoundTarget)
 	if len(d.Cells) > 0 {
 		b.WriteString("| cell | pool | marked (wanted) | judged | wanted: rate (95%) | wanted postings: median (95%) | yes: rate (95%) | yes postings: median (95%) |\n|---|---|---|---|---|---|---|---|\n")
 		for _, c := range d.Cells {
@@ -469,18 +536,26 @@ func (d DropRecall) Markdown() string {
 			if c.Known {
 				we, ye = estText(c.Wanted), estText(c.Yes)
 			}
-			fmt.Fprintf(&b, "| %s | %d | %d (%d) | %d | %s | %s | %s | %s |\n", c.Cell, c.Pool, c.Marked, c.MarkedWanted, c.Judged, wr, we, yr, ye)
+			cell := c.Cell
+			if c.PriorDominated {
+				cell += " (prior-dominated)"
+			}
+			fmt.Fprintf(&b, "| %s | %d | %d (%d) | %d | %s | %s | %s | %s |\n", cell, c.Pool, c.Marked, c.MarkedWanted, c.Judged, wr, we, yr, ye)
 		}
-		b.WriteString("\n| drop class | judged | wanted | one-sided 95% upper bound on its wanted rate | more not-wanted labels for a 5% bound |\n|---|---|---|---|---|\n")
+		b.WriteString("\n| drop class | judged | wanted (judged + saved or applied) | one-sided 95% upper bound on its wanted rate | more not-wanted labels for a 5% bound |\n|---|---|---|---|---|\n")
 		for _, c := range d.Cells {
 			if !strings.HasPrefix(c.Cell, DroppedPrefix) {
 				continue
 			}
 			need := fmt.Sprintf("%d", c.LabelsFor5pct)
 			if c.LabelsFor5pct < 0 {
-				need = fmt.Sprintf("n/a: %d wanted found", c.Wanted.K)
+				need = fmt.Sprintf("more than %d", maxBoundLabels)
 			}
-			fmt.Fprintf(&b, "| %s | %d | %d | %.1f%% | %s |\n", c.Cell, c.Judged, c.Wanted.K, 100*c.UpperBound, need)
+			wanted := fmt.Sprintf("%d", c.Wanted.K)
+			if c.KnownMisses > 0 {
+				wanted = fmt.Sprintf("%d + %d", c.Wanted.K, c.KnownMisses)
+			}
+			fmt.Fprintf(&b, "| %s | %d | %s | %.1f%% | %s |\n", c.Cell, c.Judged, wanted, 100*c.UpperBound, need)
 		}
 		b.WriteString("\n")
 	}
@@ -490,10 +565,22 @@ func (d DropRecall) Markdown() string {
 		writeShare(&b, "wanted (yes or maybe)", d.Missed, d.ByClass)
 		writeShare(&b, "yes only", d.MissedYes, d.ByClassYes)
 	}
-	if n := d.OutOfPool + d.Moved + d.Manual + d.MarkedOut; n > 0 {
-		fmt.Fprintf(&b, "\nLabels left out: %d on postings no longer kept or dropped (closed, untriaged or gone), %d drawn from another stratum than the posting sits in now, %d with no sampling stratum, %d on marked postings (counted by the mark).\n", d.OutOfPool, d.Moved, d.Manual, d.MarkedOut)
+	if n := d.OutOfPool + d.Moved + d.NotAudit + d.Manual + d.MarkedOut; n > 0 {
+		fmt.Fprintf(&b, "\nLabels left out: %d on postings no longer kept or dropped (closed, untriaged or gone), %d drawn from another stratum than the posting sits in now, %d not drawn from an audit stratum (Explore or another surface), %d with no sampling stratum, %d on marked postings (counted by the mark).\n", d.OutOfPool, d.Moved, d.NotAudit, d.Manual, d.MarkedOut)
+	}
+	if d.Renamed > 0 {
+		fmt.Fprintf(&b, "\n%d label(s) were drawn from their cell under an older drop-class name and are counted in it.\n", d.Renamed)
 	}
 	return b.String()
+}
+
+// maxPriorDominatedJudged is the largest judged count priorDominated flags.
+func maxPriorDominatedJudged() int {
+	n := 0
+	for n < maxBoundLabels && priorDominated(n+1) {
+		n++
+	}
+	return n
 }
 
 func writeShare(b *strings.Builder, what string, s *RecallShare, by []RecallShare) {

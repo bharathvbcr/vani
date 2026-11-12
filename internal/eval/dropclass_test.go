@@ -69,3 +69,30 @@ func TestDropClassNamesExclusionsByField(t *testing.T) {
 		t.Errorf("kept record classed %q", got)
 	}
 }
+
+// LegacyDropCell names the cell an exclusion drop had before exclusions were
+// a class of their own, so labels drawn under that name still count; a record
+// whose class did not change has none.
+func TestLegacyDropCellNamesTheCellBeforeTheRename(t *testing.T) {
+	cases := []struct {
+		name string
+		ann  map[string]string
+		want string
+	}{
+		{"exclusion at triage", map[string]string{"triage.backend": "exclude", AnnExcludeMatched: `company is "Initech"`}, "dropped:model:other"},
+		{"exclusion over a model reading", map[string]string{
+			"triage.backend": "d1-ultra", "triage.role_fit": "mismatch_domain", "triage.role_fit.backend": "d1-ultra",
+			AnnExcludeMatched: "excluded: " + `title matches "sales"`,
+		}, "dropped:model:role_fit"},
+		{"model drop", map[string]string{"triage.backend": "d1-ultra", "triage.role_fit": "mismatch_domain", "triage.role_fit.backend": "d1-ultra"}, ""},
+		{"title drop", map[string]string{"triage.backend": "title", "triage.seniority": "manager"}, ""},
+	}
+	for _, c := range cases {
+		if got := LegacyDropCell(droppedWith(c.ann), classRules); got != c.want {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+	if got := LegacyDropCell(ledger.Record{Key: "gh:a:2", Status: posting.Digested}, classRules); got != "" {
+		t.Errorf("a kept record: %q", got)
+	}
+}
