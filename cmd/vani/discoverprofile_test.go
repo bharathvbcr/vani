@@ -496,6 +496,89 @@ func TestDiscoverProfileWeakBoardsAreNotAdded(t *testing.T) {
 	}
 }
 
+// mirrorBody is one employer on two Greenhouse boards: stone lists three
+// postings, jornada two of them under its own ids (live, Stone's second board
+// did this on 2026-11-11), and an unrelated board one of the same titles.
+func mirrorBody() []byte {
+	row := func(token, id, company, title, loc string) map[string]string {
+		return map[string]string{"source": "greenhouse", "external_id": token + ":" + id, "url": "https://boards.greenhouse.io/" + token + "/jobs/" + id,
+			"company": company, "title": title, "location": loc}
+	}
+	b, _ := json.Marshal(map[string]any{"meta": map[string]int{"total": 6}, "data": []map[string]string{
+		row("stone", "1", "Stone", "LLM Inference Engineer", "Florianopolis"),
+		row("stone", "2", "Stone", "Inference Platform Engineer", "Florianopolis"),
+		row("stone", "3", "Stone", "Inference SRE", "Florianopolis"),
+		row("jornada", "71", "Jornada Stone", "LLM Inference Engineer", "Florianopolis"),
+		row("jornada", "72", "Jornada Stone", "inference  platform engineer ", "florianopolis"),
+		row("other", "9", "Other", "LLM Inference Engineer", "Florianopolis"),
+	}})
+	return b
+}
+
+// A board that lists only postings a bigger board lists is folded into it:
+// shown under it, never added by --add, and a group already watched through
+// its mirror is not added again through its keeper.
+func TestDiscoverProfileFoldsMirrorBoards(t *testing.T) {
+	answer := func(q string) srctest.Reply {
+		if q == "Inference" {
+			return srctest.Reply{Status: 200, Body: mirrorBody()}
+		}
+		return srctest.Reply{Status: 200, Body: fhBody(0)}
+	}
+	cfgPath := profileSetup(t, func(c *config.Config) { c.TitleSignals.Include = []string{"Inference", "LLM"} })
+	fakeStacks(t, nil, nil)
+	fakeProfileFreehire(t, answer)
+	o, _ := mustCode(t, 0, "watchlist", "discover", "--profile", "--allow-host", "--add", "5", "--json")
+	doc := profileDocOf(t, o)
+	var added []string
+	for _, b := range doc.Added {
+		added = append(added, b.Token)
+	}
+	slices.Sort(added)
+	if !slices.Equal(added, []string{"other", "stone"}) || doc.Meta.Mirrored != 1 {
+		t.Fatalf("added %v, mirrored %d", added, doc.Meta.Mirrored)
+	}
+	if _, ok := profileBoardIn(doc, "gh", "jornada"); ok {
+		t.Error("the mirror is listed as a board of its own")
+	}
+	st, _ := profileBoardIn(doc, "gh", "stone")
+	if len(st.Mirrors) != 1 || st.Mirrors[0].Token != "jornada" || st.Mirrors[0].Company != "Jornada Stone" || st.Mirrors[0].Postings != 2 ||
+		st.Mirrors[0].Shared != 2 || st.Mirrors[0].Watched || st.Mirrors[0].AddCommand != "vani watchlist add --ats gh --token jornada --company 'Jornada Stone'" {
+		t.Errorf("stone %+v", st)
+	}
+	if ot, _ := profileBoardIn(doc, "gh", "other"); ot.Mirrors == nil || len(ot.Mirrors) != 0 {
+		t.Errorf("other's mirrors %#v, want an empty list", ot.Mirrors)
+	}
+
+	// The owner watches the mirror: the keeper is shown watched through it and
+	// --add leaves the group alone.
+	cfgPath = profileSetup(t, func(c *config.Config) { c.TitleSignals.Include = []string{"Inference", "LLM"} })
+	mustCode(t, 0, "watchlist", "add", "--ats", "gh", "--token", "jornada", "--company", "Jornada Stone")
+	mustCode(t, 0, "watchlist", "add", "--ats", "gh", "--token", "other", "--company", "Other")
+	fakeProfileFreehire(t, answer)
+	o, _ = mustCode(t, 0, "watchlist", "discover", "--profile", "--allow-host", "--add", "5", "--json")
+	doc = profileDocOf(t, o)
+	st, _ = profileBoardIn(doc, "gh", "stone")
+	if len(doc.Added) != 0 || !st.Watched || st.WatchedAs != "gh/jornada" || st.AddCommand != "" || !st.Mirrors[0].Watched ||
+		st.Mirrors[0].AddCommand != "" {
+		t.Errorf("added %+v, stone %+v", doc.Added, st)
+	}
+	if n := len(watchlistOf(t, cfgPath).Watchlist); n != 2 {
+		t.Errorf("watchlist has %d boards, want 2", n)
+	}
+	fakeProfileFreehire(t, answer)
+	o, _ = mustCode(t, 0, "watchlist", "discover", "--profile")
+	for _, want := range []string{
+		"gh  stone  Stone  [watched as gh/jornada]",
+		"      same postings on: gh jornada (Jornada Stone, 2) [watched]",
+		"1 board(s) list only postings a bigger board lists and are shown under it",
+	} {
+		if !strings.Contains(o, want) {
+			t.Errorf("text lacks %q:\n%s", want, o)
+		}
+	}
+}
+
 // --max-searches below the skills default narrows the skills to fit; only a
 // --max-skills given above --max-searches is refused.
 func TestDiscoverProfileFewSearches(t *testing.T) {

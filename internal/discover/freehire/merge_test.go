@@ -145,6 +145,201 @@ func TestMergeWorkdaySearchBounds(t *testing.T) {
 	}
 }
 
+// placed is a result with a title and a location.
+func placed(source, id, rawURL, company, title, location string) Job {
+	j := titled(source, id, rawURL, company, title)
+	j.Location = location
+	return j
+}
+
+// jpmcJob is one requisition as freehire lists it on one of JPMorgan's Oracle
+// career sites (live, 2026-11-11: the same requisition id on jobsearch, CX and
+// CX_2001, the last under another company name).
+func jpmcJob(site, req, company, title, location string) Job {
+	return placed("oracle", "jpmc.fa.oraclecloud.com/"+site+":"+req,
+		"https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/"+site+"/job/"+req+"?utm_source=freehire.me",
+		company, title, location)
+}
+
+// mirrorWorld is the two live cases: three JPMorgan Oracle sites listing the
+// same requisitions, and Stone's second Greenhouse board (custom domain, its
+// own ids) listing the same roles. Titles differ only in case and trailing
+// space between the copies.
+func mirrorWorld() []Hit {
+	blr, uk := "Bengaluru, Karnataka, India", "BOURNEMOUTH, DORSET, United Kingdom"
+	jpmc := []Job{
+		jpmcJob("jobsearch", "210773687", "JPMorganChase", "Applied AI ML Director", blr),
+		jpmcJob("jobsearch", "210788790", "JPMorganChase", "Applied AI ML Senior Associate", blr),
+		jpmcJob("CX", "210773687", "JPMC", "Applied AI ML Director", blr),
+		jpmcJob("CX_2001", "210773687", "Nextmind Solutions Private Limited", "Applied AI ML Director", blr),
+		jpmcJob("jobsearch", "210805724", "JPMorganChase", "Applied AI ML Lead", blr),
+		jpmcJob("CX", "210805724", "JPMC", "Applied AI ML Lead", blr),
+		jpmcJob("CX_2001", "210805724", "Nextmind Solutions Private Limited", "Applied AI ML Lead", blr),
+		jpmcJob("jobsearch", "210761189", "JPMorganChase", "Applied AI ML Lead - Senior Data Scientist", uk),
+		jpmcJob("CX", "210761189", "JPMC", "Applied AI ML Lead - Senior Data Scientist", uk),
+		jpmcJob("CX_2001", "210761189", "Nextmind Solutions Private Limited", "Applied AI ML Lead - Senior Data Scientist", uk),
+	}
+	fln, flnH := "Florianopolis, Santa Catarina, Brasil", "Florianópolis, Santa Catarina, Brasil - Híbrido"
+	jornada := func(id, title, loc string) Job {
+		return placed("greenhouse", "jornadatecnologiaengenharia:"+id,
+			"https://jornada.stone.com.br/times/tracking-link/oportunidades/"+id+"?gh_jid="+id,
+			"Jornada Stone - Tecnologia - Engenharia", title, loc)
+	}
+	stone := func(id, title, loc string) Job {
+		return placed("greenhouse", "stone:"+id, "https://job-boards.greenhouse.io/stone/jobs/"+id, "Stone", title, loc)
+	}
+	genai := []Job{
+		jornada("8200580003", "[Genai] Sênior AI Engineer - Híbrido Florianópolis", fln),
+		stone("8040257003", "[Genai] Sênior AI Engineer - Híbrido Florianópolis", fln),
+		jornada("7999588003", "[GenAI] Sênior Software Engineer - híbrido Florianópolis ", fln),
+		jornada("7998364003", "[GenAI] Sênior AI Engineer - Híbrido Florianópolis", flnH),
+		stone("7984857003", "[GenAI] Sênior Software Engineer - híbrido Florianópolis", fln),
+		stone("8017007003", "[GENAI] sênior AI engineer -  Híbrido Florianópolis", flnH),
+		stone("8041727003", "[GenAI] Sênior Analytics Engineer - híbrido Florianópolis", fln),
+	}
+	return []Hit{{Search: "Applied AI", Jobs: jpmc}, {Search: "GenAI", Jobs: genai}}
+}
+
+func boardKeys(bs []MergedBoard) []string {
+	var out []string
+	for _, b := range bs {
+		out = append(out, string(b.Board.ATS)+":"+b.Board.Token)
+	}
+	return out
+}
+
+func mirrorKeys(mb MergedBoard) []string {
+	var out []string
+	for _, x := range mb.Mirrors {
+		out = append(out, string(x.Board.ATS)+":"+x.Board.Token)
+	}
+	return out
+}
+
+// A board whose every posting (title and location) another board also lists
+// is one employer's second site: it is folded into the board that lists the
+// most, which keeps its searches and lists it as a mirror.
+func TestMergeFoldsBoardsListingTheSamePostings(t *testing.T) {
+	m := merge(mirrorWorld())
+	if got := boardKeys(m.Boards); !slices.Equal(got, []string{"gh:stone", "oc:jpmc/jobsearch"}) {
+		t.Fatalf("boards %v, want the two keepers only", got)
+	}
+	jp, _ := mergedIn(m, posting.OracleHCM, "jpmc/jobsearch")
+	if jp.Postings != 4 || jp.Board.Company != "JPMorganChase" || jp.Board.Search != "Applied AI" {
+		t.Errorf("jobsearch %+v", jp)
+	}
+	if got := mirrorKeys(jp); !slices.Equal(got, []string{"oc:jpmc/CX", "oc:jpmc/CX_2001"}) {
+		t.Errorf("jpmc mirrors %v", got)
+	}
+	for _, x := range jp.Mirrors {
+		if x.Postings != 3 || x.Shared != 3 || x.Board.Host != "jpmc.fa.oraclecloud.com" {
+			t.Errorf("mirror %+v", x)
+		}
+	}
+	if x := jp.Mirrors[1]; x.Board.Company != "Nextmind Solutions Private Limited" {
+		t.Errorf("a mirror keeps its own company: %+v", x.Board)
+	}
+	st, _ := mergedIn(m, posting.Greenhouse, "stone")
+	if got := mirrorKeys(st); st.Postings != 4 || !slices.Equal(got, []string{"gh:jornadatecnologiaengenharia"}) ||
+		st.Mirrors[0].Postings != 3 || st.Mirrors[0].Shared != 3 {
+		t.Errorf("stone %+v mirrors %+v", st, st.Mirrors)
+	}
+	// Every distinct result is still accounted for: on a board, on a mirror,
+	// or in an unreadable group.
+	total := 0
+	for _, b := range m.Boards {
+		total += b.Postings
+		for _, x := range b.Mirrors {
+			total += x.Postings
+		}
+	}
+	if total != m.Distinct || m.Distinct != 17 || m.Mirrored != 3 {
+		t.Errorf("accounted %d of %d, mirrored %d", total, m.Distinct, m.Mirrored)
+	}
+}
+
+// A mirror's searches and evidence pass to the board it is folded into, so
+// the group ranks and corroborates as one employer.
+func TestMergeFoldedSearchesAndEvidenceJoinTheKeeper(t *testing.T) {
+	a1 := placed("greenhouse", "a:1", "https://boards.greenhouse.io/a/jobs/1", "A", "Inference Engineer", "Remote")
+	a2 := placed("greenhouse", "a:2", "https://boards.greenhouse.io/a/jobs/2", "A", "LLM Engineer", "Remote")
+	a3 := placed("greenhouse", "a:3", "https://boards.greenhouse.io/a/jobs/3", "A", "GPU Engineer", "Remote")
+	b1 := placed("greenhouse", "b:1", "https://boards.greenhouse.io/b/jobs/1", "A Labs", "Inference Engineer", "Remote")
+	b2 := placed("greenhouse", "b:2", "https://boards.greenhouse.io/b/jobs/2", "A Labs", "LLM Engineer", "Remote")
+	ev := func(search string, j Job) int {
+		if search == "LLM" && j.Company == "A Labs" {
+			return 2
+		}
+		return 0
+	}
+	m := Merge([]Hit{{Search: "Inference", Jobs: []Job{a1, a2, a3}}, {Search: "LLM", Jobs: []Job{b2, b1}}}, ev)
+	if len(m.Boards) != 1 {
+		t.Fatalf("boards %v", boardKeys(m.Boards))
+	}
+	k := m.Boards[0]
+	if k.Board.Token != "a" || !slices.Equal(k.Searches, []string{"Inference", "LLM"}) || k.Evidence != 2 || k.Postings != 3 {
+		t.Errorf("keeper %+v", k)
+	}
+	if len(k.Mirrors) != 1 || k.Mirrors[0].Board.Token != "b" || !slices.Equal(k.Mirrors[0].Searches, []string{"LLM"}) {
+		t.Errorf("mirrors %+v", k.Mirrors)
+	}
+}
+
+// What is not folded: a board with one posting (one shared title is too
+// little to call two boards one employer), boards that only overlap, the same
+// title in another place, and untitled results.
+func TestMergeDoesNotFoldOnTooLittle(t *testing.T) {
+	gh := func(token, id, title, loc string) Job {
+		return placed("greenhouse", token+":"+id, "https://boards.greenhouse.io/"+token+"/jobs/"+id, token, title, loc)
+	}
+	cases := map[string][]Job{
+		"one shared posting": {
+			gh("big", "1", "Applied AI Engineer", "Remote"), gh("big", "2", "LLM Engineer", "Remote"),
+			gh("solo", "1", "Applied AI Engineer", "Remote"),
+		},
+		"overlap, not contained": {
+			gh("x", "1", "A", "Remote"), gh("x", "2", "B", "Remote"), gh("x", "3", "C", "Remote"),
+			gh("y", "1", "A", "Remote"), gh("y", "2", "B", "Remote"), gh("y", "3", "D", "Remote"),
+		},
+		"same titles, other place": {
+			gh("x", "1", "A", "Remote"), gh("x", "2", "B", "Remote"), gh("x", "3", "C", "Remote"),
+			gh("y", "1", "A", "Berlin"), gh("y", "2", "B", "Berlin"),
+		},
+		"untitled": {
+			gh("x", "1", "", "Remote"), gh("x", "2", "", "Remote"), gh("x", "3", "A", "Remote"),
+			gh("y", "1", "", "Remote"), gh("y", "2", "", "Remote"),
+		},
+	}
+	for name, jobs := range cases {
+		m := merge([]Hit{{Search: "s", Jobs: jobs}})
+		for _, b := range m.Boards {
+			if len(b.Mirrors) != 0 {
+				t.Errorf("%s: %s folded %v", name, b.Board.Token, mirrorKeys(b))
+			}
+		}
+		if m.Mirrored != 0 || len(m.Boards) < 2 {
+			t.Errorf("%s: boards %v mirrored %d", name, boardKeys(m.Boards), m.Mirrored)
+		}
+	}
+}
+
+// Two boards with the same postings fold the same way whichever was read
+// first: the keeper is the one that ranks first (more searches, then
+// evidence, postings, ATS and token).
+func TestMergeFoldIsOrderIndependent(t *testing.T) {
+	gh := func(token, id, title string) Job {
+		return placed("greenhouse", token+":"+id, "https://boards.greenhouse.io/"+token+"/jobs/"+id, token, title, "Remote")
+	}
+	p := []Job{gh("pear", "1", "A"), gh("pear", "2", "B")}
+	q := []Job{gh("apple", "1", "A"), gh("apple", "2", "B")}
+	for _, jobs := range [][]Job{append(slices.Clone(p), q...), append(slices.Clone(q), p...)} {
+		m := merge([]Hit{{Search: "s", Jobs: jobs}})
+		if got := boardKeys(m.Boards); !slices.Equal(got, []string{"gh:apple"}) || !slices.Equal(mirrorKeys(m.Boards[0]), []string{"gh:pear"}) {
+			t.Errorf("boards %v mirrors %v", got, mirrorKeys(m.Boards[0]))
+		}
+	}
+}
+
 func TestMergeOfNothing(t *testing.T) {
 	for _, hits := range [][]Hit{nil, {}, {{Search: "x"}}, {{Search: "x", Jobs: []Job{}}}} {
 		if m := merge(hits); len(m.Boards) != 0 || len(m.Unreadable) != 0 || m.Distinct != 0 || m.Repeated != 0 {

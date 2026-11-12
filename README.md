@@ -889,7 +889,11 @@ puts its own word in every title it finds, so that match is not evidence: a boar
 when two or more searches found it, or a kept title matches a role word beyond its own search's
 ("LLM Inference Engineer" found by "Inference"). Boards are ranked by how many searches found them,
 then by that evidence, then by distinct postings (a posting two searches found counts once); the
-rest are marked `weak` ("Agent d'accueil" found by "Agent") and `--add` never adds one. A Workday or Oracle board carries every search that found it. A 429 ends the
+rest are marked `weak` ("Agent d'accueil" found by "Agent") and `--add` never adds one. A Workday or Oracle board carries every search that found it. A board
+that lists only postings a bigger board lists (the same title and location, case and spacing aside,
+at least 2 of them) is one employer's second career site, such as JPMorgan's several Oracle sites or
+Stone's two Greenhouse boards: it is shown under the bigger board (`mirrors` in the JSON), its
+searches count toward it, `--add` never adds it, and watching either one counts as watching both. A 429 ends the
 run and keeps what was read; a search that fails is reported on its row; every search failing is an
 error. The command edits the watchlist only with `--add N` (at most 50), which adds the top N new
 corroborated boards in rank order. A board whose own host is not in `allowed_hosts` yet (Workday, the per-tenant

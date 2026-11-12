@@ -119,6 +119,9 @@ type profileMetaJSON struct {
 	// Weak is the boards that are not corroborated: one search found them
 	// and only that search's own word matched their titles.
 	Weak int `json:"weak"`
+	// Mirrored is the boards listed under another (profileBoardJSON.Mirrors)
+	// rather than as boards of their own.
+	Mirrored int `json:"mirrored"`
 }
 
 type profileBoardJSON struct {
@@ -141,10 +144,31 @@ type profileBoardJSON struct {
 	// kept title matched a role word its search did not supply. Only a
 	// corroborated board is added by --add.
 	Corroborated bool `json:"corroborated"`
-	Watched      bool `json:"watched"`
-	Added        bool `json:"added"`
+	// Watched is true when the board or one of its Mirrors is on the
+	// watchlist; WatchedAs names the mirror ("ats/token") when it is that.
+	Watched   bool   `json:"watched"`
+	WatchedAs string `json:"watched_as,omitempty"`
+	Added     bool   `json:"added"`
 	// AddCommand is the `vani watchlist add` that adds the board; empty for
-	// one on the watchlist.
+	// one watched.
+	AddCommand string `json:"add_command,omitempty"`
+	// Mirrors is the boards that list only postings this board lists too
+	// (freehire.MergedBoard.Mirrors): one employer's other career sites.
+	// --add never adds one.
+	Mirrors []profileMirrorJSON `json:"mirrors"`
+}
+
+type profileMirrorJSON struct {
+	ATS      string   `json:"ats"`
+	Token    string   `json:"token"`
+	Company  string   `json:"company"`
+	Host     string   `json:"host,omitempty"`
+	Postings int      `json:"postings"`
+	Shared   int      `json:"shared"`
+	FoundBy  []string `json:"found_by"`
+	Watched  bool     `json:"watched"`
+	// AddCommand adds the mirror itself, for an owner who wants that site
+	// read and not the board it is listed under; empty when watched.
 	AddCommand string `json:"add_command,omitempty"`
 }
 
@@ -316,7 +340,7 @@ func (e *env) discoverProfile(o profileDiscoverOptions) error {
 					break
 				}
 				b := mb.Board
-				if slices.ContainsFunc(c.Watchlist, func(x sources.Board) bool { return sameBoard(x, b) }) {
+				if _, watched := watchedIn(c.Watchlist, mb); watched {
 					continue
 				}
 				if !o.allowBoards {
@@ -364,13 +388,41 @@ func (e *env) discoverProfile(o profileDiscoverOptions) error {
 			out.Titles = []string{}
 		}
 		out.Added = added[string(b.ATS)+":"+strings.ToLower(b.Token)]
-		out.Watched = !out.Added && slices.ContainsFunc(cfg.Watchlist, func(x sources.Board) bool { return sameBoard(x, b) })
+		if !out.Added {
+			out.WatchedAs, out.Watched = watchedIn(cfg.Watchlist, mb)
+		}
 		if !out.Watched && !out.Added {
 			out.AddCommand = addCommand(b, cfg.AllowedHosts)
 		}
+		out.Mirrors = []profileMirrorJSON{}
+		for _, x := range mb.Mirrors {
+			mj := profileMirrorJSON{ATS: string(x.Board.ATS), Token: x.Board.Token, Company: x.Board.Company, Host: x.Board.Host,
+				Postings: x.Postings, Shared: x.Shared, FoundBy: x.Searches,
+				Watched: slices.ContainsFunc(cfg.Watchlist, func(w sources.Board) bool { return sameBoard(w, x.Board) })}
+			if !mj.Watched {
+				mj.AddCommand = addCommand(x.Board, cfg.AllowedHosts)
+			}
+			out.Mirrors = append(out.Mirrors, mj)
+		}
+		doc.Meta.Mirrored += len(mb.Mirrors)
 		doc.Boards = append(doc.Boards, out)
 	}
 	return e.writeProfileDiscover(o.asJSON, doc)
+}
+
+// watchedIn is whether the owner watches mb: the board itself, or one of its
+// mirrors (then as names it, "ats/token"), since a mirror reads the same
+// postings.
+func watchedIn(watchlist []sources.Board, mb freehire.MergedBoard) (as string, watched bool) {
+	if slices.ContainsFunc(watchlist, func(x sources.Board) bool { return sameBoard(x, mb.Board) }) {
+		return "", true
+	}
+	for _, m := range mb.Mirrors {
+		if slices.ContainsFunc(watchlist, func(x sources.Board) bool { return sameBoard(x, m.Board) }) {
+			return string(m.Board.ATS) + "/" + m.Board.Token, true
+		}
+	}
+	return "", false
 }
 
 // profileKeep is whether a result counts toward its board: its title passes
@@ -504,6 +556,9 @@ func (e *env) printProfileDiscover(doc profileDiscoverJSON) {
 	if m.Weak > 0 {
 		fmt.Fprintf(w, "  %d board(s) are weak: one search found them and only its own word matched their titles; --add stops before them\n", m.Weak)
 	}
+	if m.Mirrored > 0 {
+		fmt.Fprintf(w, "  %d board(s) list only postings a bigger board lists and are shown under it; --add never adds one\n", m.Mirrored)
+	}
 	if doc.Stopped != "" {
 		fmt.Fprintf(w, "  stopped early: %s\n", doc.Stopped)
 	}
@@ -517,6 +572,8 @@ func (e *env) printProfileDiscover(doc profileDiscoverJSON) {
 		switch {
 		case b.Added:
 			state = "added"
+		case b.WatchedAs != "":
+			state = "watched as " + b.WatchedAs
 		case b.Watched:
 			state = "watched"
 		}
@@ -526,6 +583,17 @@ func (e *env) printProfileDiscover(doc profileDiscoverJSON) {
 		fmt.Fprintf(w, "%3d search(es) %4d  %s  %s  %s  [%s]\n", len(b.FoundBy), b.Postings, b.ATS, b.Token, b.Company, state)
 		if len(b.Titles) > 0 {
 			fmt.Fprintf(w, "      e.g. %s\n", strings.Join(b.Titles, "; "))
+		}
+		if len(b.Mirrors) > 0 {
+			var on []string
+			for _, x := range b.Mirrors {
+				s := fmt.Sprintf("%s %s (%s, %d)", x.ATS, x.Token, x.Company, x.Postings)
+				if x.Watched {
+					s += " [watched]"
+				}
+				on = append(on, s)
+			}
+			fmt.Fprintf(w, "      same postings on: %s\n", strings.Join(on, "; "))
 		}
 		if b.AddCommand != "" {
 			fmt.Fprintf(w, "      %s\n", b.AddCommand)

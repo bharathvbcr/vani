@@ -78,6 +78,13 @@ cap raised from 5,000 to 15,000 (`srcutil.MaxPostings`, `sources.MaxPostingsCeil
   the extension's `DAEMON_WORKDAY_MAX` (mirrors `workday.MaxPostings`).
 - **A Workday board at the 15,000 ceiling** lists in about 1,600 requests, some 27 minutes at the
   per-host pace (`TestCapFor`). No board sets that today; the largest live board is 2,913.
+- **Mirror boards are judged on freehire's sample only** (`freehire.MinMirrorShared`, 2026-11-11).
+  A board folds into another when every on-profile posting freehire returned for it, by title and
+  location, is on the other; a posting cut off one board's page by the 100-result limit can keep
+  two copies apart, and two employers that each list the same two titles in one place would be
+  folded wrongly (shown, with the mirror's own add command, not hidden). The watchlist itself is
+  not checked: boards added before this (the owner's `oc jpmc/jobsearch` and `jpmc/CX_2001`,
+  `gh stone` and `jornadatecnologiaengenharia`) are still read separately each run.
 
 ## Autofill rework (2026-10-28): what is left
 
