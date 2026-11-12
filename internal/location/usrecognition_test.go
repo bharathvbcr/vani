@@ -102,7 +102,8 @@ func TestAmbiguousPlace(t *testing.T) {
 		{"Cambridge, MA", false},
 		{"Cambridge, UK", false},
 		{"Vancouver, BC", false},
-		{"Paris", false},
+		// The owner's decision (2026-11-12): a bare Paris is ambiguous.
+		{"Paris", true},
 		{"London", false},
 		{"San Francisco", false},
 		{"Europe", false},

@@ -147,6 +147,28 @@ func TestReview2USNamesOutsideTheTables(t *testing.T) {
 	})
 }
 
+// F7, the owner's decision (2026-11-12): a bare Paris is ambiguous (kept by
+// only_locations, never US); with a country or a French region it is France;
+// with a US state it is the US.
+func TestReview2Paris(t *testing.T) {
+	checkUS(t, []struct {
+		loc    string
+		remote bool
+		want   usWant
+	}{
+		{"Paris", false, wantAmbiguous},
+		{"Paris", true, wantAmbiguous},
+		{"Paris / London", false, wantAmbiguous},
+		{"Paris, France", false, wantNotUS},
+		{"Paris, FR", false, wantNotUS},
+		{"Paris, Île-de-France", false, wantNotUS},
+		{"Paris, Île-de-France, France", false, wantNotUS},
+		{"Paris, TX", false, wantUS},
+		{"Paris, Texas", false, wantUS},
+		{"Paris, Kentucky", false, wantUS},
+	})
+}
+
 // F4: forms 9f1db69 read as US.
 func TestReview2USForms(t *testing.T) {
 	checkUS(t, []struct {

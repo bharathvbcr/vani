@@ -12,6 +12,10 @@
 #             Rico); M: some option is and some is not; N: none is; A: as
 #             likely US as not, unresolvable from the string; ?: no place.
 #          A remote role listed at a place is remote within that place.
+#          (Relabelled 2026-11-12 by the owner's decision, two rows N -> A:
+#          "Paris" and "Helsinki, Stockholm, Paris, Munich". A bare Paris,
+#          with no state or country, is not judged, alone or as an option of
+#          a list; "Paris, France" stays N. Other rows are as first labelled.)
 N	false	London, UK	heldout2	193
 U	false	San Francisco	heldout2	1588
 U	true	New York	heldout2	213
@@ -34,7 +38,7 @@ U	false	Greater Seattle Area; Los Angeles, CA; Denver, CO	heldout2	9
 N	false	Saudi Arabia	heldout2	35
 U	true	Poughkeepsie, United States; Lowell, United States; Rochester, United States; Tucson, United States; Research Triangle Park, United States; Armonk, United States; Boston, United States; Bellevue, United States; Atlanta, United States; San Jose, United States; Dallas, United States; Austin, United States; San Francisco, United States; Seattle, United States	heldout2	30
 U	false	San Mateo, CA	heldout2	23
-N	false	Helsinki, Stockholm, Paris, Munich	heldout2	1
+A	false	Helsinki, Stockholm, Paris, Munich	heldout2	1
 U	true	United States	heldout2	440
 U	false	Dallas, Texas	heldout2	288
 U	false	Boston, Massachusetts, United States; Las Vegas, Nevada, United States; Remote U.S.	heldout2	1
@@ -143,7 +147,7 @@ U	false	Bellevue, Washington; Boston, Massachusetts; Chicago, Illinois; Denver, 
 U	false	San Francisco, CA • New York, NY • United States	heldout2	89
 U	false	O'Fallon, MO, US	heldout2	13
 A	true	San Jose	heldout2	2
-N	false	Paris	heldout2	135
+A	false	Paris	heldout2	135
 U	true	Redwood City, CA	heldout2	20
 N	true	Thailand	heldout2	118
 U	false	US-CA-Menlo Park	heldout2	77

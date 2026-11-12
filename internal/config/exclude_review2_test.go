@@ -65,6 +65,13 @@ func TestExcludeReview2USRules(t *testing.T) {
 		{"Remote EST", true, false, false},
 		{"CST", false, false, false},
 		{"Pacific Time", false, false, false},
+		// F7, the owner's decision: a bare Paris is kept unjudged by both.
+		{"Paris", true, false, false},
+		{"Paris", false, false, false},
+		{"Paris / London", false, false, false},
+		{"Paris, France", false, true, false},
+		{"Paris, Île-de-France", false, true, false},
+		{"Paris, TX", false, false, true},
 		// F4.
 		{"Plano TX 75024", false, false, true},
 		{"Dallas-Fort Worth Metroplex", false, false, true},

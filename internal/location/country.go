@@ -313,11 +313,12 @@ var foreignCities = func() map[string]string {
 	}
 	// The foreign tech hubs boards list beside a US city ("San Francisco,
 	// Amsterdam"), each far more often that city than any US namesake (a US
-	// namesake comes with its state: "Paris, TX", "Dublin, OH", "Lima, OH",
-	// which PlaceOptions reads as the US).
+	// namesake comes with its state: "Dublin, OH", "Lima, OH", which
+	// PlaceOptions reads as the US). Paris is not here: by the owner's
+	// decision (2026-11-12) a bare "Paris" is ambiguous (us.go).
 	for c, country := range map[string]string{
 		"london": "United Kingdom", "manchester": "United Kingdom", "edinburgh": "United Kingdom",
-		"paris": "France", "amsterdam": "Netherlands", "dublin": "Ireland", "zurich": "Switzerland",
+		"amsterdam": "Netherlands", "dublin": "Ireland", "zurich": "Switzerland",
 		"zürich": "Switzerland", "geneva": "Switzerland", "stockholm": "Sweden", "copenhagen": "Denmark",
 		"oslo": "Norway", "helsinki": "Finland", "madrid": "Spain", "barcelona": "Spain", "lisbon": "Portugal",
 		"warsaw": "Poland", "krakow": "Poland", "kraków": "Poland", "prague": "Czechia", "budapest": "Hungary",
@@ -374,5 +375,8 @@ var foreignRegions = func() map[string]string {
 	add("Spain", "catalonia", "cataluña", "catalunya", "comunidad de madrid")
 	add("Netherlands", "north holland", "noord holland")
 	add("Philippines", "metro manila")
+	// "Paris, Île-de-France" is France: with a bare Paris ambiguous, its
+	// region has to say so.
+	add("France", "île de france", "ile de france")
 	return m
 }()

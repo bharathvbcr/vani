@@ -44,14 +44,16 @@ func ScopeTakesInUS(scope string) bool {
 
 // ambiguousNames are names boards write bare that are as likely a US place as
 // a foreign one in tech hiring. A name far more often foreign ("London",
-// "Paris", "Dublin", "Melbourne") is not here: it reads as the foreign place.
+// "Dublin", "Melbourne") is not here: it reads as the foreign place.
 // "San Jose" is here: San José, Costa Rica hires as often as a bare "San Jose"
 // means California, and a board writing California adds the state. "NA" is
-// North America or N/A.
+// North America or N/A. "Paris" is here by the owner's decision (2026-11-12):
+// a bare Paris is kept unjudged by only_locations, while "Paris, France" is
+// France and "Paris, TX" the US.
 var ambiguousNames = set(
 	"cambridge", "portland", "vancouver", "birmingham", "richmond", "durham",
 	"vienna", "columbia", "athens", "lexington", "salem", "kingston",
-	"san jose", "na",
+	"san jose", "na", "paris",
 )
 
 // iso3Country holds the ISO alpha-3 codes boards put before a city ("IND-Pune",

@@ -11,17 +11,11 @@
 #              territory Puerto Rico); N: none is; A: a bare name that is a
 #              well-known place both in and outside the US, so unresolvable;
 #              ?: names no readable place
-#              (Relabelled 2026-11-12: remote "Paris" A -> N, on the name
-#              alone; the remote flag does not bear on it. A is for a name
-#              well known as a place both in and outside the US, as the bare
-#              names labelled A across the three sets are: Vienna (VA) here,
-#              Vancouver (WA), Richmond, Athens and Portland in
-#              us_heldout.tsv, San Jose in us_heldout2.tsv. Paris's US namesakes
-#              (Paris, TX; Paris, TN) are not; the ambiguousNames comment in
-#              us.go named Paris as "far more often foreign" from 9f1db69, the
-#              commit that first labelled this row A; and the held-out set
-#              us_heldout2.tsv, labelled without a verdict column, has the
-#              same string "Paris" as N.)
+#              (Remote "Paris" is A, as first labelled. It was relabelled N on
+#              2026-11-12 and restored to A the same day by the owner's
+#              decision: a bare Paris, with no state or country, is not
+#              judged, so only_locations keeps it; "Paris, France" is N and
+#              "Paris, TX" Y.)
 #   remote  the board's remote flag
 #   location, stratum, postings with that string in the ledger
 # Location strings only: no posting, company or person data.
@@ -256,7 +250,7 @@ N	true	United Kingdom - London Office	fd_hi	3
 N	false	Ludwigshafen, RP, Germany	fd_hi	47
 Y	false	California - Palo Alto	td	4
 N	true	San Jose, Costa Rica	td	1
-N	true	Paris	fd_hi	87
+A	true	Paris	fd_hi	87
 N	false	Freiburg, Germany	fd_hi	4
 N	false	CA-Ontario-Toronto	fd_hi	6
 Y	false	New York, Chicago, Seattle, San Francisco	td	1
