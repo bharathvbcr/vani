@@ -503,7 +503,7 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 func (w *wired) drainSpool(ctx context.Context) (drainResult, error) {
 	res, err := drainInbox(ctx, w.led, w.stateDir, w.markProtector())
 	if res.Report.Folded > 0 {
-		w.warnf("inbox: folded %d batch(es), %d job(s): %d new, %d duplicate", res.Report.Folded, res.Report.Jobs, res.New, res.Duplicate)
+		w.warnf("%s", inboxFoldLine(res))
 	}
 	if n := len(res.Report.Bad); n > 0 {
 		w.warnf("inbox: %d unreadable file(s) moved to %s; they are not retried", n, filepath.Join(w.stateDir, inbox.Dir, inbox.BadDir))
