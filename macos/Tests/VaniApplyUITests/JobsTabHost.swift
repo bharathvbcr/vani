@@ -16,7 +16,7 @@ import VaniApplyKit
 /// `STATE <json>` with the model's fields), `click X Y` (accessibility
 /// coordinates: global, top-left origin), a mouse click this process sends
 /// itself, and `scroll PANE Y|end` and `offset PANE` (PANE is `list` or
-/// `detail`; replies `OFFSET <points from the top>`), which move and read the
+/// `detail`; replies `OFFSET <points from the top>`, or `NOPANE PANE` while that pane is not on screen), which move and read the
 /// pane's AppKit scroll view as a trackpad would. Nothing is posted to the
 /// window server, so the user's cursor and keyboard are never touched.
 final class JobsTabHost: XCTestCase {
@@ -53,7 +53,11 @@ private final class HostController {
     private var buffer = Data()
 
     init(vani: URL) {
-        model = JobsModel { JobsClient(vaniBinary: vani, timeout: 10) }
+        // The fixture's own (absent) state folder and config, so the model's list-input stamps never
+        // read the owner's live App Support state.
+        let dir = vani.deletingLastPathComponent()
+        let stateDir = dir.appendingPathComponent("state").path, config = dir.appendingPathComponent("config.json").path
+        model = JobsModel { JobsClient(vaniBinary: vani, configPath: config, stateDir: stateDir, timeout: 10) }
         window = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 1200, height: 820),
                           styleMask: [.titled, .resizable, .closable, .miniaturizable], backing: .buffered, defer: false)
     }
@@ -99,8 +103,12 @@ private final class HostController {
             }
             click(atAccessibilityPoint: CGPoint(x: x, y: y))
         case "scroll":
-            guard parts.count == 3, let sv = scrollView(parts[1]) else {
+            guard parts.count == 3, Self.panes.contains(parts[1]) else {
                 print("ERROR bad scroll: \(line.prefix(80))")
+                return
+            }
+            guard let sv = scrollView(parts[1]) else {
+                print("NOPANE \(parts[1])")
                 return
             }
             if parts[2] == "end" {
@@ -113,8 +121,12 @@ private final class HostController {
             }
             print("OFFSET \(offset(sv))")
         case "offset":
-            guard parts.count == 2, let sv = scrollView(parts[1]) else {
+            guard parts.count == 2, Self.panes.contains(parts[1]) else {
                 print("ERROR bad offset: \(line.prefix(80))")
+                return
+            }
+            guard let sv = scrollView(parts[1]) else {
+                print("NOPANE \(parts[1])")
                 return
             }
             print("OFFSET \(offset(sv))")
@@ -139,6 +151,7 @@ private final class HostController {
     }
 
     static let maxViews = 6000
+    static let panes: Set<String> = ["list", "detail"]
 
     /// `list`: the job list's table. `detail`: the tallest other vertical
     /// scroll view, the detail pane once a role is open.
