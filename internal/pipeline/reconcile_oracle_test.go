@@ -6,7 +6,6 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -161,7 +160,7 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 				s.Kept++
 				break
 			}
-			ann := staleAnnotations(rec.Annotations)
+			ann := clearMissMarks(staleAnnotations(rec.Annotations))
 			ann[DescHashKey] = hash
 			ann[DiedFromKey] = ""
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: posting.Live, Posting: &p,
@@ -179,16 +178,16 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 				st = from
 			}
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &relist,
-				Annotations: map[string]string{DescHashKey: hash, DiedFromKey: ""}, Reason: "reappeared"}
+				Annotations: clearMissMarks(map[string]string{DescHashKey: hash, DiedFromKey: ""}), Reason: "reappeared"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Reappeared++
 		case rec.MissedRuns > 0:
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
-				Reason: "reappeared"}
+				Annotations: clearMissMarks(nil), Reason: "reappeared"}
 			if rendered {
-				e.Annotations = map[string]string{DescHashKey: hash}
+				e.Annotations[DescHashKey] = hash
 			}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
@@ -225,37 +224,107 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 		}
 	}
 
-	var absent []ledger.Record
+	return oracleAbsence(ctx, l, existing, prefix, seen, now, s)
+}
+
+// oracleAbsence is the absence pass written again from the owner's rule and
+// nothing else: it calls none of ageAbsent, absenceEvent, massAbsence or
+// clockBehind and uses none of the Default* or Hold constants, so the parity
+// test compares two implementations of it. The rule, in the owner's words:
+//
+//	a posting absent from a full listing is missed, stamped on its first miss,
+//	and dies after at least 2 misses and 20 hours since that first miss; a
+//	stamp more than 1 hour ahead of now is unreadable and restarts; a listing
+//	that leaves at least a quarter of the board's open postings (distinct keys,
+//	before the listing) absent, with at least 10 open, marks every absent
+//	posting mass; so does a listing showing none of at least 2 open ones; the
+//	mark holds until the posting reappears; a mass-marked posting dies after
+//	at least 2 misses and 14 days since its own first miss; a clock more than
+//	an hour behind the ledger's newest event ages nothing unless every such
+//	event lies within 6 hours of the others and the newest is a week or more
+//	ahead.
+func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Record, prefix string, seen map[posting.Key]bool, now time.Time, s Summary) (Summary, error) {
+	isClosed := func(st posting.Status) bool { return st == "dead" || st == "duplicate" || st == "dropped" }
+	var open, absent []posting.Key
 	for _, r := range existing {
-		if strings.HasPrefix(string(r.Key), prefix) && !closed(r.Status) && !seen[r.Key] {
-			absent = append(absent, r)
+		if strings.HasPrefix(string(r.Key), prefix) && !isClosed(r.Status) {
+			open = append(open, r.Key)
+			if !seen[r.Key] {
+				absent = append(absent, r.Key)
+			}
 		}
 	}
-	sort.Slice(absent, func(i, j int) bool { return absent[i].Key < absent[j].Key })
-	for _, r := range absent {
+	sort.Slice(absent, func(i, j int) bool { return absent[i] < absent[j] })
+	s.Open, s.Absent = len(open), len(absent)
+	if len(absent) == 0 {
+		return s, nil
+	}
+	var oldest, newest time.Time
+	agreeing := 0 // events not ahead of now: history that says the clock is right
+	for _, r := range existing {
+		switch {
+		case r.LastEvent.After(now.Add(time.Hour)):
+			if oldest.IsZero() || r.LastEvent.Before(oldest) {
+				oldest = r.LastEvent
+			}
+			if r.LastEvent.After(newest) {
+				newest = r.LastEvent
+			}
+		case !r.LastEvent.IsZero():
+			agreeing++
+		}
+	}
+	if !newest.IsZero() && (agreeing == 0 || !(newest.Sub(now) >= 7*24*time.Hour && newest.Sub(oldest) <= 6*time.Hour)) {
+		s.ClockBehind = true
+		return s, nil
+	}
+	n, a := len(open), len(absent)
+	mass := (n >= 2 && a == n) || (n >= 10 && 4*a >= n)
+	for _, k := range absent {
 		if err := ctx.Err(); err != nil {
 			return s, err
 		}
-		cur, ok := l.Get(r.Key)
-		if !ok || closed(cur.Status) {
+		cur, ok := l.Get(k)
+		if !ok || isClosed(cur.Status) {
 			continue
 		}
 		misses := cur.MissedRuns + 1
-		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: cur.Status,
-			Annotations: map[string]string{ledger.MissedRunsKey: strconv.Itoa(misses)},
-			Reason:      fmt.Sprintf("absent from board (%d)", misses)}
-		if misses >= MissesToDead {
+		first := now
+		if cur.MissedRuns > 0 {
+			if t, err := time.Parse(time.RFC3339Nano, cur.Annotations["missed_since"]); err == nil && !t.After(now.Add(time.Hour)) {
+				first = t
+			}
+		}
+		massed := ""
+		if cur.MissedRuns > 0 && cur.Annotations["mass_missed_since"] != "" {
+			massed = cur.Annotations["mass_missed_since"]
+		}
+		if mass && massed == "" {
+			massed = now.UTC().Format(time.RFC3339Nano)
+			s.MassMarked++
+		}
+		hold := 20 * time.Hour
+		if massed != "" {
+			hold = 14 * 24 * time.Hour
+		}
+		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: k, Status: cur.Status, Reason: "absent from board",
+			Annotations: map[string]string{ledger.MissedRunsKey: strconv.Itoa(misses),
+				"missed_since": first.UTC().Format(time.RFC3339Nano), "mass_missed_since": massed}}
+		switch {
+		case misses >= 2 && !now.Before(first.Add(hold)):
 			e.Status = posting.Dead
 			e.Annotations[DiedFromKey] = string(cur.Status)
-			e.Reason = "absent from board twice"
 			s.Dead++
-		} else {
+		case misses >= 2:
+			s.Held++
+		default:
 			s.Missed++
 		}
 		if err := l.Append(ctx, e); err != nil {
 			return s, err
 		}
 	}
+	s.Mass = mass
 	return s, nil
 }
 

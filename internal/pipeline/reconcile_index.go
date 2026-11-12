@@ -37,6 +37,10 @@ type ledgerIndex struct {
 	byURL map[string][]posting.Key
 	// touched holds the keys written since the index was last refreshed.
 	touched map[posting.Key]bool
+	// events is every record's last event time, sorted, as the ledger stood
+	// when the index was built: the history a clock behind it is judged against
+	// (clockBehind). Not kept current: this run's own writes are not history.
+	events []time.Time
 }
 
 func infoOf(r ledger.Record) recInfo {
@@ -58,7 +62,11 @@ func buildIndex(l ledger.Ledger) *ledgerIndex {
 	for _, r := range all { // sorted by key, so each tuple list is built sorted
 		x.keys = append(x.keys, r.Key)
 		x.add(r.Key, infoOf(r))
+		if !r.LastEvent.IsZero() {
+			x.events = append(x.events, r.LastEvent)
+		}
 	}
+	slices.SortFunc(x.events, time.Time.Compare)
 	return x
 }
 
@@ -187,6 +195,8 @@ type Reconciler struct {
 	// protected, when set, names records Reconcile must never demote to
 	// Duplicate after the fact (the ones the user marked).
 	protected func(posting.Key) bool
+	// live tunes the mass-absence rule (liveness.go); zero is the defaults.
+	live Liveness
 }
 
 // Protect sets the records Reconcile never demotes to Duplicate once they

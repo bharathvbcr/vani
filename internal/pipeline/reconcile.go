@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -54,8 +53,22 @@ type Summary struct {
 	Unchanged  int
 	Reappeared int // seen again after a miss (or after being marked dead)
 	Missed     int // absent, below the death threshold
-	Dead       int
-	Duplicate  int
+	// Held postings are absent with enough misses to die but inside their
+	// hold (liveness.go): OrdinaryHold, or the mass hold when mass marked.
+	Held int
+	Dead int
+	// Open counts the board's open postings before a full listing; Absent how
+	// many of them it left out. Zero for a partial listing.
+	Open, Absent int
+	// Mass says this listing was a mass absence (liveness.go); MassMarked counts
+	// the postings it newly mass-marked (ones marked by an earlier listing and
+	// still absent are Held, not counted again).
+	MassMarked int
+	Mass       bool
+	// ClockBehind: the clock read behind the ledger's own history, so this
+	// full listing that left postings absent aged nothing.
+	ClockBehind bool
+	Duplicate   int
 	// Revived duplicates were listed again while their survivor was gone
 	// (reviveDuplicate): live again, or a duplicate of another live record.
 	Revived int
@@ -185,7 +198,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				s.Kept++
 				break
 			}
-			ann := staleAnnotations(rec.Annotations)
+			ann := clearMissMarks(staleAnnotations(rec.Annotations))
 			ann[DescHashKey] = hash
 			ann[DiedFromKey] = ""
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: posting.Live, Posting: &p,
@@ -203,16 +216,16 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				st = from
 			}
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &relist,
-				Annotations: map[string]string{DescHashKey: hash, DiedFromKey: ""}, Reason: "reappeared"}
+				Annotations: clearMissMarks(map[string]string{DescHashKey: hash, DiedFromKey: ""}), Reason: "reappeared"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Reappeared++
 		case rec.MissedRuns > 0:
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
-				Reason: "reappeared"}
+				Annotations: clearMissMarks(nil), Reason: "reappeared"}
 			if rendered {
-				e.Annotations = map[string]string{DescHashKey: hash}
+				e.Annotations[DescHashKey] = hash
 			}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
@@ -261,44 +274,29 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	if !full {
 		return s, nil
 	}
-	var absent []posting.Key
+	// The absence pass (liveness.go). open is the board's open keys as the
+	// index held them when the board started, before this listing.
+	var open []posting.Key
 	for _, k := range idx.board(prefix) { // in key order
-		if !closed(idx.info[k].status) && !seen[k] {
-			absent = append(absent, k)
+		if !closed(idx.info[k].status) {
+			open = append(open, k)
 		}
 	}
-	// Every read precedes the write: each absent key is distinct and an event
-	// touches only its own record, so the events go in one batch (one fsync).
-	var evs []ledger.Event
-	var missed, dead int
-	for _, k := range absent {
-		if err := ctx.Err(); err != nil {
-			return s, err
-		}
-		cur, ok := l.Get(k)
-		if !ok || closed(cur.Status) {
-			continue
-		}
-		misses := cur.MissedRuns + 1
-		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: k, Status: cur.Status,
-			Annotations: map[string]string{ledger.MissedRunsKey: strconv.Itoa(misses)},
-			Reason:      fmt.Sprintf("absent from board (%d)", misses)}
-		if misses >= MissesToDead {
-			e.Status = posting.Dead
-			e.Annotations[DiedFromKey] = string(cur.Status)
-			e.Reason = "absent from board twice"
-			dead++
-		} else {
-			missed++
-		}
-		evs = append(evs, e)
-	}
-	if _, err := appendBatched(ctx, l, evs); err != nil {
-		return s, err
-	}
-	s.Dead += dead
-	s.Missed += missed
-	return s, nil
+	a, err := ageAbsent(ctx, l, rc.live, open, seen, clockBehind(idx.events, now), now)
+	s.addAbsence(a)
+	return s, err
+}
+
+// addAbsence folds one absence pass into the summary.
+func (s *Summary) addAbsence(a absence) {
+	s.Open += a.open
+	s.Absent += a.absent
+	s.Missed += a.missed
+	s.Held += a.held
+	s.Dead += a.dead
+	s.MassMarked += a.massMarked
+	s.Mass = s.Mass || a.mass
+	s.ClockBehind = s.ClockBehind || a.clockBehind
 }
 
 // batchByteBudget is how much encoded event data appendBatched puts in one

@@ -170,13 +170,13 @@ func TestDeadRelistedRerenderedRestoresStatus(t *testing.T) {
 	p := ghPost(t, "1", "Build the thing.")
 	digestedWith(t, l, p)
 	Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
-	Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
+	Reconcile(ctx, l, board, nil, t0.Add(21*time.Hour))
 	if r := rec(t, l, p.Key); r.Status != posting.Dead {
 		t.Fatalf("setup: %s", r.Status)
 	}
 	p2 := p
 	p2.Description = "Pay range: USD 1 – 2 per year\n\nBuild the thing."
-	s, _ := Reconcile(ctx, l, board, []posting.Posting{p2}, t0.Add(3*time.Hour))
+	s, _ := Reconcile(ctx, l, board, []posting.Posting{p2}, t0.Add(22*time.Hour))
 	r := rec(t, l, p.Key)
 	if s.Reappeared != 1 || s.Changed != 0 || r.Status != posting.Digested {
 		t.Fatalf("rerendered relist: %+v status %s", s, r.Status)
