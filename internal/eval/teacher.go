@@ -77,6 +77,20 @@ type TeacherSlot struct {
 // two readings saw the same rendered posting. Rows written before 2026-11-11
 // have neither. They are provenance only: not part of TeacherIdent, so a stored
 // reading stays current when they are absent or differ.
+//
+// RenderSHA256 is posting.RawSHA256 of the exact Context bytes of the question
+// the model was sent, as the gate captured them (TeacherRun, teacherGate). For
+// jd_triage that is jdtriage.Render's output: the fixture layout with the
+// target block (from the normalized target summary), the title, the location
+// and the description substituted, then cut to jdtriage.MaxContextBytes at a
+// rune boundary. The hash is taken after that cut, over the bytes as sent, so
+// two descriptions differing only past the cap hash alike, and a title or
+// location change (which TextSHA256 cannot see) moves it. Because the target
+// block is part of the rendered bytes, a changed target summary moves it too;
+// PromptHash already records that. For kb_match it is the same: the Context
+// bytes that task's question carried. Rows written before 2026-11-12 have
+// none. Like TitleSHA256 it is provenance only, not part of TeacherIdent: a
+// stored reading's currency is unchanged by it, so adding it re-asks nothing.
 type TeacherRow struct {
 	V              int                    `json:"v"`
 	Key            posting.Key            `json:"key"`
@@ -84,6 +98,7 @@ type TeacherRow struct {
 	TextSHA256     string                 `json:"text_sha256"`
 	TitleSHA256    string                 `json:"title_sha256,omitempty"`
 	LocationSHA256 string                 `json:"location_sha256,omitempty"`
+	RenderSHA256   string                 `json:"render_sha256,omitempty"`
 	Model          string                 `json:"model"`
 	FixtureSHA     string                 `json:"fixture_sha"`
 	PromptHash     string                 `json:"prompt_hash"`
@@ -799,9 +814,13 @@ func teacherRow(p posting.Posting, model string, t TeacherTask, q decide.Questio
 			slots[s.Name] = TeacherSlot{Reading: string(rd.Reading), Value: rd.Value, Detail: rd.Detail}
 		}
 	}
+	render := ""
+	if len(q.Context) > 0 {
+		render = posting.RawSHA256(string(q.Context))
+	}
 	return TeacherRow{
 		V: TeacherSchema, Key: p.Key, Task: t.Name, TextSHA256: HashText(p.Description),
-		TitleSHA256: HashText(p.Title), LocationSHA256: HashText(p.Location), Model: model,
+		TitleSHA256: HashText(p.Title), LocationSHA256: HashText(p.Location), RenderSHA256: render, Model: model,
 		FixtureSHA: t.Fixture, PromptHash: t.Prompt, DigestSHA: t.Digest, Slots: slots, At: at.UTC(),
 	}
 }
