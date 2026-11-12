@@ -658,6 +658,9 @@ private struct LastRunSection: View {
                 if let boards = run.boards, let fetch = boards.fetchSummary {
                     Row(label: "Board fetches", value: fetchLine(boards, fetch), secondary: boards.payFailed == 0, verbatim: true)
                 }
+                if let short = run.boards?.shortSummary {
+                    Row(label: "Listed short", value: PipelineStatus.bounded(short, max: 500), secondary: true, verbatim: true)
+                }
                 if let adv = run.advance {
                     AdvanceRows(advance: adv)
                 }

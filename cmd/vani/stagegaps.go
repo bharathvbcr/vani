@@ -5,6 +5,10 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/ibm"
+	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
+	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
 // explain modes (explainNote.Mode). A list-only pass still warns and does not
@@ -120,9 +124,30 @@ func fetchKey(ats posting.ATS, token string) boardKey {
 	return boardKey{ATS: string(ats), Token: oneLine(token, maxBoardNameRunes)}
 }
 
+// The adapters' counts as the run record keeps them: one function each, so a
+// count an adapter reports and the record drops fails a test
+// (TestAdapterStatsReachTheBoardFetch) rather than an inline closure.
+func workdayFetch(st workday.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short}
+}
+
+func smartRecruitersFetch(st smartrecruiters.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short}
+}
+
+func oracleFetch(st oraclehcm.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short}
+}
+
+func ibmFetch(st ibm.Stats) boardFetch { return boardFetch{Short: st.Short} }
+
 // noteBoardFetch keeps one board's fetch counts. A second report for the same
-// board adds; the first pay error is the one kept.
+// board adds; the first pay error is the one kept. A listing that counted rows
+// it did not list (Short) is said in the run log too.
 func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
+	if f.Short > 0 {
+		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, f.Short)
+	}
 	if f.PayError != "" {
 		f.PayError = oneLine(f.PayError, maxStageNote)
 	}
@@ -158,6 +183,12 @@ func (w *wired) applyFetchesLocked(rep *boardsReport) {
 			continue
 		}
 		seen[boardKey{it.ATS, it.Token}] = true
+		// A listing's short rows age stored postings only when the board was
+		// read and reconciled; an adapter may report them before a detail
+		// fails the board, so a board that did not read keeps none.
+		if it.Outcome != boardRead {
+			f.Short = 0
+		}
 		it.Deferred = f.Deferred
 		it.PayFailed = f.PayFailed
 		it.PaySkipped = f.PaySkipped
@@ -166,6 +197,9 @@ func (w *wired) applyFetchesLocked(rep *boardsReport) {
 		it.PayError = f.PayError
 		addFetch(rep, f)
 	}
+	// A board Items left out is counted whole: its outcome is not at hand.
+	// The cut keeps failed and skipped boards before read ones
+	// (boardsReportOf), so it was read unless those alone overflow the bound.
 	for k, f := range w.fetches {
 		if seen[k] {
 			continue

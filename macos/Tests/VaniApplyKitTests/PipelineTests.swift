@@ -259,6 +259,16 @@ final class PipelineTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(ok.inbox).summary.contains("3 folded"))
         XCTAssertTrue(ok.inbox?.summary.contains("1 new") == true)
 
+        // A vani that writes the job split: the counts add up to the jobs, and
+        // the records the fold marked are said apart from the listed duplicates.
+        let split = #""inbox":{"ok":true,"folded":1,"jobs":200,"new":5,"known":90,"listed_duplicate":100,"duplicate":103,"unaccounted":5}"#
+        let s = try XCTUnwrap(try decode(statusReply(tail: "," + split)).inbox)
+        XCTAssertEqual(s.jobs, 200)
+        XCTAssertEqual(s.listedDuplicate, 100)
+        XCTAssertEqual(s.summary, "1 folded, 200 jobs, 5 new, 90 already known, 100 duplicate of a stored job, 5 unaccounted, 3 other records marked duplicate")
+        let over = #""inbox":{"ok":true,"folded":1,"jobs":2,"new":2,"known":1,"unaccounted":-1}"#
+        XCTAssertTrue(try XCTUnwrap(try decode(statusReply(tail: "," + over)).inbox).summary.contains("-1 unaccounted"))
+
         let left = #""inbox":{"ok":true,"bad":1,"unreadable":2}"#
         XCTAssertEqual(try decode(statusReply(tail: "," + left)).issues(at: now).map(\.title), ["The last inbox poll left files unread"])
         let broken = #""inbox":{"ok":false,"reason":"inbox status is corrupt"}"#

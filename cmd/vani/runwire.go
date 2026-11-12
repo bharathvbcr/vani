@@ -252,10 +252,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			if st.Short > 0 {
-				w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, st.Short)
-			}
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short})
+			w.noteBoardFetch(b, workdayFetch(st))
 		},
 	})
 	if err != nil {
@@ -270,7 +267,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st smartrecruiters.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, smartRecruitersFetch(st))
 		},
 	})
 	if err != nil {
@@ -282,13 +279,18 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		Stored: storedFor,
 		Report: func(b sources.Board, st oraclehcm.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, oracleFetch(st))
 		},
 	})
 	if err != nil {
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.OracleHCM] = oc
+	// IBM lists in one step; its report carries only the rows its searches
+	// counted and did not list.
+	srcs[posting.IBM] = ibm.NewWith(d, ibm.Options{
+		Report: func(b sources.Board, st ibm.Stats) { w.noteBoardFetch(b, ibmFetch(st)) },
+	})
 	// Rippling's list has no description either: the same bounds as
 	// SmartRecruiters (stored postings reused, listed rows prefiltered, at most
 	// rippling.MaxDetails requests a board a run).
@@ -542,6 +544,8 @@ func (w *wired) pollInbox(ctx context.Context) (err error) {
 	res, derr := w.drainSpool(ctx)
 	st.Folded, st.Bad, st.Unreadable = res.Report.Folded, len(res.Report.Bad), res.Report.Unreadable
 	st.Remaining, st.New, st.Duplicate, st.Live = res.Report.Remaining, res.New, res.Duplicate, len(res.Live)
+	st.Jobs, st.ListedDuplicate, st.Known = res.Report.Jobs, res.ListedDuplicate, res.Known
+	st.Invalid, st.Repeated, st.Unaccounted = res.Invalid, res.Repeated, res.unaccounted()
 	if derr != nil && ctx.Err() == nil {
 		st.Error = derr.Error()
 	}

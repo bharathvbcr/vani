@@ -567,7 +567,8 @@ func openHostThrottle(path string, warnf func(string, ...any)) (*srcutil.HostThr
 func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Kept: s.Kept, Redated: s.Redated,
 		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
-		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, Invalid: s.Invalid}
+		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate,
+		Invalid: s.Invalid}
 }
 
 // boardsReportOf totals the tried boards out of configured and keeps as many

@@ -206,6 +206,12 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone rows answered their detail with no requisition: closed since listing.
 	Gone int `json:"gone,omitempty"`
+	// Short is the requisitions the board's searches counted and did not list,
+	// within the allowance that keeps a search (shortfall), summed over its
+	// terms and never below zero per term; markers the pages serve are listed
+	// rows. Set only when List succeeds, though Report also fires for a failed
+	// board. Not in Listed: stored postings among them age as absent.
+	Short int `json:"short,omitempty"`
 }
 
 // NewWith returns the Oracle HCM source with the bounded detail step: stored
@@ -318,6 +324,9 @@ func (s *source) List(ctx context.Context, b sources.Board) (out []posting.Posti
 	if err != nil {
 		return nil, fmt.Errorf("oraclehcm %q: %w", b.Token, err)
 	}
+	// Set only for a board that lists: a failed one is not reconciled, so
+	// its unlisted rows age nothing.
+	st.Short = w.short
 	return out, nil
 }
 

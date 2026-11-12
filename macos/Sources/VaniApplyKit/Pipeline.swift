@@ -1037,6 +1037,10 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 public var payError: String?
                 /// Details that answered 404 under a listing that succeeded.
                 public var gone: Int
+                /// Rows the board counted but did not list (a Workday listing that
+                /// ended short of its own total). Kept, not failed; stored postings
+                /// among them age as absent.
+                public var short: Int
                 /// `reconcile.new`: new ledger rows this board wrote. Nil when the
                 /// board was not read. A read board whose key was omitted wrote 0.
                 public var reconcileNew: Int?
@@ -1047,7 +1051,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 }
 
                 enum CodingKeys: String, CodingKey {
-                    case ats, token, company, outcome, listed, error, deferred, gone, reconcile
+                    case ats, token, company, outcome, listed, error, deferred, gone, short, reconcile
                     case payFailed = "pay_failed"
                     case paySkipped = "pay_skipped"
                     case payError = "pay_error"
@@ -1066,6 +1070,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     paySkipped = try c.decodeIfPresent(Int.self, forKey: .paySkipped) ?? 0
                     payError = try c.decodeIfPresent(String.self, forKey: .payError)
                     gone = try c.decodeIfPresent(Int.self, forKey: .gone) ?? 0
+                    short = try c.decodeIfPresent(Int.self, forKey: .short) ?? 0
                     if let wire = try c.decodeIfPresent(ReconcileWire.self, forKey: .reconcile) {
                         reconcileNew = wire.new ?? 0
                     } else {
@@ -1075,7 +1080,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
 
                 public init(ats: String, token: String, company: String? = nil, outcome: Outcome, listed: Int? = nil, error: String? = nil,
                             deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, payError: String? = nil, gone: Int = 0,
-                            reconcileNew: Int? = nil) {
+                            short: Int = 0, reconcileNew: Int? = nil) {
                     self.ats = ats
                     self.token = token
                     self.company = company
@@ -1087,6 +1092,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                     self.paySkipped = paySkipped
                     self.payError = payError
                     self.gone = gone
+                    self.short = short
                     self.reconcileNew = reconcileNew
                 }
 
@@ -1136,6 +1142,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var paySkipped: Int
             public var gone: Int
             public var payError: String?
+            /// Rows the boards counted but did not list, together (`Item.short`).
+            public var short: Int
             public var items: [Item]
             /// Tried boards vani left out of `items`.
             public var unrecorded: Int
@@ -1144,7 +1152,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var added: Int?
 
             enum CodingKeys: String, CodingKey {
-                case configured, read, failed, skipped, listed, items, unrecorded, deferred, gone, added
+                case configured, read, failed, skipped, listed, items, unrecorded, deferred, gone, added, short
                 case notReached = "not_reached"
                 case rateLimited = "rate_limited"
                 case payFailed = "pay_failed"
@@ -1166,6 +1174,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 paySkipped = try c.decodeIfPresent(Int.self, forKey: .paySkipped) ?? 0
                 gone = try c.decodeIfPresent(Int.self, forKey: .gone) ?? 0
                 payError = try c.decodeIfPresent(String.self, forKey: .payError)
+                short = try c.decodeIfPresent(Int.self, forKey: .short) ?? 0
                 items = try c.decodeIfPresent([Item].self, forKey: .items) ?? []
                 unrecorded = try c.decodeIfPresent(Int.self, forKey: .unrecorded) ?? 0
                 added = try c.decodeIfPresent(Int.self, forKey: .added)
@@ -1173,7 +1182,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
 
             public init(configured: Int, read: Int, failed: Int = 0, rateLimited: Int = 0, skipped: Int = 0, notReached: Int = 0,
                         listed: Int, items: [Item] = [], unrecorded: Int = 0, added: Int? = nil,
-                        deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, gone: Int = 0, payError: String? = nil) {
+                        deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, gone: Int = 0, payError: String? = nil,
+                        short: Int = 0) {
                 self.configured = configured
                 self.read = read
                 self.failed = failed
@@ -1189,6 +1199,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 self.paySkipped = paySkipped
                 self.gone = gone
                 self.payError = payError
+                self.short = short
             }
 
             /// Boards tried but not read: failed and skipped.
@@ -1207,9 +1218,38 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 if payFailed > 0 { parts.append("\(payFailed) pay failed") }
                 if paySkipped > 0 { parts.append("\(paySkipped) pay skipped") }
                 if gone > 0 { parts.append("\(gone) gone") }
+                if short > 0 { parts.append("\(short) counted but not listed") }
                 guard !parts.isEmpty else { return nil }
                 return parts.joined(separator: ", ")
             }
+
+            /// Boards that listed fewer jobs than they count, at most `maxShortBoards`
+            /// named, as vani's `runs show` names them ("wd:acme/External (Acme): 63");
+            /// the rest, and short rows on boards `items` left out, are counted.
+            /// Nil when no board listed short. Not a failure: the listing is kept,
+            /// but stored postings among the unlisted rows age as absent.
+            public var shortSummary: String? {
+                guard short > 0 else { return nil }
+                // Largest first, ties in watchlist order: routine one-row gaps on
+                // many boards must not push a large one past the bound.
+                let shortItems = items.enumerated()
+                    .filter { $0.element.short > 0 }
+                    .sorted { $0.element.short != $1.element.short ? $0.element.short > $1.element.short : $0.offset < $1.offset }
+                    .map(\.element)
+                var parts = shortItems.prefix(Self.maxShortBoards).map { item -> String in
+                    let name = item.company.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+                    return "\(item.ats):\(item.token)\(name): \(item.short)"
+                }
+                let more = shortItems.dropFirst(Self.maxShortBoards)
+                if !more.isEmpty {
+                    parts.append("\(more.count) more board\(more.count == 1 ? "" : "s"): \(more.reduce(0) { $0 + $1.short })")
+                }
+                let rest = short - shortItems.reduce(0) { $0 + $1.short }
+                if rest > 0 { parts.append("\(rest) on boards the record does not keep") }
+                return "\(short) counted job\(short == 1 ? "" : "s") not listed: " + parts.joined(separator: ", ")
+            }
+
+            public static let maxShortBoards = 5
 
             /// How the boards that were not read went, or nil when every board was read.
             public var outcome: String? {
@@ -1762,17 +1802,38 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var remaining: Int
         public var folded: Int
         public var newCount: Int
+        /// Listed duplicates and the other records the fold marked, together.
         public var duplicate: Int
         public var live: Int
+        /// The folded batches' jobs, and how they split: new, a duplicate of a
+        /// stored job, already known, invalid, repeated in a batch, and what no
+        /// count names (negative when the counts overrun). Zero from a vani
+        /// that does not write them.
+        public var jobs: Int
+        public var listedDuplicate: Int
+        public var known: Int
+        public var invalid: Int
+        public var repeated: Int
+        public var unaccounted: Int
 
         enum CodingKeys: String, CodingKey {
             case ok, reason, at, error, bad, unreadable, remaining, folded, duplicate, live
+            case jobs, known, invalid, repeated, unaccounted
             case newCount = "new"
+            case listedDuplicate = "listed_duplicate"
         }
 
         public init(ok: Bool = false, reason: String? = nil, at: Date? = nil, error: String? = nil,
                     bad: Int = 0, unreadable: Int = 0, remaining: Int = 0, folded: Int = 0,
-                    newCount: Int = 0, duplicate: Int = 0, live: Int = 0) {
+                    newCount: Int = 0, duplicate: Int = 0, live: Int = 0,
+                    jobs: Int = 0, listedDuplicate: Int = 0, known: Int = 0, invalid: Int = 0,
+                    repeated: Int = 0, unaccounted: Int = 0) {
+            self.jobs = jobs
+            self.listedDuplicate = listedDuplicate
+            self.known = known
+            self.invalid = invalid
+            self.repeated = repeated
+            self.unaccounted = unaccounted
             self.ok = ok
             self.reason = reason
             self.at = at
@@ -1801,7 +1862,13 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                       folded: (try? c.decodeIfPresent(Int.self, forKey: .folded)) ?? 0,
                       newCount: (try? c.decodeIfPresent(Int.self, forKey: .newCount)) ?? 0,
                       duplicate: (try? c.decodeIfPresent(Int.self, forKey: .duplicate)) ?? 0,
-                      live: (try? c.decodeIfPresent(Int.self, forKey: .live)) ?? 0)
+                      live: (try? c.decodeIfPresent(Int.self, forKey: .live)) ?? 0,
+                      jobs: (try? c.decodeIfPresent(Int.self, forKey: .jobs)) ?? 0,
+                      listedDuplicate: (try? c.decodeIfPresent(Int.self, forKey: .listedDuplicate)) ?? 0,
+                      known: (try? c.decodeIfPresent(Int.self, forKey: .known)) ?? 0,
+                      invalid: (try? c.decodeIfPresent(Int.self, forKey: .invalid)) ?? 0,
+                      repeated: (try? c.decodeIfPresent(Int.self, forKey: .repeated)) ?? 0,
+                      unaccounted: (try? c.decodeIfPresent(Int.self, forKey: .unaccounted)) ?? 0)
         }
 
         /// Counts and the last error, or why the poll could not be read.
@@ -1819,8 +1886,20 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             add(unreadable, "unreadable")
             add(remaining, "remaining")
             add(folded, "folded")
-            add(newCount, "new")
-            add(duplicate, "duplicate")
+            if jobs > 0 {
+                // A vani that writes the split: the job counts add up to `jobs`.
+                add(jobs, "jobs")
+                add(newCount, "new")
+                add(known, "already known")
+                add(listedDuplicate, "duplicate of a stored job")
+                add(invalid, "invalid")
+                add(repeated, "repeated in a batch")
+                if unaccounted != 0 { parts.append("\(unaccounted) unaccounted") }
+                add(duplicate - listedDuplicate, "other records marked duplicate")
+            } else {
+                add(newCount, "new")
+                add(duplicate, "duplicate")
+            }
             add(live, "live")
             if let error, !error.isEmpty { parts.append(PipelineStatus.bounded(error, max: 200)) }
             if parts.isEmpty { return "Last poll recorded nothing to fold" }
