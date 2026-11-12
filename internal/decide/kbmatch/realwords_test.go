@@ -122,7 +122,7 @@ func TestRawDigestTextIsUncutAndUnredacted(t *testing.T) {
 	}
 	w := realWords(t, "zephyrnet")
 	d, _ := DigestOf(p, w)
-	if strings.Contains(strings.ToLower(d.Text), "zephy") && !strings.Contains(d.Text, Redacted) {
+	if strings.Contains(strings.ToLower(d.Text), "zephy") && !strings.Contains(d.Text, track.Redacted) {
 		t.Fatalf("the sent digest was not redacted:\n%s", d.Text)
 	}
 	if len(w.Found(raw)) != 1 {
