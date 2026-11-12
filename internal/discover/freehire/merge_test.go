@@ -323,6 +323,42 @@ func TestMergeDoesNotFoldOnTooLittle(t *testing.T) {
 	}
 }
 
+// One employer's boards spell a place with and without its accents (Stone's
+// copies, 2026-11-11: "Piracicaba, São Paulo" against "Piracicaba, Sao Paulo",
+// "Ilhéus" against "Ilheus"), or decomposed: the copy still folds, and a
+// posting in another place still keeps a board apart.
+func TestMergeFoldsAccentSpellings(t *testing.T) {
+	gh := func(token, id, title, loc string) Job {
+		return placed("greenhouse", token+":"+id, "https://boards.greenhouse.io/"+token+"/jobs/"+id, token, title, loc)
+	}
+	big := []Job{
+		gh("stone", "1", "Motorista de Distribuição | CNH B (carro) | Barueri/SP", "Barueri, Sao Paulo, Brasil"),
+		gh("stone", "2", "Auxiliar de Atendimento Logístico | CNH B (carro) | Ilhéus/BA", "Ilheus, Bahia, Brasil"),
+		gh("stone", "3", "Executivo(a) Comercial Externo | Maceió/AL", "Maceió, Alagoas, Brazil"),
+		gh("stone", "4", "Data Engineer III", "Remoto"),
+	}
+	copyJobs := []Job{
+		gh("stonepatrocina", "1", "Motorista de Distribuição | CNH B (carro) | Barueri/SP", "Barueri, São Paulo, Brasil"),
+		gh("stonepatrocina", "2", "AUXILIAR DE ATENDIMENTO LOGÍSTICO | CNH B (carro) | Ilhéus/BA", "Ilhéus, Bahia, Brasil"),
+		gh("stonepatrocina", "3", "Executivo(a) Comercial Externo | Maceio/AL", "Maceio, Alagoas, Brazil"),
+	}
+	m := merge([]Hit{{Search: "s", Jobs: append(slices.Clone(big), copyJobs...)}})
+	if got := boardKeys(m.Boards); !slices.Equal(got, []string{"gh:stone"}) || !slices.Equal(mirrorKeys(m.Boards[0]), []string{"gh:stonepatrocina"}) {
+		t.Fatalf("boards %v mirrors %v, want gh:stone over gh:stonepatrocina", got, mirrorKeys(m.Boards[0]))
+	}
+	if mb := m.Boards[0]; mb.Mirrors[0].Shared != 3 || m.Mirrored != 1 {
+		t.Errorf("shared %d mirrored %d, want 3 and 1", mb.Mirrors[0].Shared, m.Mirrored)
+	}
+
+	// The same copy with one posting somewhere the big board has none.
+	elsewhere := append(slices.Clone(copyJobs[:2]),
+		gh("stonepatrocina", "3", "Executivo(a) Comercial Externo | Maceió/AL", "Paripueira, Alagoas, Brasil"))
+	m = merge([]Hit{{Search: "s", Jobs: append(slices.Clone(big), elsewhere...)}})
+	if m.Mirrored != 0 || len(m.Boards) != 2 {
+		t.Errorf("a posting in another place folded: boards %v mirrored %d", boardKeys(m.Boards), m.Mirrored)
+	}
+}
+
 // Two boards with the same postings fold the same way whichever was read
 // first: the keeper is the one that ranks first (more searches, then
 // evidence, postings, ATS and token).

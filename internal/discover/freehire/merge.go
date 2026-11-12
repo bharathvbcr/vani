@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/textsim"
 )
 
 // MaxSampleTitles bounds the titles a merged board carries as examples.
@@ -95,15 +96,18 @@ type mergeAgg struct {
 
 // postingPrint names a posting by what a reader sees of it, so one employer's
 // copies on two boards (each with its own id and URL) match: the title and
-// the location, case-folded with their spacing collapsed. An untitled result
+// the location, with case and accents folded (textsim.Fold: one board writes
+// "São Paulo", its copy "Sao Paulo") and spacing collapsed. An untitled result
 // has none.
 func postingPrint(j Job) string {
-	title := strings.ToLower(strings.Join(strings.Fields(j.Title), " "))
+	title := printText(j.Title)
 	if title == "" {
 		return ""
 	}
-	return title + "\x00" + strings.ToLower(strings.Join(strings.Fields(j.Location), " "))
+	return title + "\x00" + printText(j.Location)
 }
+
+func printText(s string) string { return strings.Join(strings.Fields(textsim.Fold(s)), " ") }
 
 // Merge turns several searches' results into distinct candidate boards. A
 // result is identified as Search does (source, external id and URL), so the
