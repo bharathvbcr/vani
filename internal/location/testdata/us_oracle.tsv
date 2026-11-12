@@ -11,6 +11,9 @@
 #              territory Puerto Rico); N: none is; A: a bare name that is a
 #              well-known place both in and outside the US, so unresolvable;
 #              ?: names no readable place
+#              (Relabelled 2026-11-12: remote "Paris" A -> N. A remote role
+#              listed at a place is remote within that place, as "Remote -
+#              India" is India; a US Paris comes with its state, "Paris, TX".)
 #   remote  the board's remote flag
 #   location, stratum, postings with that string in the ledger
 # Location strings only: no posting, company or person data.
@@ -245,7 +248,7 @@ N	true	United Kingdom - London Office	fd_hi	3
 N	false	Ludwigshafen, RP, Germany	fd_hi	47
 Y	false	California - Palo Alto	td	4
 N	true	San Jose, Costa Rica	td	1
-A	true	Paris	fd_hi	87
+N	true	Paris	fd_hi	87
 N	false	Freiburg, Germany	fd_hi	4
 N	false	CA-Ontario-Toronto	fd_hi	6
 Y	false	New York, Chicago, Seattle, San Francisco	td	1

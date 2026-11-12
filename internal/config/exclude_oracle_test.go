@@ -13,8 +13,9 @@ import (
 // the hand-labelled sets in internal/location/testdata: of the strings that
 // list a US option, at least 98% are kept (a US role dropped is the costly
 // miss), and of the strings kept with a readable answer, at least 99% list a
-// US option. Label A rows are logged: location.AmbiguousPlace decides which
-// of them the rule keeps unjudged (TestOnlyLocationsAmbiguous pins that).
+// US option. A label A row (a name as likely US as foreign) is kept by both
+// only_locations and exclude.locations ["United States"]: neither rule may
+// drop what it cannot judge.
 func TestOnlyLocationsUSOracle(t *testing.T) {
 	for _, set := range []struct {
 		path    string
@@ -30,6 +31,7 @@ func TestOnlyLocationsUSOracle(t *testing.T) {
 			}
 			defer f.Close()
 			x := Exclude{OnlyLocations: []string{"United States"}}
+			ex := Exclude{Locations: []string{"United States"}}
 			var keptUS, droppedUS, keptForeign, droppedForeign, rows int
 			sc := bufio.NewScanner(f)
 			for sc.Scan() {
@@ -60,7 +62,12 @@ func TestOnlyLocationsUSOracle(t *testing.T) {
 						t.Logf("foreign kept: %q (remote %v)", c[2], p.Remote)
 					}
 				case "A":
-					t.Logf("ambiguous %q: dropped %v, counted unread %v", c[2], dropped, x.LocationUnreadable(p))
+					if dropped {
+						t.Errorf("ambiguous %q (remote %v) dropped by only_locations; an unjudged place is kept", c[2], p.Remote)
+					}
+					if _, exd := ex.Match(p); exd {
+						t.Errorf("ambiguous %q (remote %v) dropped by exclude.locations; an unjudged place is kept", c[2], p.Remote)
+					}
 				case "?":
 					// No readable place to a person. The rule keeps what Parse
 					// reads as no place; text Parse takes for an unknown place

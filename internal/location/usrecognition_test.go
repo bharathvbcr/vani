@@ -132,8 +132,14 @@ func TestInUSBounded(t *testing.T) {
 	}
 	commas := "London, " + strings.Repeat("Berlin, ", 200) + "New York"
 	_ = InUS(Parse(commas, false)) // bounded by MaxInputRunes; must not hang or panic
-	huge := strings.Repeat("San Francisco ", 10000)
+	// Oversized, but each place whole: a city matches as a whole part, not as
+	// the prefix of a longer one (one run of "San Francisco San Francisco ..."
+	// is no place).
+	huge := strings.Repeat("San Francisco; ", 10000)
 	if !InUS(Parse(huge, false)) {
 		t.Error("oversized San Francisco string not read as US")
+	}
+	if InUS(Parse(strings.Repeat("San Francisco ", 10000), false)) {
+		t.Error("one oversized run of words read as San Francisco")
 	}
 }

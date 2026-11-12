@@ -13,9 +13,11 @@
 // inconsistently) and a short remote-scope vocabulary are normalised. The one
 // exception is a short list of foreign cities, used only to tell a country from
 // a state written the same way ("Tbilisi, Georgia", "Berlin, DE"). Whether a
-// place is in the US is answered once, by PlaceInUS (us.go), which reads a
-// table of US cities boards write without a state; InUS, Countries and the
-// exclusions all read that answer.
+// place is in the US is answered once, per option of the place, by
+// PlaceOptions (options.go), which reads a table of US cities boards write
+// without a state (us.go) and the foreign countries, regions and cities
+// beside them (country.go); InUS, Countries and the exclusions all compose
+// that answer.
 package location
 
 import (
@@ -120,6 +122,7 @@ func Parse(raw string, boardRemote bool) Location {
 			scopes = append(scopes, s)
 		}
 	}
+	var only []string
 	n := 0
 	for _, group := range segments(clean(raw)) {
 		var placed []Place
@@ -131,6 +134,7 @@ func Parse(raw string, boardRemote bool) Location {
 			remote := remoteInText(words(seg))
 			loc.Remote = loc.Remote || remote
 			p, ok, scope := parseSegment(seg, remote)
+			only = append(only, onlyScopes(seg)...)
 			if remote || !ok || p.Area == "" && p.State == "" {
 				// A scope counts for remote work when the segment says remote, or
 				// when it names nothing but a country ("United States" on a role
@@ -148,9 +152,67 @@ func Parse(raw string, boardRemote bool) Location {
 		}
 	}
 	if loc.Remote && len(scopes) > 0 {
+		var dropped []string
+		scopes, dropped = narrowScopes(strings.Split(strings.Join(scopes, ", "), ", "), only)
 		loc.RemoteScope = strings.Join(scopes, ", ")
+		if len(dropped) > 0 {
+			// The wider region was written as a segment of its own ("Remote -
+			// LATAM / Americas"): it is the narrowed scope, not a place.
+			loc.Places = slices.DeleteFunc(loc.Places, func(p Place) bool {
+				s, ok := scopeOf(p.Region)
+				return p.Area == "" && p.State == "" && ok && slices.Contains(dropped, s)
+			})
+		}
 	}
 	return loc
+}
+
+// wideScopes are the remote scopes that take in narrower ones: Anywhere takes
+// in every scope, the Americas take in North and Latin America and their
+// countries, North America the US, Canada and Mexico.
+var wideScopes = map[string][]string{
+	"Americas":      {"North America", "LATAM", "US", "Canada", "Mexico"},
+	"North America": {"US", "Canada", "Mexico"},
+}
+
+// narrowScopes drops a wide remote scope a narrower one inside it qualifies:
+// "Remote - Americas (LATAM only)" is LATAM and "Remote - North America
+// (Canada only)" is Canada, because the board marked the narrower one "only";
+// "Remote - LATAM / Americas" is LATAM, because LATAM beside the Americas
+// names which part of them. Without such a qualifier the list stays as
+// written ("Remote (EMEA or Americas)", "Remote (Continental US + Hawaii +
+// Canada Only)", where no wider scope is listed). It returns the scopes kept
+// and the ones dropped.
+func narrowScopes(scopes, only []string) (kept, dropped []string) {
+	inside := func(n, w string) bool {
+		return n != w && (w == "Anywhere" || slices.Contains(wideScopes[w], n))
+	}
+	drop := map[string]bool{}
+	for _, w := range scopes {
+		if w != "Anywhere" && wideScopes[w] == nil {
+			continue
+		}
+		for _, n := range only {
+			if slices.Contains(scopes, n) && inside(n, w) {
+				drop[w] = true
+			}
+		}
+		if w == "Americas" && slices.Contains(scopes, "LATAM") {
+			drop[w] = true
+		}
+	}
+	for _, s := range scopes {
+		if drop[s] {
+			if !slices.Contains(dropped, s) {
+				dropped = append(dropped, s)
+			}
+			continue
+		}
+		if !slices.Contains(kept, s) {
+			kept = append(kept, s)
+		}
+	}
+	return kept, dropped
 }
 
 // StateCode reads a USPS code or a state name in any case ("tx", "Texas",
@@ -238,7 +300,18 @@ func shareTail(ps []Place) []Place {
 	if last.State == "" && last.Region == "" {
 		return ps
 	}
+	// A bare "New York" (the city, read with its state) or "Georgia" wrote no
+	// tail to share: "Toronto / New York" is Toronto and New York, not
+	// Toronto, NY.
+	if last.State != "" && (last.Area == "" || NormArea(last.Area) == NormArea(stateNames[last.State])) {
+		return ps
+	}
 	for i := range ps[:len(ps)-1] {
+		// A foreign city of the lists keeps its own country: "Toronto/Austin,
+		// TX" is not Toronto, TX.
+		if _, foreign := foreignCities[NormArea(ps[i].Area)]; foreign && last.State != "" {
+			continue
+		}
 		if ps[i].Area != "" && ps[i].State == "" && ps[i].Region == "" {
 			ps[i].State, ps[i].Region = last.State, last.Region
 		}
@@ -258,6 +331,25 @@ var workModeWords = map[string]bool{
 	"optional": true, "or": true, "within": true, "position": true, "role": true, "non": true, "not": true,
 	"continental": true, "contiguous": true,
 	"some": true, "occasional": true, "travel": true, "required": true, "eligible": true,
+}
+
+// onlyScopes are the scopes a segment marks "only" ("(LATAM only)", "Canada
+// Only"): a part that names one scope or US state beside the word only.
+func onlyScopes(seg string) []string {
+	var out []string
+	for _, part := range strings.Split(partSep.Replace(seg), ",") {
+		w := words(part)
+		if len(w) < 2 || !slices.Contains(w, "only") {
+			continue
+		}
+		p := stripWorkMode(part)
+		if s, ok := scopeOf(p); ok {
+			out = append(out, s)
+		} else if _, ok := stateOf(p); ok {
+			out = append(out, "US")
+		}
+	}
+	return out
 }
 
 // parseSegment reads one location. ok is false when no place is named; scope
@@ -355,13 +447,21 @@ func parseSegment(seg string, remote bool) (Place, bool, string) {
 
 // scopeList joins parts that are all scopes or US states, at least one of
 // them a scope, into one scope. States alone ("Remote - Texas") stay places.
+// "Georgia" beside a scope outside the US ("Remote - Georgia (Europe)") is
+// the country, not the state: it is no scope list.
 func scopeList(parts []string) (string, bool) {
 	var out []string
 	anyScope := false
+	foreignScope := false
+	for _, p := range parts {
+		if s, ok := scopeOf(p); ok && s != "US" && s != "North America" && s != "Americas" && s != "Anywhere" {
+			foreignScope = true
+		}
+	}
 	for _, p := range parts {
 		s, ok := scopeOf(p)
 		if !ok {
-			if _, isState := stateOf(p); !isState {
+			if code, isState := stateOf(p); !isState || code == "GA" && foreignScope && len(strings.TrimSpace(p)) > 2 {
 				return "", false
 			}
 			s = "US"
@@ -395,31 +495,56 @@ func stripWorkMode(part string) string {
 		weak   bool
 		joined bool // joined to the previous piece by a hyphen
 	}
-	var keep []piece
-	strong, dropped := 0, false
+	type raw struct {
+		text      string
+		lastField bool
+		first     bool // first piece of its field
+	}
+	var raws []raw
 	fields := strings.Fields(part)
 	for fi, field := range fields {
-		first := true
-		for _, s := range strings.Split(field, "-") {
-			w := words(s)
-			switch {
-			case len(w) == 0:
-			case fi == len(fields)-1 && isStateCode(s):
-				// "Portland, OR", "Evansville IN": a trailing code in capitals is
-				// the state, not the word it spells.
-				keep = append(keep, piece{s, false, !first})
-				first = false
-				strong++
-			case allIn(w, workModeWords):
-				dropped = true
-			case allIn(w, weakWords):
-				keep = append(keep, piece{s, true, !first})
-				first = false
-			default:
-				keep = append(keep, piece{s, false, !first})
-				first = false
-				strong++
+		for si, s := range strings.Split(field, "-") {
+			raws = append(raws, raw{s, fi == len(fields)-1, si == 0})
+		}
+	}
+	var keep []piece
+	strong, dropped := 0, false
+	first := true
+	for ri, r := range raws {
+		s, w := r.text, words(r.text)
+		if r.first {
+			first = true
+		}
+		var next []string
+		for _, n := range raws[ri+1:] {
+			if next = words(n.text); len(next) > 0 {
+				break
 			}
+		}
+		switch {
+		case len(w) == 0:
+		case len(w) == 1 && (w[0] == "not" || w[0] == "non") && len(next) > 0 && !allIn(next, workModeWords) && !allIn(next, weakWords):
+			// "Not US", "non-US": a negated place, kept for the reader of the
+			// place (PlaceOptions). A negated work mode ("Non-remote", "not
+			// remote") is dropped with the mode below.
+			keep = append(keep, piece{s, false, !first})
+			first = false
+			strong++
+		case r.lastField && isStateCode(s):
+			// "Portland, OR", "Evansville IN": a trailing code in capitals is
+			// the state, not the word it spells.
+			keep = append(keep, piece{s, false, !first})
+			first = false
+			strong++
+		case allIn(w, workModeWords):
+			dropped = true
+		case allIn(w, weakWords):
+			keep = append(keep, piece{s, true, !first})
+			first = false
+		default:
+			keep = append(keep, piece{s, false, !first})
+			first = false
+			strong++
 		}
 	}
 	// A weak word stays only when it is all there is ("in", "ON"); next to a
@@ -469,14 +594,22 @@ func multipleLocations(parts []string) bool {
 
 // placeholderScope is the one scope a placeholder such as "US locations" or
 // "Multiple U.S. Data Center Locations" names, or "" when it names none or
-// more than one.
+// more than one. A region that takes in the US among others ("Global
+// locations", "Multiple Locations Worldwide", "Multiple Americas locations")
+// names no place: as before the scope was read, it stays unread rather than a
+// place a rule could drop. The US needs "US" in capitals, "U.S.", "USA" or
+// "United States": a pronoun ("Contact us for locations") is not the country.
 func placeholderScope(part string) string {
 	w := words(part)
 	found := ""
 	for i := range w {
 		for n := 1; n <= 3 && i+n <= len(w); n++ {
-			s, ok := scopes[strings.Join(w[i:i+n], " ")]
+			k := strings.Join(w[i:i+n], " ")
+			s, ok := scopes[k]
 			if !ok || s == found {
+				continue
+			}
+			if (k == "us" || k == "u s") && !hasUSToken(part) {
 				continue
 			}
 			if found != "" {
@@ -484,6 +617,10 @@ func placeholderScope(part string) string {
 			}
 			found = s
 		}
+	}
+	switch found {
+	case "Anywhere", "North America", "Americas":
+		return ""
 	}
 	return found
 }
@@ -588,7 +725,8 @@ var scopes = map[string]string{
 	"the united kingdom": "UK", "canada": "Canada", "mexico": "Mexico", "méxico": "Mexico",
 	"uk": "UK", "u k": "UK", "united kingdom": "UK", "england": "UK", "great britain": "UK", "britain": "UK",
 	"europe": "Europe", "eu": "Europe", "emea": "EMEA", "apac": "APAC", "asia pacific": "APAC",
-	"latam": "LATAM", "latin america": "LATAM", "north america": "North America", "americas": "Americas",
+	"latam": "LATAM", "latin america": "LATAM", "south america": "LATAM", "central america": "LATAM",
+	"north america": "North America", "americas": "Americas",
 	"anywhere": "Anywhere", "worldwide": "Anywhere", "global": "Anywhere", "world": "Anywhere",
 }
 
