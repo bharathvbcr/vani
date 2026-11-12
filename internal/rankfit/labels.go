@@ -91,9 +91,10 @@ type TargetCounts struct {
 	Saved, Hidden, Passed int
 	// Skipped counts judgments of "can't tell", which label nothing.
 	Skipped int
-	// Closed counts judgments drawn from the audit's closed strata (dead or
-	// duplicate postings), kept out of the fit: they measure liveness and the
-	// duplicate fold, not what the ranking orders.
+	// Closed counts yes, maybe and no judgments drawn from the audit's closed
+	// strata (dead or duplicate postings), kept out of the fit: they measure
+	// liveness and the duplicate fold, not what the ranking orders. A skip
+	// there counts in Skipped.
 	Closed int
 }
 
@@ -104,9 +105,10 @@ func (c TargetCounts) Judged() int { return c.Yes + c.Maybe + c.No }
 // decisions). An audit judgment (the eval store's would_apply label, which
 // `vani audit answer` writes once per posting) wins where there is one: yes
 // above maybe above no; skip labels nothing. Else a mark: saved or applied is
-// a yes, hidden a no. Else a posting an impression shows was shown and left
-// unmarked is a no; an unmarked posting nothing shows was ever shown is no
-// label at all. Scores come from the newest impression; a posting no surface
+// a yes, hidden a no. Else a posting a digest or Jobs impression shows was
+// shown and left unmarked is a no; an unmarked posting only an audit card
+// showed, or nothing showed, is no label at all, and neither is a posting whose
+// judgment came from a closed stratum (kept out of the fit on purpose). Scores come from the newest impression; a posting no surface
 // showed has none, and the caller scores it now.
 //
 // A judgment keeps its stratum and inclusion probability (Source, PSelect),
@@ -115,11 +117,22 @@ func (c TargetCounts) Judged() int { return c.Yes + c.Maybe + c.No }
 func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m map[posting.Key]marks.Mark) (map[posting.Key]Target, TargetCounts, error) {
 	var c TargetCounts
 	newest := map[posting.Key]int{} // index of each key's newest impression
+	// passable holds the keys a surface other than the audit showed. An audit
+	// card asks one question; leaving it unanswered, or answering skip, is not
+	// passing the posting over, so an audit impression alone never makes a
+	// negative.
+	passable := map[posting.Key]bool{}
 	for i, im := range shown {
 		if j, ok := newest[im.Key]; !ok || !im.At.Before(shown[j].At) {
 			newest[im.Key] = i
 		}
+		if im.Surface != feedback.SurfaceAudit {
+			passable[im.Key] = true
+		}
 	}
+	// excluded holds the keys whose judgment is kept out of the fit on purpose
+	// (the closed strata). No other signal may bring them back in as a pass.
+	excluded := map[posting.Key]bool{}
 	scores := func(k posting.Key) *feedback.Scores {
 		if i, ok := newest[k]; ok {
 			s := shown[i].Scores
@@ -138,7 +151,12 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 			return nil, TargetCounts{}, err
 		}
 		if strings.HasPrefix(e.Source, eval.ClosedPrefix) {
-			c.Closed++
+			excluded[k] = true
+			if v == eval.Skip {
+				c.Skipped++ // a skip labels nothing, whatever stratum drew it
+			} else {
+				c.Closed++
+			}
 			continue
 		}
 		t := Target{Judged: true, Scores: scores(k), Source: e.Source, PSelect: e.PSelect}
@@ -172,7 +190,7 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 		}
 	}
 	for _, k := range slices.Sorted(maps.Keys(newest)) {
-		if _, labelled := out[k]; labelled || m[k] != marks.None {
+		if _, labelled := out[k]; labelled || m[k] != marks.None || excluded[k] || !passable[k] {
 			continue
 		}
 		out[k] = Target{Grade: GradeNo, Scores: scores(k)}
