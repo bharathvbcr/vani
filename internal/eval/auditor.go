@@ -129,6 +129,11 @@ type AuditorRow struct {
 type AuditorGate struct {
 	Verdict string   `json:"verdict"`
 	Why     []string `json:"why"`
+	// Reachable says when the gate can decide at all (MinGateClass wanted and
+	// not wanted in each of the kept and dropped groups) and where the counts
+	// stand now, so a calibration on a handful of labels is not read as a test
+	// of the auditor.
+	Reachable string `json:"reachable"`
 }
 
 // AuditorAgreement is the whole measurement.
@@ -315,6 +320,28 @@ func percentileInterval(xs []float64) (lo, hi float64, ok bool) {
 // group that cannot be measured makes the whole gate GateCannot; one too small
 // or not clearly better makes it GateNotYet; it passes only when both pass.
 func auditorGate(rows []AuditorRow) AuditorGate {
+	g := gateVerdict(rows)
+	g.Reachable = gateReachable(rows)
+	return g
+}
+
+// gateReachable states the gate's floor and the kept and dropped groups'
+// wanted / not wanted counts among postings with all three scores.
+func gateReachable(rows []AuditorRow) string {
+	count := func(group string) (int, int) {
+		i := slices.IndexFunc(rows, func(r AuditorRow) bool { return r.Group == group && r.Outcome == OutcomeWanted })
+		if i < 0 {
+			return 0, 0
+		}
+		return rows[i].Positives, rows[i].Negatives
+	}
+	kp, kn := count(GroupKept)
+	dp, dn := count(GroupDropped)
+	return fmt.Sprintf("The gate can decide only when the kept and the dropped postings each hold at least %d wanted and %d not wanted with all three scores; now: kept %d wanted / %d not wanted, dropped %d wanted / %d not wanted.",
+		MinGateClass, MinGateClass, kp, kn, dp, dn)
+}
+
+func gateVerdict(rows []AuditorRow) AuditorGate {
 	var cannot, notYet []string
 	for _, g := range []string{GroupKept, GroupDropped} {
 		i := slices.IndexFunc(rows, func(r AuditorRow) bool { return r.Group == g && r.Outcome == OutcomeWanted })
@@ -360,6 +387,9 @@ func (a AuditorAgreement) Markdown() string {
 	fmt.Fprintf(&sb, "\nGate: **%s**\n", a.Gate.Verdict)
 	for _, w := range a.Gate.Why {
 		fmt.Fprintf(&sb, "- %s\n", w)
+	}
+	if a.Gate.Reachable != "" {
+		fmt.Fprintf(&sb, "\n%s\n", a.Gate.Reachable)
 	}
 	return sb.String()
 }

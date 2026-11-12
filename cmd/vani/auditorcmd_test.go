@@ -29,7 +29,7 @@ import (
 
 // auFake answers the would-apply question as answer says (default: every slot
 // its first option), records what it was sent, and charges tcPerCall per
-// question to the meter teacherSpent reads.
+// question to the meter teacherSpent and teacherResolved read.
 type auFake struct {
 	mu     sync.Mutex
 	sent   []string
@@ -57,19 +57,31 @@ func (f *auFake) Decide(ctx context.Context, q decide.Question) (decide.Answer, 
 
 func auUse(t *testing.T, f *auFake) {
 	t.Helper()
-	oldD, oldS, oldT := teacherDecider, teacherSpent, auditorTimeout
-	t.Cleanup(func() { teacherDecider, teacherSpent, auditorTimeout = oldD, oldS, oldT })
+	oldD, oldS, oldR, oldT := teacherDecider, teacherSpent, teacherResolved, auditorTimeout
+	t.Cleanup(func() { teacherDecider, teacherSpent, teacherResolved, auditorTimeout = oldD, oldS, oldR, oldT })
 	teacherDecider = func(context.Context, *wired, string) (decide.Decider, error) { return f, nil }
 	teacherSpent = func(context.Context, string) (int64, error) { return f.meter.Load(), nil }
+	teacherResolved = func(context.Context, string) (int64, error) { return f.meter.Load(), nil }
 }
 
 // auSetup is tkSetup (ledger gh:a:1..5, a knowledge base) with the owner's
 // judgments: five would_apply answers (one for a posting the ledger does not
 // hold, one for a posting with no text) and two marks, one on a posting also
-// labelled.
+// labelled. It writes an owner's identifying-words list whose one term occurs
+// nowhere, since a real run refuses when that list is missing or empty.
 func auSetup(t *testing.T) *tcEnv {
 	t.Helper()
 	e := tkSetup(t)
+	cfg, err := config.Load(e.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(track.Dir(cfg, e.state), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(track.Dir(cfg, e.state), track.WordsFile), []byte("# test\nzzqxvterm\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	s, err := eval.NewStore(filepath.Join(e.state, "eval", "labels"), filepath.Join(e.state, "eval", "text"))
 	if err != nil {
 		t.Fatal(err)
@@ -343,7 +355,7 @@ func TestAuditorRefusesAQuestionThatWouldCarryAnIdentifyingTerm(t *testing.T) {
 	}
 	// A dry run sends nothing: it prices the plan and says a real run would refuse.
 	o, _ := mustCode(t, 0, "auditor", "calibrate", "--dry-run")
-	if !strings.Contains(o, "a real run would REFUSE") || !strings.Contains(o, "the target summary holds visa") || !strings.Contains(o, "4 to ask") {
+	if !strings.Contains(o, "a real run would REFUSE") || !strings.Contains(o, "the target summary holds 1 identifying term") || !strings.Contains(o, "4 to ask") {
 		t.Errorf("dry run:\n%s", o)
 	}
 	// A real run refuses before any decider is built (tcNoModel fails the test if one is).
@@ -388,7 +400,7 @@ func TestAuditorAppliesTheOwnersIdentifyingWordsToTheDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, _, stderr := do(t, "auditor", "calibrate", "--budget-usd", "1")
-	if code == 0 || !strings.Contains(stderr, "the knowledge-base digest holds "+word) {
+	if code == 0 || !strings.Contains(stderr, "the knowledge-base digest holds 1 identifying term") {
 		t.Errorf("exit %d, stderr %s", code, stderr)
 	}
 }
@@ -423,8 +435,8 @@ func TestAuditorReportCannotGateBeforeAnyAnswerAndMeasuresAfter(t *testing.T) {
 	if err := json.Unmarshal([]byte(o), &r); err != nil {
 		t.Fatal(err)
 	}
-	if r.AuditorAnswered != 4 || r.TeacherModel != tcHaiku || r.TeacherCurrentPrompt != 0 {
-		t.Errorf("after answers: answered %d teacher %q current %d", r.AuditorAnswered, r.TeacherModel, r.TeacherCurrentPrompt)
+	if r.AuditorAnswered != 4 || r.TeacherModel != tcHaiku || r.TeacherBaseline.ScoredCurrent != 0 {
+		t.Errorf("after answers: answered %d teacher %q current %d", r.AuditorAnswered, r.TeacherModel, r.TeacherBaseline.ScoredCurrent)
 	}
 	// Two labels in a group cannot pass a gate that needs ten of each class.
 	if r.Agreement.Gate.Verdict == eval.GatePasses {

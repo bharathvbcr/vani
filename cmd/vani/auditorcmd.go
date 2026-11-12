@@ -135,14 +135,45 @@ func (e *env) auditorSetup(modelFlag string) (config.Config, string, string, kbm
 	return cfg, model, summary, d, auditorTask(summary, d), nil
 }
 
+// Which identifying-word lists a calibration checked (auditorPlanJSON).
+const (
+	auditorWordsBoth    = "the owner's list and the built-in list"
+	auditorWordsBuiltin = "built-in list only"
+)
+
+// auditorFinding is one part of the shared text that holds identifying terms.
+// The terms are the owner's private list (or the built-in one): String names
+// the part and the count only, so a refusal, a dry run or a JSON reply never
+// carries them; only --show-terms prints them, to a terminal's stderr.
+type auditorFinding struct {
+	part  string
+	terms []string
+}
+
+func (f auditorFinding) String() string {
+	s := "s"
+	if len(f.terms) == 1 {
+		s = ""
+	}
+	return fmt.Sprintf("%s holds %d identifying term%s", f.part, len(f.terms), s)
+}
+
+func auditorFindings(fs []auditorFinding) string {
+	parts := make([]string, len(fs))
+	for i, f := range fs {
+		parts[i] = f.String()
+	}
+	return strings.Join(parts, "; ")
+}
+
 // auditorIdentifying checks the text every question carries (the prompt, the
 // target summary and the knowledge-base digest) against the identifying-word
 // list (internal/track: the built-in list plus the owner's
 // identifying-words.txt). It returns one finding per part that holds a term,
-// naming the part and the terms (never the surrounding text), and personal
-// false when the owner's list was missing or empty, so only the built-in list
-// was checked. A list that cannot be read is an error: the check did not run.
-func (e *env) auditorIdentifying(cfg config.Config, summary string, d kbmatch.Digest) (findings []string, personal bool, err error) {
+// and personal false when the owner's list was missing, empty or only
+// comments, so only the built-in list was checked. A list that cannot be read
+// is an error: the check did not run.
+func (e *env) auditorIdentifying(cfg config.Config, summary string, d kbmatch.Digest) (findings []auditorFinding, personal bool, err error) {
 	words, err := track.LoadWords(track.Dir(cfg, e.stateDir))
 	if err != nil {
 		return nil, false, fmt.Errorf("auditor: the identifying-word check could not run: %w", err)
@@ -153,7 +184,7 @@ func (e *env) auditorIdentifying(cfg config.Config, summary string, d kbmatch.Di
 		{"the knowledge-base digest", d.Text},
 	} {
 		if found := words.Found(part.text); len(found) > 0 {
-			findings = append(findings, fmt.Sprintf("%s holds %s", part.name, strings.Join(found, ", ")))
+			findings = append(findings, auditorFinding{part: part.name, terms: found})
 		}
 	}
 	return findings, words.Personal, nil
@@ -234,8 +265,14 @@ type auditorPlanJSON struct {
 	MaxUSD       float64        `json:"max_usd"`
 	AuditorCap   float64        `json:"auditor_daily_cap_usd"`
 	LLMDailyCap  float64        `json:"llm_daily_cap_usd"`
-	// BlockedBy names, per part of the shared text, the identifying terms that
-	// make a real run refuse; empty when it would send.
+	// IdentifyingWords says which lists the identifying-word check applied:
+	// auditorWordsBoth, or auditorWordsBuiltin when the owner's list was
+	// missing or empty (a real run then refuses without
+	// --no-identifying-words-file).
+	IdentifyingWords string `json:"identifying_words"`
+	// BlockedBy says, per part of the shared text, how many identifying terms
+	// it holds (never the terms) that make a real run refuse; empty when it
+	// would send.
 	BlockedBy []string `json:"blocked_by_identifying_terms,omitempty"`
 }
 
@@ -256,9 +293,14 @@ func (e *env) auditorCalibrate(args []string) error {
 	budgetUSD := fs.Float64("budget-usd", 0, fmt.Sprintf("the most this run may spend, in dollars, at most %v (required for a real run; no default)", auditorDailyCapUSD))
 	modelFlag := fs.String("model", "", "the llm model that answers (default llm.triage_model, else llm.model)")
 	conc := fs.Int("concurrency", defaultTeacherConcurrency, fmt.Sprintf("questions in flight (1-%d)", eval.MaxTeacherConcurrency))
+	builtinOnly := fs.Bool("no-identifying-words-file", false, "send even though your identifying-words list ("+track.WordsFile+") is missing or empty, so only the built-in list was checked")
+	showTerms := fs.Bool("show-terms", false, "name the identifying terms found, on stderr, for your own terminal (never with --json)")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what the run did (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *showTerms && *asJSON {
+		return usagef("auditor calibrate: --show-terms is for your own terminal and cannot be combined with --json")
 	}
 	budgetSet := false
 	fs.Visit(func(f *flag.Flag) { budgetSet = budgetSet || f.Name == "budget-usd" })
@@ -274,7 +316,8 @@ func (e *env) auditorCalibrate(args []string) error {
 		return usagef("auditor calibrate: --concurrency must be 1-%d", eval.MaxTeacherConcurrency)
 	}
 	jr := &auditorCalibrateReply{DryRun: *dry}
-	err := e.textToStderr(*asJSON, func() error { return e.auditorCalibrateBody(jr, *dry, *budgetUSD, *modelFlag, *conc) })
+	o := auditorCalibrateOpts{dry: *dry, budgetUSD: *budgetUSD, model: *modelFlag, conc: *conc, builtinOnly: *builtinOnly, showTerms: *showTerms}
+	err := e.textToStderr(*asJSON, func() error { return e.auditorCalibrateBody(jr, o) })
 	if !*asJSON {
 		return err
 	}
@@ -320,8 +363,19 @@ func (e *env) auditorCandidates(keys []posting.Key) (cands []eval.TeacherCandida
 	return cands, notInLedger, noText, nil
 }
 
-func (e *env) auditorCalibrateBody(jr *auditorCalibrateReply, dry bool, budgetUSD float64, modelFlag string, conc int) error {
-	cfg, model, summary, digest, task, err := e.auditorSetup(modelFlag)
+// auditorCalibrateOpts is `vani auditor calibrate`'s flags.
+type auditorCalibrateOpts struct {
+	dry         bool
+	budgetUSD   float64
+	model       string
+	conc        int
+	builtinOnly bool // --no-identifying-words-file
+	showTerms   bool
+}
+
+func (e *env) auditorCalibrateBody(jr *auditorCalibrateReply, o auditorCalibrateOpts) error {
+	dry, budgetUSD, conc := o.dry, o.budgetUSD, o.conc
+	cfg, model, summary, digest, task, err := e.auditorSetup(o.model)
 	if err != nil {
 		return err
 	}
@@ -329,11 +383,24 @@ func (e *env) auditorCalibrateBody(jr *auditorCalibrateReply, dry bool, budgetUS
 	if err != nil {
 		return err
 	}
+	wordsChecked := auditorWordsBoth
 	if !personal {
-		fmt.Fprintf(e.stderr, "vani: identifying-word check: built-in list only; personal names were NOT checked (no terms in %s)\n", track.WordsFile)
+		// Fail closed: with the owner's list missing or empty, only the built-in
+		// list was checked, so the owner's names, employers and schools could be
+		// in the digest unseen. A real run needs the owner to say so explicitly.
+		wordsChecked = auditorWordsBuiltin
+		fmt.Fprintf(e.stderr, "vani: identifying-word check: built-in list only; your own terms were NOT checked (%s in %s is missing or empty)\n", track.WordsFile, track.Dir(cfg, e.stateDir))
+		if !dry && !o.builtinOnly {
+			return fmt.Errorf("auditor: your identifying-words list (%s in %s) is missing or empty, so only the built-in list was checked; nothing was sent (add your terms to it, or pass --no-identifying-words-file to send anyway)", track.WordsFile, track.Dir(cfg, e.stateDir))
+		}
+	}
+	if o.showTerms {
+		for _, f := range identifying {
+			fmt.Fprintf(e.stderr, "vani: %s: %s (shown because of --show-terms)\n", f.part, strings.Join(f.terms, ", "))
+		}
 	}
 	if len(identifying) > 0 && !dry {
-		return fmt.Errorf("auditor: the text every question carries holds identifying terms (%s); nothing was sent", strings.Join(identifying, "; "))
+		return fmt.Errorf("auditor: the text every question carries holds identifying terms (%s); nothing was sent (--show-terms names them in your terminal)", auditorFindings(identifying))
 	}
 	judged, err := e.auditorJudgedSet()
 	if err != nil {
@@ -375,11 +442,17 @@ func (e *env) auditorCalibrateBody(jr *auditorCalibrateReply, dry bool, budgetUS
 		Labelled: judged.labelled, Marked: judged.marked, Judged: len(judged.keys), NotInLedger: notInLedger, NoText: noText,
 		Already: len(cands) - len(pending), ToAsk: len(pending), AuditorCap: auditorDailyCapUSD, LLMDailyCap: cfg.Decide.DailyUSD.LLM,
 		PriceSource: source, InputPerMTok: float64(prices.Input) / 1000, OutputPerMTk: float64(prices.Output) / 1000,
-		BlockedBy: identifying}
+		IdentifyingWords: wordsChecked}
+	for _, f := range identifying {
+		plan.BlockedBy = append(plan.BlockedBy, f.String())
+	}
 	jr.Plan = plan
 	if len(identifying) > 0 {
-		fmt.Fprintf(e.stdout, "auditor: a real run would REFUSE: the text every question carries holds identifying terms (%s); remove them, or take them off the list in %s, before anything is sent\n",
-			strings.Join(identifying, "; "), track.WordsFile)
+		fmt.Fprintf(e.stdout, "auditor: a real run would REFUSE: the text every question carries holds identifying terms (%s); remove them, or take them off the list in %s, before anything is sent (--show-terms names them in your terminal)\n",
+			auditorFindings(identifying), track.WordsFile)
+	}
+	if !personal && !o.builtinOnly {
+		fmt.Fprintf(e.stdout, "auditor: a real run would REFUSE without --no-identifying-words-file: only the built-in identifying-word list was checked\n")
 	}
 	fmt.Fprintf(e.stdout, "auditor: %d postings judged or marked (%d with a would_apply answer, %d marked); left out: %d not in the ledger, %d with no text; %d already answered by %s under this question and digest; %d to ask\n",
 		len(judged.keys), judged.labelled, judged.marked, notInLedger, noText, plan.Already, model, len(pending))
@@ -423,8 +496,7 @@ func (e *env) auditorCalibrateBody(jr *auditorCalibrateReply, dry bool, budgetUS
 	if err != nil {
 		return fmt.Errorf("auditor budget: %w", err)
 	}
-	spent := func(c context.Context) (int64, error) { return teacherSpent(c, ledgerPath) }
-	committed, err := spent(ctx)
+	committed, err := teacherSpent(ctx, ledgerPath)
 	if err != nil {
 		return fmt.Errorf("auditor: reading today's llm spend: %w", err)
 	}
@@ -438,25 +510,41 @@ func (e *env) auditorCalibrateBody(jr *auditorCalibrateReply, dry bool, budgetUS
 		return err
 	}
 	fmt.Fprintf(e.stdout, "auditor: spending at most %s (the least of --budget-usd, the auditor's cap headroom and the daily llm cap's headroom)\n", usd(limit))
+	// The auditor's cap is charged as questions settle, with what the ledger's
+	// resolved spend (settled plus kept reservations; never in-flight ones) grew
+	// by since the run began. Every question of the run is resolved into it
+	// before it returns and it never falls, so the charge is never less than
+	// what the run spent; spend other callers resolved meanwhile is charged too,
+	// so it can be more. Charging as it goes means a run that dies part-way has
+	// already put what its finished questions cost on the cap; only a question
+	// in flight at that moment is unrecorded here (the llm cap's ledger keeps it).
+	var charged int64
 	run := eval.TeacherRun{
 		D: d, Model: model, Summary: summary, Store: store, Task: task, Concurrency: conc, Timeout: auditorTimeout,
-		LimitNano: limit, Spent: spent, Now: now,
+		LimitNano: limit, Now: now,
+		Spent: func(c context.Context) (int64, error) { return teacherResolved(c, ledgerPath) },
 		Worst: func(q decide.Question) int64 { return teacherWorstNano(prices, q) },
+		OnSpent: func(c context.Context, since int64) error {
+			if since <= charged {
+				return nil
+			}
+			if err := auditorCap.Charge(c, auditorSpendKey, float64(since-charged)/1e9); err != nil {
+				return fmt.Errorf("charging the auditor's cap: %w", err)
+			}
+			charged = since
+			return nil
+		},
 	}
 	res, runErr := run.Run(ctx, pending)
-	// The auditor's cap is charged with what the llm ledger grew by during the
-	// run, whatever else was metered into it meanwhile: conservative, never low.
-	charged := float64(max(res.SpentNano, 0)) / 1e9
-	chargeErr := auditorCap.Charge(context.WithoutCancel(ctx), auditorSpendKey, charged)
 	jr.Run = &auditorRunResult{LimitUSD: float64(limit) / 1e9, Asked: res.Asked, Stored: res.Stored, Unusable: res.Unusable,
-		NoReading: res.Unread, ChargedUSD: charged, NotAsked: max(len(pending)-res.Stored, 0), Stopped: res.Stopped}
+		NoReading: res.Unread, ChargedUSD: float64(charged) / 1e9, NotAsked: max(len(pending)-res.Stored, 0), Stopped: res.Stopped}
 	fmt.Fprintf(e.stdout, "auditor: asked %d, stored %d (%d with an unusable slot), no reading %d; charged %s to the auditor's cap\n",
-		res.Asked, res.Stored, res.Unusable, res.Unread, usd(max(res.SpentNano, 0)))
+		res.Asked, res.Stored, res.Unusable, res.Unread, usd(charged))
 	if res.Stopped != "" {
 		fmt.Fprintf(e.stdout, "auditor: stopped: %s; %d of the %d planned postings were not asked; run again to resume\n", res.Stopped, jr.Run.NotAsked, len(pending))
 	}
-	if err := errors.Join(runErr, chargeErr); err != nil {
-		return fmt.Errorf("auditor: %w", err)
+	if runErr != nil {
+		return fmt.Errorf("auditor: %w", runErr)
 	}
 	if res.Stopped != "" && res.Stopped != eval.TeacherStoppedAtLimit {
 		return errors.New("auditor: " + res.Stopped)
@@ -468,34 +556,52 @@ func (e *env) auditorCalibrateBody(jr *auditorCalibrateReply, dry bool, budgetUS
 type auditorReportReply struct {
 	Model        string `json:"model"`
 	TeacherModel string `json:"teacher_model"`
-	// TeacherCurrentPrompt counts the teacher readings used that were asked
-	// under the current target summary's prompt; the rest predate it.
-	TeacherCurrentPrompt int                    `json:"teacher_current_prompt"`
-	Labelled             int                    `json:"labelled"`
-	Marked               int                    `json:"marked"`
-	NotInLedger          int                    `json:"not_in_ledger"`
-	AuditorAnswered      int                    `json:"auditor_answered"`
-	Reasons              map[string]int         `json:"auditor_reasons"`
-	MissedReasons        map[string]int         `json:"auditor_reasons_when_owner_wanted_and_auditor_said_no"`
-	Agreement            *eval.AuditorAgreement `json:"agreement,omitempty"`
+	// TeacherBaseline says which teacher readings the comparison scored.
+	TeacherBaseline auditorBaseline        `json:"teacher_baseline"`
+	Labelled        int                    `json:"labelled"`
+	Marked          int                    `json:"marked"`
+	NotInLedger     int                    `json:"not_in_ledger"`
+	AuditorAnswered int                    `json:"auditor_answered"`
+	Reasons         map[string]int         `json:"auditor_reasons"`
+	MissedReasons   map[string]int         `json:"auditor_reasons_when_owner_wanted_and_auditor_said_no"`
+	Agreement       *eval.AuditorAgreement `json:"agreement,omitempty"`
 	failure
+}
+
+// auditorBaseline is what the teacher baseline was made of, over the postings
+// the comparison scored (a label item or a mark item that holds a teacher
+// reading): how many readings, and how many of them were asked under the
+// current question (fixture and target-summary prompt). A reading asked under
+// an older summary answered a different question, which handicaps the
+// baseline; CurrentOnly restricts the baseline to current readings.
+type auditorBaseline struct {
+	Scored        int  `json:"scored"`
+	ScoredCurrent int  `json:"scored_current_prompt"`
+	CurrentOnly   bool `json:"current_only"`
 }
 
 func (e *env) auditorReport(args []string) error {
 	fs := e.newFlags("auditor report")
 	modelFlag := fs.String("model", "", "the auditor model whose answers are measured (default llm.triage_model, else llm.model)")
 	teacherFlag := fs.String("teacher-model", "", "the teacher whose triage reading is the baseline (default the model with the most readings of the judged postings)")
+	currentOnly := fs.Bool("teacher-current-only", false, "use only teacher readings asked under the current question (fixture and target summary) as the baseline")
 	seed := fs.Uint64("seed", 1, "the bootstrap's seed")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	out := &auditorReportReply{}
-	err := e.auditorReportBody(out, *modelFlag, *teacherFlag, *seed)
+	err := e.auditorReportBody(out, *modelFlag, *teacherFlag, *currentOnly, *seed)
 	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "# Would-apply auditor: agreement with your answers\n\n")
 		fmt.Fprintf(e.stdout, "- auditor %s: %d of the judged postings answered under the current question and digest\n", out.Model, out.AuditorAnswered)
-		fmt.Fprintf(e.stdout, "- baseline teacher %s (triage role_fit, newest reading; %d under the current prompt), and the relevance score\n", cmp.Or(out.TeacherModel, "(none)"), out.TeacherCurrentPrompt)
+		b := out.TeacherBaseline
+		which := "newest reading, whatever question it was asked under"
+		if b.CurrentOnly {
+			which = "current-question readings only (--teacher-current-only)"
+		}
+		fmt.Fprintf(e.stdout, "- baseline teacher %s (triage role_fit, %s): %d of the %d scored teacher readings were asked under the current prompt; and the relevance score\n",
+			cmp.Or(out.TeacherModel, "(none)"), which, b.ScoredCurrent, b.Scored)
 		fmt.Fprintf(e.stdout, "- %d would_apply answers, %d marks; %d not in the ledger\n\n", out.Labelled, out.Marked, out.NotInLedger)
 		if out.Agreement != nil {
 			fmt.Fprint(e.stdout, out.Agreement.Markdown())
@@ -545,7 +651,7 @@ func auditorGroup(en eval.Entry, status posting.Status) string {
 	return eval.GroupKept
 }
 
-func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag string, seed uint64) error {
+func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag string, currentOnly bool, seed uint64) error {
 	_, model, summary, _, task, err := e.auditorSetup(modelFlag)
 	if err != nil {
 		return err
@@ -583,7 +689,9 @@ func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag 
 		byKey[r.Key] = r
 	}
 	current := aud.CurrentOf(model, task)
-	curPrompt := eval.PromptHash(summary)
+	curPrompt, curFixture := eval.PromptHash(summary), eval.FixtureSHA()
+	teachCur := teach.Current(teacherModel, summary)
+	out.TeacherBaseline.CurrentOnly = currentOnly
 	out.Reasons, out.MissedReasons = map[string]int{}, map[string]int{}
 	score := func(k posting.Key, it *eval.AuditorItem) {
 		r := byKey[k]
@@ -592,9 +700,23 @@ func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag 
 			it.Relevance, it.HasRelevance = res.Relevance, true
 		}
 		if teacherModel != "" {
-			if row, ok := teach.Latest(k, "", teacherModel); ok {
-				if v, ok := auditorRoleFitScore[answeredValue(row, "role_fit")]; ok {
-					it.Teacher, it.HasTeacher = v, true
+			// The baseline is the teacher's newest reading, or with currentOnly
+			// its newest reading under the current question; either way the
+			// disclosure counts the readings actually scored, with how many were
+			// asked under the current question.
+			value, isCurrent, ok := "", false, false
+			if currentOnly {
+				if rd, has := teachCur.Reading(string(k)); has {
+					value, isCurrent, ok = rd["role_fit"], true, true
+				}
+			} else if row, has := teach.Latest(k, "", teacherModel); has {
+				value, isCurrent, ok = answeredValue(row, "role_fit"), row.PromptHash == curPrompt && row.FixtureSHA == curFixture, true
+			}
+			if v, scored := auditorRoleFitScore[value]; ok && scored {
+				it.Teacher, it.HasTeacher = v, true
+				out.TeacherBaseline.Scored++
+				if isCurrent {
+					out.TeacherBaseline.ScoredCurrent++
 				}
 			}
 		}
@@ -606,7 +728,6 @@ func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag 
 	}
 	var items []eval.AuditorItem
 	answered := map[posting.Key]bool{}
-	teacherCur := map[posting.Key]bool{}
 	for _, k := range judged.keys {
 		r, ok := byKey[k]
 		if !ok {
@@ -620,9 +741,6 @@ func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag 
 					out.Reasons[rs]++
 				}
 			}
-		}
-		if row, ok := teach.Latest(k, "", teacherModel); ok && row.PromptHash == curPrompt {
-			teacherCur[k] = true
 		}
 		if en, ok := judged.labels[k]; ok {
 			ans := en.Labels[eval.WouldApply]
@@ -641,7 +759,7 @@ func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag 
 			items = append(items, it)
 		}
 	}
-	out.AuditorAnswered, out.TeacherCurrentPrompt = len(answered), len(teacherCur)
+	out.AuditorAnswered = len(answered)
 	a, err := eval.BuildAuditorAgreement(items, seed)
 	if err != nil {
 		return err

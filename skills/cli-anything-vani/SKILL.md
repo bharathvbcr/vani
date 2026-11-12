@@ -157,8 +157,11 @@ before running one.
 - `vani kbmatch run`
 - `vani teacher`
 - `vani auditor calibrate` (it also needs `--budget-usd`, and stops at the auditor's own
-  $15 daily cap). `vani auditor report` spends nothing: it measures the auditor's answers
-  against the owner's, and its gate says whether they may be trusted.
+  $15 daily cap). It refuses while the text it would send holds identifying terms, or the
+  owner's identifying-words list is missing; its output gives counts, never the terms. Do not
+  pass `--show-terms` or `--no-identifying-words-file`: both are the owner's to choose.
+  `vani auditor report` spends nothing: it measures the auditor's answers against the
+  owner's, and its gate says whether they may be trusted.
 - `vani draft`, `vani suggest` and `vani resume` take a JSON request on stdin and write a
   JSON reply.
 
