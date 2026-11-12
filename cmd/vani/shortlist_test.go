@@ -8,6 +8,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
 // A board that listed fewer jobs than it counts (workday.Stats.Short) carries
@@ -29,6 +30,27 @@ func TestBoardFetchCarriesShortListing(t *testing.T) {
 	}
 	if rep.Short != 15 {
 		t.Fatalf("total short %d, want 15 (the cut board's 5 included)", rep.Short)
+	}
+}
+
+// What a Workday listing reports reaches the run record: deferred, gone and
+// short together, and a short listing is said in the run log.
+func TestWorkdayStatsReachTheRunRecord(t *testing.T) {
+	warn := &bytes.Buffer{}
+	w := &wired{warn: warn}
+	b := sources.Board{ATS: posting.Workday, Token: "acme/External"}
+	w.noteWorkdayStats(b, workday.Stats{Listed: 40, Deferred: 2, Gone: 1, Short: 60})
+	w.noteWorkdayStats(sources.Board{ATS: posting.Workday, Token: "full/Site"}, workday.Stats{Listed: 5})
+	rep := &boardsReport{Items: []boardReport{{ATS: string(posting.Workday), Token: "acme/External", Outcome: boardRead}}}
+	w.mu.Lock()
+	w.applyFetchesLocked(rep)
+	w.mu.Unlock()
+	if it := rep.Items[0]; it.Short != 60 || it.Deferred != 2 || it.Gone != 1 || rep.Short != 60 {
+		t.Fatalf("item %+v, total short %d", it, rep.Short)
+	}
+	log := warn.String()
+	if !strings.Contains(log, "board wd/acme/External: listed 60 job(s) fewer than it counts") || strings.Contains(log, "full/Site") {
+		t.Fatalf("run log %q", log)
 	}
 }
 
@@ -68,6 +90,28 @@ func TestRunsShowNamesShortListing(t *testing.T) {
 	copyText := (&env{stateDir: t.TempDir(), stderr: &bytes.Buffer{}}).runReportOf(runRef{ID: runID(rec), Rec: rec}, histT0, false)
 	if strings.Contains(copyText.Text, "Listed short") {
 		t.Errorf("failures copy text carries a short listing\n%s", copyText.Text)
+	}
+}
+
+// The largest gaps are named first, so routine one-row gaps on many boards
+// cannot push a large one past the bound.
+func TestRunsShowNamesTheLargestShortListingsFirst(t *testing.T) {
+	rec := histRec(1, outcomeOK)
+	rep := &boardsReport{Configured: maxShortLines + 2, Read: maxShortLines + 2}
+	for i := range maxShortLines + 1 {
+		rep.Items = append(rep.Items, boardReport{ATS: "workday", Token: fmt.Sprintf("small%d/Site", i), Outcome: boardRead, Short: 1})
+		rep.Short++
+	}
+	rep.Items = append(rep.Items, boardReport{ATS: "workday", Token: "big/Site", Outcome: boardRead, Short: 60})
+	rep.Short += 60
+	rec.Boards = rep
+	text := (&env{stateDir: t.TempDir(), stderr: &bytes.Buffer{}}).runReportOf(runRef{ID: runID(rec), Rec: rec}, histT0, true).Text
+	big, small := strings.Index(text, "Listed short: workday:big/Site: 60"), strings.Index(text, "Listed short: workday:small0/Site")
+	if big < 0 || small < 0 || big > small {
+		t.Fatalf("the 60-row gap is not named first\n%s", text)
+	}
+	if !strings.Contains(text, "Listed short: 2 more board(s), 2 counted job(s) not listed") {
+		t.Fatalf("the one-row gaps past the bound are not counted\n%s", text)
 	}
 }
 

@@ -252,10 +252,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			if st.Short > 0 {
-				w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, st.Short)
-			}
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short})
+			w.noteWorkdayStats(b, st)
 		},
 	})
 	if err != nil {
@@ -542,6 +539,8 @@ func (w *wired) pollInbox(ctx context.Context) (err error) {
 	res, derr := w.drainSpool(ctx)
 	st.Folded, st.Bad, st.Unreadable = res.Report.Folded, len(res.Report.Bad), res.Report.Unreadable
 	st.Remaining, st.New, st.Duplicate, st.Live = res.Report.Remaining, res.New, res.Duplicate, len(res.Live)
+	st.Jobs, st.ListedDuplicate, st.Known = res.Report.Jobs, res.ListedDuplicate, res.Known
+	st.Invalid, st.Repeated, st.Unaccounted = res.Invalid, res.Repeated, res.unaccounted()
 	if derr != nil && ctx.Err() == nil {
 		st.Error = derr.Error()
 	}

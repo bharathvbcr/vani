@@ -5,6 +5,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
 // explain modes (explainNote.Mode). A list-only pass still warns and does not
@@ -118,6 +119,16 @@ type boardKey struct {
 
 func fetchKey(ats posting.ATS, token string) boardKey {
 	return boardKey{ATS: string(ats), Token: oneLine(token, maxBoardNameRunes)}
+}
+
+// noteWorkdayStats keeps what one Workday listing reports for the run record:
+// its deferred and gone details, and the rows it counted but did not list
+// (Short), which it also says in the run log.
+func (w *wired) noteWorkdayStats(b sources.Board, st workday.Stats) {
+	if st.Short > 0 {
+		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, st.Short)
+	}
+	w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short})
 }
 
 // noteBoardFetch keeps one board's fetch counts. A second report for the same
