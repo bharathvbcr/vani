@@ -128,10 +128,14 @@ scratch folder and the bundle verified. What remains, by design or unmeasured:
     kept. Changing that means changing the shared vector.
 - **Bounded detail step:** `srcutil.PlanDetails` now plans Workday, SmartRecruiters, Oracle HCM,
   Rippling, Avature and TalentBrew. Not yet on it:
-  - Eightfold and Apple (bounded by board cap and search terms only).
+  - Apple (bounded by board cap and search terms only). Eightfold joined on 2026-11-11: stored
+    postings are reused and re-read on their turn (its search rows carry no updated stamp), new
+    rows are prefiltered by title, and nothing is deferred (the limit is its 200 cap). Microsoft's
+    host had answered 429 in 9 of 12 runs while every run re-read all ~137 details; that reuse
+    ends the 429s is inferred, not yet seen live.
   - IBM, D. E. Shaw and Atlassian (one-request lists).
-- **Duplicate `maxGone`:** `apple`, `eightfold` and `avature`'s `maxGone` copies were not touched
-  beyond Avature; `srcutil.MaxGone` is the shared form.
+- **Duplicate `maxGone`:** `apple`'s `maxGone` copy is the one left (Avature's and Eightfold's now
+  use the shared form); `srcutil.MaxGone` is the shared form.
 - **Robots reads:** `talentbrew` and `avature.checkRobots` each read robots.txt twice per board.
   `page.RobotsAllowsPaths` answers several paths from one read.
 - **Eightfold:** robots.txt is now read before the first pcsx request, so a robots.txt outage

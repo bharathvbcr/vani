@@ -15,14 +15,19 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/bamboohr"
+	"github.com/bharathvbcr/Vani/internal/sources/breezy"
+	"github.com/bharathvbcr/Vani/internal/sources/hibob"
+	"github.com/bharathvbcr/Vani/internal/sources/hirehive"
 	"github.com/bharathvbcr/Vani/internal/sources/personio"
 	"github.com/bharathvbcr/Vani/internal/sources/pinpoint"
 	"github.com/bharathvbcr/Vani/internal/sources/recruitee"
 	"github.com/bharathvbcr/Vani/internal/sources/srctest"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
+	"github.com/bharathvbcr/Vani/internal/sources/teamtailor"
 )
 
-// tenant is one per-tenant ATS (Recruitee, Pinpoint, BambooHR, Personio), whose
+// tenant is one per-tenant ATS (Recruitee, Pinpoint, BambooHR, Personio,
+// Breezy, Teamtailor, HireHive, HiBob), whose
 // boards each live on {token}.{domain}: the contract they share, put side by
 // side. listURL is the one request that lists the board; list builds its reply
 // for the given ids, and detail (BambooHR only) the reply for one id's detail.
@@ -90,6 +95,50 @@ func tenants() []tenant {
 				return "/careers/" + id + "/detail", fmt.Sprintf(`{"result":{"jobOpening":{"jobOpeningShareUrl":"https://acme.bamboohr.com/careers/%s","jobOpeningName":"Role %s","jobOpeningStatus":"Open","description":"<p>Body %s</p>"}}}`, id, id, id)
 			},
 			redirectIsGone: true,
+		},
+		{
+			name: "breezy", ats: posting.Breezy, listURL: "https://acme.breezy.hr/json",
+			source: breezy.New,
+			list: func(ids []string) string {
+				var rows []string
+				for _, id := range ids {
+					rows = append(rows, fmt.Sprintf(`{"id":"%s","name":"Role %s","url":"https://acme.breezy.hr/p/%s-role","salary":"Body %s","location":{"name":"Berlin","is_remote":false}}`, id, id, id, id))
+				}
+				return `[` + strings.Join(rows, ",") + `]`
+			},
+		},
+		{
+			name: "teamtailor", ats: posting.Teamtailor, listURL: "https://acme.teamtailor.com/jobs.json",
+			source: teamtailor.New,
+			list: func(ids []string) string {
+				var rows []string
+				for _, id := range ids {
+					rows = append(rows, fmt.Sprintf(`{"id":"%s","title":"Role %s","url":"https://acme.teamtailor.com/jobs/%s-role","content_html":"<p>Body %s</p>"}`, id, id, id, id))
+				}
+				return `{"version":"https://jsonfeed.org/version/1.1","title":"Acme","items":[` + strings.Join(rows, ",") + `]}`
+			},
+		},
+		{
+			name: "hirehive", ats: posting.HireHive, listURL: "https://acme.hirehive.com/api/v2/jobs?page=1&page_size=100",
+			source: hirehive.New,
+			list: func(ids []string) string {
+				var rows []string
+				for _, id := range ids {
+					rows = append(rows, fmt.Sprintf(`{"id":"%s","title":"Role %s","hosted_url":"https://acme.hirehive.com/%s","description":{"html":"<p>Body %s</p>"}}`, id, id, id, id))
+				}
+				return fmt.Sprintf(`{"meta":{"total_items":%d,"has_next_page":false},"items":[%s]}`, len(ids), strings.Join(rows, ","))
+			},
+		},
+		{
+			name: "hibob", ats: posting.HiBob, listURL: "https://acme.careers.hibob.com/api/job-ad",
+			source: hibob.New,
+			list: func(ids []string) string {
+				var rows []string
+				for _, id := range ids {
+					rows = append(rows, fmt.Sprintf(`{"id":"%s","title":"Role %s","description":"<p>Body %s</p>","site":"Berlin"}`, id, id, id))
+				}
+				return `{"jobAdDetails":[` + strings.Join(rows, ",") + `]}`
+			},
 		},
 	}
 }

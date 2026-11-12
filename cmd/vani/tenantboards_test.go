@@ -6,9 +6,9 @@ import (
 	"testing"
 )
 
-// `vani watchlist add` takes a Recruitee, Pinpoint, BambooHR or Personio board
-// by its subdomain, allows that tenant's own host with --allow-host, and
-// refuses a token that is not one host label.
+// `vani watchlist add` takes a Recruitee, Pinpoint, BambooHR, Personio, Breezy,
+// Teamtailor, HireHive or HiBob board by its subdomain, allows that tenant's own host with
+// --allow-host, and refuses a token that is not one host label.
 func TestWatchlistAddPerTenantBoards(t *testing.T) {
 	cfgPath, _ := setup(t)
 	mustCode(t, 0, "init")
@@ -17,6 +17,10 @@ func TestWatchlistAddPerTenantBoards(t *testing.T) {
 		{"pp", "workwithus", "workwithus.pinpointhq.com"},
 		{"bh", "sortitt", "sortitt.bamboohr.com"},
 		{"ps", "deskbird", "deskbird.jobs.personio.com"},
+		{"bz", "thirdchannel-inc", "thirdchannel-inc.breezy.hr"},
+		{"tm", "polestar", "polestar.teamtailor.com"},
+		{"hv", "amcsgroup", "amcsgroup.hirehive.com"},
+		{"hb", "corlytics", "corlytics.careers.hibob.com"},
 	} {
 		mustCode(t, 0, "watchlist", "add", "--ats", tc.ats, "--token", tc.token, "--company", "Co", "--allow-host")
 		cfg := watchlistOf(t, cfgPath)
@@ -43,7 +47,7 @@ func TestWatchlistAddPerTenantBoards(t *testing.T) {
 	}
 	mustCode(t, 0, "config", "check")
 	o, _ := mustCode(t, 0, "watchlist", "list")
-	for _, want := range []string{"rc\tsyrve", "pp\tworkwithus", "bh\tsortitt", "ps\tdeskbird"} {
+	for _, want := range []string{"rc\tsyrve", "pp\tworkwithus", "bh\tsortitt", "ps\tdeskbird", "bz\tthirdchannel-inc", "tm\tpolestar", "hv\tamcsgroup", "hb\tcorlytics"} {
 		if !strings.Contains(o, want) {
 			t.Errorf("list lacks %q: %q", want, o)
 		}

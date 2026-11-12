@@ -9,9 +9,10 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
-// Recruitee, Pinpoint, BambooHR and Personio each live on one host per
-// tenant, built from the token: the host a board is allowed is the host its
-// adapter asks, and a token that is not one host label is refused.
+// Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive and
+// HiBob each live on
+// one host per tenant, built from the token: the host a board is allowed is
+// the host its adapter asks, and a token that is not one host label is refused.
 func TestPerTenantBoards(t *testing.T) {
 	for _, tc := range []struct {
 		ats  posting.ATS
@@ -21,6 +22,10 @@ func TestPerTenantBoards(t *testing.T) {
 		{posting.Pinpoint, "syrve.pinpointhq.com"},
 		{posting.BambooHR, "syrve.bamboohr.com"},
 		{posting.Personio, "syrve.jobs.personio.com"},
+		{posting.Breezy, "syrve.breezy.hr"},
+		{posting.Teamtailor, "syrve.teamtailor.com"},
+		{posting.HireHive, "syrve.hirehive.com"},
+		{posting.HiBob, "syrve.careers.hibob.com"},
 	} {
 		t.Run(string(tc.ats), func(t *testing.T) {
 			good := sources.Board{ATS: tc.ats, Token: "syrve", Company: "Syrve"}
@@ -85,7 +90,7 @@ func TestPerTenantBoards(t *testing.T) {
 // A token that is not a host label has no host to allow: BoardHost never
 // builds "evil.example.recruitee.com" from it, and 63 bytes is the longest label.
 func TestPerTenantBoardHostRefusesNonLabels(t *testing.T) {
-	for _, ats := range []posting.ATS{posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio} {
+	for _, ats := range []posting.ATS{posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob} {
 		for _, token := range []string{"", "a.b", "A", "a b", "a/b", "a:b", "-a", "a-", strings.Repeat("a", 64)} {
 			if h, ok := BoardHost(sources.Board{ATS: ats, Token: token}); ok {
 				t.Errorf("%s/%q: BoardHost = %q, want none", ats, token, h)

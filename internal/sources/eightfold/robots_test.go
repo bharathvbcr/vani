@@ -72,7 +72,7 @@ func TestPCSXDisallowedGoesStraightToV2(t *testing.T) {
 	if strings.Join(f.reqs, " ") != strings.Join(want, " ") {
 		t.Errorf("requests %v, want %v", f.reqs, want)
 	}
-	if len(stats) != 1 || stats[0] != (Stats{Listed: 2, V2: true}) {
+	if len(stats) != 1 || stats[0] != (Stats{Listed: 2, Fetched: 2, V2: true}) {
 		t.Errorf("reports %+v, want one read through v2", stats)
 	}
 }

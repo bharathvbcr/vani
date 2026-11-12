@@ -199,6 +199,10 @@ func TestBoardsReasons(t *testing.T) {
 		"pinpoint tenant host":          {job("pinpoint", "123", "https://workwithus.pinpointhq.com/postings/abc", "X"), "", posting.Pinpoint, "workwithus"},
 		"bamboohr tenant host":          {job("bamboohr", "76", "https://sortitt.bamboohr.com/careers/76", "X"), "", posting.BambooHR, "sortitt"},
 		"personio tenant host":          {job("personio", "2759612", "https://deskbird.jobs.personio.com/job/2759612", "X"), "", posting.Personio, "deskbird"},
+		"breezy tenant host":            {job("breezy", "e9d983bbc5b2", "https://thirdchannel-inc.breezy.hr/p/e9d983bbc5b2-role", "X"), "", posting.Breezy, "thirdchannel-inc"},
+		"teamtailor tenant host":        {job("teamtailor", "2370d02d-914f-44e0-abf2-8ec6eb860415", "https://polestar.teamtailor.com/jobs/8690571-role", "X"), "", posting.Teamtailor, "polestar"},
+		"hirehive tenant host":          {job("hirehive", "job_zo9SLD", "https://amcsgroup.hirehive.com/enterprise-account-executive-remote-us-zo9SLD", "X"), "", posting.HireHive, "amcsgroup"},
+		"hibob tenant host":             {job("hibob", "d1c264ea-1ab6-4ff8-be27-227fa82f179a", "https://corlytics.careers.hibob.com/jobs/d1c264ea-1ab6-4ff8-be27-227fa82f179a", "X"), "", posting.HiBob, "corlytics"},
 		"greenhouse custom domain":      {job("greenhouse", "nebius:4864833101", "https://careers.nebius.com/?gh_jid=4864833101", "X"), "", posting.Greenhouse, "nebius"},
 		"greenhouse, empty board path":  {job("greenhouse", "acme:1", "https://boards.greenhouse.io/", "X"), "", posting.Greenhouse, "acme"},
 		"greenhouse custom, no id":      {job("greenhouse", "", "https://careers.acme.com/?gh_jid=1", "X"), ReasonBadBoardID, "", ""},
@@ -305,13 +309,15 @@ func TestSourceTable(t *testing.T) {
 		"gem": posting.Gem, "smartrecruiters": posting.SmartRecruiters, "workable": posting.Workable,
 		"rippling": posting.Rippling, "oracle": posting.OracleHCM,
 		"recruitee": posting.Recruitee, "pinpoint": posting.Pinpoint, "bamboohr": posting.BambooHR, "personio": posting.Personio,
+		"breezy": posting.Breezy, "teamtailor": posting.Teamtailor,
+		"hirehive": posting.HireHive, "hibob": posting.HiBob,
 	} {
 		i := slices.IndexFunc(sourceATS, func(r sourceRow) bool { return r.Source == source })
 		if i < 0 || sourceATS[i].ATS != ats {
 			t.Errorf("source %q does not map to %s", source, ats)
 		}
 	}
-	if len(sourceATS) != 13 {
+	if len(sourceATS) != 17 {
 		t.Errorf("%d rows: a new row needs a case here and a host in sources.BoardFromURL", len(sourceATS))
 	}
 }

@@ -64,6 +64,13 @@ type FormOptions struct {
 	// Skip reports a listed posting the engine drops before triage; its form is
 	// never read. Nil skips nothing.
 	Skip func(posting.Posting) bool
+	// KeepsBody, when set, reports a stored posting whose record keeps its
+	// stored posting over an unchanged listing (pipeline.KeepsStoredBody: one
+	// the engine dropped, or holds as a duplicate). A form read for it would be
+	// thrown away, and so never stored, so it would be read every run: while its
+	// text is unchanged it is not asked. Nothing is stored either way, so it is
+	// asked once its record takes the listing again.
+	KeepsBody func(posting.Key) bool
 	// Report, when set, receives each board's form counts after List reads it.
 	// The counts carry no question text.
 	Report func(sources.Board, FormStats)
@@ -81,6 +88,9 @@ type FormStats struct {
 	Unread int `json:"unread,omitempty"`
 	// Prefiltered postings were dropped by Skip and not asked.
 	Prefiltered int `json:"prefiltered,omitempty"`
+	// Kept postings had unchanged text and a record that keeps its stored
+	// posting (FormOptions.KeepsBody), so they were not asked.
+	Kept int `json:"kept,omitempty"`
 	// Failed requests (status, decode, body cap, timeout) and NotFound ones (the
 	// posting closed since the listing) leave the posting with no summary.
 	Failed   int `json:"failed,omitempty"`
@@ -135,13 +145,18 @@ func (r *formReader) read(ctx context.Context, s *source, b sources.Board, out [
 		}
 		p := &out[i]
 		stored, known := r.opt.Known(p.Key)
-		if known && stored.Form.Usable() && (stored.Description == "" || stored.DescriptionHash() == p.DescriptionHash()) {
+		unchanged := known && (stored.Description == "" || stored.DescriptionHash() == p.DescriptionHash())
+		if unchanged && stored.Form.Usable() {
 			p.Form = stored.Form
 			st.Reused++
 			continue
 		}
 		if r.opt.Skip != nil && r.opt.Skip(*p) {
 			st.Prefiltered++
+			continue
+		}
+		if unchanged && r.opt.KeepsBody != nil && r.opt.KeepsBody(p.Key) {
+			st.Kept++
 			continue
 		}
 		if asked >= MaxFormsPerBoard || st.Failed >= maxFormFailures || r.left.Add(-1) < 0 {

@@ -817,7 +817,7 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "apply.workable.com", true
 	case posting.Gem:
 		return "api.gem.com", true
-	case posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio:
+	case posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob:
 		// One host per tenant, built from the token, so the token must be a
 		// single host label (ValidBoard checks the same rule).
 		if sources.TenantLabelProblem(b.Token) != "" {
@@ -1045,9 +1045,9 @@ func ValidBoard(b sources.Board) error {
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
 		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
 		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
-		posting.TikTok, posting.TalentBrew, posting.Feed, posting.Page:
+		posting.TikTok, posting.TalentBrew, posting.Feed, posting.Page, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)

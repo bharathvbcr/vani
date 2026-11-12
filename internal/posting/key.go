@@ -114,6 +114,21 @@ func BambooHRKey(board, jobID string) (Key, error) { return build(BambooHR, boar
 // PersonioKey is ps:{subdomain}:{position_id}.
 func PersonioKey(board, positionID string) (Key, error) { return build(Personio, board, positionID) }
 
+// BreezyKey is bz:{subdomain}:{posting_id}. The id is the list's id, not the
+// friendly_id in the public URL.
+func BreezyKey(board, jobID string) (Key, error) { return build(Breezy, board, jobID) }
+
+// TeamtailorKey is tm:{subdomain}:{item_id}. The id is the JSON Feed item id
+// (a UUID on Teamtailor's own feeds), not identifier.value.
+func TeamtailorKey(board, jobID string) (Key, error) { return build(Teamtailor, board, jobID) }
+
+// HireHiveKey is hv:{subdomain}:{posting_id}. The id is the list's id
+// (job_… on HireHive's own boards), not the slug in hosted_url.
+func HireHiveKey(board, jobID string) (Key, error) { return build(HireHive, board, jobID) }
+
+// HiBobKey is hb:{subdomain}:{job_ad_id}. The id is the job ad's id.
+func HiBobKey(board, jobID string) (Key, error) { return build(HiBob, board, jobID) }
+
 // TikTokKey is tt:tiktok:{job_post_id}, the id the job page URL carries.
 func TikTokKey(board, postID string) (Key, error) { return build(TikTok, board, postID) }
 
@@ -184,7 +199,7 @@ func (k Key) ATS() ATS {
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
 		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Rippling, Workable,
-		Recruitee, Pinpoint, BambooHR, Personio, TikTok, TalentBrew, Feed, Page, Other:
+		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, TikTok, TalentBrew, Feed, Page, Other:
 		return a
 	}
 	return ""

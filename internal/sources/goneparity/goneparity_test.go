@@ -2,8 +2,9 @@
 // SmartRecruiters, Avature and Oracle HCM side by side on the same question:
 // what does a detail that answers 404 (or
 // fails otherwise) do to a board of n listed postings. tenantparity_test.go
-// does the same for the per-tenant boards (Recruitee, Pinpoint, BambooHR and
-// Personio), on the questions that apply to a board read in one request.
+// does the same for the per-tenant boards (Recruitee, Pinpoint, BambooHR,
+// Personio, Breezy, Teamtailor, HireHive and HiBob), on the questions that apply to a board
+// read in one request.
 package goneparity
 
 import (

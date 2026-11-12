@@ -55,6 +55,13 @@ type Pay struct {
 	// simply has no pay lines. Required: without Known every posting would
 	// be fetched every run.
 	Known func(posting.Key) (posting.Posting, bool)
+	// KeepsBody, when set, reports a stored posting whose record keeps its
+	// stored body over an unchanged listing (pipeline.KeepsStoredBody: one the
+	// engine dropped, or holds as a duplicate). Pay lines fetched for it would
+	// be thrown away, and so never stored, so it would be asked every run:
+	// while its board text is unchanged it is not asked, and nothing is
+	// remembered, so it is asked once its record takes a body again.
+	KeepsBody func(posting.Key) bool
 	// Report, when set, receives each board's pay counts after List reads it.
 	Report func(sources.Board, PayStats)
 	// Resolved is the file that remembers completed pay checks across runs.
@@ -67,11 +74,14 @@ type Pay struct {
 }
 
 // PayStats counts what one board's pay step did. Every posting the board
-// listed is counted exactly once, in Reused or one of the fetch outcomes.
+// listed is counted exactly once, in Reused, Kept or one of the fetch outcomes.
 type PayStats struct {
 	// Reused postings had unchanged board text and a completed pay check, so
 	// nothing was requested.
 	Reused int `json:"reused"`
+	// Kept postings had unchanged board text and a record that keeps its
+	// stored body (Pay.KeepsBody), so nothing was requested or remembered.
+	Kept int `json:"kept,omitempty"`
 	// Fetched postings were requested and answered; WithPay of them carry at
 	// least one pay line (the rest publish none).
 	Fetched int `json:"fetched"`
@@ -193,6 +203,11 @@ func (s *source) applyPay(ctx context.Context, b sources.Board, jobs []job, out 
 					if len(storedPayLines(prev.Description)) > 0 {
 						p.checks.remember(out[i].Key, base, true, true)
 					}
+					continue
+				}
+				if p.cfg.KeepsBody != nil && p.cfg.KeepsBody(out[i].Key) {
+					out[i].Description = desc
+					st.Kept++
 					continue
 				}
 			}

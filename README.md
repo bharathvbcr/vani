@@ -38,11 +38,12 @@ Credits: [docs/ACKNOWLEDGEMENTS.md](docs/ACKNOWLEDGEMENTS.md). Measurements:
 Vani runs on your machine. It watches the employer boards you list, fetches
 the listings they publish, and writes one digest.
 
-- **One fetch for many boards.** Twenty-six source kinds: Greenhouse, Lever
+- **One fetch for many boards.** Thirty source kinds: Greenhouse, Lever
   (US and EU), Ashby, Workday, Amazon, Google Careers, Apple, Eightfold,
   iCIMS Jibe, Gem, SmartRecruiters, Oracle HCM, IBM, Avature, D. E. Shaw,
   Atlassian, Rippling, Workable, Recruitee, Pinpoint, BambooHR, Personio,
-  TikTok, Radancy TalentBrew, XML feeds, and a career page read by Lightpanda.
+  Breezy HR, Teamtailor, HireHive, HiBob, TikTok, Radancy TalentBrew, XML feeds, and a career
+  page read by Lightpanda.
   The list and the caps are under Sources below.
 - **A board that does not fit is skipped, not cut.** A partial list would
   treat the missing postings as gone. Caps are per adapter. The shared cap is
@@ -94,7 +95,7 @@ flowchart TD
         AB["Ashby API"]
         WD["Workday CXS API"]
         SS["Search sites: Amazon, Google,\nApple, Eightfold (PCSX), Jibe"]
-        AD["Dedicated Adapters: Gem, SmartRecruiters,\nOracle HCM, IBM, Avature, D. E. Shaw,\nAtlassian, Rippling, Workable, Recruitee,\nPinpoint, BambooHR, Personio, TikTok,\nRadancy TalentBrew, XML Feeds"]
+        AD["Dedicated Adapters: Gem, SmartRecruiters,\nOracle HCM, IBM, Avature, D. E. Shaw,\nAtlassian, Rippling, Workable, Recruitee,\nPinpoint, BambooHR, Personio, Breezy,\nTeamtailor, HireHive, HiBob, TikTok, Radancy TalentBrew, XML Feeds"]
         PG["Custom Pages (Lightpanda)"]
     end
 
@@ -198,7 +199,10 @@ stateDiagram-v2
   adapters for Gem (`gm`), SmartRecruiters (`sr`), Oracle HCM / Recruiting Cloud (`oc`), IBM careers (`ib`,
   covering IBM and Confluent), Avature (`av`, e.g. Two Sigma), D. E. Shaw (`ds`), Atlassian (`at`), Rippling
   (`rp`), Workable (`wk`), and XML job feeds (`fd`); and the per-tenant ATS boards Recruitee (`rc`), Pinpoint
-  (`pp`), BambooHR (`bh`) and Personio (`ps`), each on its own `{token}.` host; TikTok's careers site (`tt`);
+  (`pp`), BambooHR (`bh`), Personio (`ps`), Breezy HR (`bz`, list JSON only: the public feed has no
+  description), Teamtailor (`tm`, a JSON Feed whose `next_url` stays on that host), HireHive (`hv`,
+  `/api/v2/jobs`, 100 per page) and HiBob (`hb`, one `/api/job-ad` call that requires the careers-page
+  Referer), each on its own `{token}.` host; TikTok's careers site (`tt`);
   and Radancy TalentBrew career
   sites such as Intuit's and Citi's (`tb`, token the owner's slug, host `jobs.intuit.com`), read from the
   site's sitemap and job pages, each page 2 s after the last and at most 150 pages a board a run. Eightfold requests are spaced 2 s apart; both spacings
@@ -821,9 +825,16 @@ postings are reused, so a run spends at most 300 detail requests per board and a
 fills over a few runs. Careers pages: `--ats pg --url https://... --link-pattern '<regexp for posting
 URLs>'`, with `lightpanda_binary` set or `lightpanda` on PATH. More board kinds, each read through
 its own adapter: Gem `--ats gm --token groq`; Recruitee `--ats rc --token syrve`, Pinpoint `--ats pp
---token workwithus`, BambooHR `--ats bh --token sortitt` and Personio `--ats ps --token deskbird`
+--token workwithus`, BambooHR `--ats bh --token sortitt`, Personio `--ats ps --token deskbird`,
+Breezy `--ats bz --token thirdchannel-inc`, Teamtailor `--ats tm --token polestar`,
+HireHive `--ats hv --token amcsgroup` and HiBob `--ats hb --token corlytics`
 (the token is the board's subdomain, `syrve.recruitee.com`, and that host is what `--allow-host`
-allows; BambooHR costs a detail request per posting, spaced by the egress per-host interval (a second by default) on top of 500 ms, so a board of
+allows; Breezy's public JSON lists titles, place, salary text and type, not the job body; Teamtailor
+follows `next_url` on the same host and fails the board rather than stopping early; HireHive asks
+`/api/v2/jobs` a hundred at a time and fails the board when the stated total does not match or a
+further page remains after 60; HiBob's `/api/job-ad` answers only with Referer
+`https://{token}.careers.hibob.com/jobs`, and a 401 is an error rather than a missing board;
+BambooHR costs a detail request per posting, spaced by the egress per-host interval (a second by default) on top of 500 ms, so a board of
 more than 300 postings fails rather than being cut, and a tenant BambooHR redirects away from
 `/careers` reads as not found; a Personio tenant that switched its XML feed off reads as not found
 too); TikTok `--ats tt --token tiktok` (the whole site is 4,318 postings, so narrow it with
@@ -836,7 +847,7 @@ roles IBM lists for Confluent; Avature `--ats av --token twosigma --host careers
 https://careers.twosigma.com/careers/OpenRoles`; single-company `--ats ds --token deshaw` (D. E. Shaw)
 and `--ats at --token atlassian` (Atlassian); Rippling `--ats rp --token <slug>`; Workable
 `--ats wk --token <slug>`; TalentBrew `--ats tb --token intuit --host jobs.intuit.com`; and XML job feeds `--ats fd --token <slug> --url https://...`.
-`config.ValidBoard` checks every entry against the 26 supported ATS kinds (`gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg`).
+`config.ValidBoard` checks every entry against the 30 supported ATS kinds (`gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb`).
 Each careers-page load waits until
 a host's interval has passed since the previous load from that host ended. The interval is the longer
 of `page_interval_ms` (0..10000, default 0) and the `Crawl-delay` the host's `robots.txt` sets for

@@ -101,15 +101,21 @@ var (
 // answered: the position closed after it was listed.
 var errDetailGone = errors.New("detail is gone (HTTP 404)")
 
-// maxGone is how many of n listed positions may come back gone before the
-// board fails: a tenth, at least one (workday's bound).
-func maxGone(n int) int { return max(1, n/10) }
-
-// Stats counts what one List did: the positions listed and the ones whose
-// detail answered 404 (closed since listing).
+// Stats counts what one List did. Every listed position is counted once, in
+// Reused, Fetched, Refreshed, Prefiltered or Gone.
 type Stats struct {
 	Listed int `json:"listed"`
-	Gone   int `json:"gone,omitempty"`
+	// Reused positions were returned as stored, with no detail request.
+	Reused int `json:"reused,omitempty"`
+	// Fetched positions were new and got a detail request; Refreshed ones were
+	// stored and re-read on their turn (srcutil.RefreshTurn).
+	Fetched   int `json:"fetched,omitempty"`
+	Refreshed int `json:"refreshed,omitempty"`
+	// Prefiltered positions were new and dropped by DropListed from their
+	// search row's title, with no request.
+	Prefiltered int `json:"prefiltered,omitempty"`
+	// Gone positions' details answered 404: closed since the search.
+	Gone int `json:"gone,omitempty"`
 	// V2 is set when the board was read through /api/apply/v2: its pcsx search
 	// answered 403, or its host's robots.txt disallows pcsx.
 	V2 bool `json:"v2,omitempty"`
@@ -119,6 +125,21 @@ type Stats struct {
 type Options struct {
 	// Report, when set, receives each listed board's counts.
 	Report func(sources.Board, Stats)
+	// Stored returns the postings an earlier run stored for b (every record
+	// under b.KeyPrefix()). With it, the bounded detail step
+	// (srcutil.PlanDetails) reuses a listed position's stored posting rather
+	// than asking for its detail again, re-reading each on its turn, once
+	// every srcutil.RefreshDays days. The search row has no updated stamp, so
+	// an edited description is seen on that turn. Nil asks for every detail.
+	//
+	// Microsoft's host answered 429 in 9 of 12 runs from 2026-11-09 to
+	// 2026-11-11, each run asking for all of its ~137 details again: reuse
+	// cuts a run to its search pages and the new positions' details.
+	Stored func(b sources.Board) []posting.Posting
+	// DropListed reports whether the engine drops a posting from what a
+	// search row says of it: its title and the board's company. A new position
+	// it drops is neither fetched nor returned. Nil drops nothing.
+	DropListed func(p posting.Posting) bool
 	// Wait spaces a board's requests (srcutil.Pacer.Sleep); nil is
 	// srcutil.Sleep. A field only so tests need not wait in real time.
 	Wait func(ctx context.Context, d time.Duration) error
@@ -166,9 +187,10 @@ type position struct {
 	WorkLocationOption string      `json:"work_location_option"`
 }
 
-// listing is one position a search found: its id, and the work location
-// option of its v2 row ("" for pcsx, whose detail has it).
-type listing struct{ id, work string }
+// listing is one position a search found: its id, the title its row shows,
+// and the work location option of its v2 row ("" for pcsx, whose detail has
+// it).
+type listing struct{ id, name, work string }
 
 // api is the Eightfold API a board is read through: its URL prefix and which
 // of the two it is.
@@ -295,24 +317,37 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 	}
 	seen := s.now()
-	out := make([]posting.Posting, 0, len(ids))
-	st := Stats{Listed: len(ids), V2: a.v2}
+	pl, keys, stored, err := s.planDetails(b, domain, ids, seen)
+	if err != nil {
+		return nil, err
+	}
+	st := Stats{Listed: len(ids), V2: a.v2, Prefiltered: pl.Prefiltered}
 	if s.opt != nil && s.opt.Report != nil {
 		defer func() { s.opt.Report(b, st) }()
 	}
-	allowed := maxGone(len(ids))
-	for _, l := range ids {
+	slot := make([]*posting.Posting, len(ids))
+	for _, i := range pl.Reuse {
+		p := stored[keys[i]]
+		p.SeenAt = seen
+		slot[i] = &p
+		st.Reused++
+	}
+	allowed := srcutil.MaxGone(len(pl.Fetch))
+	for n, i := range pl.Fetch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		l := ids[i]
 		p, err := s.detail(ctx, a, host, domain, l, b, seen)
 		if errors.Is(err, errDetailGone) {
 			// The position closed between the search and its detail; leaving it
-			// out is the truth. Many at once is the detail endpoint failing. The
-			// error is deliberately not ErrBoardNotFound: the search answered.
-			if st.Gone++; st.Gone > allowed || st.Gone == len(ids) {
+			// out is the truth. Many at once is the detail endpoint failing; with
+			// every other position reused, one new position gone is only that
+			// position. The error is deliberately not ErrBoardNotFound: the
+			// search answered.
+			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
 				return nil, fmt.Errorf("eightfold %q: %d of %d position details are gone (HTTP 404); the detail endpoint is not answering",
-					b.Token, st.Gone, len(ids))
+					b.Token, st.Gone, len(pl.Fetch))
 			}
 			continue
 		}
@@ -320,9 +355,64 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			// A partial listing would age healthy postings as absent.
 			return nil, fmt.Errorf("eightfold %q: position %s: %w", b.Token, l.id, err)
 		}
-		out = append(out, p)
+		if n < pl.New {
+			st.Fetched++
+		} else {
+			st.Refreshed++
+		}
+		slot[i] = &p
+	}
+	out := make([]posting.Posting, 0, len(ids))
+	for _, p := range slot {
+		if p != nil {
+			out = append(out, *p)
+		}
 	}
 	return out, nil
+}
+
+// planDetails is the bounded detail step for the listed positions: which get a
+// detail request, which are reused from the postings an earlier run stored
+// (looked up by the key a row builds, so another board's posting never
+// matches), and which new ones DropListed drops from their row. The limit is
+// MaxPostings, the most a board may list, so no new position is ever deferred:
+// reuse alone bounds the requests.
+func (s *source) planDetails(b sources.Board, domain string, ids []listing, seen time.Time) (srcutil.DetailPlan, []posting.Key, map[posting.Key]posting.Posting, error) {
+	stored := map[posting.Key]posting.Posting{}
+	var drop func(posting.Posting) bool
+	if s.opt != nil {
+		if s.opt.Stored != nil {
+			for _, p := range s.opt.Stored(b) {
+				stored[p.Key] = p
+			}
+		}
+		drop = s.opt.DropListed
+	}
+	company := b.Company
+	if company == "" {
+		company = domain
+	}
+	keys := make([]posting.Key, len(ids))
+	rows := make([]srcutil.DetailRow, len(ids))
+	for i, l := range ids {
+		key, err := posting.EightfoldKey(domain, l.id)
+		if err != nil {
+			return srcutil.DetailPlan{}, nil, nil, fmt.Errorf("eightfold %q: position %s: %w", b.Token, l.id, err)
+		}
+		keys[i] = key
+		_, ok := stored[key]
+		rows[i] = srcutil.DetailRow{ID: l.id, Stored: ok}
+		if !ok && drop != nil {
+			rows[i].Drop = drop(posting.Posting{ATS: posting.Eightfold, Company: company, Title: srcutil.Title(l.name)})
+		}
+	}
+	pl := srcutil.PlanDetails(rows, srcutil.Day(seen), MaxPostings)
+	if pl.Deferred > 0 {
+		// Unreachable while the limit is MaxPostings; a deferred position could
+		// not be told from a stored one left out, which would age it as absent.
+		return srcutil.DetailPlan{}, nil, nil, fmt.Errorf("eightfold %q: %w: %d positions deferred", b.Token, srcutil.ErrTooManyPostings, pl.Deferred)
+	}
+	return pl, keys, stored, nil
 }
 
 // get fetches one PCSX endpoint and returns its data, checking the envelope.
@@ -477,7 +567,7 @@ func (s *source) search(ctx context.Context, a api, domain, term string, filters
 			}
 			if !have[id] {
 				have[id] = true
-				ids = append(ids, listing{id: id, work: strings.TrimSpace(p.WorkLocationOption)})
+				ids = append(ids, listing{id: id, name: p.Name, work: strings.TrimSpace(p.WorkLocationOption)})
 				added++
 			}
 		}

@@ -35,11 +35,11 @@ var tenantLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // TenantLabelProblem is why token cannot be the subdomain of a per-tenant ATS
 // host ({token}.recruitee.com, .pinpointhq.com, .bamboohr.com,
-// .jobs.personio.com), or "" when it can. The token becomes a host name, so
-// it is exactly one lower-case DNS label as written: a '.', '/', '@', ':' or
-// '%' would move the request to another host or path. It is the one rule
-// behind config.ValidBoard (and so the host config.BoardHost allows) and the
-// four adapters that build the host from it.
+// .jobs.personio.com, .breezy.hr, .teamtailor.com), or "" when it can. The
+// token becomes a host name, so it is exactly one lower-case DNS label as
+// written: a '.', '/', '@', ':' or '%' would move the request to another host
+// or path. It is the one rule behind config.ValidBoard (and so the host
+// config.BoardHost allows) and the adapters that build the host from it.
 func TenantLabelProblem(token string) string {
 	if !tenantLabel.MatchString(token) {
 		return "must be one lower-case host label of letters, digits and '-' (at most 63), as in acme.recruitee.com"
@@ -51,10 +51,14 @@ func TenantLabelProblem(token string) string {
 // the one table config.BoardHost builds the host from and BoardFromURL reads a
 // tenant back out of.
 var TenantHostSuffix = map[posting.ATS]string{
-	posting.Recruitee: ".recruitee.com",
-	posting.Pinpoint:  ".pinpointhq.com",
-	posting.BambooHR:  ".bamboohr.com",
-	posting.Personio:  ".jobs.personio.com",
+	posting.Recruitee:  ".recruitee.com",
+	posting.Pinpoint:   ".pinpointhq.com",
+	posting.BambooHR:   ".bamboohr.com",
+	posting.Personio:   ".jobs.personio.com",
+	posting.Breezy:     ".breezy.hr",
+	posting.Teamtailor: ".teamtailor.com",
+	posting.HireHive:   ".hirehive.com",
+	posting.HiBob:      ".careers.hibob.com",
 }
 
 // MaxBoardNameLen bounds Board.BoardName in runes; MaxBoardNameBytes bounds it

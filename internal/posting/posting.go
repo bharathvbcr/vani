@@ -62,6 +62,18 @@ const (
 	// Personio is a Personio career site ({token}.jobs.personio.com). The
 	// token is the subdomain.
 	Personio ATS = "ps"
+	// Breezy is a Breezy HR board ({token}.breezy.hr). The token is the
+	// subdomain. The key id is the posting's id, not its friendly_id.
+	Breezy ATS = "bz"
+	// Teamtailor is a Teamtailor board ({token}.teamtailor.com). The token is
+	// the subdomain. The key id is the JSON Feed item id.
+	Teamtailor ATS = "tm"
+	// HireHive is a HireHive board ({token}.hirehive.com). The token is the
+	// subdomain. The key id is the posting's id, not the slug in its URL.
+	HireHive ATS = "hv"
+	// HiBob is a HiBob career site ({token}.careers.hibob.com). The token is
+	// the subdomain. The key id is the job ad's id.
+	HiBob ATS = "hb"
 	// TikTok is TikTok's careers site (lifeattiktok.com). The token is
 	// "tiktok", the one site the adapter knows.
 	TikTok ATS = "tt"

@@ -32,7 +32,9 @@ import (
 // Source names are freehire's, lower case. Verified against live results on
 // 2026-10-28: greenhouse, lever, ashby, workday, workable. From freehire's
 // source tree (internal/ingest/atsboard), not seen live: gem, smartrecruiters,
-// rippling, oracle.
+// rippling, oracle. breezy, teamtailor, hirehive and hibob are the source
+// names in freehire's published sources list; BoardFromURL reads the tenant
+// from the host, so IDBoard stays false.
 type sourceRow struct {
 	Source  string
 	ATS     posting.ATS
@@ -53,6 +55,10 @@ var sourceATS = []sourceRow{
 	{"pinpoint", posting.Pinpoint, false},
 	{"bamboohr", posting.BambooHR, false},
 	{"personio", posting.Personio, false},
+	{"breezy", posting.Breezy, false},
+	{"teamtailor", posting.Teamtailor, false},
+	{"hirehive", posting.HireHive, false},
+	{"hibob", posting.HiBob, false},
 }
 
 // searchesBoard is true for the ATSs whose board takes the search that found

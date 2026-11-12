@@ -391,6 +391,20 @@ func sourceHash(desc string) string {
 	return posting.Posting{Description: srcutil.SourceText(desc)}.DescriptionHash()
 }
 
+// KeepsStoredBody reports whether reconcile keeps r's stored posting when the
+// board lists the same text again, in another rendering or with other display
+// fields: a dropped record gets no event (its last event dates the drop the
+// digest footer counts), and a duplicate gets none unless its survivor is gone.
+// A record with missed runs is not one: it reappears and takes the listing.
+//
+// What an adapter reads only to put in such a posting's body or display fields
+// (Greenhouse pay lines, an Ashby application form) is thrown away, so while
+// the text is unchanged an adapter need not ask for it. A duplicate revived in
+// that same run is stored without it, and the next run asks.
+func KeepsStoredBody(r ledger.Record) bool {
+	return (r.Status == posting.Dropped || r.Status == posting.Duplicate) && r.MissedRuns == 0
+}
+
 // closed reports whether a record has left the board's lifecycle, so absence
 // no longer ages it. This is narrower than Status.Terminal: a digested posting
 // runs no further stage but is still listed, and must die when its board drops it.

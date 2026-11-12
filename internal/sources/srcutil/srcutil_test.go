@@ -299,8 +299,10 @@ func TestRetryOnRateLimit(t *testing.T) {
 
 	// Other statuses are not retried; a 404 stays ErrBoardNotFound. A 500 is the
 	// request's own failure. A 502 and a 504 are gateway failures and are
-	// retried below, the same way as a 503.
-	for _, code := range []int{400, 401, 403, 404, 500} {
+	// retried below, the same way as a 503. Cloudflare's 525 and 526 are the
+	// origin's TLS, and 530 its DNS or configuration: asking again changes
+	// nothing.
+	for _, code := range []int{400, 401, 403, 404, 500, 525, 526, 530} {
 		waits = noWait(t)
 		d = seq(t, srctest.Reply{Status: code})
 		err := GetJSON(context.Background(), d, u, &v)
@@ -312,9 +314,12 @@ func TestRetryOnRateLimit(t *testing.T) {
 		}
 	}
 
-	// A gateway 502 or 504 is retried like a 503: one success after the first
-	// failure is the board, and maxAttempts failures give up with the status.
-	for _, code := range []int{502, 504} {
+	// A gateway 502 or 504, or Cloudflare's 520 to 524 (the origin erred, is
+	// down, timed out or is unreachable behind it; Micron's Workday POST
+	// answered 520 once on 2026-11-11 and read in the runs either side), is
+	// retried like a 503: one success after the first failure is the board,
+	// and maxAttempts failures give up with the status.
+	for _, code := range []int{502, 504, 520, 521, 522, 523, 524} {
 		waits = noWait(t)
 		noJitter(t)
 		d = seq(t, srctest.Reply{Status: code}, okReply)
@@ -336,6 +341,34 @@ func TestRetryOnRateLimit(t *testing.T) {
 		}
 		if len(d.Requests()) != maxAttempts {
 			t.Errorf("status %d: %d requests, want %d", code, len(d.Requests()), maxAttempts)
+		}
+	}
+}
+
+// A gateway or origin failure that outlasts its retries says nothing about a
+// rate limit: it is never a *RateLimitedError and leaves no host cooldown, so
+// the next run asks the host as usual.
+func TestOriginFailureLeavesNoCooldown(t *testing.T) {
+	var v struct{ A int }
+	for _, code := range []int{502, 520, 522, 524} {
+		noWait(t)
+		noJitter(t)
+		th := NewHostThrottle(nil, nil)
+		replies := make([]srctest.Reply, maxAttempts)
+		for i := range replies {
+			replies[i] = srctest.Reply{Status: code}
+		}
+		d := seq(t, replies...)
+		err := GetJSON(WithHostThrottle(context.Background(), th), d, u, &v)
+		var se *egress.StatusError
+		if !errors.As(err, &se) || se.Code != code || errors.Is(err, ErrRateLimited) {
+			t.Errorf("status %d: %v", code, err)
+		}
+		if c := th.Cooldowns(); len(c) != 0 {
+			t.Errorf("status %d left cooldowns %v", code, c)
+		}
+		if err := HostBlocked(WithHostThrottle(context.Background(), th), se.Host, "GET", u); err != nil {
+			t.Errorf("status %d: host blocked afterwards: %v", code, err)
 		}
 	}
 }

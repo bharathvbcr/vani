@@ -632,7 +632,7 @@ func TestStatsNameTheAPI(t *testing.T) {
 	if _, err := m.List(context.Background(), board("LLM inference")); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0] != (Stats{Listed: 2, V2: true}) || got[1] != (Stats{Listed: 2}) {
+	if len(got) != 2 || got[0] != (Stats{Listed: 2, Fetched: 2, V2: true}) || got[1] != (Stats{Listed: 2, Fetched: 2}) {
 		t.Errorf("reports %+v, want v2 for Netflix and pcsx for Microsoft", got)
 	}
 }

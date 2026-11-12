@@ -373,8 +373,9 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		return fail(searchUnsupported, "%s needs a signed-in browser; Vani cannot search it on its own", host)
 	}
 	// Workable, Rippling and per-tenant (Recruitee, Pinpoint, BambooHR,
-	// Personio) pages are left to the page board below: they were never
-	// saved-search boards, and a saved page keeps the filters in its URL.
+	// Personio, Breezy, Teamtailor, HireHive, HiBob) pages are left to the page board below:
+	// they were never saved-search boards, and a saved page keeps the filters
+	// in its URL.
 	b, known, err := sources.BoardFromURL(u)
 	_, perTenant := sources.TenantHostSuffix[b.ATS]
 	if known && b.ATS != posting.Workable && b.ATS != posting.Rippling && !perTenant {

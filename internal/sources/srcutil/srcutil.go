@@ -433,11 +433,28 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 	return out, err
 }
 
-// retryableStatus is a response worth asking for again: rate limited, or a
+// Cloudflare's own statuses for an origin it could not get an answer from
+// (developers.cloudflare.com, "Cloudflare 5xx errors"): 520 the origin
+// returned an unknown error, 521 it is down, 522 the connection timed out,
+// 523 it is unreachable, 524 it timed out answering. Its 525 and 526 are the
+// origin's TLS and 530 its DNS or configuration, which another attempt does
+// not change.
+const (
+	cfOriginError       = 520
+	cfOriginTimeoutLast = 524
+)
+
+// retryableStatus is a response worth asking for again: rate limited, a
 // gateway that failed in front of the origin (NVIDIA's listing POST returned
-// 502 once on 2026-11-02 and 200 for the same body an hour later). A 500 stays
-// final: it may be the request, and retrying it would not change the answer.
+// 502 once on 2026-11-02 and 200 for the same body an hour later), or
+// Cloudflare's word that the origin behind it failed (Micron's Workday POST
+// returned 520 once on 2026-11-11 and read in the runs either side). A 500
+// stays final: it may be the request, and retrying it would not change the
+// answer.
 func retryableStatus(code int) bool {
+	if code >= cfOriginError && code <= cfOriginTimeoutLast {
+		return true
+	}
 	switch code {
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true

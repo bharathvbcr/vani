@@ -22,12 +22,15 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/atlassian"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
 	"github.com/bharathvbcr/Vani/internal/sources/bamboohr"
+	"github.com/bharathvbcr/Vani/internal/sources/breezy"
 	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/feed"
 	"github.com/bharathvbcr/Vani/internal/sources/gem"
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
+	"github.com/bharathvbcr/Vani/internal/sources/hibob"
+	"github.com/bharathvbcr/Vani/internal/sources/hirehive"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
@@ -38,6 +41,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
+	"github.com/bharathvbcr/Vani/internal/sources/teamtailor"
 	"github.com/bharathvbcr/Vani/internal/sources/tiktok"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
@@ -230,25 +234,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	}
 
 	srcs := apiSources(d)
-	resolved := ""
-	if w.stateDir != "" {
-		// Completed pay checks (empty answer or 404). A skip is not recorded,
-		// so the next run asks for it. Absent when this process has no state dir.
-		resolved = filepath.Join(w.stateDir, "sources", "greenhouse-pay.json")
-	}
-	gh, err := greenhouse.NewWithPay(d, greenhouse.Pay{
-		Known: func(k posting.Key) (posting.Posting, bool) {
-			r, ok := w.led.Get(k)
-			return r.Posting, ok
-		},
-		Report: func(b sources.Board, st greenhouse.PayStats) {
-			w.warnf("board %s/%s: pay %+v", b.ATS, b.Token, st)
-			// NotFound is a closed posting, not a fetch that failed.
-			w.noteBoardFetch(b, boardFetch{PayFailed: st.Failed, PaySkipped: st.Skipped, PayError: st.FirstError})
-		},
-		Resolved: resolved,
-		Warn:     w.warnf,
-	})
+	gh, err := w.greenhouseSource(d)
 	if err != nil {
 		return pipeline.BoardCounts{}, err
 	}
@@ -330,7 +316,12 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.TalentBrew] = tb
+	// Eightfold costs a detail request per position too: stored postings are
+	// reused (re-read on their turn) and new ones the title rule drops are
+	// never fetched, so a run asks for its search pages and the new details.
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
+		Stored:     storedFor,
+		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
@@ -618,11 +609,48 @@ func (w *wired) ashbySource(d egress.Doer, policy pipeline.DropPolicy) (sources.
 			r, ok := w.led.Get(k)
 			return r.Posting, ok
 		},
-		Skip: policy.ListedDrops(),
+		Skip:      policy.ListedDrops(),
+		KeepsBody: w.keepsBody,
 		Report: func(b sources.Board, st ashby.FormStats) {
 			w.warnf("board %s/%s: forms %+v", b.ATS, b.Token, st)
 		},
 	})
+}
+
+// greenhouseSource is the Greenhouse adapter with structured pay: a request per
+// new or changed posting, none for a posting whose stored pay check stands or
+// whose record keeps its stored body (keepsBody), within a run budget.
+func (w *wired) greenhouseSource(d egress.Doer) (sources.Source, error) {
+	resolved := ""
+	if w.stateDir != "" {
+		// Completed pay checks (empty answer or 404). A skip is not recorded,
+		// so the next run asks for it. Absent when this process has no state dir.
+		resolved = filepath.Join(w.stateDir, "sources", "greenhouse-pay.json")
+	}
+	return greenhouse.NewWithPay(d, greenhouse.Pay{
+		Known: func(k posting.Key) (posting.Posting, bool) {
+			r, ok := w.led.Get(k)
+			return r.Posting, ok
+		},
+		KeepsBody: w.keepsBody,
+		Report: func(b sources.Board, st greenhouse.PayStats) {
+			w.warnf("board %s/%s: pay %+v", b.ATS, b.Token, st)
+			// NotFound is a closed posting, not a fetch that failed.
+			w.noteBoardFetch(b, boardFetch{PayFailed: st.Failed, PaySkipped: st.Skipped, PayError: st.FirstError})
+		},
+		Resolved: resolved,
+		Warn:     w.warnf,
+	})
+}
+
+// keepsBody reports a stored posting whose record keeps its stored posting over
+// an unchanged listing (pipeline.KeepsStoredBody: dropped, or a duplicate).
+// Pay lines or a form an adapter read for it would be thrown away by reconcile,
+// so the adapter does not ask. It is asked only for postings an adapter would
+// otherwise request, so the lookup costs no more than the request it saves.
+func (w *wired) keepsBody(k posting.Key) bool {
+	r, ok := w.led.Get(k)
+	return ok && pipeline.KeepsStoredBody(r)
 }
 
 // titleRank orders triage by the configured title signals, or is nil (ledger
@@ -661,6 +689,10 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Pinpoint:        pinpoint.New(d),
 		posting.BambooHR:        bamboohr.New(d),
 		posting.Personio:        personio.New(d),
+		posting.Breezy:          breezy.New(d),
+		posting.Teamtailor:      teamtailor.New(d),
+		posting.HireHive:        hirehive.New(d),
+		posting.HiBob:           hibob.New(d),
 		posting.TikTok:          tiktok.New(d),
 		posting.TalentBrew:      talentbrew.New(d),
 		posting.Feed:            feed.New(d),
