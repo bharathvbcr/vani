@@ -22,6 +22,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/semantic"
+	"github.com/bharathvbcr/Vani/internal/track"
 	"github.com/bharathvbcr/decide"
 	"github.com/bharathvbcr/decide/jev"
 )
@@ -163,21 +164,73 @@ func (e *env) cmdKBMatch(args []string) error {
 }
 
 // kbmatchSetup is what a run and a status both need: the config, the knowledge
-// base's profile and digest, and the normalized target summary.
-func (e *env) kbmatchSetup() (config.Config, semantic.Profile, kbmatch.Digest, string, error) {
-	cfg, err := e.loadConfig()
+// base's profile and digest, and the normalized target summary. send is true
+// for a path that may send the digest (a run, a dry run included): it refuses a
+// missing identifying-words file unless allowMissing. words is that file's
+// state as the reply records it.
+func (e *env) kbmatchSetup(send, allowMissing bool) (cfg config.Config, prof semantic.Profile, d kbmatch.Digest, summary, words string, err error) {
+	cfg, err = e.loadConfig()
 	if err != nil {
-		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", err
+		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", "", err
 	}
-	prof, d, summary, err := kbmatchDigest(cfg)
-	return cfg, prof, d, summary, err
+	w, words, err := kbmatchWords(cfg, e.stateDir, send, allowMissing)
+	if err != nil {
+		return cfg, semantic.Profile{}, kbmatch.Digest{}, "", words, err
+	}
+	prof, d, summary, err = kbmatchDigest(cfg, w)
+	return cfg, prof, d, summary, words, err
+}
+
+// The identifying-words file's state, as kb_match replies record it
+// (identifying_words): loaded (the owner's terms and the built-in list),
+// empty (the file has no terms: the built-in list alone), missing (no file:
+// the built-in list alone; a send path refuses it unless
+// --allow-missing-identifying-words, and then records missing_allowed).
+const (
+	kbWordsLoaded         = "loaded"
+	kbWordsEmpty          = "empty"
+	kbWordsMissing        = "missing"
+	kbWordsMissingAllowed = "missing_allowed"
+)
+
+// kbAllowMissingFlag is the flag a send path takes to send with the built-in
+// list alone when the owner's file does not exist. It never lifts an unreadable,
+// oversized or malformed file: that refuses whatever the flag says, since the
+// file may be the owner's list cut short.
+const kbAllowMissingFlag = "allow-missing-identifying-words"
+
+// kbmatchWords loads the identifying-word list the knowledge base is redacted
+// with: the owner's track.WordsFile in the tracks directory on top of the
+// built-in list. An unreadable file is an error everywhere. A missing one is an
+// error on a send path unless allowMissing; a read-only path (the ranking's
+// lookup, kbmatch status) uses the built-in list alone, which is what such a
+// send would have used, so their digests agree.
+func kbmatchWords(cfg config.Config, stateDir string, send, allowMissing bool) (track.Words, string, error) {
+	dir := track.Dir(cfg, stateDir)
+	w, err := track.LoadWords(dir)
+	if err != nil {
+		return track.Words{}, "", fmt.Errorf("kbmatch: the identifying-words list: %w; the knowledge base is not sent without it", err)
+	}
+	switch {
+	case w.Missing && send && !allowMissing:
+		return track.Words{}, kbWordsMissing, fmt.Errorf("kbmatch: there is no %s in %s, so the owner's identifying terms cannot be removed from the knowledge base; nothing is sent (add the file, or pass --%s to send with the built-in list alone)",
+			track.WordsFile, dir, kbAllowMissingFlag)
+	case w.Missing && send:
+		return w, kbWordsMissingAllowed, nil
+	case w.Missing:
+		return w, kbWordsMissing, nil
+	case !w.Personal:
+		return w, kbWordsEmpty, nil
+	}
+	return w, kbWordsLoaded, nil
 }
 
 // kbmatchDigest is the knowledge base as a kb_match question carries it, read
-// only through eligibleBank (semanticProfile), which fails closed, and the
-// normalized target summary. `vani kbmatch` and `vani teacher --task kb_match`
-// both read it here.
-func kbmatchDigest(cfg config.Config) (semantic.Profile, kbmatch.Digest, string, error) {
+// only through eligibleBank (semanticProfile), which fails closed, redacted with
+// w (kbmatch.DigestOf), and the normalized target summary. `vani kbmatch`,
+// `vani teacher --task kb_match` and the ranking's lookup all build it here, so
+// the digest a stored answer was asked under is the digest the lookup finds.
+func kbmatchDigest(cfg config.Config, w track.Words) (semantic.Profile, kbmatch.Digest, string, error) {
 	if strings.TrimSpace(cfg.TargetSummary) == "" {
 		return semantic.Profile{}, kbmatch.Digest{}, "", errors.New("kbmatch: the config has no target_summary to judge the postings against")
 	}
@@ -191,7 +244,7 @@ func kbmatchDigest(cfg config.Config) (semantic.Profile, kbmatch.Digest, string,
 	if err != nil {
 		return semantic.Profile{}, kbmatch.Digest{}, "", fmt.Errorf("kbmatch: the knowledge base: %w", err)
 	}
-	d, err := kbmatch.DigestOf(prof)
+	d, err := kbmatch.DigestOf(prof, w)
 	if err != nil {
 		return semantic.Profile{}, kbmatch.Digest{}, "", err
 	}
@@ -264,6 +317,7 @@ func (e *env) kbmatchRun(args []string) error {
 	backendFlag := fs.String("backend", "", "llm, or openrouter for the decision model (default kbmatch.backend, else llm)")
 	modelFlag := fs.String("model", "", "the llm model that answers (default kbmatch.model, else llm.triage_model, else llm.model)")
 	noRetrieve := fs.Bool("no-retrieve", false, "do not have the embedding model pick the closest knowledge-base lines; send the full digest")
+	allowMissing := fs.Bool(kbAllowMissingFlag, false, "send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+" (without it, a missing file refuses)")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what was asked (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
 		return err
@@ -272,7 +326,9 @@ func (e *env) kbmatchRun(args []string) error {
 		return usagef("kbmatch run: --top must be 1-%d", maxKBMatchTop)
 	}
 	jr := &kbmatchRunReply{DryRun: *dry}
-	err := e.textToStderr(*asJSON, func() error { return e.kbmatchRunBody(jr, *top, *dry, *backendFlag, *modelFlag, *noRetrieve) })
+	err := e.textToStderr(*asJSON, func() error {
+		return e.kbmatchRunBody(jr, *top, *dry, *backendFlag, *modelFlag, *noRetrieve, *allowMissing)
+	})
 	if !*asJSON {
 		return err
 	}
@@ -283,9 +339,14 @@ func (e *env) kbmatchRun(args []string) error {
 // candidates are chosen; Result once questions were asked (a dry run never
 // has one). A run that stopped carries the failure beside them.
 type kbmatchRunReply struct {
-	DryRun bool              `json:"dry_run"`
-	Plan   *kbmatchPlanJSON  `json:"plan,omitempty"`
-	Result *kbmatchAskResult `json:"result,omitempty"`
+	DryRun bool `json:"dry_run"`
+	// IdentifyingWords is the identifying-words file's state (kbWords*), set
+	// whenever the file was looked at, a refusal included; Redactions is how
+	// many terms the digest had removed (never which).
+	IdentifyingWords string            `json:"identifying_words,omitempty"`
+	Redactions       int               `json:"redactions"`
+	Plan             *kbmatchPlanJSON  `json:"plan,omitempty"`
+	Result           *kbmatchAskResult `json:"result,omitempty"`
 	failure
 }
 
@@ -318,9 +379,16 @@ type kbmatchAskResult struct {
 	Stopped  string         `json:"stopped,omitempty"`
 }
 
-func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag, modelFlag string, noRetrieve bool) error {
-	cfg, prof, digest, summary, err := e.kbmatchSetup()
+func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag, modelFlag string, noRetrieve, allowMissing bool) error {
+	cfg, prof, digest, summary, words, err := e.kbmatchSetup(true, allowMissing)
+	jr.IdentifyingWords = words
 	if err != nil {
+		return err
+	}
+	jr.Redactions = digest.Redactions
+	// Every question shares the summary and the digest: a term surviving in
+	// either stops the run here, a dry run included, before anything is asked.
+	if err := kbmatch.CheckOwner(summary, digest); err != nil {
 		return err
 	}
 	if backendFlag != "" {
@@ -419,6 +487,7 @@ func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag
 		view = fmt.Sprintf("a %d-byte compact digest of your knowledge base plus up to %d lines of it that the embedding model finds closest to that posting", len(digest.Compact), kbmatch.MaxFocus)
 	}
 	fmt.Fprintf(e.stdout, "kbmatch: each question carries the posting, your target summary and %s (titles, stack terms and bullets, with employers, dates, places and contact details already removed), sent to %s\n", view, where)
+	fmt.Fprintf(e.stdout, "kbmatch: %d identifying term(s) were removed from the knowledge base before sending (identifying-words file: %s)\n", digest.Redactions, words)
 	switch backend {
 	case config.KBMatchOpenRouter:
 		fmt.Fprintf(e.stdout, "kbmatch: about %d input tokens at most (focused questions are shorter); charged to the openrouter cap ($%.2f a day)\n", inTok, cfg.Decide.DailyUSD.OpenRouter)
@@ -477,6 +546,17 @@ func (e *env) kbmatchAsk(ctx context.Context, j kbmatch.Judge, st *kbmatch.Store
 		}
 		asked++
 		v, err := j.Ask(ctx, c.rec.Posting)
+		var ident *kbmatch.IdentifyingError
+		if errors.Is(err, kbmatch.ErrNoRedactor) || errors.As(err, &ident) {
+			// Not sent. Keep what was answered and stop: it is not a backend
+			// outage to count toward the streak, and the next question would carry
+			// the same knowledge base.
+			asked--
+			if serr := save(); serr != nil {
+				return serr
+			}
+			return err
+		}
 		if err != nil {
 			unread++
 			if rd, ok := kbmatch.ReadingOf(err); ok && rd == decide.Abstained {
@@ -531,6 +611,10 @@ type kbmatchStatusReply struct {
 	Stale        int            `json:"stale"`
 	DigestSHA256 string         `json:"digest_sha256"`
 	DigestBytes  int            `json:"digest_bytes"`
+	// IdentifyingWords and Redactions are as in kbmatchRunReply: the digest
+	// status compares against is the redacted one a run would send.
+	IdentifyingWords string `json:"identifying_words"`
+	Redactions       int    `json:"redactions"`
 }
 
 func (e *env) kbmatchStatus(args []string) error {
@@ -546,12 +630,14 @@ func (e *env) kbmatchStatus(args []string) error {
 			parts = append(parts, fmt.Sprintf("%s %d", o, out.ByValue[o]))
 		}
 		fmt.Fprintf(e.stdout, "kbmatch: %d answers kept, %d current (%s), %d out of date or for postings no longer listed\n", out.Kept, out.Current, strings.Join(parts, ", "), out.Stale)
-		fmt.Fprintf(e.stdout, "knowledge-base digest %s (%d bytes)\n", out.DigestSHA256[:12], out.DigestBytes)
+		fmt.Fprintf(e.stdout, "knowledge-base digest %s (%d bytes), %d identifying term(s) removed (identifying-words file: %s)\n", out.DigestSHA256[:12], out.DigestBytes, out.Redactions, out.IdentifyingWords)
 	})
 }
 
 func (e *env) kbmatchStatusOf() (kbmatchStatusReply, error) {
-	_, _, digest, summary, err := e.kbmatchSetup()
+	// Status sends nothing: a missing words file reads with the built-in list,
+	// as a run allowed to proceed without it would.
+	_, _, digest, summary, words, err := e.kbmatchSetup(false, false)
 	if err != nil {
 		return kbmatchStatusReply{}, err
 	}
@@ -578,7 +664,7 @@ func (e *env) kbmatchStatusOf() (kbmatchStatusReply, error) {
 		byValue[o] += 0 // every value appears, a zero included
 	}
 	return kbmatchStatusReply{Kept: st.Len(), Current: current, ByValue: byValue, Stale: st.Len() - current,
-		DigestSHA256: digest.SHA256, DigestBytes: len(digest.Text)}, nil
+		DigestSHA256: digest.SHA256, DigestBytes: len(digest.Text), IdentifyingWords: words, Redactions: digest.Redactions}, nil
 }
 
 // kbmatchLookup is jobinsight.RankContext.KBMatch over the store; nil when no
@@ -621,7 +707,14 @@ func kbmatchLookupKeyed(cfg config.Config, stateDir string, hash func(ledger.Rec
 	if err != nil {
 		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}
-	digest, err := kbmatch.DigestOf(prof)
+	// The digest the stored answers were asked under is the redacted one, so the
+	// lookup redacts with the same list (a read-only path: a missing file means
+	// the built-in list, as a run allowed to proceed without it used).
+	w, _, err := kbmatchWords(cfg, stateDir, false, false)
+	if err != nil {
+		return nil, notUsed + oneLine(err.Error(), 200), ""
+	}
+	digest, err := kbmatch.DigestOf(prof, w)
 	if err != nil {
 		return nil, notUsed + oneLine(err.Error(), 200), ""
 	}

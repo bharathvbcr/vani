@@ -28,6 +28,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/track"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -134,6 +135,7 @@ func (e *env) cmdTeacher(args []string) error {
 	readingsOf := fs.String("with-readings-of", "", "keep only postings that already have a current reading by this model (this task, fixture and prompt, and for kb_match this knowledge-base digest), applied before --sample")
 	taskFlag := fs.String("task", teacherTaskJD, fmt.Sprintf("the question asked: %s (the triage question) or %s (does the work match your knowledge base; the full digest is sent)", teacherTaskJD, teacherTaskKB))
 	keysFile := fs.String("keys", "", "ask only about the posting keys this file lists, one per line (an unknown or duplicate key is refused); without --sample they are asked in the file's order")
+	allowMissing := fs.Bool(kbAllowMissingFlag, false, "with --task kb_match: send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+" (without it, a missing file refuses)")
 	drawOut := fs.String("draw-out", "", "save the drawn keys, in the order they are asked, to this file (default: a new file under the state directory's teacher_draws/); pass it back with --keys to resume the same sample")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what the run did (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
@@ -174,7 +176,8 @@ func (e *env) cmdTeacher(args []string) error {
 		return usagef("teacher: --max must not be negative")
 	}
 	o := teacherOpts{dry: *dry, budgetUSD: *budgetUSD, model: *modelFlag, of: *of, conc: *conc, maxN: *maxN,
-		sample: sampleSet, sampleN: *sampleN, seed: *seed, readingsOf: *readingsOf, task: *taskFlag, keys: *keysFile, drawOut: *drawOut}
+		sample: sampleSet, sampleN: *sampleN, seed: *seed, readingsOf: *readingsOf, task: *taskFlag, keys: *keysFile, drawOut: *drawOut,
+		allowMissingWords: *allowMissing}
 	jr := &teacherReply{DryRun: *dry}
 	err := e.textToStderr(*asJSON, func() error { return e.teacherRun(o, jr) })
 	if !*asJSON {
@@ -192,6 +195,8 @@ type teacherOpts struct {
 	conc, maxN, sampleN   int
 	sample                bool
 	seed                  uint64
+	// allowMissingWords is --allow-missing-identifying-words (kb_match only).
+	allowMissingWords bool
 }
 
 // The --task names.
@@ -238,7 +243,13 @@ func teacherKBMatchTask(summary string, d kbmatch.Digest) eval.TeacherTask {
 	return eval.TeacherTask{
 		Name: kbmatch.Task, Fixture: teacherKBMatchFixture(), Prompt: teacherKBMatchPromptHash(summary), Digest: d.SHA256,
 		Ask: func(ctx context.Context, dc decide.Decider, p posting.Posting) (decide.Answer, error) {
-			q, _ := kbmatch.Question(p, summary, d, nil)
+			// Prepare, not Question: a digest not built through the redactor, or a
+			// term that survived it, is refused here, per posting, as well as once
+			// before the run (teacherRun).
+			q, _, err := kbmatch.Prepare(p, summary, d, nil)
+			if err != nil {
+				return decide.Answer{}, err
+			}
 			return dc.Decide(ctx, q)
 		},
 	}
@@ -248,9 +259,14 @@ func teacherKBMatchTask(summary string, d kbmatch.Digest) eval.TeacherTask {
 // it could cost; Run is what a real run did. A run that stopped carries the
 // failure beside them.
 type teacherReply struct {
-	DryRun bool             `json:"dry_run"`
-	Plan   *teacherPlanJSON `json:"plan,omitempty"`
-	Run    *teacherRunJSON  `json:"run,omitempty"`
+	DryRun bool `json:"dry_run"`
+	// IdentifyingWords and Redactions are set for --task kb_match only (the
+	// jd_triage question carries no knowledge base): the identifying-words
+	// file's state and how many terms the digest had removed (never which).
+	IdentifyingWords string           `json:"identifying_words,omitempty"`
+	Redactions       *int             `json:"redactions,omitempty"`
+	Plan             *teacherPlanJSON `json:"plan,omitempty"`
+	Run              *teacherRunJSON  `json:"run,omitempty"`
 	failure
 }
 
@@ -339,9 +355,21 @@ func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
 		// The knowledge base only through eligibleBank, which fails closed: with
 		// no selections or no rkb there is no digest and nothing is asked, a dry
 		// run included (its prompt hash and measure need the digest).
-		_, d, s, derr := kbmatchDigest(cfg)
+		// Redacted with the owner's identifying-words list, which must exist
+		// (or --allow-missing-identifying-words), and checked once here so a term
+		// in the summary or digest stops the run before anything is asked.
+		w, words, werr := kbmatchWords(cfg, e.stateDir, true, o.allowMissingWords)
+		jr.IdentifyingWords = words
+		if werr != nil {
+			return fmt.Errorf("teacher: %w", werr)
+		}
+		_, d, s, derr := kbmatchDigest(cfg, w)
 		if derr != nil {
 			return fmt.Errorf("teacher: %w", derr)
+		}
+		jr.Redactions = &d.Redactions
+		if cerr := kbmatch.CheckOwner(s, d); cerr != nil {
+			return fmt.Errorf("teacher: %w", cerr)
 		}
 		summary, task, digestBytes = s, teacherKBMatchTask(s, d), len(d.Text)
 	}

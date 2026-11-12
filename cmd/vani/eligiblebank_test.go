@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
 	"github.com/bharathvbcr/Vani/internal/kbsync"
 	"github.com/bharathvbcr/Vani/internal/semantic"
+	"github.com/bharathvbcr/Vani/internal/track"
 )
 
 // eligibleTestClaims is the fake rkb's export for synthetic banks with no claim
@@ -100,7 +101,7 @@ func TestSemanticProfileHoldsOnlyEligibleBullets(t *testing.T) {
 			t.Errorf("%q reached the profile although it is not eligible", banned)
 		}
 	}
-	d, err := kbmatch.DigestOf(p)
+	d, err := kbmatch.DigestOf(p, track.BuiltinWords())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -29,11 +29,11 @@ func testProfile() semantic.Profile {
 }
 
 func TestDigestIsDeterministicBoundedAndHashed(t *testing.T) {
-	a, err := DigestOf(testProfile())
+	a, err := DigestOf(testProfile(), noTerms)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := DigestOf(testProfile())
+	b, _ := DigestOf(testProfile(), noTerms)
 	if a != b || len(a.SHA256) != 64 {
 		t.Fatalf("digest is not deterministic: %+v vs %+v", a, b)
 	}
@@ -45,7 +45,7 @@ func TestDigestIsDeterministicBoundedAndHashed(t *testing.T) {
 	// An edit to the knowledge base changes the hash, so stored answers re-ask.
 	p := testProfile()
 	p.Chunks[2].Text = "Built a batching scheduler in Go"
-	if c, _ := DigestOf(p); c.SHA256 == a.SHA256 {
+	if c, _ := DigestOf(p, noTerms); c.SHA256 == a.SHA256 {
 		t.Errorf("an edited bullet kept the digest hash")
 	}
 }
@@ -56,7 +56,7 @@ func TestDigestCapsABigBank(t *testing.T) {
 		label := fmt.Sprintf("Entry %03d", i/6)
 		p.Chunks = append(p.Chunks, semantic.Chunk{Label: label, Text: fmt.Sprintf("%s bullet %d %s", label, i, strings.Repeat("word ", 80)), Weight: 1})
 	}
-	d, err := DigestOf(p)
+	d, err := DigestOf(p, noTerms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,14 +75,14 @@ func TestDigestRefusesAnEmptyProfile(t *testing.T) {
 	for name, p := range map[string]semantic.Profile{
 		"none": {}, "blank": {Chunks: []semantic.Chunk{{Label: "x", Text: "  "}, {Label: " ", Text: "y"}}},
 	} {
-		if _, err := DigestOf(p); err == nil {
+		if _, err := DigestOf(p, noTerms); err == nil {
 			t.Errorf("%s: a profile with nothing to say gave a digest", name)
 		}
 	}
 }
 
 func TestQuestionStaysInsideTheContextBoundAndNamesNoOne(t *testing.T) {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	p := posting.Posting{
 		Key: "gh:acme:1", Company: "SecretCo", Title: "Software Engineer", Location: "Austin",
 		Description: strings.Repeat("Design services. ", 20000),
@@ -115,7 +115,7 @@ func TestQuestionStaysInsideTheContextBoundAndNamesNoOne(t *testing.T) {
 }
 
 func TestQuestionCutsOnRuneBoundaries(t *testing.T) {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	q, _ := Question(posting.Posting{Title: "T", Description: strings.Repeat("é", jdtriage.MaxContextBytes)}, "s", d, nil)
 	if !utf8.Valid(q.Context) {
 		t.Errorf("the cut split a rune")
@@ -138,7 +138,7 @@ func (f *fakeDecider) Decide(_ context.Context, q decide.Question) (decide.Answe
 }
 
 func judge(f *fakeDecider) Judge {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	return Judge{D: f, Target: "early-career ML systems roles", Digest: d}
 }
 
@@ -178,7 +178,7 @@ func TestJudgeBackendErrorsAndMissingPieces(t *testing.T) {
 	if _, err := (Judge{D: &fakeDecider{}, Target: "t"}).Ask(context.Background(), p); err == nil {
 		t.Errorf("no digest must be an error, not a question with an empty knowledge base")
 	}
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	if _, err := (Judge{D: &fakeDecider{}, Target: strings.Repeat("x", jdtriage.MaxTargetSummaryBytes+1), Digest: d}).Ask(context.Background(), p); err == nil {
 		t.Errorf("an oversized target summary must be refused")
 	}
@@ -191,7 +191,7 @@ func (emptyDecider) Decide(context.Context, decide.Question) (decide.Answer, err
 }
 
 func TestJudgeAnswerWithoutTheSlotIsNotRead(t *testing.T) {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	j := Judge{D: emptyDecider{}, Target: "t", Digest: d}
 	if _, err := j.Ask(context.Background(), posting.Posting{Title: "T", Description: "d"}); !errors.Is(err, ErrNotRead) {
 		t.Errorf("want ErrNotRead, got %v", err)
@@ -199,13 +199,13 @@ func TestJudgeAnswerWithoutTheSlotIsNotRead(t *testing.T) {
 }
 
 func TestTextSHA256ChangesWithWhatTheModelSees(t *testing.T) {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	p := posting.Posting{Title: "T", Location: "L", Description: "D"}
 	base := TextSHA256(p, "summary", d)
 	if len(base) != 64 || base != TextSHA256(p, "summary", d) {
 		t.Fatalf("hash is not stable: %q", base)
 	}
-	other, _ := DigestOf(semantic.Profile{Chunks: []semantic.Chunk{{Label: "x", Text: "other work", Weight: 1}}})
+	other, _ := DigestOf(semantic.Profile{Chunks: []semantic.Chunk{{Label: "x", Text: "other work", Weight: 1}}}, noTerms)
 	for name, h := range map[string]string{
 		"title":       TextSHA256(posting.Posting{Title: "T2", Location: "L", Description: "D"}, "summary", d),
 		"location":    TextSHA256(posting.Posting{Title: "T", Location: "L2", Description: "D"}, "summary", d),
@@ -236,7 +236,7 @@ func oldTextSHA256(p posting.Posting, summary string, d Digest) string {
 // TextSHA256, and TextSHA256Of over a saved TextPrefix, are the hash stored
 // answers were filed under, for text that ends anywhere in a SHA-256 block.
 func TestTextPrefixResumesToTheStoredIdentity(t *testing.T) {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	var posts []posting.Posting
 	for n := range 140 { // every length across two 64-byte blocks
 		posts = append(posts, posting.Posting{Title: "T", Location: "Austin, TX", Description: strings.Repeat("x", n)})

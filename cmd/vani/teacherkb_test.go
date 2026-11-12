@@ -26,6 +26,7 @@ func tkSetup(t *testing.T) *tcEnv {
 	t.Helper()
 	e := tcSetup(t)
 	tkBank(t, e, kbmBank)
+	writeKBWords(t, e.state, kbTestOwnWord) // a kb_match send needs the list; this term is in no test bank
 	return e
 }
 
@@ -51,7 +52,11 @@ func tkDigest(t *testing.T, e *tcEnv) (kbmatch.Digest, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, d, s, err := kbmatchDigest(cfg)
+	w, _, err := kbmatchWords(cfg, e.state, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, d, s, err := kbmatchDigest(cfg, w)
 	if err != nil {
 		t.Fatal(err)
 	}

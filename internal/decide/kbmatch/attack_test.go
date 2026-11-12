@@ -12,7 +12,7 @@ import (
 )
 
 func TestAttackTitleLocationAtCapAndOver(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	for _, c := range []struct {
 		name       string
 		title, loc int
@@ -40,7 +40,7 @@ func TestAttackTitleLocationAtCapAndOver(t *testing.T) {
 // The stated contract is a rune boundary; a combining mark at the cut is
 // separated from its base. Documented here, not asserted as a break.
 func TestAttackCombiningMarkAtCut(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	title := strings.Repeat("a", draft.MaxTitleRunes-1) + "é" // base is rune 300, mark is rune 301
 	q, truncated := Question(posting.Posting{Title: title, Description: "x"}, "t", digest, nil)
 	if !truncated || !utf8.Valid(q.Context) {
@@ -52,7 +52,7 @@ func TestAttackCombiningMarkAtCut(t *testing.T) {
 }
 
 func TestAttackFourByteRunesAtByteCap(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	for pad := range 5 {
 		body := strings.Repeat("a", pad) + strings.Repeat("\U0001F600", jdtriage.MaxContextBytes)
 		q, truncated := Question(posting.Posting{Title: "E", Description: body}, "t", digest, nil)
@@ -84,7 +84,7 @@ func TestAttackContextNeverExceedsCapProperty(t *testing.T) {
 		}
 		return sb.String()
 	}
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	for i := range 300 {
 		d := digest
 		if rng.Intn(3) == 0 {

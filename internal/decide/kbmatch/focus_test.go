@@ -15,7 +15,7 @@ import (
 )
 
 func TestQuestionWithFocusCarriesTheCompactDigestAndTheClosestLines(t *testing.T) {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	if strings.Contains(d.Compact, "*") || !strings.Contains(d.Compact, "- Agent Platform") || len(d.Compact) >= len(d.Text) {
 		t.Fatalf("compact digest should hold titles and stack terms only:\n%s", d.Compact)
 	}
@@ -42,7 +42,7 @@ func TestQuestionWithFocusCarriesTheCompactDigestAndTheClosestLines(t *testing.T
 			prof.Chunks = append(prof.Chunks, semanticChunk(label, fmt.Sprintf("%s bullet %d %s", label, b, strings.Repeat("work ", 30))))
 		}
 	}
-	bd, err := DigestOf(prof)
+	bd, err := DigestOf(prof, noTerms)
 	if err != nil {
 		t.Fatal(err)
 	}

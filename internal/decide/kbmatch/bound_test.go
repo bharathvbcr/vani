@@ -11,7 +11,7 @@ import (
 )
 
 func TestQuestionBoundsTitleLocationAndDigest(t *testing.T) {
-	digest, err := DigestOf(testProfile())
+	digest, err := DigestOf(testProfile(), noTerms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestQuestionBoundsTitleLocationAndDigest(t *testing.T) {
 }
 
 func TestQuestionCutsTitleAndLocationToRuneCaps(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	p := posting.Posting{
 		Title:       strings.Repeat("世", draft.MaxTitleRunes+50),
 		Location:    strings.Repeat("界", MaxLocationRunes+50),

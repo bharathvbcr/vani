@@ -21,7 +21,11 @@
 // not personal data here, and the drafter sends them on purpose). The digest
 // is bounded and its hash is part
 // of each stored answer, so an edit to the knowledge base re-asks. Nothing in the
-// question names the owner. Both sections and the posting sit inside the
+// question names the owner. On top of that, every knowledge-base line (the
+// digest, the compact digest and the embedding-picked focus lines) passes
+// through a Redactor (the owner's identifying-words list plus the built-in one,
+// track.Words) before it is put in a question, and Prepare re-checks the
+// assembled owner text and refuses to send when a term survived. Both sections and the posting sit inside the
 // backend's untrusted-content frame: none carries instructions to the model, and
 // the reply is parsed strictly to one listed option.
 package kbmatch
@@ -102,15 +106,47 @@ const MaxCompactBytes = 2 << 10
 // MaxFocus is the most lines the embedding model may add to a question.
 const MaxFocus = 8
 
-// Digest is the knowledge base as the model sees it.
+// Digest is the knowledge base as the model sees it. Only DigestOf makes a
+// usable one: it redacts the owner's identifying terms (Redactor) out of every
+// line, and keeps the redactor so Question redacts the focus lines too and
+// Prepare can check the assembled bytes. A Digest built any other way (a
+// literal) has no redactor, and Prepare refuses it.
 type Digest struct {
-	// Text is the full digest. SHA256 is its hash and the one identity of the
-	// knowledge base: an answer is current while it matches, whichever of Text or
-	// Compact + Focus the question carried.
+	// Text is the full digest, redacted. SHA256 is its hash and the one identity
+	// of the knowledge base: an answer is current while it matches, whichever of
+	// Text or Compact + Focus the question carried. It hashes what is sent.
 	Text   string
 	SHA256 string
-	// Compact is the stack terms and entry titles alone.
+	// Compact is the stack terms and entry titles alone, redacted.
 	Compact string
+	// Redactions counts the identifying terms DigestOf replaced, once per
+	// knowledge-base line it read (a line in both Text and Compact counts once).
+	Redactions int
+
+	r Redactor
+}
+
+// Redactor removes the owner's identifying terms from knowledge-base text
+// before it leaves the machine (track.Words). Found is the check Prepare runs
+// over the assembled owner text: it must find nothing Redact left.
+type Redactor interface {
+	Redact(s string) (string, int)
+	Found(s string) []string
+}
+
+// ErrNoRedactor is Prepare's refusal of a Digest DigestOf did not make.
+var ErrNoRedactor = errors.New("kbmatch: the knowledge-base digest was not built through the redactor; nothing is sent without it")
+
+// IdentifyingError is Prepare's refusal: identifying terms survived in the
+// owner's text a question would carry. It counts them by section and never
+// names them, so the error can be printed and logged.
+type IdentifyingError struct {
+	Summary, Digest, Focus int
+}
+
+func (e *IdentifyingError) Error() string {
+	return fmt.Sprintf("kbmatch: %d identifying term(s) would be sent (target summary %d, knowledge-base digest %d, closest lines %d); nothing was asked",
+		e.Summary+e.Digest+e.Focus, e.Summary, e.Digest, e.Focus)
 }
 
 // Focus is one line of the knowledge base an embedding model found closest to a
@@ -122,8 +158,21 @@ type Focus struct {
 
 // DigestOf cuts p into a bounded, deterministic digest: stack terms first, then
 // each entry's title with up to MaxBulletsPerEntry of its bullets, whole lines
-// only, up to MaxDigestBytes. A profile with nothing to say is an error.
-func DigestOf(p semantic.Profile) (Digest, error) {
+// only, up to MaxDigestBytes. Every line passes through r first, so no
+// identifying term reaches Text or Compact and SHA256 hashes the redacted
+// text; entries are still grouped by their own titles, so two entries whose
+// titles redact alike stay apart. A nil r is refused, as is a profile with
+// nothing to say.
+func DigestOf(p semantic.Profile, r Redactor) (Digest, error) {
+	if r == nil {
+		return Digest{}, ErrNoRedactor
+	}
+	n := 0
+	red := func(s string) string {
+		out, k := r.Redact(s)
+		n += k
+		return out
+	}
 	var skills, order []string
 	bullets := map[string][]string{}
 	for _, c := range p.Chunks {
@@ -139,7 +188,7 @@ func DigestOf(p semantic.Profile) (Digest, error) {
 				bullets[label] = nil
 			}
 			if text != label && len(bullets[label]) < MaxBulletsPerEntry {
-				bullets[label] = append(bullets[label], cutRunes(text, maxBulletBytes))
+				bullets[label] = append(bullets[label], text)
 			}
 		}
 	}
@@ -153,18 +202,22 @@ func DigestOf(p semantic.Profile) (Digest, error) {
 		return true
 	}
 	for _, s := range skills {
+		s = red(s)
 		if !add(&sb, MaxDigestBytes, s) {
 			break
 		}
 		add(&compact, MaxCompactBytes, s)
 	}
 	for _, label := range order {
-		if !add(&sb, MaxDigestBytes, "- "+label) {
+		shown := red(label)
+		if !add(&sb, MaxDigestBytes, "- "+shown) {
 			break
 		}
-		add(&compact, MaxCompactBytes, "- "+label)
+		add(&compact, MaxCompactBytes, "- "+shown)
 		for _, b := range bullets[label] {
-			if !add(&sb, MaxDigestBytes, "    * "+b) {
+			// Redact before the cut, so the cut can never split a term into a
+			// fragment the redactor no longer recognises.
+			if !add(&sb, MaxDigestBytes, "    * "+cutRunes(red(b), maxBulletBytes)) {
 				break
 			}
 		}
@@ -173,7 +226,7 @@ func DigestOf(p semantic.Profile) (Digest, error) {
 		return Digest{}, errors.New("kbmatch: the knowledge base has no titles, skills or bullets to describe")
 	}
 	sum := sha256.Sum256([]byte(sb.String()))
-	return Digest{Text: sb.String(), SHA256: hex.EncodeToString(sum[:]), Compact: compact.String()}, nil
+	return Digest{Text: sb.String(), SHA256: hex.EncodeToString(sum[:]), Compact: compact.String(), Redactions: n, r: r}, nil
 }
 
 // cutRuneCount cuts s to at most n runes and reports whether it cut.
@@ -254,28 +307,13 @@ func writeField(w io.Writer, s string) { fmt.Fprintf(w, "%d:%s\x00", len(s), s) 
 // MaxFocus lines an embedding model found closest to this posting) it carries the
 // compact digest and those lines instead: shorter, and the lines are the ones
 // that bear on this posting rather than the first few of each entry.
+//
+// The digest's redactor (DigestOf) also redacts the focus lines, before they are
+// cut. Question itself checks nothing: Prepare is what a sender calls.
 func Question(p posting.Posting, summary string, d Digest, focus []Focus) (q decide.Question, truncated bool) {
 	var head strings.Builder
-	head.WriteString("JOB SEEKER'S TARGET ROLES:\n")
-	head.WriteString(summary)
-	if len(focus) == 0 || d.Compact == "" {
-		head.WriteString("\n\nJOB SEEKER'S EXPERIENCE:\n")
-		head.WriteString(d.Text)
-	} else {
-		head.WriteString("\n\nJOB SEEKER'S EXPERIENCE (stack terms and entry titles):\n")
-		head.WriteString(d.Compact)
-		head.WriteString("\nTHE JOB SEEKER'S EXPERIENCE CLOSEST TO THIS POSTING (picked by an embedding model):\n")
-		for i, f := range focus {
-			if i == MaxFocus {
-				break
-			}
-			head.WriteString("- ")
-			head.WriteString(cutRunes(strings.Join(strings.Fields(f.Label), " "), maxBulletBytes))
-			head.WriteString(": ")
-			head.WriteString(cutRunes(strings.Join(strings.Fields(f.Text), " "), maxBulletBytes))
-			head.WriteByte('\n')
-		}
-	}
+	owner, _ := ownerHead(summary, d, focus)
+	head.WriteString(owner)
 	head.WriteString("\nJOB POSTING:\nTitle: ")
 	title, cutTitle := cutRuneCount(strings.Join(strings.Fields(p.Title), " "), draft.MaxTitleRunes)
 	location, cutLocation := cutRuneCount(strings.Join(strings.Fields(p.Location), " "), MaxLocationRunes)
@@ -303,6 +341,97 @@ func Question(p posting.Posting, summary string, d Digest, focus []Focus) (q dec
 	}, truncated
 }
 
+// ownerSections is where each part of ownerHead's text sits, so Prepare can
+// count surviving terms by section.
+type ownerSections struct {
+	summary, digest, focus string
+}
+
+// ownerHead renders the owner's part of a question (target summary, then the
+// knowledge base: the full digest, or the compact digest and the focus lines),
+// exactly the bytes Question puts before the posting.
+func ownerHead(summary string, d Digest, focus []Focus) (string, ownerSections) {
+	var head strings.Builder
+	var sec ownerSections
+	head.WriteString("JOB SEEKER'S TARGET ROLES:\n")
+	head.WriteString(summary)
+	sec.summary = summary
+	if len(focus) == 0 || d.Compact == "" {
+		head.WriteString("\n\nJOB SEEKER'S EXPERIENCE:\n")
+		head.WriteString(d.Text)
+		sec.digest = d.Text
+	} else {
+		head.WriteString("\n\nJOB SEEKER'S EXPERIENCE (stack terms and entry titles):\n")
+		head.WriteString(d.Compact)
+		sec.digest = d.Compact
+		head.WriteString("\nTHE JOB SEEKER'S EXPERIENCE CLOSEST TO THIS POSTING (picked by an embedding model):\n")
+		var fb strings.Builder
+		for i, f := range focus {
+			if i == MaxFocus {
+				break
+			}
+			label := strings.Join(strings.Fields(f.Label), " ")
+			text := strings.Join(strings.Fields(f.Text), " ")
+			if d.r != nil {
+				label, _ = d.r.Redact(label)
+				text, _ = d.r.Redact(text)
+			}
+			fb.WriteString("- ")
+			fb.WriteString(cutRunes(label, maxBulletBytes))
+			fb.WriteString(": ")
+			fb.WriteString(cutRunes(text, maxBulletBytes))
+			fb.WriteByte('\n')
+		}
+		head.WriteString(fb.String())
+		sec.focus = fb.String()
+	}
+	return head.String(), sec
+}
+
+// Prepare is Question for a question that will be sent: it refuses a Digest
+// DigestOf did not make (ErrNoRedactor), and runs the redactor's check over
+// the owner's text exactly as the question carries it (target summary, digest
+// or compact digest, focus lines), refusing with an IdentifyingError when any
+// term survived. The target summary is checked, not redacted: it also goes into
+// every triage question, so a term in it is the track's to fix (vani track
+// check), and silently rewriting it here would make the two disagree. The
+// posting is not checked or redacted: it is the employer's text, not the
+// owner's, and words such as "visa" or "sponsorship" belong there.
+func Prepare(p posting.Posting, summary string, d Digest, focus []Focus) (decide.Question, bool, error) {
+	if d.r == nil {
+		return decide.Question{}, false, ErrNoRedactor
+	}
+	if err := checkOwner(summary, d, focus); err != nil {
+		return decide.Question{}, false, err
+	}
+	q, truncated := Question(p, summary, d, focus)
+	return q, truncated, nil
+}
+
+// CheckOwner is Prepare's check alone, for the full-digest question every
+// posting shares: a sender runs it once before asking anything, so a term in
+// the summary or digest stops the run before the first call rather than
+// failing every posting in turn.
+func CheckOwner(summary string, d Digest) error {
+	if d.r == nil {
+		return ErrNoRedactor
+	}
+	return checkOwner(summary, d, nil)
+}
+
+func checkOwner(summary string, d Digest, focus []Focus) error {
+	_, sec := ownerHead(summary, d, focus)
+	e := &IdentifyingError{
+		Summary: len(d.r.Found(sec.summary)),
+		Digest:  len(d.r.Found(sec.digest)),
+		Focus:   len(d.r.Found(sec.focus)),
+	}
+	if e.Summary+e.Digest+e.Focus > 0 {
+		return e
+	}
+	return nil
+}
+
 // Judge asks D the question.
 type Judge struct {
 	D decide.Decider
@@ -327,7 +456,8 @@ type Verdict struct {
 }
 
 // Ask reads p. It returns ErrNotRead (wrapped, with the reading) when the model
-// gave no listed option, and any decider error as it is.
+// gave no listed option, ErrNoRedactor or an IdentifyingError (from Prepare)
+// when it would not send the question, and any decider error as it is.
 func (j Judge) Ask(ctx context.Context, p posting.Posting) (Verdict, error) {
 	if j.D == nil {
 		return Verdict{}, errors.New("kbmatch: no Decider")
@@ -347,7 +477,12 @@ func (j Judge) Ask(ctx context.Context, p posting.Posting) (Verdict, error) {
 			return Verdict{}, ctx.Err()
 		}
 	}
-	q, _ := Question(p, summary, j.Digest, focus)
+	q, _, err := Prepare(p, summary, j.Digest, focus)
+	if err != nil {
+		// Never sent: no redactor, or a term survived. Not ErrNotRead: the caller
+		// stops rather than counting it as a backend that gave no answer.
+		return Verdict{}, err
+	}
 	ans, err := j.D.Decide(ctx, q)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("kbmatch: %w", err)

@@ -206,7 +206,7 @@ func kbmatchAsksTheDecisionModel(t *testing.T, configured string, flags []string
 		t.Fatalf("store: %v", err)
 	}
 	cfg, _ := config.Load(k.cfgPath)
-	_, _, digest, summary, err := (&env{configPath: k.cfgPath, stateDir: k.state, stderr: io.Discard}).kbmatchSetup()
+	_, _, digest, summary, _, err := (&env{configPath: k.cfgPath, stateDir: k.state, stderr: io.Discard}).kbmatchSetup(false, false)
 	_ = cfg
 	if err != nil {
 		t.Fatal(err)
@@ -261,7 +261,7 @@ func TestKBMatchUsesTheEmbeddingModelForEvidence(t *testing.T) {
 		}
 	}
 	st, _ := kbmatch.OpenStore(filepath.Join(k.state, kbmatch.FileName))
-	_, _, digest, summary, _ := (&env{configPath: k.cfgPath, stateDir: k.state, stderr: io.Discard}).kbmatchSetup()
+	_, _, digest, summary, _, _ := (&env{configPath: k.cfgPath, stateDir: k.state, stderr: io.Discard}).kbmatchSetup(false, false)
 	p := posting.Posting{Key: "gh:a:1", ATS: "gh", Company: "SecretCo", Title: "Inference Engineer", Description: longDesc}
 	if e, ok := st.Lookup("gh:a:1", digest.SHA256, kbmatch.TextSHA256(p, summary, digest)); !ok || e.Mode != kbmatch.ModeFocused {
 		t.Errorf("entry %+v (found %v), want mode focused", e, ok)

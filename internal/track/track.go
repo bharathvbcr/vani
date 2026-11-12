@@ -22,6 +22,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
@@ -191,15 +193,21 @@ type Words struct {
 	// Personal is true when the owner's WordsFile supplied at least one term; false
 	// (missing, empty or comment-only file) means only the built-in list was checked.
 	Personal bool
+	// Missing is true when WordsFile does not exist at all, as against an
+	// empty or comment-only file. A caller that sends the owner's own text to a
+	// provider refuses on it (see kbmatch); trackcmd only reports Personal.
+	Missing bool
 }
 
 // LoadWords reads <dir>/identifying-words.txt (one term per line, '#'
 // comments) on top of the built-in list. A missing file is not an error:
-// Words.Personal reports it so the caller can say the check was partial.
+// Words.Personal and Words.Missing report it so the caller can say the check
+// was partial, or refuse.
 func LoadWords(dir string) (Words, error) {
 	w := Words{terms: slices.Clone(builtinWords)}
 	f, err := os.OpenInRoot(dir, WordsFile)
 	if errors.Is(err, fs.ErrNotExist) {
+		w.Missing = true
 		return w, nil
 	}
 	if err != nil {
@@ -237,6 +245,132 @@ func LoadWords(dir string) (Words, error) {
 
 // BuiltinWords returns the built-in list alone (Personal false).
 func BuiltinWords() Words { return Words{terms: slices.Clone(builtinWords)} }
+
+// Found returns the terms of w that occur in s as whole words: the check Check
+// applies to a track's target summary, for any other text bound for a provider.
+func (w Words) Found(s string) []string { return w.found(s) }
+
+// Redacted is what Redact puts in place of a term.
+const Redacted = "[redacted]"
+
+// Redact replaces every whole-word occurrence of w's terms in s with Redacted
+// and reports how many it replaced. It matches as found does, so that found
+// finds nothing Redact left: case-insensitively, a term bounded on both sides
+// by anything but an ASCII letter (so "gemma-metal", "manvi's", "manvi-cli" and
+// "(lappi)" are all caught and "optimize" is not a match for "opt"). At each
+// position the longest term wins, so "gemma-metal" is removed whole rather than
+// leaving "-metal" after "gemma". The built-in "@" removes the whole
+// whitespace-delimited token holding it (an address or a handle), not the
+// sign alone. Text between matches is copied unchanged.
+func (w Words) Redact(s string) (string, int) {
+	if s == "" {
+		return s, 0
+	}
+	terms := make([]string, 0, len(w.terms))
+	at := false
+	for _, t := range w.terms {
+		if t == "@" {
+			at = true
+			continue
+		}
+		if t != "" {
+			terms = append(terms, t)
+		}
+	}
+	// Longest first, so the first term that matches at a position is the longest.
+	sort.SliceStable(terms, func(i, j int) bool {
+		return utf8.RuneCountInString(terms[i]) > utf8.RuneCountInString(terms[j])
+	})
+	var b strings.Builder
+	n := 0
+	prevLetter := false
+	for i := 0; i < len(s); {
+		if !prevLetter {
+			if m := matchAt(s[i:], terms); m > 0 && !asciiLetterAt(s, i+m) {
+				b.WriteString(Redacted)
+				n++
+				i += m
+				prevLetter = false
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		b.WriteString(s[i : i+size])
+		prevLetter = isASCIILetter(r)
+		i += size
+	}
+	out := b.String()
+	if at && strings.Contains(out, "@") {
+		var ob strings.Builder
+		for _, tok := range splitKeepSpace(out) {
+			if strings.Contains(tok, "@") {
+				ob.WriteString(Redacted)
+				n++
+				continue
+			}
+			ob.WriteString(tok)
+		}
+		out = ob.String()
+	}
+	return out, n
+}
+
+// matchAt returns the byte length in s of the first term (longest first) that s
+// begins with, compared case-insensitively rune by rune, or 0.
+func matchAt(s string, terms []string) int {
+	for _, t := range terms {
+		j := 0
+		ok := true
+		for _, tr := range t {
+			if j >= len(s) {
+				ok = false
+				break
+			}
+			sr, size := utf8.DecodeRuneInString(s[j:])
+			if sr != tr && !strings.EqualFold(string(sr), string(tr)) {
+				ok = false
+				break
+			}
+			j += size
+		}
+		if ok && j > 0 {
+			return j
+		}
+	}
+	return 0
+}
+
+func isASCIILetter(r rune) bool { return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') }
+
+// asciiLetterAt reports whether s has an ASCII letter at byte i.
+func asciiLetterAt(s string, i int) bool {
+	if i >= len(s) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(s[i:])
+	return isASCIILetter(r)
+}
+
+// splitKeepSpace splits s into runs of whitespace and runs of anything else,
+// in order, so joining them gives s back.
+func splitKeepSpace(s string) []string {
+	var out []string
+	start := 0
+	for i, r := range s {
+		if i == start {
+			continue
+		}
+		prev, _ := utf8.DecodeLastRuneInString(s[:i])
+		if unicode.IsSpace(prev) != unicode.IsSpace(r) {
+			out = append(out, s[start:i])
+			start = i
+		}
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
+}
 
 // found returns the terms that occur in s as whole words: bounded on both
 // sides by a non-letter or the end of the text.
