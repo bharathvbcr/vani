@@ -60,13 +60,17 @@ struct JobsFixture {
         printf '%s\\n' "$*" >> "$d/calls.log"
         case "$1 $2" in
         "jobs list")
-            # One slow list, armed by slowNextList(): it runs until stopped and logs the SIGTERM.
+            # One slow list, armed by slowNextList(): it logs a SIGTERM, and runs until stopped, or for
+            # the seconds the file names and then prints the list as it was when it started.
             if [ -f "$d/slow" ]; then
+                t=$(cat "$d/slow")
                 rm -f "$d/slow"
+                cp "$d/list.json" "$d/slow.snap"
                 trap 'echo term >> "$d/term.log"; kill $! 2>/dev/null; exit 143' TERM
-                sleep 30 &
+                sleep "${t:-30}" &
                 echo started >> "$d/slow.started"
                 wait
+                exec cat "$d/slow.snap"
             fi
             case " $* " in
             *" --fit strong_fit "*) exec cat "$d/list-strong.json" ;;
@@ -147,35 +151,33 @@ struct JobsFixture {
         try write("write-\(key).json", j)
     }
 
-    /// The next `jobs list` runs until it is stopped (SIGTERM), which it records in term.log;
-    /// it writes slow.started once it is waiting.
-    func slowNextList() throws {
-        try Data().write(to: dir.appendingPathComponent("slow"))
+    /// The next `jobs list` runs until it is stopped (SIGTERM), which it records in term.log, or with
+    /// `seconds`, for that long, and then prints the standard list as it was when it started; it
+    /// writes slow.started once it is waiting.
+    func slowNextList(seconds: Double? = nil) throws {
+        try Data((seconds.map { String($0) } ?? "").utf8).write(to: dir.appendingPathComponent("slow"))
     }
 
     func exists(_ name: String) -> Bool {
         FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path)
     }
 
-    /// A state folder holding the files a list reads, for a client whose `stateDir` it is.
-    var stateDir: URL { dir.appendingPathComponent("state") }
-    var configPath: URL { dir.appendingPathComponent("config.json") }
-
-    func makeState() throws {
-        for sub in ["ledger", "marks", "retriage"] {
-            try FileManager.default.createDirectory(at: stateDir.appendingPathComponent(sub), withIntermediateDirectories: true)
+    /// Replaces what the fake `vani jobs list` (the standard order) answers, standing in for vani's
+    /// list after a write: these roles in this order, `notes` on them, and these per-view counts.
+    func setListReply(_ keys: [String], counts: [String: Int], notes: [String: String] = [:]) throws {
+        let byKey = Dictionary(uniqueKeysWithValues: Self.roles.map { ($0.key, $0) })
+        let jobs = try keys.map { key -> [String: Any] in
+            var j = job(try XCTUnwrap(byKey[key], "no role \(key)"))
+            if let note = notes[key] { j["note"] = note }
+            return j
         }
-        try Data("{}\n".utf8).write(to: stateDir.appendingPathComponent("ledger/events.jsonl"))
-        try Data("{}\n".utf8).write(to: stateDir.appendingPathComponent("marks/marks.jsonl"))
-        try Data("{}\n".utf8).write(to: configPath)
+        try write("list.json", ["view": "new", "jobs": jobs, "total": jobs.count, "shown": jobs.count,
+                                "counts": counts, "records": Self.roles.count])
     }
 
-    /// Appends a line to a state file, as a run or another writer would.
-    func append(_ relative: String) throws {
-        let h = try FileHandle(forWritingTo: stateDir.appendingPathComponent(relative))
-        defer { try? h.close() }
-        try h.seekToEnd()
-        try h.write(contentsOf: Data("{}\n".utf8))
+    /// The fake `vani jobs list` (the standard order) prints something that is not a list.
+    func breakListReply() throws {
+        try Data("not json\n".utf8).write(to: dir.appendingPathComponent("list.json"))
     }
 
     func calls() -> [String] {
