@@ -266,7 +266,11 @@ func backfillPass(ctx context.Context, runner *pipeline.Runner, esc *escalator, 
 				outage++
 			}
 		}
-		n, werr := runner.RecordShadows(ctx, it.key, escalateName, asked, got)
+		// The tier was asked about it.post (the Triager call above); the record
+		// is it.key, whatever key the stored posting carries.
+		read := it.post
+		read.Key = it.key
+		n, werr := runner.RecordShadows(ctx, read, escalateName, asked, got)
 		mu.Lock()
 		rep.Slots += len(slots)
 		rep.Answered += answered

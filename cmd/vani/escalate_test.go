@@ -88,7 +88,7 @@ func testEscalator(t *testing.T, primary decide.Decider, f *escFake, belowP floa
 		warn.WriteString(format + "\n")
 	}
 	ask := decide.NewRouter(logErrors(f, warnf, sink))
-	return newEscalator(primary, ask, belowP, maxPerRun, warnf), sink, &warn
+	return newEscalator(primary, ask, testTierModel, belowP, maxPerRun, warnf), sink, &warn
 }
 
 func triageQuestion(key string) decide.Question {
@@ -142,7 +142,7 @@ func TestEscalatesOnlyTheLowSlotIntoShadow(t *testing.T) {
 		t.Fatalf("shadow %+v, want exactly role_fit", got.Shadow)
 	}
 	roleOpts := q.Slots[0].Options
-	if sh.Reading != decide.Answered || sh.Value != roleOpts[len(roleOpts)-1] || sh.Detail != "backend=escalate" {
+	if sh.Reading != decide.Answered || sh.Value != roleOpts[len(roleOpts)-1] || sh.Detail != "backend=escalate;model="+testTierModel {
 		t.Fatalf("shadow reading %+v", sh)
 	}
 	if st := sink.stats()[escalateName]; st.Calls != 1 || st.Readings["answered"] != 1 {
@@ -339,7 +339,7 @@ func TestEscalationMergesIntoExistingShadow(t *testing.T) {
 	if !reflect.DeepEqual(f.asked, [][]string{{"role_fit"}}) {
 		t.Fatalf("asked %v; a slot with a shadow reading must not be re-asked", f.asked)
 	}
-	if got.Shadow["seniority"] != existing || got.Shadow["role_fit"].Detail != "backend=escalate" || len(got.Shadow) != 2 {
+	if got.Shadow["seniority"] != existing || got.Shadow["role_fit"].Detail != "backend=escalate;model="+testTierModel || len(got.Shadow) != 2 {
 		t.Fatalf("shadow %+v", got.Shadow)
 	}
 	if len(want.Shadow) != 1 {

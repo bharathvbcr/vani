@@ -8,7 +8,6 @@ package eval
 import (
 	"bufio"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -429,11 +428,9 @@ func readLine(br *bufio.Reader, max int) (line string, tooLong bool, err error) 
 	}
 }
 
-// HashText is the cache name for a description.
-func HashText(text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(sum[:])
-}
+// HashText is the cache name for a description: posting.RawSHA256, the raw
+// hash every reading's text binding uses.
+func HashText(text string) string { return posting.RawSHA256(text) }
 
 // PutText caches text under its sha256 (mode 0600) and returns the hash. An
 // existing entry is left alone; the write is atomic (temp file, then rename).

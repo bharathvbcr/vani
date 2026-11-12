@@ -42,6 +42,10 @@ const (
 	// denominator: how often the shadow was asked, not only when it answered.
 	AnnTriageSuffixShadowReading = ".shadow_reading"
 	AnnTriageSuffixShadowBackend = ".shadow_backend"
+	// AnnTriageSuffixShadowModel is the model id that made the shadow reading,
+	// written when the shadow tier names it (the escalation tier tags each
+	// reading with llm.triage_model as it was that run).
+	AnnTriageSuffixShadowModel = ".shadow_model"
 	// AnnTriageSuffixDisagree is "true" when primary and shadow both answered
 	// and chose different values.
 	AnnTriageSuffixDisagree = ".disagree"
@@ -64,6 +68,24 @@ const (
 	// it read. Both start with AnnTriagePrefix, so a re-ask forgets them.
 	AnnTriageKeptEdits = "triage.kept_edits"
 	AnnTriageBasisHash = "triage.basis_hash"
+	// AnnTriageDescSHA256, AnnTriageTitleSHA256 and AnnTriageLocationSHA256
+	// bind a triage reading to its text: posting.RawSHA256 of the raw
+	// description, title and location the backends were asked about (the
+	// teacher store's text_sha256 is the same hash of the description; the
+	// normalised AnnDescHash and AnnTriageBasisHash are not). Written only on
+	// the event of a triage that asked the backends, primary and in-line shadow
+	// alike, never on a copied reading or a title or exclusion drop. They start
+	// with AnnTriagePrefix, so the next triage forgets them.
+	AnnTriageDescSHA256     = AnnTriagePrefix + "desc_sha256"
+	AnnTriageTitleSHA256    = AnnTriagePrefix + "title_sha256"
+	AnnTriageLocationSHA256 = AnnTriagePrefix + "location_sha256"
+	// AnnTriageShadowDescSHA256, AnnTriageShadowTitleSHA256 and
+	// AnnTriageShadowLocationSHA256 are the same binding for shadow readings
+	// recorded after the triage (the escalation backfill), which may have read a
+	// later version of the posting than the primary did.
+	AnnTriageShadowDescSHA256     = AnnTriagePrefix + "shadow_desc_sha256"
+	AnnTriageShadowTitleSHA256    = AnnTriagePrefix + "shadow_title_sha256"
+	AnnTriageShadowLocationSHA256 = AnnTriagePrefix + "shadow_location_sha256"
 	// AnnLCA is the sponsorship-history badge from DOL LCA data. A badge, never
 	// a filter: no engine rule reads it.
 	AnnLCA = "lca.badge"

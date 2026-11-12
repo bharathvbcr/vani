@@ -117,6 +117,10 @@ func (r *Runner) read(ctx context.Context, key posting.Key, rec ledger.Record) (
 	if r.ModelID != "" {
 		ann[AnnTriageModel] = r.ModelID
 	}
+	// The backends (and any in-line shadow) were asked about p itself: bind the
+	// reading to that exact text. A copied reading above is not bound here, and
+	// Advance forgets an earlier binding it does not set.
+	bindText(ann, p, ledger.AnnTriageDescSHA256, ledger.AnnTriageTitleSHA256, ledger.AnnTriageLocationSHA256)
 	return readResult{ans: ans, status: st, reason: reason, ann: ann, pre: pre}, nil
 }
 

@@ -45,7 +45,7 @@ func TestRecordShadowsWritesWhatATriageWrites(t *testing.T) {
 		r, key := triagedPosting(t, l, "1", st, 0.3)
 		before := rec(t, l, key)
 
-		n, err := r.RecordShadows(ctx, key, escBackend, map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("hybrid")})
+		n, err := r.RecordShadows(ctx, posting.Posting{Key: key}, escBackend, map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("hybrid")})
 		if err != nil || n != 1 {
 			t.Fatalf("%s: n=%d err=%v", st, n, err)
 		}
@@ -88,7 +88,7 @@ func TestRecordShadowsSkipsWhatIsNotARecordableReading(t *testing.T) {
 		"not asked":   {reads: tagged(decide.SlotReading{Reading: decide.NotAsked}, escBackend), asked: "remote"},
 		"already read by the tier": {asked: "remote", reads: escalated("hybrid"),
 			prep: func(t *testing.T, l ledger.Ledger, r *Runner, key posting.Key) {
-				if n, err := r.RecordShadows(ctx, key, escBackend, map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("onsite")}); n != 1 || err != nil {
+				if n, err := r.RecordShadows(ctx, posting.Posting{Key: key}, escBackend, map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("onsite")}); n != 1 || err != nil {
 					t.Fatal(n, err)
 				}
 			}},
@@ -116,7 +116,7 @@ func TestRecordShadowsSkipsWhatIsNotARecordableReading(t *testing.T) {
 				c.prep(t, l, r, key)
 			}
 			before := rec(t, l, key)
-			n, err := r.RecordShadows(ctx, key, escBackend, map[string]string{"remote": c.asked}, map[string]decide.SlotReading{"remote": c.reads})
+			n, err := r.RecordShadows(ctx, posting.Posting{Key: key}, escBackend, map[string]string{"remote": c.asked}, map[string]decide.SlotReading{"remote": c.reads})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -144,7 +144,7 @@ func TestRecordShadowsReplacesTheTiersOutageOnce(t *testing.T) {
 		t.Fatal("the tier's own outage reading is not pending")
 	}
 	asked, reads := map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("remote")}
-	if n, err := r.RecordShadows(ctx, key, escBackend, asked, reads); n != 1 || err != nil {
+	if n, err := r.RecordShadows(ctx, posting.Posting{Key: key}, escBackend, asked, reads); n != 1 || err != nil {
 		t.Fatalf("replace: n=%d err=%v", n, err)
 	}
 	a := rec(t, l, key)
@@ -154,7 +154,7 @@ func TestRecordShadowsReplacesTheTiersOutageOnce(t *testing.T) {
 	if ShadowPending(a.Annotations, "remote", escBackend) {
 		t.Fatal("a recorded answer is still pending")
 	}
-	if n, err := r.RecordShadows(ctx, key, escBackend, asked, reads); n != 0 || err != nil || !rec(t, l, key).LastEvent.Equal(a.LastEvent) {
+	if n, err := r.RecordShadows(ctx, posting.Posting{Key: key}, escBackend, asked, reads); n != 0 || err != nil || !rec(t, l, key).LastEvent.Equal(a.LastEvent) {
 		t.Fatalf("second pass wrote: n=%d err=%v", n, err)
 	}
 }
@@ -196,13 +196,13 @@ func TestRecordShadowsRefusals(t *testing.T) {
 	r, key := triagedPosting(t, l, "1", posting.Explained, 0.3)
 	asked, reads := map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("hybrid")}
 
-	if _, err := r.RecordShadows(ctx, "gh:acme:404", escBackend, asked, reads); err == nil {
+	if _, err := r.RecordShadows(ctx, posting.Posting{Key: "gh:acme:404"}, escBackend, asked, reads); err == nil {
 		t.Error("an unknown key was recorded")
 	}
 	cctx, cancel := context.WithCancel(ctx)
 	cancel()
 	before := rec(t, l, key)
-	if n, err := r.RecordShadows(cctx, key, escBackend, asked, reads); n != 0 || !errors.Is(err, context.Canceled) {
+	if n, err := r.RecordShadows(cctx, posting.Posting{Key: key}, escBackend, asked, reads); n != 0 || !errors.Is(err, context.Canceled) {
 		t.Errorf("cancelled: n=%d err=%v", n, err)
 	}
 	for _, st := range []posting.Status{posting.Dead, posting.Dropped} {
@@ -211,7 +211,7 @@ func TestRecordShadowsRefusals(t *testing.T) {
 		if err := l2.Append(ctx, ledger.Event{V: ledger.SchemaVersion, At: t0.Add(3 * time.Minute), Key: k2, Status: st, Reason: "closed"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r2.RecordShadows(ctx, k2, escBackend, asked, reads); err == nil {
+		if _, err := r2.RecordShadows(ctx, posting.Posting{Key: k2}, escBackend, asked, reads); err == nil {
 			t.Errorf("a %s posting was written", st)
 		}
 	}
@@ -239,7 +239,7 @@ func TestEscalationNeverChangesADrop(t *testing.T) {
 	// evidence only (RecordShadows writes nothing but them).
 	l := openLedger(t)
 	r, key := triagedPosting(t, l, "1", posting.Explained, 0.3)
-	if _, err := r.RecordShadows(ctx, key, escBackend, map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("onsite")}); err != nil {
+	if _, err := r.RecordShadows(ctx, posting.Posting{Key: key}, escBackend, map[string]string{"remote": "remote"}, map[string]decide.SlotReading{"remote": escalated("onsite")}); err != nil {
 		t.Fatal(err)
 	}
 	if got := rec(t, l, key); got.Status != posting.Explained || got.Annotations["triage.remote"] != "remote" {

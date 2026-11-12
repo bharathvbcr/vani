@@ -53,10 +53,16 @@ func ShadowPending(ann map[string]string, slot, backend string) bool {
 // Only a record that is Triaged, Unsure, Scored, Explained or Digested is written:
 // a closed posting's last event day is what the digest footer counts. A record
 // that is gone or in another status is an error. The write is bounded by ctx.
-func (r *Runner) RecordShadows(ctx context.Context, key posting.Key, backend string, asked map[string]string, shadows map[string]decide.SlotReading) (int, error) {
+//
+// read is the posting the tier was asked about (its key is the record's). The
+// event binds the readings to its raw text under the shadow's own keys
+// (triage.shadow_desc_sha256 and the title and location beside it), never the
+// primary's: the tier may have read a later version than the primary triage.
+func (r *Runner) RecordShadows(ctx context.Context, read posting.Posting, backend string, asked map[string]string, shadows map[string]decide.SlotReading) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	key := read.Key
 	rec, ok := r.Ledger.Get(key)
 	if !ok {
 		return 0, fmt.Errorf("pipeline: unknown key %q", key)
@@ -91,6 +97,7 @@ func (r *Runner) RecordShadows(ctx context.Context, key posting.Key, backend str
 	if n == 0 {
 		return 0, nil
 	}
+	bindText(ann, read, ledger.AnnTriageShadowDescSHA256, ledger.AnnTriageShadowTitleSHA256, ledger.AnnTriageShadowLocationSHA256)
 	if err := r.emit(ctx, key, rec.Status, ReasonShadowBackfilled, ann); err != nil {
 		return 0, err
 	}
