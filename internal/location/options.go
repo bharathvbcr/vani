@@ -342,6 +342,7 @@ type part struct {
 	country string // kindCountry, or a headForeign city's country
 	state   string // kindState: the USPS code
 	strong  bool   // kindState written by name, or read by Parse as the place's state
+	note    bool   // kindCountry read from a longer phrase: "Canada OK", "UK hours", "Mexico team"
 }
 
 // classifyPart reads one comma part of a place. In a place's first part a
@@ -517,6 +518,7 @@ func classifyPart(raw string, first, stated bool) part {
 	}
 	if s := regionPhrase(named); s != "" && !stated {
 		classifyScope(&q, s)
+		q.note = true
 		return q
 	}
 	if len(dotless) >= 2 && len(dotless) <= 4 && dotless == strings.ToUpper(dotless) && isLetters(dotless) {
@@ -792,18 +794,20 @@ func (o *optBuild) refusesHead(q *part) bool {
 }
 
 // takesCountry: a country or region qualifies the option unless the option
-// already says the US, names another country, holds a state written in full
-// after its city ("Houston, New York, Singapore" is a list), or is a city of
-// the US table (or a name as likely US as not) that a state code has already
-// placed: "Seattle, WA, Canada", "Austin, TX (EMEA hours)" and "Portland, OR
-// (Canada OK)" are a US place and a second option, as "New York, NY
-// (Europe)" is. Otherwise a state code does not stop it, and neither does a
-// city of the foreign lists: a city the US table does not hold, then a code,
-// then a country, is that country's address with a subdivision code that a
-// USPS code shares ("Madrid, MD, Spain" is Comunidad de Madrid, "Westport,
-// MO, Ireland" Mayo, "Hoofddorp, NH, Netherlands" Noord-Holland; every such
-// string in the live ledger on 2026-11-12 was foreign), and the qualifier
-// names which one ("London, Ontario" is in Canada).
+// already says the US, names another country, or holds a state written in
+// full after its city ("Houston, New York, Singapore" is a list). An option
+// a state code has placed in the US keeps it, and what follows is an option
+// of its own, as after "New York, NY (Europe)": always for a city of the US
+// table ("Seattle, WA, Canada", "San Francisco, CA (Canada OK)"), and for
+// any town but a city of the foreign lists when what follows is a region or
+// a note naming a country ("Bentonville, AR (EMEA hours)", "Smallville, KS
+// (Canada OK)"). A country written as a whole part after a town the US table
+// does not hold and a code is that country's address, the code a subdivision
+// code a USPS code shares ("Madrid, MD, Spain" is Comunidad de Madrid,
+// "Westport, MO, Ireland" Mayo, "Hoofddorp, NH, Netherlands" Noord-Holland;
+// every such string in the live ledger on 2026-11-12 was foreign). A city of
+// the foreign lists takes the qualifier, which names which one ("London,
+// Ontario" is in Canada).
 func (o *optBuild) takesCountry(q *part) bool {
 	switch {
 	case o.us, o.negUS:
@@ -813,6 +817,8 @@ func (o *optBuild) takesCountry(q *part) bool {
 	case o.strongState:
 		return false
 	case len(o.states) > 0 && o.head == headUS:
+		return false
+	case len(o.states) > 0 && o.head != headForeign && (q.note || q.country == ""):
 		return false
 	case len(o.states) > 0 && o.head == headAmbiguous && (q.country == "" || collidingCountry[o.states[0]] != q.country):
 		// A name as likely US as not keeps its state unless the code is

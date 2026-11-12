@@ -35,6 +35,14 @@ func TestReview2USCityStateThenAbroad(t *testing.T) {
 		{"Austin, TX (Canada only)", false, wantUS},
 		{"New York, NY (Europe)", false, wantUS},
 		{"Austin, Texas (Mexico team)", false, wantUS},
+		// A town no table holds, placed by its state code: a note naming a
+		// country or a region after it ("Canada OK", "EMEA hours", "LATAM")
+		// is an option of its own. Only a country written as a whole part
+		// is an address's country (below).
+		{"Bentonville, AR (Canada OK)", false, wantUS},
+		{"Bentonville, AR (EMEA hours)", false, wantUS},
+		{"Smallville, KS (LATAM)", false, wantUS},
+		{"Smallville, KS (Europe)", false, wantUS},
 		// A name as likely US as not, placed by its state code.
 		{"Portland, OR (Canada OK)", false, wantUS},
 		{"Cambridge, MA, UK hours", false, wantUS},
@@ -67,6 +75,11 @@ func TestReview2NotIn(t *testing.T) {
 		{"Remote, but not in the US", false, wantNotUS},
 		{"Remote, but not in the US", true, wantNotUS},
 		{"Remote - outside CONUS", true, wantNotUS},
+		{"Not based in the US", false, wantNotUS},
+		{"Remote - not based in the US", true, wantNotUS},
+		{"Not within the US", false, wantNotUS},
+		{"Not located in the US", false, wantNotUS},
+		{"Not based in office - Austin, TX", false, wantUS},
 		// A negated work mode is still the mode, not a place.
 		{"Not in office - Austin, TX", false, wantUS},
 		{"Austin, TX (not on site)", false, wantUS},

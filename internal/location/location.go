@@ -492,6 +492,11 @@ func scopeOr(s, def string) string {
 	return s
 }
 
+// negConnectors are work-mode words that join a negation to the place it
+// negates ("not based in the US", "not within the US"): stripWorkMode drops
+// them, but they do not make the negation a work mode's.
+var negConnectors = map[string]bool{"based": true, "within": true}
+
 // weakWords are dropped only beside another kept word, so "Hybrid in Boston"
 // reads as "Boston" while a lone "in" or "ON" (Ontario) is kept.
 var weakWords = map[string]bool{"in": true, "on": true, "site": true, "at": true}
@@ -519,13 +524,15 @@ func stripWorkMode(part string) string {
 		}
 	}
 	// negatesPlace: the pieces after the "not" or "non" at ri name a place,
-	// not a work mode. The first piece that is not a weak word ("in", "on",
-	// "at", "site") decides: "Not in the US" negates the US; "not in office"
-	// and "not on site" negate the mode.
+	// not a work mode. The first piece that is neither a weak word ("in",
+	// "on", "at", "site") nor a connector ("based", "within") decides: "Not
+	// in the US", "Not based in the US" and "Not within the US" negate the
+	// US; "not in office", "not on site" and "not based in office" negate
+	// the mode.
 	negatesPlace := func(ri int) bool {
 		for _, n := range raws[ri+1:] {
 			w := words(n.text)
-			if len(w) == 0 || allIn(w, weakWords) {
+			if len(w) == 0 || allIn(w, weakWords) || allIn(w, negConnectors) {
 				continue
 			}
 			return !allIn(w, workModeWords)

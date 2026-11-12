@@ -38,6 +38,10 @@ func TestExcludeReview2USRules(t *testing.T) {
 		{"Not in US", false, true, false},
 		{"Not in the US", true, true, false},
 		{"Remote, but not in the US", true, true, false},
+		{"Not based in the US", false, true, false},
+		{"Not within the US", false, true, false},
+		{"Bentonville, AR (Canada OK)", false, false, false},
+		{"Bentonville, AR (EMEA hours)", false, false, false},
 		// F2: US names outside the tables are kept by only_locations.
 		{"Upstate New York", false, false, true},
 		{"Northern New Jersey", false, false, true},
