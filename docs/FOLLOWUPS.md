@@ -1217,7 +1217,15 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     kept because a live `total` that overstates would otherwise fail the board on every run.
     Since 2026-11-12 the gap is counted instead of passing silently: `workday.Stats.Short` (per
     query, summed) reaches the run record as `boards.short` and `items[].short`, and `vani runs
-    show` prints a "Listed short" line per board. It is still not a failure.
+    show` prints a "Listed short" line per board. It is still not a failure. The same count covers
+    a split query's allowance (a bucket whose own total dropped with its rows) and the
+    `max(1, count/100)` that SmartRecruiters, Oracle HCM and IBM tolerate. Apple's tolerance is
+    left uncounted: per its code comment it absorbs repeats Apple itself counts in the total, not
+    missing jobs (read from the comment, not re-checked live).
+  - **Open:** page boards (`internal/sources/page/page.go`) read one page and do not follow
+    pagination, so a careers page with more jobs than its first page lists them partially and says
+    nothing. Following a pager means following links from page content, which the rules forbid for
+    untrusted text; it needs a design (an owner-declared next-page pattern, say), not a patch.
   - Jibe (`jb`, AMD) fails the board when a page adds nothing before `totalCount` is reached,
     as Eightfold does. Live on 2026-10-19 the unsearched AMD listing read 1278 of 1278 in 13
     pages, so an overstated total has not been seen.

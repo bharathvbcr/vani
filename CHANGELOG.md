@@ -154,12 +154,16 @@ were ported with notice. Source files do not carry an upstream copyright header.
 - **Workday short listings are counted**: a query under the 2000-row window that ends before the
   board's own total is still kept, not failed, but the rows it counted and did not list are now
   recorded (`boards.short`, `items[].short` in the run record) and named per board by
-  `vani runs show` ("Listed short: …"). Stored postings among them age as absent, so the gap is
-  now visible. It is not a failure.
+  `vani runs show` ("Listed short: …", largest first). Stored postings among them age as absent,
+  so the gap is now visible. It is not a failure. The same count now covers a Workday split whose
+  allowance let a gap pass, and the hundredth that SmartRecruiters, Oracle HCM and IBM listings
+  may lose before they fail; a board that then fails is not counted, as nothing ages. The app's
+  run panel shows a **Listed short** row.
 - **Inbox fold line adds up**: "folded N batch(es), M job(s)" now splits M into new, already known,
   duplicate of a stored job, invalid and repeated, prints any remainder as unaccounted, and says
   the other records it marked as duplicates apart. `pipeline.Summary` gains `ListedDuplicate`;
-  `Duplicate` keeps its meaning.
+  `Duplicate` keeps its meaning. The inbox status (`vani status`, the app's Inbox row) carries the
+  same split, and each board's reconcile counts in the run record carry `listed_duplicate`.
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
 - **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and
