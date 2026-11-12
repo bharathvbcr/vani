@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -159,8 +160,16 @@ func closedOrDropped(r ledger.Record, rules []eval.DropRule) (eval.AuditCandidat
 	switch r.Status {
 	case posting.Dropped:
 		return eval.AuditCandidate{Key: r.Key, Dropped: true, Class: eval.DropClass(r, rules)}, true
-	case posting.Dead, posting.Duplicate:
+	case posting.Dead:
 		return eval.AuditCandidate{Key: r.Key, Closed: true, Class: string(r.Status)}, true
+	case posting.Duplicate:
+		// A duplicate is its own stratum per fold method (dup.method); one folded
+		// by identity rather than overlap carries none.
+		method := r.Annotations[pipeline.AnnDupMethod]
+		if method == "" {
+			method = "other"
+		}
+		return eval.AuditCandidate{Key: r.Key, Closed: true, Class: string(r.Status) + ":" + method}, true
 	}
 	return eval.AuditCandidate{}, false
 }

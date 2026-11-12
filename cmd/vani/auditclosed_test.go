@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -57,10 +58,10 @@ func TestAuditDrawsClosedPostingsWithTheirOwnPlaces(t *testing.T) {
 	seedAudit(t, state, 30, 10, 10)
 	before := drawn(t, "--seed", "w1")
 	seedMore(t, state, "gh:dead", 8, posting.Dead, nil)
-	seedMore(t, state, "gh:dup", 4, posting.Duplicate, nil)
+	seedMore(t, state, "gh:dup", 4, posting.Duplicate, map[string]string{pipeline.AnnDupMethod: pipeline.DupMethodShingle})
 
 	after := drawn(t, "--seed", "w1")
-	if len(after["closed:dead"]) != 1 || len(after["closed:duplicate"]) != 1 {
+	if len(after["closed:dead"]) != 1 || len(after["closed:duplicate:shingle"]) != 1 {
 		t.Fatalf("closed picks %v", after)
 	}
 	for src, keys := range before {
@@ -68,7 +69,7 @@ func TestAuditDrawsClosedPostingsWithTheirOwnPlaces(t *testing.T) {
 			t.Errorf("%s moved: %v then %v", src, keys, after[src])
 		}
 	}
-	if off := drawn(t, "--seed", "w1", "--closed", "0"); len(off["closed:dead"])+len(off["closed:duplicate"]) != 0 {
+	if off := drawn(t, "--seed", "w1", "--closed", "0"); len(off["closed:dead"])+len(off["closed:duplicate:shingle"]) != 0 {
 		t.Errorf("--closed 0 drew closed postings: %v", off)
 	}
 

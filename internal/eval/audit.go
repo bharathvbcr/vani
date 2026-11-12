@@ -3,7 +3,9 @@ package eval
 import (
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -29,7 +31,7 @@ var DefaultAuditQuotas = AuditQuotas{Scored: AuditScored, Dropped: AuditDropped,
 
 // AuditCandidate is a posting the weekly audit may draw: a kept one with its
 // priority score, a dropped one with its DropClass, or a closed one (Closed,
-// with Class its status: "dead" or "duplicate").
+// with Class its status: "dead", or "duplicate:<method>" for a duplicate).
 type AuditCandidate struct {
 	Key     posting.Key
 	Score   float64
@@ -55,12 +57,23 @@ func droppedSource(c string) string {
 	return unknownDropped
 }
 
-// closedSource is the stratum of a closed posting whose status is c.
+// closedSource is the stratum of a closed posting whose class is c: its status
+// ("dead", "duplicate"), and for a duplicate the method that found it
+// ("duplicate:shingle", from the dup.method annotation), so that a wrongly
+// folded duplicate is told apart from a wrongly dead posting and one fold
+// method from another. Each part is made a safe token; a bare status is a
+// stratum of its own (labels written before the split carry it).
 func closedSource(c string) string {
-	if t := classToken(c); t != "" {
-		return ClosedPrefix + t
+	var parts []string
+	for _, p := range strings.Split(c, ":") {
+		if t := classToken(p); t != "" {
+			parts = append(parts, t)
+		}
 	}
-	return ClosedPrefix + "other"
+	if len(parts) == 0 {
+		return ClosedPrefix + "other"
+	}
+	return ClosedPrefix + strings.Join(parts, ":")
 }
 
 // AuditCell is the cell c stands in for when labels are weighted up to the
@@ -109,8 +122,10 @@ type AuditPlan struct {
 // its quota is drawn short, not padded.
 //
 // Within a group, places go round-robin to the non-empty strata; when the
-// places run out inside a round, the strata served are the first in a hash of
-// seed and stratum name. Within a stratum the draw is uniform: the first members
+// places run out inside a round, the strata served are a window that walks
+// round the strata in name order, `places` further each ISO week (every
+// stratum is served within ceil(strata/places) weeks), or, for a seed that is
+// not a week, the first in a hash of seed and stratum name. Within a stratum the draw is uniform: the first members
 // in a hash of seed and key. Everything is a function of (candidates, labels,
 // seed), so the same week draws the same postings in any input order.
 //
@@ -192,6 +207,25 @@ func WeekSeed(t time.Time) string {
 	return fmt.Sprintf("%d-W%02d", y, w)
 }
 
+// weekIndex is the number of the ISO week a WeekSeed names, counted in whole
+// weeks (consecutive weeks differ by one, across year ends, 52- and 53-week
+// years alike); ok is false for any other seed.
+func weekIndex(seed string) (n int64, ok bool) {
+	var y, w int
+	if c, err := fmt.Sscanf(seed, "%d-W%d", &y, &w); err != nil || c != 2 || w < 1 || w > 53 || y < 1970 || y > 9999 {
+		return 0, false
+	}
+	if seed != fmt.Sprintf("%d-W%02d", y, w) {
+		return 0, false
+	}
+	jan4 := time.Date(y, 1, 4, 0, 0, 0, 0, time.UTC)
+	monday := jan4.AddDate(0, 0, -int((jan4.Weekday()+6)%7)+7*(w-1))
+	if gy, gw := monday.ISOWeek(); gy != y || gw != w {
+		return 0, false // a week 53 the year does not have
+	}
+	return monday.Unix() / (7 * 24 * 3600), true
+}
+
 // Interleaved is the picks in a hash order of seed and key, so the owner does
 // not meet every scored posting before every dropped one and cannot tell the
 // stratum from the position.
@@ -235,6 +269,7 @@ func drawGroup(plan *AuditPlan, strata map[string][]posting.Key, total int, seed
 
 	taken := map[string]int{}
 	expected := map[string]float64{} // expected places over the seed
+	week, byWeek := weekIndex(seed)
 	for left := total; left > 0; {
 		var active []string
 		for _, n := range order {
@@ -253,11 +288,23 @@ func drawGroup(plan *AuditPlan, strata map[string][]posting.Key, total int, seed
 			left -= len(active)
 			continue
 		}
-		// A partial round: the first `left` active strata in hash order are
-		// served; over the seed each active stratum is served left/len of the time.
+		// A partial round: `left` of the active strata are served, so some go
+		// unserved this draw. Over the seed each is served left/len of the time.
+		// For a week seed the served window walks round the strata in name
+		// order, `left` further each week, so every non-empty stratum is
+		// served within ceil(len/left) successive weeks; for any other seed it
+		// is the first `left` in hash order.
+		if byWeek {
+			active = append([]string(nil), names...)
+			active = slices.DeleteFunc(active, func(n string) bool { return taken[n] >= len(strata[n]) })
+		}
+		start := 0
+		if n := int64(len(active)); byWeek {
+			start = int(week % n * int64(left) % n)
+		}
 		for i, n := range active {
 			expected[n] += float64(left) / float64(len(active))
-			if i < left {
+			if byWeek && (i-start+len(active))%len(active) < left || !byWeek && i < left {
 				taken[n]++
 			}
 		}
