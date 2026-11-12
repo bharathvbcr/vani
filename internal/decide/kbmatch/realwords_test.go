@@ -34,6 +34,8 @@ func leakyProfile() semantic.Profile {
 		{Label: "Inference runtime", Text: "Inference runtime", Weight: 1},
 		{Label: "Inference runtime", Text: "Tuned kernels and cut decode latency in Zeph\xe2\x80\x8byrnet", Weight: 1},
 		{Label: "Inference runtime", Text: "Met Jose\xcc\x81 and shipped ZephyrnetApp", Weight: 1},
+		// Spacing variants of a listed hyphenated term: double space, NBSP, newline, tab.
+		{Label: "Inference runtime", Text: "Cut decode  latency, decode\xc2\xa0latency, decode\nlatency and decode\tlatency", Weight: 1},
 	}}
 }
 

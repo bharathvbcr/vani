@@ -25,33 +25,35 @@ func U(s string) string {
 }
 
 // The owner's list in these tests is synthetic. Nothing here is a real term.
-var ownerTerms = []string{"kernel", "decode-latency", "Zephyrnet", "Quillbridge Labs", U("Jos<U+00E9>")}
+var ownerTerms = []string{"kernel", "decode-latency", "Zephyrnet", "Quillbridge Labs", U("Jos<U+00E9>"), "MIT", "UF"}
 
 // leaks are spellings of a listed term that the whole-word matcher let through
 // (F1: plurals, suffixes, camelCase, joins; F2: Unicode tricks). Every one must
 // be caught by Found and removed by Redact.
 var leaks = map[string]string{
 	// F1: inflection, suffix, camelCase, joins and spacing of listed terms.
-	"plural":           "tuned kernels for Metal",
-	"suffix":           "a kernelized path",
-	"hyphen listed":    "cut decode-latency in half",
-	"space for hyphen": "cut decode latency in half",
-	"double space":     "cut decode  latency in half",
-	"nbsp":             U("cut decode<U+00A0>latency in half"),
-	"newline":          "cut decode\nlatency in half",
-	"tab":              "cut decode\tlatency in half",
-	"no separator":     "cut decodelatency in half",
-	"camel join":       "cut DecodeLatency in half",
-	"underscore":       "cut decode_latency in half",
-	"camel suffix":     "ported ZephyrnetApp today",
-	"plural name":      "ported Zephyrnets today",
-	"camel prefix":     "ported myZephyrnet today",
-	"hyphen inside":    "ported Zephyr-net today",
-	"space inside":     "ported Zephyr net today",
-	"phrase joined":    "at QuillbridgeLabs now",
-	"phrase hyphen":    "at Quillbridge-Labs now",
-	"phrase double":    "at Quillbridge  Labs now",
-	"phrase newline":   "at Quillbridge\nLabs now",
+	"plural":            "tuned kernels for Metal",
+	"suffix":            "a kernelized path",
+	"hyphen listed":     "cut decode-latency in half",
+	"space for hyphen":  "cut decode latency in half",
+	"double space":      "cut decode  latency in half",
+	"nbsp":              U("cut decode<U+00A0>latency in half"),
+	"newline":           "cut decode\nlatency in half",
+	"tab":               "cut decode\tlatency in half",
+	"no separator":      "cut decodelatency in half",
+	"camel join":        "cut DecodeLatency in half",
+	"underscore":        "cut decode_latency in half",
+	"camel suffix":      "ported ZephyrnetApp today",
+	"plural name":       "ported Zephyrnets today",
+	"camel prefix":      "ported myZephyrnet today",
+	"hyphen inside":     "ported Zephyr-net today",
+	"underscore inside": "ported Zephyr_net today",
+	"short caps join":   "at the MITLab today",
+	"short caps join2":  "at UFHealth today",
+	"phrase joined":     "at QuillbridgeLabs now",
+	"phrase hyphen":     "at Quillbridge-Labs now",
+	"phrase double":     "at Quillbridge  Labs now",
+	"phrase newline":    "at Quillbridge\nLabs now",
 	// F2: Unicode variants.
 	"nfd accent":     U("met Jose<U+0301> today"),
 	"nfc accent":     U("met Jos<U+00E9> today"),
@@ -142,9 +144,11 @@ func TestBuiltinTermsStayWholeWords(t *testing.T) {
 // Owner terms do not eat unrelated words: a prefix of a term, a different word
 // that shares a stem with one token, and short terms that are common word starts.
 func TestOwnerTermsLeaveUnrelatedWordsAlone(t *testing.T) {
-	w := wordsOf(t, "kernel", "decode-latency", "Zephyrnet", "mit")
+	w := wordsOf(t, "kernel", "decode-latency", "Zephyrnet", "mit", "metal")
 	for _, in := range []string{
-		"Zephyr and net", "decoder latency", "decode the latency", "the colonel", "mitigate risk", "committed", "limit it",
+		"Zephyr and net", "Zephyr net", "decoder latency", "decode the latency", "the colonel", "mitigate risk", "committed", "limit it",
+		// A space inside a word of a term is not a join: "metal" is not "met al".
+		"met all the goals", "met al",
 	} {
 		if out, n := w.Redact(in); out != in || n != 0 {
 			t.Errorf("Redact(%q) = %q (%d), want it unchanged", in, out, n)

@@ -104,7 +104,7 @@ Ported from the drafting validator (`build/check-deciders.js`):
     (`kernel` finds `kernels`, `kernelized`; a term under four letters takes only a plural), a
     camelCase join (`ZephyrnetApp`, `myZephyrnet`), and optional spaces, hyphens, underscores,
     dots or slashes at a term's word joins (`decode-latency` finds `decode latency`,
-    `DecodeLatency`) and, for terms of five or more letters, between any two letters
+    `DecodeLatency`) and, for terms of five or more letters, between any two letters (not by a space)
     (`Zephyr-net`). A term that starts in the middle of a lowercase word (`rezephyrnet`) is not
     found. A knowledge-base send refuses when the list is missing or has no terms, unless
     `--allow-missing-identifying-words`.
