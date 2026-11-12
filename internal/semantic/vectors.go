@@ -955,8 +955,10 @@ func (s *chunkStore) stats() VectorStats {
 // have to evict is refused (Report.VectorsRefused) rather than evict a
 // higher-ranked one; its score is still saved. The postings of the Warm that
 // triggers a compaction are always kept, and one the map does not rank counts as
-// the highest. nil (the default) names no live set: nothing is evicted for it,
-// and only age decides. The map is copied.
+// the highest. The score cache evicts by the same rule when it passes
+// DefaultMaxEntries or MaxCacheBytes (Report.ScoresEvicted). nil (the default)
+// names no live set: nothing is evicted for it, and only age decides. The map
+// is copied.
 func (m *Matcher) SetVectorPriority(rank map[string]float64) {
 	var c map[string]float64
 	if rank != nil {
