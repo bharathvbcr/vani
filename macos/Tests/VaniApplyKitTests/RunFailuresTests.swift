@@ -56,6 +56,8 @@ final class RunFailuresTests: XCTestCase {
             #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"fail_open":{"coverage_unknown":4}}}"#,
             #"{"ok":true,"state":"ok","advance":{"eligible":1,"limit":10,"attempted":1,"unread":0,"failed":0,"deferred":0,"notes":{"below_floor":3,"budget_spent":2}}}"#,
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"deferred":4,"pay_skipped":2,"gone":1}}"#,
+            // A short listing is kept by design: shown, never a failure.
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"short":12,"items":[{"ats":"wd","token":"a/B","outcome":"read","listed":3,"short":12}]}}"#,
             #"{"ok":true,"state":"ok","near_dup":{"similarity_note":"vector cache off"}}"#,
             #"{"ok":true,"state":"ok","shadow":{"errors":0,"busy_skips":0}}"#,
             #"{"ok":true,"state":"ok","explain":{}}"#,
@@ -64,6 +66,36 @@ final class RunFailuresTests: XCTestCase {
         for json in quiet {
             XCTAssertFalse(try decodeRun(json).hasFailures, json)
         }
+    }
+
+    /// A board that listed fewer jobs than it counts is named with the count,
+    /// as `vani runs show` names it; boards past the bound and rows on boards the
+    /// record does not keep are counted, not dropped. No short listing, no line.
+    func testShortListingIsNamedPerBoard() throws {
+        let one = try decodeRun(#"{"ok":true,"state":"ok","boards":{"configured":2,"read":2,"failed":0,"skipped":0,"listed":187,"short":63,"items":[{"ats":"wd","token":"acme/External","company":"Acme","outcome":"read","listed":137,"short":63},{"ats":"gh","token":"fine","outcome":"read","listed":50}]}}"#)
+        let boards = try XCTUnwrap(one.boards)
+        XCTAssertEqual(boards.short, 63)
+        XCTAssertEqual(boards.items.first?.short, 63)
+        XCTAssertEqual(boards.shortSummary, "63 counted jobs not listed: wd:acme/External (Acme): 63")
+        XCTAssertEqual(boards.fetchSummary, "63 counted but not listed")
+
+        var items: [String] = []
+        for i in 0..<7 { items.append(#"{"ats":"wd","token":"t\#(i)/S","outcome":"read","short":2}"#) }
+        let many = try decodeRun(#"{"ok":true,"state":"ok","boards":{"configured":8,"read":8,"failed":0,"skipped":0,"listed":0,"short":23,"unrecorded":1,"items":["# + items.joined(separator: ",") + "]}}")
+        let summary = try XCTUnwrap(many.boards?.shortSummary)
+        XCTAssertTrue(summary.hasPrefix("23 counted jobs not listed: wd:t0/S: 2"), summary)
+        XCTAssertTrue(summary.contains("2 more boards: 4"), summary)
+        XCTAssertTrue(summary.contains("9 on boards the record does not keep"), summary)
+        XCTAssertFalse(summary.contains("t5/S"), summary)
+
+        XCTAssertNil(try decodeRun(#"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3}}"#).boards?.shortSummary)
+
+        // The largest gap is named first, ahead of routine one-row gaps.
+        var mixed: [String] = []
+        for i in 0..<6 { mixed.append(#"{"ats":"wd","token":"small\#(i)/S","outcome":"read","short":1}"#) }
+        mixed.append(#"{"ats":"wd","token":"big/S","outcome":"read","short":60}"#)
+        let ordered = try decodeRun(#"{"ok":true,"state":"ok","boards":{"configured":7,"read":7,"failed":0,"skipped":0,"listed":0,"short":66,"items":["# + mixed.joined(separator: ",") + "]}}")
+        XCTAssertTrue(try XCTUnwrap(ordered.boards?.shortSummary).hasPrefix("66 counted jobs not listed: wd:big/S: 60, wd:small0/S: 1"))
     }
 
     func testEachKindOfFailureShowsTheButton() throws {
