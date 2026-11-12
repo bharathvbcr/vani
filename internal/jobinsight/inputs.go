@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/expyears"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -343,10 +344,18 @@ func blendInputsFor(r ledger.Record, c RankContext) Inputs {
 		if !s.Answered {
 			continue
 		}
+		// A staff reading the posting's own year figures contradict is
+		// penalised at the level those years imply (expyears.BelowStaff).
+		// Only the ranking reads it so; the stored reading is untouched.
+		if rule.Slot == seniorityName && s.Value == expyears.ValueStaff {
+			if level, ok := expyears.BelowStaff(r.Posting.Description); ok {
+				s.Value = level
+			}
+		}
 		for _, v := range rule.Values {
 			if strings.TrimSpace(v) == s.Value && s.Value != "" {
 				seen[rule.Slot] = true
-				in.Penalties = append(in.Penalties, Penalty{Slot: s})
+				in.Penalties = append(in.Penalties, Penalty{Name: rule.Slot, Slot: s})
 				break
 			}
 		}

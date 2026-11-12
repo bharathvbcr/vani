@@ -78,7 +78,7 @@ func RetriageTitleDrops(ctx context.Context, l ledger.Ledger, now time.Time, p D
 		if !TitleDropped(r) {
 			return false
 		}
-		_, _, still := p.EvaluateTitle(r.Posting.Title)
+		_, _, still := p.EvaluateTitle(r.Posting.Title, r.Posting.Description)
 		return !still
 	})
 }

@@ -258,7 +258,7 @@ func TestInputsForPenalties(t *testing.T) {
 		{Slot: "role_fit", Values: nil},
 	}
 	in := InputsFor(r, RankContext{Now: inT0, DropRules: rules})
-	want := []Penalty{{Slot: Slot{Value: "no", Answered: true, P: 0.7, HasP: true}}}
+	want := []Penalty{{Name: "sponsorship", Slot: Slot{Value: "no", Answered: true, P: 0.7, HasP: true}}}
 	if !reflect.DeepEqual(in.Penalties, want) {
 		t.Fatalf("penalties %+v, want %+v", in.Penalties, want)
 	}

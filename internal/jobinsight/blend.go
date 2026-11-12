@@ -203,14 +203,23 @@ func BlendOf(in Inputs, w Weights) Blend {
 	}
 
 	gate := 1.0
+	// level is the factor a seniority penalty would take when the role_fit
+	// reading is mismatch_seniority: both say the role's level is wrong, so the
+	// gate below takes the stronger of the two, never their product.
+	level := 1.0
 	for _, p := range in.Penalties {
 		if mismatch && p.Slot.Value == in.RoleFit.Value {
 			continue // the same reading, penalised once by the mismatch gate below
 		}
-		gate *= 1 - clamp01(w.PenaltyStrength)*w.conf(p.Slot)
+		f := 1 - clamp01(w.PenaltyStrength)*w.conf(p.Slot)
+		if mismatch && in.RoleFit.Value == mismatchSeniority && p.Name == seniorityName {
+			level = min(level, f)
+			continue
+		}
+		gate *= f
 	}
 	if mismatch {
-		gate *= 1 - clamp01(w.Mismatch)*fitConf
+		gate *= min(level, 1-clamp01(w.Mismatch)*fitConf)
 	}
 	if excluded {
 		gate *= clamp01(w.ExcludedTitle)

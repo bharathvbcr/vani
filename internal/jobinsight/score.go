@@ -89,11 +89,21 @@ const ShadowEscalate = "escalate"
 // for it. It only orders (Rule 7).
 const BackendManual = "manual"
 
+// seniorityName is the triage slot a mismatch_seniority role_fit reading
+// restates: the two are one fact (the role's level), penalised once.
+const (
+	seniorityName     = "seniority"
+	mismatchSeniority = "mismatch_seniority"
+)
+
 // Penalty is a drop rule whose slot value matched a posting the policy kept
 // (the rule's confidence threshold was not met). It softens the score in
 // proportion to how sure the reading is. The rule's values never leave the
 // caller: Score sees only the slot reading, so nothing here reveals them.
 type Penalty struct {
+	// Name is the triage slot the rule reads ("seniority", "work_mode"). A
+	// slot name is not a rule value, so it reveals nothing the rule keeps.
+	Name string
 	Slot Slot
 }
 
