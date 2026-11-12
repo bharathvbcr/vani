@@ -359,11 +359,11 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 
 	// One index of the ledger for the whole loop: only Reconcile writes to the
 	// ledger here (the adapters read it), as Reconciler requires.
-	rec, err := newBoardReconciler(w.cfg, w.led)
+	rec, finish, err := w.runReconciler(protect, now())
 	if err != nil {
 		return pipeline.BoardCounts{}, err
 	}
-	rec.Protect(protect)
+	defer finish()
 	reconcile := func(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
 		prefixMu.Lock()
 		dirtyPrefix[b.KeyPrefix()] = true

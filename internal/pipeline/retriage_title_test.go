@@ -39,7 +39,7 @@ func TestRetriageTitleDropsRoundTrip(t *testing.T) {
 	}
 
 	// Same rules: nothing to return.
-	keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), r.Policy, false)
+	keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), r.Policy, reviewScope(), false)
 	if err != nil || len(keys) != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("unchanged rules returned %v (%v)", keys, err)
 	}
@@ -47,11 +47,11 @@ func TestRetriageTitleDropsRoundTrip(t *testing.T) {
 	// The owner stops dropping staff_plus: a dry run reports it and writes nothing.
 	kept := r.Policy
 	kept.Rules = []DropRule{{Slot: "seniority", Values: []string{"manager"}, MinOpenRouterProb: 0.9}}
-	keys, err = RetriageTitleDrops(ctx, l, t0.Add(time.Hour), kept, true)
+	keys, err = RetriageTitleDrops(ctx, l, t0.Add(time.Hour), kept, reviewScope(), true)
 	if err != nil || len(keys) != 1 || keys[0] != k || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("dry run: %v (%v), status %s", keys, err, rec(t, l, k).Status)
 	}
-	keys, err = RetriageTitleDrops(ctx, l, t0.Add(time.Hour), kept, false)
+	keys, err = RetriageTitleDrops(ctx, l, t0.Add(time.Hour), kept, reviewScope(), false)
 	if err != nil || len(keys) != 1 {
 		t.Fatalf("retriage: %v (%v)", keys, err)
 	}
@@ -86,7 +86,7 @@ func TestRetriageTitleDropsOffAndModelDrops(t *testing.T) {
 		t.Fatalf("model drop setup: %v %s", err, rec(t, l, p2.Key).Status)
 	}
 
-	keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), DropPolicy{Rules: titleRules}, false)
+	keys, err := RetriageTitleDrops(ctx, l, t0.Add(time.Hour), DropPolicy{Rules: titleRules}, reviewScope(), false)
 	if err != nil || len(keys) != 1 || keys[0] != k {
 		t.Fatalf("returned %v (%v), want only the title drop", keys, err)
 	}
@@ -110,7 +110,7 @@ func TestRetriageTitleDropsStopsOnCancel(t *testing.T) {
 	}
 	c, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := RetriageTitleDrops(c, l, t0, DropPolicy{}, false); !errors.Is(err, context.Canceled) {
+	if _, err := RetriageTitleDrops(c, l, t0, DropPolicy{}, reviewScope(), false); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err %v", err)
 	}
 	if rec(t, l, k).Status != posting.Dropped {

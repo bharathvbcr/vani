@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // livenessOf is the config's mass-absence settings as the reconcile rule takes
@@ -27,4 +29,19 @@ func newBoardReconciler(cfg config.Config, led ledger.Ledger) (*pipeline.Reconci
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	return rec, nil
+}
+
+// runReconciler is the Reconciler a run's board listing ages postings with,
+// made in one place: the config's liveness settings (newBoardReconciler), the
+// records the owner marked protected, and the pending reopens applied as full
+// listings show their postings again and cleared when they stay away
+// (reopenOnSighting). finish saves the spent reopen set; the caller runs it
+// once the listing is done.
+func (w *wired) runReconciler(protect func(posting.Key) bool, at time.Time) (rec *pipeline.Reconciler, finish func(), err error) {
+	rec, err = newBoardReconciler(w.cfg, w.led)
+	if err != nil {
+		return nil, nil, err
+	}
+	rec.Protect(protect)
+	return rec, w.reopenOnSighting(rec, at), nil
 }

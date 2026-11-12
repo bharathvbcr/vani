@@ -251,10 +251,29 @@ commands:
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the
                              priority of the roles each blocks; display-only
-  retriage [--json] [--dry-run] [--title-drops]
+  retriage [--json] [--dry-run] [--title-drops | --policy-drops [--refresh-unjudged]]
                              return postings triaged with no backend reading to live; with
-                             --title-drops, postings dropped on a title the current
-                             title_signals.read and drop rules no longer drop
+                             --title-drops, let back postings dropped on a title the current
+                             title_signals.read and drop rules no longer drop; with
+                             --policy-drops, those and postings a decision model dropped on a
+                             reading the current drop rules no longer drop (a value or slot
+                             taken out, a threshold raised). A drop on a watched board waits,
+                             still dropped, for the board's next listing to show it, and comes
+                             back then, judged again on the listed text (a pending reopen, in
+                             state dir reopen/pending.json; one its board leaves out for 14
+                             days is cleared); an inbox or page posting comes back at once.
+                             A title drop goes back to live; a model drop goes back on its
+                             stored reading, so no model is asked again, unless its title,
+                             location or description moved since the reading (then to live).
+                             It never drops anything. --refresh-unjudged also sends model drops
+                             whose reading cannot be judged, and whose values no drop rule
+                             names, to live for a fresh read (at most 500). Counted and left
+                             dropped: a reading the rules cannot judge (made under another
+                             model or question, a slot or value the question no longer has,
+                             or no calibration from the configured model or Lappi); a drop on
+                             a board no longer on the watchlist (stale: no listing would age
+                             it); one whose stored description cannot be read back (a dry run
+                             cannot tell, and says so)
   rescore [--json] [--dry-run] [--limit N]
                              score scored and explained postings that have no score (they went
                              through while devprism.binary was empty); status and explanation

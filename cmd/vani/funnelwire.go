@@ -23,6 +23,16 @@ const notesBudgetFile = "jev-notes.json"
 // posting: the backends that may answer, and the question they are asked (the
 // shared fixture and the target summary). A reading is inherited only under
 // the same id, so changing a model, a backend order or the summary re-asks.
+//
+// It does not name the Lappi model's version, and cannot: the config locates
+// Lappi only by its socket, and neither the decide contract's Answer nor its
+// LappiCalib carries a version, so nothing at the call site knows which
+// checkpoint answered. After a Lappi retrain a stored Lappi score is judged
+// against the current min_lappi_score as if the same model had made it (the
+// read cache has the same blind spot). Naming a version needs the decide
+// contract to carry one; adding a placeholder here would change every id and
+// discard every cached reading for no information. Lappi serves no slot live
+// today.
 func triageModelID(cfg config.Config) string {
 	h := sha256.New()
 	h.Write(jdtriage.FixtureJSON)

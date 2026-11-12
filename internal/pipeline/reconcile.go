@@ -82,7 +82,10 @@ type Summary struct {
 	// Revived duplicates were listed again while their survivor was gone
 	// (reviveDuplicate): live again, or a duplicate of another live record.
 	Revived int
-	Invalid int // listed postings skipped for a missing or malformed key
+	// Reopened dropped postings had a pending reopen (SightingReopen) that
+	// this full listing, showing them again, applied.
+	Reopened int
+	Invalid  int // listed postings skipped for a missing or malformed key
 }
 
 // staleAnnotations lists the derived results a changed description invalidates.
@@ -95,6 +98,12 @@ func staleAnnotations(a map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// hasPendingReopen reports whether k waits for a sighting.
+func (rc *Reconciler) hasPendingReopen(k posting.Key) bool {
+	_, ok := rc.reopen.pending(k)
+	return ok
 }
 
 // Reconcile folds one board's full listing into the ledger. A run with many
@@ -217,6 +226,30 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				return s, err
 			}
 			s.Changed++
+		case full && rec.Status == posting.Dropped && rc.hasPendingReopen(p.Key):
+			// The board lists a drop that waits to be let back: judged again on
+			// this text, it comes back now or stays dropped, and either way
+			// the pending reopen is spent.
+			// Either way the listing shows it, so an absence episode it was in when
+			// dropped ends here (liveness.go), as it would on any listing: a later
+			// reopen must not carry the old misses into its next absence.
+			e, ok := rc.reopen.event(l, rec, relist, hash, now)
+			if !ok {
+				if rec.MissedRuns == 0 {
+					s.Unchanged++
+					break
+				}
+				if err := l.Append(ctx, reappearedEvent(rec, relist, hash, rendered, now)); err != nil {
+					return s, err
+				}
+				s.Reappeared++
+				break
+			}
+			e.Annotations = clearMissMarks(e.Annotations)
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Reopened++
 		case rec.Status == posting.Dead:
 			// Same content, listed again: its annotations still hold, so it goes
 			// back to the status it died in (a digested posting is not triaged or
@@ -232,12 +265,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			}
 			s.Reappeared++
 		case rec.MissedRuns > 0:
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
-				Annotations: clearMissMarks(nil), Reason: "reappeared"}
-			if rendered {
-				e.Annotations[DescHashKey] = hash
-			}
-			if err := l.Append(ctx, e); err != nil {
+			if err := l.Append(ctx, reappearedEvent(rec, relist, hash, rendered, now)); err != nil {
 				return s, err
 			}
 			s.Reappeared++
@@ -284,6 +312,11 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	if !full {
 		return s, nil
 	}
+	// Pending reopens of this board that the listing left out for
+	// PendingReopenExpiry, or whose record is no longer dropped, are cleared
+	// (pendingreopen.go). Dropped records are closed: the absence pass below
+	// never ages them, so the two never touch the same record.
+	rc.reopen.expire(l, prefix, seen, now)
 	// The absence pass (liveness.go). open is the board's open keys as the
 	// index held them when the board started, before this listing.
 	var open []posting.Key
@@ -295,6 +328,18 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	a, err := ageAbsent(ctx, l, rc.live, open, seen, idx.clockEvidence(prefix, now), now)
 	s.addAbsence(a)
 	return s, err
+}
+
+// reappearedEvent is what a listing writes for rec, which had missed runs:
+// the listed posting, the same status, and every miss mark forgotten (its
+// absence episode is over).
+func reappearedEvent(rec ledger.Record, relist posting.Posting, hash string, rendered bool, now time.Time) ledger.Event {
+	e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: rec.Key, Status: rec.Status, Posting: &relist,
+		Annotations: clearMissMarks(nil), Reason: "reappeared"}
+	if rendered {
+		e.Annotations[DescHashKey] = hash
+	}
+	return e
 }
 
 // addAbsence folds one absence pass into the summary.

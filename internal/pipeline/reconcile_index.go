@@ -223,7 +223,16 @@ type Reconciler struct {
 	protected func(posting.Key) bool
 	// live tunes the mass-absence rule (liveness.go); zero is the defaults.
 	live Liveness
+	// reopen, when set, applies pending reopens as full listings show their
+	// postings again.
+	reopen *SightingReopen
 }
+
+// ReopenOnSighting has Reconcile apply the pending reopens in s when a full
+// listing shows their postings again, and clear the ones a full listing left
+// out for PendingReopenExpiry. A partial listing applies and clears nothing.
+// The caller saves s.Pending when s.Changed().
+func (r *Reconciler) ReopenOnSighting(s *SightingReopen) { r.reopen = s }
 
 // Protect sets the records Reconcile never demotes to Duplicate once they
 // exist: markCrossTwins skips them. A new posting is never protected, having
