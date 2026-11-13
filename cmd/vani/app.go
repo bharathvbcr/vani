@@ -310,6 +310,16 @@ func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, opts 
 	if errors.Is(reloadErr, errBoardSelection) {
 		return stagePipeline, reloadErr
 	}
+	// The config this run will use, fresh or the previous one a stale reload
+	// fell back to, is checked against the words file as it is now. A summary
+	// that passed at start (or at the last good reload) can fail since: a term
+	// added, the file deleted or emptied. The run is refused rather than sent
+	// with the previous summary: it is the model-prompt stages (triage,
+	// reasons, backfill) that carry it, and they are not separable from the
+	// run, so the failure is recorded and the next run re-checks.
+	if err := checkPromptSummary(cfg, e.stateDir, false); err != nil {
+		return stagePipeline, errors.Join(reloadErr, err)
+	}
 	stage, err = e.runAndPublish(ctx, app, cfg, opts, rec)
 	return stage, errors.Join(reloadErr, err)
 }
