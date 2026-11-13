@@ -717,8 +717,10 @@ and nowhere else. Nothing writes `labels.jsonl`, changes a ranking or drops a po
   that are not exemplars and not the same job (title and company) as one, are the evaluation set.
   Every pair row records the exemplar sha256, so an answer is always tied to the lists the model read.
 - **The pairs**: within a stratum, deterministic for `--seed` (default the ISO week), `--pairs N` at a
-  time (at most 500), resumable. Closed strata and sponsorship and work_mode drops are not drawn, and
-  neither are the exemplar postings. Each gold label made after the freeze is compared with three
+  time (at most 500), resumable. Closed strata, work_mode drops, owner-exclusion drops and every drop
+  class about work authorization (the doctor's own test, `sponsorshipSlot`) are not drawn, labels from
+  those strata are not exemplars, and neither are the exemplar postings. The live drop classes
+  on 2026-11-13 held none of them, so nothing was left out on that account. Each gold label made after the freeze is compared with three
   stratum-mates chosen by a hash of the seed and keys, never by the label. The A/B order is a hash of
   the pair; `--both-orders` asks both. Rows hold keys, order, stratum, text and render hashes, model,
   fixture, prompt and exemplar hashes, the answer and the time, and no text.
@@ -726,7 +728,9 @@ and nowhere else. Nothing writes `labels.jsonl`, changes a ranking or drops a po
   which refuses until the owner sets it (`vani teacher cap --usd N`; unset, zero, unreadable or spent all
   mean no spend, checked before any provider or key is touched). The run's limit is the least of
   `--budget-usd`, the cap's headroom and the llm daily ceiling's, each question is admitted at its worst
-  case as `vani teacher` does, and each question's cost is written to the cap file as it is paid.
+  case as `vani teacher` does, and each question's cost (the llm ledger's settled spend plus kept
+  reservations, so it only grows) is written to the cap file as it is paid. The cap is read again once the
+  run holds the log's lock. Another spender's cost inside the same window counts against the auditor.
   `--dry-run` prints the pair count, the worst case and one rendered question with the postings' text
   elided, and writes nothing; with no frozen set it says so and bounds the cost from the largest question
   the context cap allows.

@@ -25,7 +25,8 @@ import (
 // an explicit command and read by every pair question. Freezing is what makes
 // the evaluation honest. A label made after FrozenAt was not in what the model
 // read, so it is the evaluation set; a label made before it is not evaluation
-// data however the auditor scores it (docs/RANKING_PLAN.md, the leakage rule).
+// data however the auditor scores it (the leakage rule of the 2026-11-12
+// ranking plan, build/fable-plan-2026-11-12-ranking.md).
 
 const (
 	// ExemplarsFile is the frozen set inside the state directory.
@@ -150,8 +151,10 @@ type FreezeStats struct {
 	// YesLabels and NoLabels are the owner's usable would_apply labels (closed
 	// strata, maybes and skips left out), before the ledger join and the cap.
 	YesLabels, NoLabels int
-	// Maybe, Skipped and Closed count the labels left out for those reasons.
-	Maybe, Skipped, Closed int
+	// Maybe, Skipped and Closed count the labels left out for those reasons;
+	// Withheld counts the labels the caller's withhold function left out (labels
+	// drawn from strata whose postings the auditor never sends).
+	Maybe, Skipped, Closed, Withheld int
 	// NotInLedger counts labelled postings with no ledger record (no title to
 	// show); Repeats counts those whose title and company a kept one has.
 	NotInLedger, Repeats int
@@ -166,8 +169,11 @@ type FreezeStats struct {
 // question's bound keeps a deterministic hash-ordered subset, never "the first
 // ones", so the set does not lean on whichever postings sort first. Fewer than
 // MinExemplarsPerClass of either class is an error, and the stats still say
-// what was found.
-func FreezeExemplars(labels map[posting.Key]Entry, recs []ledger.Record, at time.Time) (ExemplarSet, FreezeStats, error) {
+// what was found. withhold, when set, is asked of each label's Source (its
+// audit stratum): one it names is left out, so a title from a stratum the
+// auditor must not send (the work-authorization drops) is not shown to the model
+// as an example of what the owner would not apply to.
+func FreezeExemplars(labels map[posting.Key]Entry, recs []ledger.Record, at time.Time, withhold func(source string) bool) (ExemplarSet, FreezeStats, error) {
 	var st FreezeStats
 	byKey := make(map[posting.Key]posting.Posting, len(recs))
 	for _, r := range recs {
@@ -181,6 +187,8 @@ func FreezeExemplars(labels map[posting.Key]Entry, recs []ledger.Record, at time
 			continue
 		case strings.HasPrefix(l.Source, ClosedPrefix):
 			st.Closed++
+		case withhold != nil && withhold(l.Source):
+			st.Withheld++
 		case v == Skip:
 			st.Skipped++
 		case v == "maybe":

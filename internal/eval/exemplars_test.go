@@ -35,7 +35,7 @@ func TestFreezeCountsOnlyYesAndNoAndRefusesAThinSet(t *testing.T) {
 	labels["s0"] = Entry{Key: "s0", Labels: map[string]string{WouldApply: Skip}, Source: SourceManual}
 	labels["c0"] = Entry{Key: "c0", Labels: map[string]string{WouldApply: "yes"}, Source: "closed:dead", PSelect: 0.1}
 	labels["t0"] = Entry{Key: "t0", Labels: map[string]string{"role_fit": "fit"}}
-	set, st, err := FreezeExemplars(labels, recs, pairT0)
+	set, st, err := FreezeExemplars(labels, recs, pairT0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,11 +52,36 @@ func TestFreezeCountsOnlyYesAndNoAndRefusesAThinSet(t *testing.T) {
 	}
 
 	thin, thinRecs := exLabels(2, 9, pairT0)
-	if _, st, err := FreezeExemplars(thin, thinRecs, pairT0); err == nil || st.YesKept != 2 {
+	if _, st, err := FreezeExemplars(thin, thinRecs, pairT0, nil); err == nil || st.YesKept != 2 {
 		t.Errorf("a set with 2 yes was frozen (err %v, stats %+v)", err, st)
 	}
-	if _, _, err := FreezeExemplars(nil, nil, pairT0); err == nil {
+	if _, _, err := FreezeExemplars(nil, nil, pairT0, nil); err == nil {
 		t.Error("an empty label set was frozen")
+	}
+}
+
+func TestFreezeWithholdsLabelsFromStrataTheAuditorNeverSends(t *testing.T) {
+	labels, recs := exLabels(5, 6, pairT0)
+	for _, k := range []posting.Key{"n0", "n1"} {
+		l := labels[k]
+		l.Source, l.PSelect = "dropped:title:sponsorship", 0.1
+		labels[k] = l
+	}
+	withhold := func(src string) bool { return strings.HasSuffix(src, ":sponsorship") }
+	set, st, err := FreezeExemplars(labels, recs, pairT0, withhold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Withheld != 2 || st.NoKept != 4 {
+		t.Errorf("stats %+v, want 2 withheld and 4 no kept", st)
+	}
+	for _, e := range set.No {
+		if e.Key == "n0" || e.Key == "n1" {
+			t.Errorf("%s, drawn from a withheld stratum, is a no exemplar", e.Key)
+		}
+	}
+	if _, st, _ := FreezeExemplars(labels, recs, pairT0, nil); st.Withheld != 0 || st.NoKept != 6 {
+		t.Errorf("without a withhold function: %+v", st)
 	}
 }
 
@@ -66,7 +91,7 @@ func TestFreezeNeedsLedgerTitlesAndFoldsRepeatedJobs(t *testing.T) {
 	recs[1].Posting.Title, recs[1].Posting.Company = " TITLE   y0 ", "co y"
 	recs[0].Posting.Title, recs[0].Posting.Company = "Title y0", "Co y"
 	recs = append(recs[:2], recs[3:]...) // drop y2's record
-	set, st, err := FreezeExemplars(labels, recs, pairT0)
+	set, st, err := FreezeExemplars(labels, recs, pairT0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,11 +105,11 @@ func TestFreezeNeedsLedgerTitlesAndFoldsRepeatedJobs(t *testing.T) {
 
 func TestFreezeBoundsEachClassDeterministically(t *testing.T) {
 	labels, recs := exLabels(80, 80, pairT0)
-	a, _, err := FreezeExemplars(labels, recs, pairT0)
+	a, _, err := FreezeExemplars(labels, recs, pairT0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _, _ := FreezeExemplars(labels, recs, pairT0.Add(time.Hour))
+	b, _, _ := FreezeExemplars(labels, recs, pairT0.Add(time.Hour), nil)
 	if len(a.Yes) != 30 || len(a.No) != 30 {
 		t.Fatalf("%d yes, %d no kept, want the bound of 30", len(a.Yes), len(a.No))
 	}
@@ -99,7 +124,7 @@ func TestFreezeBoundsEachClassDeterministically(t *testing.T) {
 
 func TestExemplarFileRoundTripAndNeverOverwrites(t *testing.T) {
 	labels, recs := exLabels(3, 3, pairT0)
-	set, _, err := FreezeExemplars(labels, recs, pairT0)
+	set, _, err := FreezeExemplars(labels, recs, pairT0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +143,7 @@ func TestExemplarFileRoundTripAndNeverOverwrites(t *testing.T) {
 	if err := WriteExemplars(path, set, false); err == nil {
 		t.Error("a frozen set was overwritten")
 	}
-	newer, _, _ := FreezeExemplars(labels, recs, pairT0.Add(24*time.Hour))
+	newer, _, _ := FreezeExemplars(labels, recs, pairT0.Add(24*time.Hour), nil)
 	newer.Yes[0].Title = "A different title"
 	newer.SHA256 = newer.contentSHA256()
 	if err := WriteExemplars(path, newer, true); err != nil {
@@ -136,7 +161,7 @@ func TestExemplarFileRoundTripAndNeverOverwrites(t *testing.T) {
 
 func TestExemplarFileRefusesTampering(t *testing.T) {
 	labels, recs := exLabels(3, 3, pairT0)
-	set, _, _ := FreezeExemplars(labels, recs, pairT0)
+	set, _, _ := FreezeExemplars(labels, recs, pairT0, nil)
 	path := filepath.Join(t.TempDir(), ExemplarsFile)
 	if err := WriteExemplars(path, set, false); err != nil {
 		t.Fatal(err)
@@ -172,7 +197,7 @@ func TestExemplarFileRefusesTampering(t *testing.T) {
 
 func TestEvaluationLabelsAreOnlyWhatPostdatesTheFreeze(t *testing.T) {
 	labels, recs := exLabels(4, 4, pairT0)
-	set, _, err := FreezeExemplars(labels, recs, pairT0.Add(time.Hour))
+	set, _, err := FreezeExemplars(labels, recs, pairT0.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

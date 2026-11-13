@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -102,28 +103,47 @@ type teacherPairsJSON struct {
 	Cover      int `json:"cover_postings"`
 	CoverShort int `json:"cover_short"`
 	// What was left out of the candidates, and why.
-	NoText      int     `json:"left_out_no_text"`
-	Closed      int     `json:"left_out_closed"`
-	Excluded    int     `json:"left_out_sponsorship_work_mode"`
-	Exemplar    int     `json:"left_out_exemplars"`
-	PromptHash  string  `json:"prompt_hash,omitempty"`
-	FixtureSHA  string  `json:"fixture_sha"`
-	CapUSD      float64 `json:"auditor_cap_usd"`
-	SpentToday  float64 `json:"auditor_spent_today_usd"`
-	CapIsNotSet bool    `json:"auditor_cap_not_set,omitempty"`
+	NoText   int `json:"left_out_no_text"`
+	Closed   int `json:"left_out_closed"`
+	Excluded int `json:"left_out_sponsorship_work_mode_exclusion"`
+	// StrataMembers is the candidate postings in each stratum a pair can be drawn
+	// from (the strata left out are counted above, never named).
+	StrataMembers map[string]int `json:"strata_candidates"`
+	Exemplar      int            `json:"left_out_exemplars"`
+	PromptHash    string         `json:"prompt_hash,omitempty"`
+	FixtureSHA    string         `json:"fixture_sha"`
+	CapUSD        float64        `json:"auditor_cap_usd"`
+	SpentToday    float64        `json:"auditor_spent_today_usd"`
+	CapIsNotSet   bool           `json:"auditor_cap_not_set,omitempty"`
 }
 
-// stratumLeftOut says why the auditor does not draw from a stratum: closed
-// postings measure liveness and the duplicate fold, not taste; the plan leaves
-// out sponsorship and work_mode drops (docs/RANKING_PLAN.md, the auditor).
+// stratumLeftOut says why the auditor does not draw from a stratum. Closed
+// postings measure liveness and the duplicate fold, not taste. The 2026-11-12
+// plan (build/fable-plan-2026-11-12-ranking.md) leaves out sponsorship and
+// work_mode drops; the sponsorship test is the doctor's (sponsorshipSlot, every
+// slot or class about work authorization: sponsor, visa, citizenship, clearance
+// and the like), so the two never disagree about what is about authorization.
+// Owner exclusions are left out for the doctor's reason too: what one matched can
+// say what the owner needs.
 func stratumLeftOut(name string) (reason string, left bool) {
 	switch {
 	case strings.HasPrefix(name, eval.ClosedPrefix):
 		return "closed", true
-	case strings.HasSuffix(name, ":sponsorship"), strings.HasSuffix(name, ":work_mode"):
+	case strings.HasPrefix(name, eval.DroppedPrefix+"exclude:"):
+		return "owner_exclusion", true
+	case strings.HasPrefix(name, eval.DroppedPrefix) && (sponsorshipSlot(name) || strings.HasSuffix(name, ":work_mode")):
 		return "sponsorship_work_mode", true
 	}
 	return "", false
+}
+
+// withholdFromExemplars is eval.FreezeExemplars' withhold function: a label drawn
+// from a stratum the auditor never sends (stratumLeftOut, the closed strata
+// aside, which the freeze leaves out itself) is not shown to the model as an
+// example of what the owner would not apply to.
+func withholdFromExemplars(source string) bool {
+	reason, left := stratumLeftOut(source)
+	return left && reason != "closed"
 }
 
 // elided is p with everything the posting wrote replaced by a note, for the one
@@ -158,7 +178,7 @@ func (e *env) pairExemplars(dry bool, labels map[posting.Key]eval.Entry, recs []
 	case !dry:
 		return eval.ExemplarSet{}, false, false, fmt.Errorf("teacher: %w; the auditor reads only a frozen set, so a freeze fixes which labels count as evaluation data", err)
 	}
-	set, _, ferr := eval.FreezeExemplars(labels, recs, now())
+	set, _, ferr := eval.FreezeExemplars(labels, recs, now(), withholdFromExemplars)
 	if ferr != nil {
 		return eval.ExemplarSet{}, false, false, nil
 	}
@@ -192,10 +212,14 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 	// set, an unreadable cap file or a spent day stops here, before the labels,
 	// the ledger, the provider or the key are touched. A dry run only reports it.
 	_, pairsPath, capPath := e.silverPaths()
-	day := eval.Day(budgetClock())
+	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
+	_ = w.budgetLedgerPath() // fixes w.day, the one UTC day this run's cap and ledger share
+	day := w.day
 	capFile := eval.OpenPairCap(capPath)
 	capNano, spentNano, capErr := capFile.State(day)
-	if !o.dry {
+	// refuseCap is the real run's cap check; it runs again once the run lock is
+	// held, because the cap and its spend were read before a wait for another run.
+	refuseCap := func() error {
 		switch {
 		case capErr != nil:
 			return fmt.Errorf("teacher: %w", capErr)
@@ -203,6 +227,12 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 			return fmt.Errorf("teacher: %w", eval.ErrNoPairCap)
 		case capNano-spentNano <= 0:
 			return fmt.Errorf("teacher: today's would_apply auditor cap (%s) is already spent; nothing was asked", usd(capNano))
+		}
+		return nil
+	}
+	if !o.dry {
+		if err := refuseCap(); err != nil {
+			return err
 		}
 	}
 
@@ -245,7 +275,8 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 		return err
 	}
 	stats := &teacherPairsJSON{Frozen: frozen, Preview: preview, FixtureSHA: wouldapply.Fixture(), BothOrders: o.bothOrders,
-		CapUSD: float64(capNano) / 1e9, SpentToday: float64(spentNano) / 1e9, CapIsNotSet: capErr == nil && capNano <= 0}
+		CapUSD: float64(capNano) / 1e9, SpentToday: float64(spentNano) / 1e9, CapIsNotSet: capErr == nil && capNano <= 0,
+		StrataMembers: map[string]int{}}
 	exempt := set.Keys()
 	var cands []eval.PairCandidate
 	for stratum, keys := range eval.AuditStrata(ac, nil) {
@@ -263,6 +294,7 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 				stats.Exemplar++
 			default:
 				cands = append(cands, eval.PairCandidate{Posting: p, Stratum: stratum})
+				stats.StrataMembers[stratum]++
 			}
 		}
 	}
@@ -281,6 +313,13 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 			return err
 		}
 		defer unlock()
+		// The cap and its spend were read before a possible wait for another run
+		// that spends from it: read them again now that this run holds the lock.
+		capNano, spentNano, capErr = capFile.State(day)
+		stats.CapUSD, stats.SpentToday, stats.CapIsNotSet = float64(capNano)/1e9, float64(spentNano)/1e9, capErr == nil && capNano <= 0
+		if err := refuseCap(); err != nil {
+			return err
+		}
 	}
 	store, err := eval.OpenPairStore(pairsPath)
 	if err != nil {
@@ -348,8 +387,8 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 		return nil
 	}
 
-	// One budget day for the whole run (see teacherRun).
-	w := &wired{cfg: cfg, stateDir: e.stateDir, warn: e.stderr}
+	// One budget day for the whole run (see teacherRun): the cap file's day is the
+	// llm ledger's, w.day.
 	ledgerPath := w.budgetLedgerPath()
 	d, err := teacherDecider(ctx, w, model)
 	if err != nil {
@@ -361,24 +400,32 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 		return fmt.Errorf("teacher: reading today's llm spend: %w", err)
 	}
 	before, beforeErr := teacherSettled(ctx, ledgerPath)
+	if beforeErr != nil {
+		// The auditor's spend is recorded from this ledger; a run that could not
+		// record it does not start.
+		return fmt.Errorf("teacher: the llm budget ledger cannot be read, so the auditor's spend could not be recorded: %w", beforeErr)
+	}
 	limit := min(int64(o.budgetUSD*1e9), capNano-spentNano, llmCap-committed)
 	if limit <= 0 {
 		return fmt.Errorf("teacher: today's llm cap ($%.2f) is already spent; nothing was asked", cfg.Decide.DailyUSD.LLM)
 	}
 	fmt.Fprintf(e.stdout, "teacher: spending at most %s (the least of --budget-usd, the auditor's cap headroom %s and the $%.2f daily llm cap's headroom)\n",
 		usd(limit), usd(capNano-spentNano), cfg.Decide.DailyUSD.LLM)
-	// Every question's cost is written to the auditor's cap file as it is paid,
-	// as the llm ledger's committed total moves (a run in a crash keeps what it
-	// spent). Another spender's cost in the same window is counted against the
-	// auditor too, which errs on the side of the cap.
-	last := committed
+	// Every question's cost is written to the auditor's cap file as it is paid: the
+	// llm ledger's settled spend plus the reservations it kept unproven, which
+	// only grows (a question still in flight is counted when it settles, and a
+	// reservation that settles lower is never given back). Another spender's cost
+	// in the same window is counted against the auditor too, which errs toward
+	// the cap.
+	last := before.SpentNanoUSD + before.RetainedNanoUSD
 	meter := func(c context.Context) error {
-		cur, err := spent(c)
+		s, err := teacherSettled(c, ledgerPath)
 		if err != nil {
 			return err
 		}
+		cur := s.SpentNanoUSD + s.RetainedNanoUSD
 		delta := max(cur-last, 0)
-		last = cur
+		last = max(cur, last)
 		return capFile.AddSpent(c, day, delta)
 	}
 	run := eval.PairRun{
@@ -390,8 +437,14 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 	after, afterErr := teacherSettled(context.WithoutCancel(ctx), ledgerPath)
 	jr.Run = e.teacherSummary(eval.TeacherResult{Considered: res.Considered, Skipped: res.Skipped, Asked: res.Asked, Stored: res.Stored,
 		Unread: res.Unread, Unusable: res.Unusable, Stopped: res.Stopped, SpentNano: res.SpentNano},
-		ps.Stored, len(works), before, beforeErr, after, afterErr, capNano)
+		ps.Stored, len(works), before, beforeErr, after, afterErr, llmCap)
 	jr.Run.LimitUSD = float64(limit) / 1e9
+	if cn, sn, serr := capFile.State(day); serr == nil {
+		stats.CapUSD, stats.SpentToday = float64(cn)/1e9, float64(sn)/1e9
+		fmt.Fprintf(e.stdout, "teacher: the auditor's own cap: %s spent today of %s, %s left\n", usd(sn), usd(cn), usd(max(cn-sn, 0)))
+	} else {
+		fmt.Fprintf(e.stdout, "teacher: the auditor's cap file could not be read back (%v)\n", serr)
+	}
 	if res.Abstained > 0 {
 		fmt.Fprintf(e.stdout, "teacher: %d of the stored answers are abstentions (the model said the pair was too thin to tell)\n", res.Abstained)
 	}
@@ -420,7 +473,13 @@ func (e *env) pairsReport(plan *teacherPlanJSON, st *teacherPairsJSON, cfg confi
 	}
 	fmt.Fprintf(e.stdout, "teacher: %d pairs planned (%d questions%s) in %d strata from %d candidate postings, seed %s; %d pairs already answered under this model, question and exemplar set\n",
 		st.Pairs, st.Questions, map[bool]string{true: ", both orders", false: ""}[st.BothOrders], st.Strata, cands, st.Seed, ps.Stored)
-	fmt.Fprintf(e.stdout, "teacher: left out of the candidates: %d closed, %d sponsorship or work_mode drops, %d with no text, %d exemplar postings\n", st.Closed, st.Excluded, st.NoText, st.Exemplar)
+	fmt.Fprintf(e.stdout, "teacher: left out of the candidates: %d closed, %d sponsorship, work_mode or owner-exclusion drops, %d with no text, %d exemplar postings\n", st.Closed, st.Excluded, st.NoText, st.Exemplar)
+	names := slices.Sorted(maps.Keys(st.StrataMembers))
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, fmt.Sprintf("%s=%d", n, st.StrataMembers[n]))
+	}
+	fmt.Fprintf(e.stdout, "teacher: candidates per stratum: %s\n", strings.Join(parts, ", "))
 	if st.Frozen {
 		fmt.Fprintf(e.stdout, "teacher: evaluation coverage: %d gold labels made after the freeze to be compared with %d mates each; %d got fewer\n", st.Cover, pairCoverMates, st.CoverShort)
 	}
@@ -500,7 +559,7 @@ func (e *env) cmdTeacherFreeze(args []string) error {
 		if err != nil {
 			return err
 		}
-		set, st, err := eval.FreezeExemplars(labels, recs, now())
+		set, st, err := eval.FreezeExemplars(labels, recs, now(), withholdFromExemplars)
 		rep.Stats = st
 		if err != nil {
 			return err

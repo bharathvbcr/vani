@@ -437,8 +437,9 @@ func (e *env) jobsState() (ledger.Snapshot, map[posting.Key]marks.Entry, error) 
 
 // jobsCheckpointAfter is how many bytes of events a jobs read folds before it
 // saves a new checkpoint: a few runs' worth, so the next read replays little
-// and a save (a few hundred ms at 60k postings) is rare.
-const jobsCheckpointAfter = 8 << 20
+// and a save (a few hundred ms at 60k postings) is rare. A variable only so a
+// test can lower it.
+var jobsCheckpointAfter int64 = 8 << 20
 
 // jobsReaderOptions is where the jobs views keep their ledger checkpoint:
 // beside the ledger directory (which only its lock holder writes), saved by

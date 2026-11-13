@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
 	"github.com/bharathvbcr/Vani/internal/eval"
@@ -187,8 +188,13 @@ func (f *psFake) Decide(_ context.Context, q decide.Question) (decide.Answer, er
 func (f *psFake) use(t *testing.T) {
 	t.Helper()
 	tcUse(t, &tcFake{}) // restores the seams on cleanup
+	oldSettled := teacherSettled
+	t.Cleanup(func() { teacherSettled = oldSettled })
 	teacherDecider = func(context.Context, *wired, string) (decide.Decider, error) { return f, nil }
 	teacherSpent = func(context.Context, string) (int64, error) { return f.meter.Load(), nil }
+	teacherSettled = func(context.Context, string) (budget.Snapshot, error) {
+		return budget.Snapshot{SpentNanoUSD: f.meter.Load()}, nil
+	}
 }
 
 func TestPairFlagsAreRefusedNotIgnored(t *testing.T) {
@@ -726,11 +732,114 @@ func TestStratumLeftOutNamesTheClassesTheAuditorSkips(t *testing.T) {
 	for stratum, want := range map[string]string{
 		"closed:dead": "closed", "closed:duplicate": "closed",
 		"dropped:title:sponsorship": "sponsorship_work_mode", "dropped:model:work_mode": "sponsorship_work_mode",
-		"dropped:title:role_fit": "", "dropped:exclude:title": "", "decile:7": "", "dropped:model:other": "",
+		// The doctor's own test for what is about work authorization.
+		"dropped:model:citizenship_or_clearance_required": "sponsorship_work_mode", "dropped:title:visa": "sponsorship_work_mode",
+		"dropped:model:no_sponsorship": "sponsorship_work_mode", "dropped:title:work_auth": "sponsorship_work_mode", "dropped:model:opt": "sponsorship_work_mode",
+		"dropped:exclude:title": "owner_exclusion", "dropped:exclude:description": "owner_exclusion",
+		"dropped:title:role_fit": "", "decile:7": "", "dropped:model:other": "", "dropped:model:seniority": "", "dropped:title:category": "",
 	} {
 		reason, left := stratumLeftOut(stratum)
 		if reason != want || left != (want != "") {
 			t.Errorf("%s: %q %v, want %q", stratum, reason, left, want)
 		}
+	}
+	// Every one of them is also kept out of the exemplars, except the closed strata,
+	// which the freeze leaves out itself.
+	for stratum, want := range map[string]bool{"dropped:title:sponsorship": true, "dropped:exclude:title": true, "closed:dead": false, "decile:3": false, "dropped:title:role_fit": false, "manual": false} {
+		if got := withholdFromExemplars(stratum); got != want {
+			t.Errorf("withholdFromExemplars(%q) = %v", stratum, got)
+		}
+	}
+}
+
+func TestPairDryRunKeepsNoLedgerCheckpointButOtherReadsDo(t *testing.T) {
+	e := psSetup(t, 30, 30, nil)
+	tcNoModel(t)
+	old := jobsCheckpointAfter
+	jobsCheckpointAfter = 1 // any fold would save one
+	t.Cleanup(func() { jobsCheckpointAfter = old })
+	ckpt := filepath.Join(e.state, "readmodel", "ledger.ckpt")
+
+	mustCode(t, 0, "teacher", "--task", "would_apply_pair", "--dry-run", "--pairs", "2")
+	if _, err := os.Stat(ckpt); err == nil {
+		t.Fatal("a dry run saved a ledger checkpoint: it wrote to the state directory")
+	}
+	// The control: the same read with a checkpoint wanted does save one, so the
+	// check above could have failed.
+	mustCode(t, 0, "jobs", "list", "--json")
+	if _, err := os.Stat(ckpt); err != nil {
+		t.Fatalf("a jobs read saved no checkpoint, so this test proves nothing: %v", err)
+	}
+	if err := os.Remove(ckpt); err != nil {
+		t.Fatal(err)
+	}
+	// And the report writes nothing either.
+	e.label(t, "w", "yes", 0, 3, jobsT0.Add(-48*time.Hour))
+	e.label(t, "u", "no", 0, 3, jobsT0.Add(-48*time.Hour))
+	e.freeze(t)
+	mustCode(t, 0, "teacher", "report")
+	if _, err := os.Stat(ckpt); err == nil {
+		t.Error("teacher report saved a ledger checkpoint")
+	}
+}
+
+func TestPairRunReadsTheCapAgainOnceItHoldsTheLock(t *testing.T) {
+	e := psSetup(t, 30, 30, nil)
+	f := &psFake{}
+	f.use(t)
+	e.label(t, "w", "yes", 0, 3, jobsT0.Add(-48*time.Hour))
+	e.label(t, "u", "no", 0, 3, jobsT0.Add(-48*time.Hour))
+	e.freeze(t)
+	e.setCap(t, "1")
+	// Another run holds the log; this one waits for it. While it waits, that run
+	// spends the day's whole cap.
+	unlock, err := eval.LockPairs(context.Background(), filepath.Join(e.state, eval.PairsFile), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		code   int
+		stderr string
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, _, stderr := do(t, "teacher", "--task", "would_apply_pair", "--budget-usd", "0.5", "--pairs", "4", "--concurrency", "1")
+		done <- result{code, stderr}
+	}()
+	time.Sleep(2 * time.Second)
+	capPath := filepath.Join(e.state, "budget", eval.PairCapFile)
+	if err := os.WriteFile(capPath, []byte(fmt.Sprintf(`{"version":1,"daily_usd":1,"spent_nano":{%q:1000000000}}`, eval.Day(budgetClock()))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	r := <-done
+	if r.code != 1 || !strings.Contains(r.stderr, "already spent") || len(f.sent) != 0 {
+		t.Errorf("a run that waited behind a spender: exit %d, %d questions asked, stderr %s", r.code, len(f.sent), r.stderr)
+	}
+}
+
+func TestPairRunReportsTheLLMBudgetAndTheAuditorsCapSeparately(t *testing.T) {
+	e := psSetup(t, 30, 30, nil)
+	f := &psFake{}
+	f.use(t)
+	e.label(t, "w", "yes", 0, 3, jobsT0.Add(-48*time.Hour))
+	e.label(t, "u", "no", 0, 3, jobsT0.Add(-48*time.Hour))
+	e.freeze(t)
+	e.setCap(t, "1")
+	o, _ := mustCode(t, 0, "teacher", "--task", "would_apply_pair", "--budget-usd", "0.5", "--pairs", "4", "--concurrency", "1", "--json")
+	var rep teacherReply
+	if err := json.Unmarshal([]byte(o), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, o)
+	}
+	if rep.Run == nil || rep.Run.RemainingTodayUSD == nil || rep.Pairs == nil {
+		t.Fatalf("reply %+v", rep)
+	}
+	spent := float64(4*psPerCall) / 1e9
+	// The llm ledger's day is $5 (decide.daily_usd.llm); the auditor's own cap is $1.
+	if got := *rep.Run.RemainingTodayUSD; got < 5-spent-1e-9 || got > 5-spent+1e-9 {
+		t.Errorf("remaining today (the llm budget) %v, want %v", got, 5-spent)
+	}
+	if rep.Pairs.CapUSD != 1 || rep.Pairs.SpentToday < spent-1e-9 || rep.Pairs.SpentToday > spent+1e-9 {
+		t.Errorf("the auditor's cap %v spent %v, want 1 and %v", rep.Pairs.CapUSD, rep.Pairs.SpentToday, spent)
 	}
 }
