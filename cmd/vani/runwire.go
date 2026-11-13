@@ -467,8 +467,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 	}
 	sc := reopenScope(w.cfg)
 	sc.Defer, sc.Pending = sc.Watched, pending
+	goneBefore := pending.GoneLen()
 	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo, &sc)
-	if perr == nil && (ch.Deferred > 0 || ch.Unqueued > 0 || pending.Expired > 0) {
+	if perr == nil && (ch.Deferred > 0 || ch.Unqueued > 0 || pending.Expired > 0 || pending.GoneLen() != goneBefore) {
 		if serr := pending.Save(path, time.Now()); serr != nil {
 			err = errors.Join(err, fmt.Errorf("pending reopens: %w", serr))
 		}
@@ -482,9 +483,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 	if ch.BodyUnavailable > 0 {
 		w.warnf("exclusions: %d posting(s) left as they are because their stored description could not be read back", ch.BodyUnavailable)
 	}
-	if len(ch.Drop) > 0 || ch.Reopened > 0 || ch.Deferred > 0 || ch.OverCap > 0 {
-		w.warnf("exclusions: dropped %d posting(s), returned %d to live; %d waiting for their board to list them again (%d already), %d on a board no longer watched left dropped, %d left out over the bound of %d",
-			len(ch.Drop), ch.Reopened, ch.Deferred, ch.AlreadyPending, ch.Stale, ch.OverCap, pipeline.MaxPendingReopens)
+	if len(ch.Drop) > 0 || ch.Reopened > 0 || ch.Deferred > 0 || ch.OverCap > 0 || ch.Gone > 0 {
+		w.warnf("exclusions: dropped %d posting(s), returned %d to live; %d waiting for their board to list them again (%d already), %d on a board no longer watched left dropped, %d not listed for %s and left dropped until their board lists them, %d left out over the bound of %d (%d for exclusions)",
+			len(ch.Drop), ch.Reopened, ch.Deferred, ch.AlreadyPending, ch.Stale, ch.Gone, pipeline.PendingReopenExpiry, ch.OverCap, pipeline.MaxPendingReopens, pipeline.MaxPendingExclusions)
 	}
 	return nil
 }

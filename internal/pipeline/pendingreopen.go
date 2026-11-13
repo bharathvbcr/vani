@@ -33,12 +33,19 @@ const (
 	// PendingReopenFile is where the set is kept, under the state dir.
 	PendingReopenFile = "reopen/pending.json"
 	// PendingReopenExpiry is how long a pending reopen waits for its board to
-	// list it. Once a full listing of its board has left it out for this long
-	// it is cleared and counted: absence from two weeks of daily listings is
-	// far past the two misses and 20 hours a live posting dies on, and long
-	// enough to ride out a board that fails or is rate limited for days (a
-	// failed listing never clears anything; only a full one that left it out).
+	// list it. Once the board's full or short listings have left it out for this
+	// much read time it is cleared and counted: absence from two weeks of daily
+	// listings is far past the two misses and 20 hours a live posting dies on,
+	// and long enough to ride out a board that fails or is rate limited for days
+	// (a failed listing counts nothing; a gap between reads counts at most
+	// ClockWindow; see SightingReopen.expire).
 	PendingReopenExpiry = 14 * 24 * time.Hour
+	// MaxPendingExclusions bounds the exclusion-class entries within
+	// MaxPendingReopens. A loosened broad rule can free tens of thousands of
+	// drops at once (the live ledger holds about 34,000); without its own
+	// bound they could fill the set and make every title and model mark OverCap.
+	// The rest of the bound is always left to those.
+	MaxPendingExclusions = 30_000
 	// pendingReopenMaxAge clears an entry on load whatever its board did: a
 	// board removed from the watchlist, or one that has not listed for that
 	// long, never sees its postings again.
@@ -96,18 +103,31 @@ type PendingReopen struct {
 	Class  string    `json:"class"`
 	At     time.Time `json:"at"`
 	Reason string    `json:"reason,omitempty"`
+	// Out is how much time its board was read (in a full or short listing)
+	// without it, and Last the read that last counted: the entry expires once
+	// Out reaches PendingReopenExpiry. Time the board was not read, or a clock
+	// that jumped, is not counted (SightingReopen.expire).
+	Out  time.Duration `json:"out,omitempty"`
+	Last time.Time     `json:"last,omitzero"`
 }
 
 // PendingReopens is the set, by posting key.
 type PendingReopens struct {
 	Items map[posting.Key]PendingReopen
+	// Gone are the exclusion drops whose pending reopen expired unseen: their
+	// board was read without them for PendingReopenExpiry, so they are probably
+	// closed for good. The exclusion pass does not mark them again until a full
+	// listing shows them (SightingReopen.sighted), so the expiry is not undone
+	// every two weeks. The value is when the entry expired. Counted, never lost
+	// silently: GoneLen.
+	Gone map[posting.Key]time.Time
 	// Expired counts entries LoadPendingReopens cleared for age.
 	Expired int
 }
 
 // NewPendingReopens returns an empty set.
 func NewPendingReopens() *PendingReopens {
-	return &PendingReopens{Items: map[posting.Key]PendingReopen{}}
+	return &PendingReopens{Items: map[posting.Key]PendingReopen{}, Gone: map[posting.Key]time.Time{}}
 }
 
 // Len is how many reopens are pending.
@@ -118,10 +138,31 @@ func (s *PendingReopens) Len() int {
 	return len(s.Items)
 }
 
+// GoneLen is how many exclusion drops expired unseen and are not marked again
+// until listed.
+func (s *PendingReopens) GoneLen() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.Gone)
+}
+
+// count is how many pending reopens are of class.
+func (s *PendingReopens) count(class string) int {
+	n := 0
+	for _, e := range s.Items {
+		if e.Class == class {
+			n++
+		}
+	}
+	return n
+}
+
 type pendingReopenFile struct {
 	V       int                           `json:"v"`
 	Updated time.Time                     `json:"updated"`
 	Items   map[posting.Key]PendingReopen `json:"items"`
+	Gone    map[posting.Key]time.Time     `json:"gone,omitempty"`
 }
 
 // LoadPendingReopens reads the set at path. A missing file is an empty set.
@@ -168,20 +209,29 @@ func LoadPendingReopens(path string, now time.Time) (*PendingReopens, error) {
 		}
 		s.Items[k] = e
 	}
+	if len(pf.Gone) > MaxPendingReopens {
+		return nil, fmt.Errorf("pending reopens: %s holds %d expired entries, over %d", path, len(pf.Gone), MaxPendingReopens)
+	}
+	for k, at := range pf.Gone {
+		if k.ATS() == "" || at.IsZero() {
+			return nil, fmt.Errorf("pending reopens: %s: expired entry %q is not readable", path, k)
+		}
+		s.Gone[k] = at
+	}
 	return s, nil
 }
 
 // Save writes the set to path atomically.
 func (s *PendingReopens) Save(path string, now time.Time) error {
-	if len(s.Items) > MaxPendingReopens {
-		return fmt.Errorf("pending reopens: %d entries, over %d", len(s.Items), MaxPendingReopens)
+	if len(s.Items) > MaxPendingReopens || len(s.Gone) > MaxPendingReopens {
+		return fmt.Errorf("pending reopens: %d entries and %d expired, over %d", len(s.Items), len(s.Gone), MaxPendingReopens)
 	}
 	for k, e := range s.Items {
 		if k.ATS() == "" || !validReopenClass(e.Class) || e.At.IsZero() {
 			return fmt.Errorf("pending reopens: entry %q is not writable", k)
 		}
 	}
-	b, err := json.MarshalIndent(pendingReopenFile{V: pendingReopenVersion, Updated: now.UTC(), Items: s.Items}, "", " ")
+	b, err := json.MarshalIndent(pendingReopenFile{V: pendingReopenVersion, Updated: now.UTC(), Items: s.Items, Gone: s.Gone}, "", " ")
 	if err != nil {
 		return fmt.Errorf("pending reopens: encode: %w", err)
 	}
@@ -324,10 +374,37 @@ func (s *SightingReopen) exclusionEvent(rec ledger.Record, listed posting.Postin
 	return ev, true
 }
 
-// expire clears the pending reopens of prefix's board that a full listing left
-// out (not in seen) for PendingReopenExpiry, and those whose record is no
-// longer dropped (a changed description already reopened it).
-func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting.Key]bool, now time.Time) {
+// sighted records that a full listing showed k and reports whether k was Gone:
+// an exclusion drop that had expired unseen is back, so it is judged against
+// the exclusions on the listed text as a pending reopen would be, and is no
+// longer remembered as gone.
+func (s *SightingReopen) sighted(k posting.Key) bool {
+	if s == nil || s.Pending == nil {
+		return false
+	}
+	if _, ok := s.Pending.Gone[k]; !ok {
+		return false
+	}
+	delete(s.Pending.Gone, k)
+	s.changed = true
+	return true
+}
+
+// expire clears the pending reopens of prefix's board that its full or short
+// listings left out (not in seen) for PendingReopenExpiry, and those whose
+// record is no longer dropped (a changed description already reopened it).
+//
+// The time counted is read time, not calendar time since the mark: each read
+// that leaves the entry out adds the time since the entry's last counted read,
+// at most ClockWindow (a board that failed for a week then answers once adds
+// three days, not seven), and nothing when the clock is behind that read or
+// when the read froze for events ahead of its clock (frozen: the clock the
+// death rule distrusts is not used to expire a posting either). A clock that
+// jumped ahead therefore adds at most ClockWindow, never the jump.
+//
+// An expired exclusion drop is remembered in Gone, so the next exclusion pass
+// does not mark it again until a listing shows it.
+func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting.Key]bool, now time.Time, frozen bool) {
 	if s == nil || s.Pending == nil || prefix == "" {
 		return
 	}
@@ -339,9 +416,31 @@ func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting
 			s.forget(k)
 			continue
 		}
-		if !seen[k] && now.Sub(e.At) >= PendingReopenExpiry {
-			s.forget(k)
-			s.Expired++
+		if seen[k] || frozen {
+			continue
+		}
+		if e.Last.IsZero() || e.Last.After(now) { // the first read that leaves it out, or a clock behind the last one
+			if e.Last.IsZero() {
+				e.Last = now
+				s.Pending.Items[k] = e
+				s.changed = true
+			}
+			continue
+		}
+		e.Out += min(now.Sub(e.Last), ClockWindow)
+		e.Last = now
+		if e.Out < PendingReopenExpiry {
+			s.Pending.Items[k] = e
+			s.changed = true
+			continue
+		}
+		s.forget(k)
+		s.Expired++
+		if e.Class == reopenClassExclusion && len(s.Pending.Gone) < MaxPendingReopens {
+			if s.Pending.Gone == nil {
+				s.Pending.Gone = map[posting.Key]time.Time{}
+			}
+			s.Pending.Gone[k] = now.UTC()
 		}
 	}
 }

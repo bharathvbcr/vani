@@ -102,7 +102,10 @@ func TestRunReconcilerHasTheConfigsLivenessAndThePendingReopens(t *testing.T) {
 	stateDir := t.TempDir()
 	path := filepath.Join(stateDir, pipeline.PendingReopenFile)
 	pending := pipeline.NewPendingReopens()
-	pending.Items[dropped] = pipeline.PendingReopen{Class: "title", At: t0, Reason: "test"}
+	// 14 days of reads without it counted but a day: the read below completes them.
+	first := t0.Add(pipeline.PendingReopenExpiry)
+	pending.Items[dropped] = pipeline.PendingReopen{Class: "title", At: t0, Reason: "test",
+		Out: pipeline.PendingReopenExpiry - 12*time.Hour, Last: first.Add(-24 * time.Hour)}
 	if err := pending.Save(path, t0); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +127,6 @@ func TestRunReconcilerHasTheConfigsLivenessAndThePendingReopens(t *testing.T) {
 		}
 		return s
 	}
-	first := t0.Add(pipeline.PendingReopenExpiry)
 	if s := read(first); !s.Mass || s.MassMarked != 2 {
 		t.Fatalf("the empty listing: %+v", s)
 	}

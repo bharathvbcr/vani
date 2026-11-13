@@ -111,12 +111,15 @@ func TestPendingReopenExpiresWhenItsBoardNoLongerListsIt(t *testing.T) {
 	if _, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), deferScope(s), false); err != nil {
 		t.Fatal(err)
 	}
-	// Listed without it, inside the window: still pending.
-	if _, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+PendingReopenExpiry-time.Minute), true, other); so.Expired != 0 || s.Len() != 1 {
-		t.Fatalf("inside the window: %+v, %d pending", so, s.Len())
+	// Daily listings without it: the first starts the count, so 14 days of read
+	// time need the read 14 days after it. Inside the window: still pending.
+	for d := 1; d <= 14; d++ {
+		if _, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+time.Duration(d)*24*time.Hour), true, other); so.Expired != 0 || s.Len() != 1 {
+			t.Fatalf("day %d, inside the window: %+v, %d pending", d, so, s.Len())
+		}
 	}
 	// Past it: cleared, counted, still dropped.
-	_, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+PendingReopenExpiry), true, other)
+	_, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+15*24*time.Hour), true, other)
 	if so.Expired != 1 || s.Len() != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("past the window: %+v, %d pending, status %s", so, s.Len(), rec(t, l, k).Status)
 	}
