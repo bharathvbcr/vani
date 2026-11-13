@@ -109,7 +109,7 @@ Ported from the drafting validator (`build/check-deciders.js`):
     found. A knowledge-base send refuses when the list is missing or has no terms, unless
     `--allow-missing-identifying-words`.
 - Drop rules name a triage slot and legal values from `internal/decide/jdtriage/fixture.json`;
-  no sponsorship rule (it stays in the main config); one rule per slot; `min_openrouter_prob` in (0, 1] (the old name `min_jev_prob` still loads).
+  no sponsorship rule (it stays in the main config); one rule per slot; `min_openrouter_prob` in [0.9, 1] (applying a track with a lower value is refused by the config check, which holds drop thresholds to the 0.9 floor; see SETUP.md) (the old name `min_jev_prob` still loads).
 - `seniority` want/stretch/drop partition the seniority levels, and `drop` equals the seniority
   drop rule's values.
 - `employer_preferences` says `use: badge_and_rank` and `drops: false`; `prefer` holds only

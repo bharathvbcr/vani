@@ -600,6 +600,23 @@ type RankPenalty struct {
 	Values []string `json:"values"`
 }
 
+// The owner's policy: a model reading drops a posting only at p >= 0.9, and a
+// zero threshold means the rule never drops on that backend.
+// MinDropOpenRouterProb is that floor for the OpenRouter model's probability.
+// Lappi's score is the top-two probability margin (decide.LappiCalib), not a
+// probability: a margin m puts the top label at p >= (1+m)/2, so the same
+// floor is a margin of MinDropLappiScore.
+const (
+	MinDropOpenRouterProb = 0.9
+	MinDropLappiScore     = 0.8
+)
+
+// dropThresholdOK reports whether a drop threshold is 0 (never) or within
+// [floor, 1]. NaN is refused.
+func dropThresholdOK(v, floor float64) bool {
+	return v == 0 || (v >= floor && v <= 1)
+}
+
 // DropRule drops a posting when a triage slot reads one of Values with enough
 // confidence. Dropping is an engine rule keyed on an annotation.
 type DropRule struct {
@@ -1659,11 +1676,11 @@ func (c Config) Validate() error {
 				add("drop_rules[%d]: %q is not a %s value (want one of %s)", i, v, r.Slot, strings.Join(legal, ", "))
 			}
 		}
-		if math.IsNaN(r.MinOpenRouterProb) || r.MinOpenRouterProb < 0 || r.MinOpenRouterProb > 1 {
-			add("drop_rules[%d]: min_openrouter_prob %v must be within 0..1", i, r.MinOpenRouterProb)
+		if !dropThresholdOK(r.MinOpenRouterProb, MinDropOpenRouterProb) {
+			add("drop_rules[%d]: min_openrouter_prob %v must be 0 (never) or within [%v, 1]: a model reading drops a posting only at p >= %v", i, r.MinOpenRouterProb, MinDropOpenRouterProb, MinDropOpenRouterProb)
 		}
-		if math.IsNaN(r.MinLappiScore) || r.MinLappiScore < 0 {
-			add("drop_rules[%d]: min_lappi_score %v must be >= 0", i, r.MinLappiScore)
+		if !dropThresholdOK(r.MinLappiScore, MinDropLappiScore) {
+			add("drop_rules[%d]: min_lappi_score %v must be 0 (never) or within [%v, 1]: the score is a top-two probability margin, so %v keeps the top label at p >= %v", i, r.MinLappiScore, MinDropLappiScore, MinDropLappiScore, MinDropOpenRouterProb)
 		}
 	}
 	if len(c.RankPenalties) > MaxRankPenalties {

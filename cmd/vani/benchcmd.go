@@ -19,6 +19,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/localserver"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/track"
 
 	"github.com/bharathvbcr/decide"
 )
@@ -162,7 +163,7 @@ func (e *env) cmdBench(args []string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(cfg.TargetSummary) == "" {
+	if track.Blank(cfg.TargetSummary) {
 		return errors.New("bench local: the config has no target_summary; the run's request includes it, so the bench needs it too")
 	}
 	if *endpoint != "" {

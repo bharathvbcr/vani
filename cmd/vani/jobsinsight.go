@@ -22,6 +22,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/resumestore"
 	"github.com/bharathvbcr/Vani/internal/samecompany"
 	"github.com/bharathvbcr/Vani/internal/semantic"
+	"github.com/bharathvbcr/Vani/internal/track"
 )
 
 // The browsing aids `vani jobs` adds to each posting: freshness, a relevance
@@ -492,7 +493,7 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	switch {
 	case err != nil:
 		in.info.Warning = "keywords are not marked against your target roles: " + oneLine(err.Error(), 200)
-	case strings.TrimSpace(cfg.TargetSummary) == "":
+	case track.Blank(cfg.TargetSummary):
 		in.info.Warning = "keywords are not marked against your target roles: the config has no target_summary"
 	default:
 		in.target = v.Terms(cfg.TargetSummary)

@@ -675,6 +675,22 @@ func parse(fs *flag.FlagSet, args []string) error {
 // loadConfig loads the config and warns on stderr about each old key name it
 // still uses (the file keeps working; Save writes the new names).
 func (e *env) loadConfig() (config.Config, error) {
+	cfg, err := e.loadConfigUnchecked()
+	if err != nil {
+		return config.Config{}, err
+	}
+	// motivation_notes goes to the drafter's model: a note naming a contact
+	// handle or work-authorization wording is refused with the rest of the
+	// config (config.Validate cannot see the matcher: internal/track imports it).
+	if err := checkMotivationNotes(cfg.MotivationNotes); err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
+}
+
+// loadConfigUnchecked is loadConfig without the motivation_notes check, for
+// the one reader that must show a refused note so it can be edited.
+func (e *env) loadConfigUnchecked() (config.Config, error) {
 	cfg, old, err := config.LoadWithDeprecations(e.configPath)
 	if err != nil {
 		return config.Config{}, err

@@ -36,8 +36,9 @@ func TestShadowModeValidation(t *testing.T) {
 		"escalate overlaps a drop rule": {func(c *Config) {
 			llmCfg(c)
 			c.Decide.ShadowMode = ShadowModeDropCandidates
-			c.DropRules = []DropRule{{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.4}}
-			c.Decide.Escalate = &Escalate{Enabled: true}
+			c.DropRules = []DropRule{{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.9}}
+			below := 0.95
+			c.Decide.Escalate = &Escalate{Enabled: true, BelowP: &below}
 		}, "claim the same slots"},
 		"llm shadow on drop candidates, cheap triage model": {func(c *Config) {
 			llmCfg(c)

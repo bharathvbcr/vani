@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -27,13 +27,36 @@ import (
 // Its messages never quote a matched term or any part of the summary.
 var errTargetSummary = errors.New("config target_summary")
 
+// errMotivationNotes marks a refusal to send motivation_notes to a model. Its
+// messages never quote a matched term or any part of the note.
+var errMotivationNotes = errors.New("config motivation_notes")
+
+// checkMotivationNotes returns nil when notes may enter the drafter's prompt.
+// The owner's identifying-words file is not applied (drafts keep project
+// names), but the built-in list is: contact handles and links (@, linkedin,
+// github) and work-authorization wording (visa, h-1b, opt, sponsorship,
+// nonprofit, cap-exempt...) never go to a model. A note that names one is
+// refused, so the owner rewords it; an innocent use of one of those words is
+// refused too, which is the price of one matcher for every text bound for a
+// provider. It only narrows what is sent.
+func checkMotivationNotes(notes string) error {
+	if track.Blank(notes) {
+		return nil
+	}
+	n := len(track.BuiltinWords().Found(notes))
+	if n == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: contains %d term(s) from the built-in list (contact handles or links, or work-authorization wording; the terms are not shown); the note is sent to the drafter's model. Reword it without them (vani config motivation --set)", errMotivationNotes, n)
+}
+
 // checkPromptSummary returns nil when cfg.TargetSummary may enter a model
 // prompt. It fails closed: an unreadable identifying-words list, and a missing
 // or term-less one unless allowMissing (--allow-missing-identifying-words, the
 // flag the kb_match path already takes; the built-in list is still applied),
 // refuse as a found term does. An empty summary carries nothing to check.
 func checkPromptSummary(cfg config.Config, stateDir string, allowMissing bool) error {
-	if strings.TrimSpace(cfg.TargetSummary) == "" {
+	if track.Blank(cfg.TargetSummary) {
 		return nil
 	}
 	dir := track.Dir(cfg, stateDir)
@@ -46,8 +69,8 @@ func checkPromptSummary(cfg config.Config, stateDir string, allowMissing bool) e
 		if w.Missing {
 			state = "does not exist"
 		}
-		return fmt.Errorf("%w: %s %s in %s, so the owner's identifying terms cannot be checked against the summary; no model prompt is built from it (add the file, or pass --%s where the command takes it)",
-			errTargetSummary, track.WordsFile, state, dir, kbAllowMissingFlag)
+		return fmt.Errorf("%w: %s %s: the file expected is %s, and it needs at least one term (one per line, # starts a comment), so the owner's identifying terms can be checked against the summary; no model prompt is built from it until it does",
+			errTargetSummary, track.WordsFile, state, filepath.Join(dir, track.WordsFile))
 	}
 	if n := len(w.Found(cfg.TargetSummary)); n > 0 {
 		return fmt.Errorf("%w: contains %d term(s) from the identifying-words list (the terms are not shown); no model prompt is built from it. Edit target_summary in the config to describe the roles without them, or apply a track whose summary is clean (vani track apply)",
@@ -90,7 +113,7 @@ func (e *env) targetSummaryFacetOf(cfg config.Config, cfgErr error) targetSummar
 	switch {
 	case cfgErr != nil:
 		return targetSummaryFacet{facet: facet{Reason: "not checked: the config could not be read"}}
-	case strings.TrimSpace(cfg.TargetSummary) == "":
+	case track.Blank(cfg.TargetSummary):
 		return targetSummaryFacet{facet: facet{OK: true, Reason: genericTargetNote(cfg)}, GenericDefault: true}
 	}
 	if err := checkPromptSummary(cfg, e.stateDir, false); err != nil {
