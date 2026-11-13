@@ -46,7 +46,11 @@ func (e *env) cmdRetriage(args []string) error {
 	dry := flags.Bool("dry-run", false, "list what would be returned to live; read the ledger only, change nothing")
 	titles := flags.Bool("title-drops", false, "return postings dropped on their title that title_signals.read and the drop rules no longer drop")
 	stale := flags.Bool("stale-drops", false, "report every dropped posting today's rules (exclude, title_signals.read, drop_rules on the stored readings) would not drop, by drop class; read-only, no model")
-	rescue := flags.Bool("rescue", false, "with --stale-drops: return the model drops among them to unsure, readings kept; with --dry-run only count")
+	rescue := flags.Bool("rescue", false, "with --stale-drops: return the model drops among them to unsure, readings kept; with --silver-drops: return the auditor's picks to unsure within the daily cap, only while its verdict on gold is go; with --dry-run only count")
+	silver := flags.Bool("silver-drops", false, "report the model drops the would_apply auditor keeps picking over their stratum (the rescue rule D6) and its precision on gold; read-only, no model")
+	minScore := flags.Float64("min-score", defaultSilverMinScore, "with --silver-drops: the auditor's score (0.5-1) a drop needs")
+	minGames := flags.Int("min-games", defaultSilverMinGames, fmt.Sprintf("with --silver-drops: the fewest comparisons (at least %d)", pipeline.MinSilverRescueGames))
+	maxPerDay := flags.Int("max-per-day", defaultSilverMaxPerDay, fmt.Sprintf("with --silver-drops --rescue: the most rescues per UTC day (1-%d)", pipeline.MaxSilverRescuePerDay))
 	asJSON := e.jsonFlag(flags, `{"dry_run","title_drops","returned","keys"} on stdout; with --stale-drops {"stale_drops","dry_run","rescue","dropped","still_dropped","stale","not_judged","not_judged_why","classes","items","items_shown","truncated","rescued","rescued_keys","left_to_other"}`)
 	if err := parse(flags, args); err != nil {
 		return err
@@ -54,12 +58,17 @@ func (e *env) cmdRetriage(args []string) error {
 	switch {
 	case *stale && *titles:
 		return usagef("retriage: --stale-drops and --title-drops are separate; --stale-drops lists title drops too")
-	case *rescue && !*stale:
-		return usagef("retriage: --rescue needs --stale-drops")
+	case *silver && (*stale || *titles):
+		return usagef("retriage: --silver-drops is separate from --stale-drops and --title-drops")
+	case *rescue && !*stale && !*silver:
+		return usagef("retriage: --rescue needs --stale-drops or --silver-drops")
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
+	}
+	if *silver {
+		return e.retriageSilver(cfg, pipeline.SilverRule{MinScore: *minScore, MinGames: *minGames, MaxPerDay: *maxPerDay}, *dry, *rescue, *asJSON)
 	}
 	if *stale {
 		return e.retriageStale(cfg, *dry, *rescue, *asJSON)
