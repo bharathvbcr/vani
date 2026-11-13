@@ -415,6 +415,9 @@ type boardsReport struct {
 	MassHeld         []massHeldBoard `json:"mass_held,omitempty"`
 	MassHeldCount    int             `json:"mass_held_count,omitempty"`
 	MassHeldPostings int             `json:"mass_held_postings,omitempty"`
+	// MassHoldHours is the mass hold this run was configured with (liveness.mass_hold_hours),
+	// so a line that names the hold says the one in force. 0 reads as the default. Additive.
+	MassHoldHours int `json:"mass_hold_hours,omitempty"`
 	// Short is rows the boards counted but did not list, together (see
 	// boardReport.Short). Additive: readers that do not know the key ignore it.
 	Short int `json:"short,omitempty"`
