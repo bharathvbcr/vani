@@ -324,8 +324,19 @@ func TestReadDuringTheFirstWriteIsNotCorrupt(t *testing.T) {
 	}
 }
 
+// busyTries bounds how often TestCompactUnderConcurrentWriters retries a write
+// that got ErrBusy. Each try already waited lockWait, so this is minutes.
+const busyTries = 40
+
 // Writers and compactions interleave under the same lock: every mark made
 // survives, and no reader ever sees a broken store.
+//
+// ErrBusy is not a broken store: it is the bounded lock wait giving up, and
+// the call changed nothing. Under a full-suite load the compactor's rewrites
+// can hold the turn queue past lockWait, so a writer retries a busy SetMark
+// (as a caller would) and the compactor skips a busy round. Starvation, where
+// a writer never gets a turn, has its own test,
+// TestOverlappingReadersDoNotStarveAWriter. Any other error fails here.
 func TestCompactUnderConcurrentWriters(t *testing.T) {
 	dir := Dir(t.TempDir())
 	const writers, each = 4, 25
@@ -337,27 +348,39 @@ func TestCompactUnderConcurrentWriters(t *testing.T) {
 			defer wg.Done()
 			for i := range each {
 				k, _ := posting.GreenhouseKey(fmt.Sprintf("w%d", w), fmt.Sprint(i))
-				if _, err := SetMark(dir, k, Applied, t0.Add(time.Duration(i)*time.Second)); err != nil {
-					errs <- err
+				var err error
+				for range busyTries {
+					if _, err = SetMark(dir, k, Applied, t0.Add(time.Duration(i)*time.Second)); !errors.Is(err, ErrBusy) {
+						break
+					}
+				}
+				if err != nil {
+					errs <- fmt.Errorf("writer %d mark %d: %w", w, i, err)
 				}
 			}
 		}()
 	}
 	stop := make(chan struct{})
 	var cw sync.WaitGroup
+	var compacted int
 	cw.Add(1)
 	go func() {
 		defer cw.Done()
 		for {
 			select {
 			case <-stop:
-				return
+				if compacted > 0 {
+					return
+				}
 			default:
 			}
-			if err := Compact(dir); err != nil {
+			switch err := Compact(dir); {
+			case err == nil:
+				compacted++
+			case !errors.Is(err, ErrBusy):
 				errs <- err
 			}
-			if _, err := Read(dir); err != nil {
+			if _, err := Read(dir); err != nil && !errors.Is(err, ErrBusy) {
 				errs <- err
 			}
 		}
@@ -368,6 +391,9 @@ func TestCompactUnderConcurrentWriters(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+	if compacted == 0 {
+		t.Fatal("no compaction completed while the writers ran; the test interleaved nothing")
 	}
 	m, err := Read(dir)
 	if err != nil {
