@@ -944,7 +944,7 @@ func massDeadLine(it boardReport) string {
 // shortListingLines names each read board that listed fewer jobs than it
 // counts (boardReport.Short), at most maxShortLines of them. Not a failure:
 // the listing is kept by design, but the postings it did not list go unseen,
-// and stored ones age toward dead. Boards past the bound, and the short rows of
+// and the board ages nothing while it is short. Boards past the bound, and the short rows of
 // boards the record could not keep, are counted on their own lines.
 func shortListingLines(b *boardsReport) []string {
 	if b == nil || b.Short <= 0 {
