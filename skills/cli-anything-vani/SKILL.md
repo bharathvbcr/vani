@@ -87,7 +87,8 @@ and work while a run holds the ledger.
   for agents: run `vani --json jobs list|stats|gaps|show` instead, which reply identically.
 - `vani labels` prints the label vocabularies (fit, status, category, triage).
 - `vani watchlist list` lists the boards. `vani prefilter`, `vani eval` and `vani relevance`
-  report on the filter and the label set.
+  report on the filter and the label set. `vani relevance --what-if-summary FILE` measures a
+  draft target summary locally and writes nothing.
 - `vani version` prints the build and `vani config check` validates the config.
 - `vani track list|show`, `vani lca lookup`, `vani employer lookup`, `vani kbmatch status`
   and `vani semantic status` print smaller reports.

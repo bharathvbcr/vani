@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ func (e *env) cmdRelevance(args []string) error {
 	fs := e.newFlags("relevance")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	ks := fs.String("k", "", "comma list of k for precision@k (default 5,10,20)")
+	whatIf := fs.String("what-if-summary", "", "a file holding a draft target_summary: report what it would do to the judged postings' order (keyword and semantic parts, computed locally, nothing written)")
 	asJSON := e.jsonFlag(fs, `{"relevance","drop_recall","teacher_proxy","drop_agreement","readers","part_auc"} on stdout: the raw counts the tables are built from`)
 	if err := parse(fs, args); err != nil {
 		return err
@@ -53,6 +55,9 @@ func (e *env) cmdRelevance(args []string) error {
 	}
 	// With nothing judged there is nothing to order or score: no ledger read.
 	if rep := eval.BuildRelevance(done, nil, nil, nil, eval.Names{}); rep.Judged == 0 {
+		if *whatIf != "" {
+			return errors.New("relevance --what-if-summary: no judged would_apply labels yet (run `vani audit`); there is no order to compare")
+		}
 		rep.Malformed = bad
 		// The drop-candidate agreement needs no labels, only the ledger. If it
 		// cannot be read the reply says so: that is not "no data".
@@ -124,6 +129,12 @@ func (e *env) cmdRelevance(args []string) error {
 	out.Sensitivity = &sens
 	shadow := e.buildSeniorityShadow(done, b.snap)
 	out.SeniorityShadow = &shadow
+	if *whatIf != "" {
+		ctx, stop := signalContext()
+		w := e.buildSummaryWhatIf(ctx, done, b.snap, *whatIf)
+		stop()
+		out.SummaryWhatIf = &w
+	}
 	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())
 		fmt.Fprint(e.stdout, recall.Markdown())
@@ -139,6 +150,9 @@ func (e *env) cmdRelevance(args []string) error {
 		}
 		fmt.Fprint(e.stdout, sens.Markdown())
 		fmt.Fprint(e.stdout, shadow.Markdown())
+		if out.SummaryWhatIf != nil {
+			fmt.Fprint(e.stdout, out.SummaryWhatIf.Markdown())
+		}
 	})
 }
 
@@ -227,6 +241,8 @@ type relevanceReply struct {
 	// SeniorityShadow is what sparing mismatch_seniority at some levels would
 	// do to the judged postings' order (measurement only).
 	SeniorityShadow *seniorityShadow `json:"seniority_shadow,omitempty"`
+	// SummaryWhatIf is present with --what-if-summary only.
+	SummaryWhatIf *summaryWhatIf `json:"summary_what_if,omitempty"`
 }
 
 // dropAgreement is the drop-candidate agreement for a run that has not read

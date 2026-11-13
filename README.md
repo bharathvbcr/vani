@@ -1066,7 +1066,10 @@ Three things measure the ranking against the owner's judgement; none changes a r
   reliability, and the shadow's agreement on drop candidates. It also sets every triage reader
   (each engine backend and each teacher model) against your answers, with role_fit sensitivity and
   specificity over all judged postings and over the score deciles alone. It gives each score part's
-  AUC, read only where the part was known evidence. `vani labels --json` is the label
+  AUC, read only where the part was known evidence. `--what-if-summary FILE` adds what a draft
+  `target_summary` would do to the order of the judged postings. It recomputes the keyword and
+  semantic parts locally, from stored vectors in a temporary copy, and writes nothing. The triage
+  readings stay as the live summary left them. `vani labels --json` is the label
   vocabulary the screens read once at launch.
 
 A calibration needs about 100 judged labels and the weight fit 150; both refuse to run below that.

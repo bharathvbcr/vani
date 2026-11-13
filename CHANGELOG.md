@@ -37,6 +37,16 @@ were ported with notice. Source files do not carry an upstream copyright header.
   posting it moves with its percentile among open postings. On the live ledger (2026-11-12)
   neither variant changed any AUC; sparing staff_plus too moved one judged posting (84th
   percentile before and after) and 373 of 29,311 open postings.
+- **Summary what-if** (`vani relevance --what-if-summary FILE`). This reports what a draft
+  `target_summary` would do to the order of the judged postings. It swaps only the two Score parts
+  that read the summary: keyword (the target terms) and semantic (the knowledge-base profile and its
+  calibration anchors). The semantic part is rescored from the stored chunk vectors for both the
+  live summary and the draft, in a temporary copy of the vector log that is removed afterwards.
+  A posting not known in both arms is compared as unknown in both. The live arm is a null test
+  against the scores the ranking reads. No model is asked and nothing is written. The triage
+  readings, which the summary also steers, stay as they are, and the report says so. It lists every
+  posting answered yes with its percentile among open postings before and after. A build without
+  `-tags tessl` says the semantic part was not computed and compares the keyword part only.
 - **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
   (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
   `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings
