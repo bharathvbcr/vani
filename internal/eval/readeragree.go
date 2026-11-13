@@ -90,6 +90,9 @@ type ReaderAgreement struct {
 	// Selected counts the judged labels drawn from the disagreement cells
 	// (SelectedOnReading), kept out of every reader's figures.
 	Selected int `json:"selected_on_reading"`
+	// Engineering counts the judged labels the engineering group drew, kept
+	// out too: a sample of the engineering postings, not of the pool.
+	Engineering int `json:"engineering"`
 
 	// TeacherStatus is TeacherProxyAvailable when the log was read; any other
 	// value says why no teacher reader is listed.
@@ -256,6 +259,10 @@ func BuildReaderAgreement(labels map[posting.Key]Entry, recs []ledger.Record, te
 			out.Selected++
 			continue
 		}
+		if EngineeringStratum(e.Source) {
+			out.Engineering++
+			continue
+		}
 		owner[k] = v
 		scored[k] = strings.HasPrefix(e.Source, "decile:")
 		out.Judged++
@@ -348,6 +355,9 @@ func (a ReaderAgreement) Markdown() string {
 	fmt.Fprintf(&b, "- owner-judged postings: %d (yes %d, maybe %d, no %d)\n", a.Judged, a.Yes, a.Maybe, a.No)
 	if a.Selected > 0 {
 		fmt.Fprintf(&b, "- left out: %d judged from the disagreement cells (drawn on a model's reading)\n", a.Selected)
+	}
+	if a.Engineering > 0 {
+		fmt.Fprintf(&b, "- left out: %d judged from the engineering group (a sample of engineering postings)\n", a.Engineering)
 	}
 	fmt.Fprintf(&b, "- teacher readings: %s", a.TeacherStatus)
 	if a.TeacherDetail != "" {

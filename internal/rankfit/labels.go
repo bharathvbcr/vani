@@ -100,6 +100,12 @@ type TargetCounts struct {
 	// disagreement cells (eval.SelectedOnReading), kept out of the fit: they
 	// were chosen because of a model's reading.
 	Selected int
+	// Engineering counts yes, maybe and no judgments drawn by the audit's
+	// engineering group (eval.EngineeringStratum), kept out of the fit: a
+	// random sample of the engineering postings, whose raw 1/p_select would
+	// count them twice beside the deciles (until the fit's weights are
+	// post-stratified; second Fable review, third pass).
+	Engineering int
 }
 
 // Judged is the usable judgment count the weight fit's threshold is on.
@@ -175,11 +181,14 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 		if err := checkInclusion(string(k), e.Source, e.PSelect); err != nil {
 			return nil, TargetCounts{}, err
 		}
-		if strings.HasPrefix(e.Source, eval.ClosedPrefix) {
+		if strings.HasPrefix(e.Source, eval.ClosedPrefix) || eval.EngineeringStratum(e.Source) {
 			excluded[k] = true
-			if v == eval.Skip {
+			switch {
+			case v == eval.Skip:
 				c.Skipped++ // a skip labels nothing, whatever stratum drew it
-			} else {
+			case eval.EngineeringStratum(e.Source):
+				c.Engineering++
+			default:
 				c.Closed++
 			}
 			continue

@@ -127,6 +127,9 @@ type Relevance struct {
 	// postings the engine took out of every view without a drop rule.
 	Closed   []StratumRow `json:"closed"`
 	Backends []BackendRow `json:"backends"`
+	// Engineering counts judged labels drawn by the engineering group: in
+	// Judged, precision@k and the backends, but in no stratum row.
+	Engineering int `json:"engineering"`
 }
 
 func wanted(v string) (hit, judged bool) {
@@ -181,6 +184,8 @@ func BuildRelevance(labels map[posting.Key]Entry, recs []ledger.Record, ordering
 		switch {
 		case e.Source == SourceManual:
 			out.Manual++
+		case EngineeringStratum(e.Source):
+			out.Engineering++ // a sample of the engineering postings, not of a stratum here
 		case strings.HasPrefix(e.Source, "decile:"):
 			add(dec, e.Source, h)
 		case strings.HasPrefix(e.Source, DroppedPrefix):
@@ -288,7 +293,10 @@ func (r Relevance) Markdown() string {
 	b.WriteString("# Vani relevance (owner would_apply labels)\n\n")
 	fmt.Fprintf(&b, "- would_apply labels: %d (judged yes/maybe/no: %d, skipped: %d, manual outside any sample: %d)\n", r.Labels, r.Judged, r.Skipped, r.Manual)
 	if r.Selected > 0 {
-		fmt.Fprintf(&b, "- judged from the disagreement cells and left out of everything below: %d (see the yes yield)\n", r.Selected)
+		fmt.Fprintf(&b, "- judged from the disagreement or yes-neighbour cells and left out of everything below: %d (see the yes yield)\n", r.Selected)
+	}
+	if r.Engineering > 0 {
+		fmt.Fprintf(&b, "- judged from the engineering group: %d (in precision@k and the backends, in no stratum row)\n", r.Engineering)
 	}
 	if r.Malformed > 0 {
 		fmt.Fprintf(&b, "- label lines skipped as unreadable: %d\n", r.Malformed)

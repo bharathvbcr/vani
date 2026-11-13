@@ -29,23 +29,31 @@ const (
 // unless asked for: a teacher that rejects most of what it reads makes it a
 // large slice of the top decile rather than a rare disagreement, and its
 // labels are kept out of every estimate (second Fable review, 2026-11-13).
+//
+// Neighbour is CellYesNeighbour's places. Engineering is the engineering
+// group's (EngineeringPrefix): a random draw from the engineering-titled
+// postings the other random groups did not take, laid over them like the
+// cells, to gather the engineering gold the auditor's go/no-go is judged on.
 type AuditQuotas struct {
-	Scored, Dropped, Closed, Disagree, DisagreeRejects int
+	Scored, Dropped, Closed, Disagree, DisagreeRejects, Neighbour, Engineering int
 }
 
 // DefaultAuditQuotas are the weekly draw's quotas. The disagreement cells are
 // off by default: their quota is the owner's call.
 var DefaultAuditQuotas = AuditQuotas{Scored: AuditScored, Dropped: AuditDropped, Closed: AuditClosed}
 
-// Cells is the disagreement cells' places in all.
-func (q AuditQuotas) Cells() int { return q.Disagree + q.DisagreeRejects }
+// Cells is the places drawn because of a model's reading or a posting's
+// nearness to the owner's yeses: the disagreement cells and the yes-neighbour
+// cell.
+func (q AuditQuotas) Cells() int { return q.Disagree + q.DisagreeRejects + q.Neighbour }
 
 // RandomShareOK reports whether at least a third of q's places are drawn from
 // the random strata the estimates use (scored and dropped) rather than the
-// disagreement cells, as the plan keeps them. Closed places do not count:
-// their labels are in no ranking or recall estimate. It checks quotas; a
-// random group drawn short can still leave the draw under a third
-// (AuditPlan.RandomShare says what was drawn).
+// cells (Cells), as the plan keeps them. Closed and engineering places count
+// on neither side: their labels are in no ranking or recall estimate, and
+// they are not chosen on a reading either. It checks quotas; a random group
+// drawn short can still leave the draw under a third (AuditPlan.RandomShare
+// says what was drawn).
 func (q AuditQuotas) RandomShareOK() bool {
 	return q.Cells() <= 2*(q.Scored+q.Dropped)
 }
@@ -94,7 +102,40 @@ type AuditCandidate struct {
 	Closed  bool
 	Class   string
 	Teacher TeacherView
+	// NearYes marks a member of the yes-neighbour pool (CellYesNeighbour): the
+	// caller's choice of the unlabelled postings nearest the owner's yes
+	// postings. Never set on a closed posting.
+	NearYes bool
+	// Engineering marks a posting the engineering group may draw: an
+	// engineering title, not closed, in no stratum the auditor leaves out
+	// (the caller's test).
+	Engineering bool
 }
+
+// The engineering group's strata: engineering-titled kept and dropped
+// postings. A label drawn there is a random sample of the engineering
+// postings, not of the pool, so it is kept out of the relevance strata, drop
+// recall, the reader table and the weight fit (EngineeringStratum), and it is
+// counted in the auditor's evaluation set, whose go/no-go is on engineering
+// gold (second Fable review, third pass).
+const (
+	EngineeringPrefix  = "engineering:"
+	EngineeringKept    = EngineeringPrefix + "kept"
+	EngineeringDropped = EngineeringPrefix + "dropped"
+)
+
+// EngineeringStratum reports whether a label was drawn by the engineering group.
+func EngineeringStratum(source string) bool { return strings.HasPrefix(source, EngineeringPrefix) }
+
+// The yes-neighbour cell (second Fable plan, enhancement 6; built to its
+// second review's terms): unlabelled postings nearest the owner's yes
+// postings, an overlay like the disagreement cells. Its labels were drawn
+// for their nearness to yeses, so SelectedOnReading keeps them out of every
+// estimate as it does the cells'.
+const (
+	NeighbourPrefix  = "neighbour:"
+	CellYesNeighbour = NeighbourPrefix + "yes"
+)
 
 // The disagreement cells (stage 5 of build/fable-plan-2026-11-12-ranking.md):
 // where the teacher's reading and the engine disagree, which is where a yes the
@@ -120,7 +161,9 @@ const (
 // drawn because of a model's reading, so it says nothing unbiased about that
 // model or the score. The relevance report, drop recall, the reader table, the
 // auditor gates and the weight fit leave such labels out and count them apart.
-func SelectedOnReading(source string) bool { return strings.HasPrefix(source, DisagreePrefix) }
+func SelectedOnReading(source string) bool {
+	return strings.HasPrefix(source, DisagreePrefix) || strings.HasPrefix(source, NeighbourPrefix)
+}
 
 // Audit cell and stratum prefixes. A kept posting's stratum is its score
 // decile ("decile:N"); for the recall estimate all kept postings are one cell.
@@ -250,22 +293,78 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 	if q.Closed > 0 {
 		drawGroup(&plan, shut, q.Closed, seed, true)
 	}
-	if q.Cells() > 0 {
-		picked := make(map[posting.Key]bool, len(plan.Picks))
+	if q.Engineering+q.Cells() == 0 {
+		return plan
+	}
+	// The overlays draw in a fixed order, each from what no earlier group
+	// took: engineering (random, so its pool stays uniform), then the
+	// disagreement cells, then the yes neighbours.
+	picked := map[posting.Key]bool{}
+	notPicked := func(ks []posting.Key) []posting.Key {
 		for _, p := range plan.Picks {
 			picked[p.Key] = true
 		}
-		for _, cell := range []struct {
-			name   string
-			places int
-		}{{CellTeacherWants, q.Disagree}, {CellTeacherRejects, q.DisagreeRejects}} {
-			left := slices.DeleteFunc(disagree[cell.name], func(k posting.Key) bool { return picked[k] })
-			if cell.places > 0 && len(left) > 0 {
-				drawGroup(&plan, map[string][]posting.Key{cell.name: left}, cell.places, seed, false)
+		return slices.DeleteFunc(slices.Clone(ks), func(k posting.Key) bool { return picked[k] })
+	}
+	if q.Engineering > 0 {
+		eng := map[string][]posting.Key{}
+		for _, c := range overlayMembers(cands, labeled, func(c AuditCandidate) bool { return c.Engineering }) {
+			src := EngineeringKept
+			if c.Dropped {
+				src = EngineeringDropped
 			}
+			eng[src] = append(eng[src], c.Key)
+		}
+		for name, ks := range eng {
+			if eng[name] = notPicked(ks); len(eng[name]) == 0 {
+				delete(eng, name)
+			}
+		}
+		drawGroup(&plan, eng, q.Engineering, seed, false)
+	}
+	near := overlayMembers(cands, labeled, func(c AuditCandidate) bool { return c.NearYes })
+	for _, cell := range []struct {
+		name    string
+		places  int
+		members []posting.Key
+	}{
+		{CellTeacherWants, q.Disagree, disagree[CellTeacherWants]},
+		{CellTeacherRejects, q.DisagreeRejects, disagree[CellTeacherRejects]},
+		{CellYesNeighbour, q.Neighbour, candidateKeys(near)},
+	} {
+		if cell.places == 0 {
+			continue
+		}
+		if left := notPicked(cell.members); len(left) > 0 {
+			drawGroup(&plan, map[string][]posting.Key{cell.name: left}, cell.places, seed, false)
 		}
 	}
 	return plan
+}
+
+// overlayMembers is the unlabelled, open (not closed) candidates in, each key
+// once.
+func overlayMembers(cands []AuditCandidate, labeled map[posting.Key]Entry, in func(AuditCandidate) bool) []AuditCandidate {
+	var out []AuditCandidate
+	seen := map[posting.Key]bool{}
+	for _, c := range cands {
+		if c.Key == "" || seen[c.Key] || c.Closed || !in(c) {
+			continue
+		}
+		seen[c.Key] = true
+		if _, done := labeled[c.Key]; !done {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func candidateKeys(cs []AuditCandidate) []posting.Key {
+	out := make([]posting.Key, len(cs))
+	for i, c := range cs {
+		out[i] = c.Key
+	}
+	return out
 }
 
 // RandomShare is the drawn picks from the random strata the estimates use
@@ -391,19 +490,30 @@ func WeekSeed(t time.Time) string {
 // weeks (consecutive weeks differ by one, across year ends, 52- and 53-week
 // years alike); ok is false for any other seed.
 func weekIndex(seed string) (n int64, ok bool) {
-	var y, w int
-	if c, err := fmt.Sscanf(seed, "%d-W%d", &y, &w); err != nil || c != 2 || w < 1 || w > 53 || y < 1970 || y > 9999 {
+	monday, ok := WeekStart(seed)
+	if !ok {
 		return 0, false
-	}
-	if seed != fmt.Sprintf("%d-W%02d", y, w) {
-		return 0, false
-	}
-	jan4 := time.Date(y, 1, 4, 0, 0, 0, 0, time.UTC)
-	monday := jan4.AddDate(0, 0, -int((jan4.Weekday()+6)%7)+7*(w-1))
-	if gy, gw := monday.ISOWeek(); gy != y || gw != w {
-		return 0, false // a week 53 the year does not have
 	}
 	return monday.Unix() / (7 * 24 * 3600), true
+}
+
+// WeekStart is the Monday 00:00 UTC that opens the ISO week a WeekSeed names;
+// ok is false for any other seed (a free-form --seed, a week 53 the year does
+// not have).
+func WeekStart(seed string) (monday time.Time, ok bool) {
+	var y, w int
+	if c, err := fmt.Sscanf(seed, "%d-W%d", &y, &w); err != nil || c != 2 || w < 1 || w > 53 || y < 1970 || y > 9999 {
+		return time.Time{}, false
+	}
+	if seed != fmt.Sprintf("%d-W%02d", y, w) {
+		return time.Time{}, false
+	}
+	jan4 := time.Date(y, 1, 4, 0, 0, 0, 0, time.UTC)
+	monday = jan4.AddDate(0, 0, -int((jan4.Weekday()+6)%7)+7*(w-1))
+	if gy, gw := monday.ISOWeek(); gy != y || gw != w {
+		return time.Time{}, false
+	}
+	return monday, true
 }
 
 // Interleaved is the picks in a hash order of seed and key, so the owner does

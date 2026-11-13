@@ -88,26 +88,45 @@ func (b *browsing) view(view, sortBy string, openOnly bool) ([]jobview.Selected,
 // maxAuditKeyBytes bounds --key of `audit answer`.
 const maxAuditKeyBytes = 512
 
-// disagreeFlags are the disagreement-cell flags `audit` and `audit answer`
-// share: each cell's quota (0, the default, draws none; with both at 0 the
-// teacher log is never opened) and whose readings define them.
+// disagreeFlags are the overlay flags `audit` and `audit answer` share: each
+// disagreement cell's quota and whose readings define them, the yes-neighbour
+// cell's quota and the engineering group's. 0, the default, draws none; with
+// both disagreement quotas at 0 the teacher log is never opened, and with the
+// neighbour quota at 0 the vector store is never opened.
 type disagreeOpts struct {
-	wants, rejects *int
-	teacher        *string
+	wants, rejects        *int
+	neighbours, engineers *int
+	teacher               *string
 }
 
 func disagreeFlags(fs *flag.FlagSet) disagreeOpts {
 	return disagreeOpts{
-		wants:   fs.Int("disagree", 0, "postings drawn from the cell where the teacher wants a posting the engine dropped or ranked in the lowest three deciles (kept out of every estimate)"),
-		rejects: fs.Int("disagree-rejects", 0, "postings drawn from the cell where the teacher rejects a top-decile posting (kept out of every estimate; off by default)"),
-		teacher: fs.String("teacher", sonnetReader, "the teacher model whose stored role_fit readings define the disagreement cells"),
+		wants:      fs.Int("disagree", 0, "postings drawn from the cell where the teacher wants a posting the engine dropped or ranked in the lowest three deciles (kept out of every estimate)"),
+		rejects:    fs.Int("disagree-rejects", 0, "postings drawn from the cell where the teacher rejects a top-decile posting (kept out of every estimate; off by default)"),
+		neighbours: fs.Int("yes-neighbours", 0, "postings drawn from the 50 unlabelled postings nearest the owner's yes answers (kept out of every estimate; refused unless the taste column beats the title part)"),
+		engineers:  fs.Int("engineering", 0, "postings drawn at random from the engineering-titled postings, kept and dropped (kept out of the deciles, drop recall and the weight fit)"),
+		teacher:    fs.String("teacher", sonnetReader, "the teacher model whose stored role_fit readings define the disagreement cells"),
 	}
 }
 
-// quotas is q with the cells' places set.
+// quotas is q with the overlays' places set.
 func (d disagreeOpts) quotas(q eval.AuditQuotas) eval.AuditQuotas {
 	q.Disagree, q.DisagreeRejects = *d.wants, *d.rejects
+	q.Neighbour, q.Engineering = *d.neighbours, *d.engineers
 	return q
+}
+
+// overlayEligible reports whether an overlay (a disagreement cell, the
+// yes-neighbour cell, the engineering group) may draw c: never a closed
+// posting, nor a dropped one in a stratum the auditor leaves out
+// (stratumLeftOut: work authorization, work mode, owner exclusions), so no
+// such posting is drawn because of a reading, a nearness or a title.
+func overlayEligible(c eval.AuditCandidate) bool {
+	if c.Closed {
+		return false
+	}
+	_, left := stratumLeftOut(eval.AuditCell(c))
+	return !left
 }
 
 // auditDraw is one week's draw with the state it was made from.
@@ -130,13 +149,13 @@ func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 	if q.Scored+q.Dropped+q.Closed < 1 {
 		return usagef("audit: --scored, --dropped and --closed must be within 0..%d and not all 0", maxAuditQuota)
 	}
-	for _, n := range []int{q.Disagree, q.DisagreeRejects} {
+	for _, n := range []int{q.Disagree, q.DisagreeRejects, q.Neighbour, q.Engineering} {
 		if n < 0 || n > maxAuditQuota {
-			return usagef("audit: --disagree and --disagree-rejects must be within 0..%d", maxAuditQuota)
+			return usagef("audit: --disagree, --disagree-rejects, --yes-neighbours and --engineering must be within 0..%d", maxAuditQuota)
 		}
 	}
 	if !q.RandomShareOK() {
-		return usagef("audit: --disagree + --disagree-rejects (%d) is more than twice --scored + --dropped (%d): at least a third of the draw stays random (closed places do not count)", q.Cells(), q.Scored+q.Dropped)
+		return usagef("audit: --disagree + --disagree-rejects + --yes-neighbours (%d) is more than twice --scored + --dropped (%d): at least a third of the draw stays random (closed and engineering places count on neither side)", q.Cells(), q.Scored+q.Dropped)
 	}
 	if len(seed) > maxSeedBytes {
 		return usagef("audit: --seed is longer than %d bytes", maxSeedBytes)
@@ -170,13 +189,24 @@ func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*audi
 		return nil, err
 	}
 	cands = b.withoutInherited(cands)
-	if q.Cells() > 0 {
+	if seed == "" {
+		seed = eval.WeekSeed(now())
+	}
+	if q.Disagree+q.DisagreeRejects > 0 {
 		if err := e.teacherViews(cands, teacher); err != nil {
 			return nil, err
 		}
 	}
-	if seed == "" {
-		seed = eval.WeekSeed(now())
+	if q.Engineering > 0 {
+		isEng := engineeringOf(b.snap)
+		for i := range cands {
+			cands[i].Engineering = overlayEligible(cands[i]) && isEng(cands[i].Key)
+		}
+	}
+	if q.Neighbour > 0 {
+		if err := e.markYesNeighbours(cands, done, b.snap, seed); err != nil {
+			return nil, err
+		}
 	}
 	plan := eval.AuditDraw(cands, done, seed, q)
 	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
@@ -201,10 +231,7 @@ func (e *env) teacherViews(cands []eval.AuditCandidate, model string) error {
 	for i := range cands {
 		c := &cands[i]
 		c.Teacher = eval.TeacherUnread
-		if c.Closed {
-			continue
-		}
-		if _, left := stratumLeftOut(eval.AuditCell(*c)); left {
+		if !overlayEligible(*c) {
 			continue
 		}
 		if row, ok := store.LatestByModel("", c.Key)[model]; ok {
@@ -384,10 +411,11 @@ func (e *env) cmdAudit(args []string) error {
 		return err
 	}
 	if len(d.picks) == 0 {
-		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored, dropped, closed or disagreement pools")
+		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored, dropped, closed, engineering, disagreement or yes-neighbour pools")
 		return nil
 	}
-	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d scored + %d dropped + %d closed + %d teacher-wants + %d teacher-rejects)\n", d.seed, len(d.picks), *scored, *dropped, *closed, q.Disagree, q.DisagreeRejects)
+	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d: %d scored + %d dropped + %d closed + %d engineering + %d teacher-wants + %d teacher-rejects + %d yes-neighbours)\n",
+		d.seed, len(d.picks), q.Scored+q.Dropped+q.Closed+q.Engineering+q.Cells(), *scored, *dropped, *closed, q.Engineering, q.Disagree, q.DisagreeRejects, q.Neighbour)
 	if random, all := d.plan.RandomShare(); q.Cells() > 0 && 3*random < all {
 		fmt.Fprintf(e.stdout, "note: %d of %d picks come from the random scored and dropped strata, under a third (closed picks do not count, and a random stratum may have been drawn short)\n", random, all)
 	}

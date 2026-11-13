@@ -132,7 +132,7 @@ func BuildYesYield(labels map[posting.Key]Entry) YesYield {
 			continue
 		}
 		random := auditStratum(e.Source)
-		if !random && !SelectedOnReading(e.Source) {
+		if !random && !SelectedOnReading(e.Source) && !EngineeringStratum(e.Source) {
 			continue
 		}
 		r := rows[e.Source]
@@ -163,7 +163,7 @@ func BuildYesYield(labels map[posting.Key]Entry) YesYield {
 		}
 	}
 	out.Random.Lo, out.Random.Hi, _ = Wilson(out.Random.Yes, out.Random.N)
-	for _, cell := range []string{CellTeacherWants, CellTeacherRejects} {
+	for _, cell := range []string{CellTeacherWants, CellTeacherRejects, CellYesNeighbour} {
 		if r := rows[cell]; r != nil {
 			out.Cells = append(out.Cells, CellVerdict{Cell: cell, N: r.N, Yes: r.Yes, Verdict: killVerdict(r.N, r.Yes)})
 		}
@@ -190,6 +190,10 @@ func BuildYesYield(labels map[posting.Key]Entry) YesYield {
 			how = "raise --disagree (at most twice --scored + --dropped)"
 		case best == CellTeacherRejects:
 			how = "raise --disagree-rejects (at most twice --scored + --dropped)"
+		case best == CellYesNeighbour:
+			how = "raise --yes-neighbours (at most twice --scored + --dropped, with the cells)"
+		case EngineeringStratum(best):
+			how = "raise --engineering"
 		case best == GroupDeciles || best == GroupTopDeciles:
 			how = "move places from --dropped to --scored"
 		case best == GroupDrops:

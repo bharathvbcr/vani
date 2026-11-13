@@ -125,6 +125,12 @@ func (e *env) cmdRankfit(args []string) error {
 	if tc.Closed > 0 {
 		fmt.Fprintf(w, "audit judgments of closed postings (dead or duplicate) left out of the fit: %d\n", tc.Closed)
 	}
+	if tc.Selected > 0 {
+		fmt.Fprintf(w, "audit judgments from the disagreement or yes-neighbour cells left out of the fit: %d\n", tc.Selected)
+	}
+	if tc.Engineering > 0 {
+		fmt.Fprintf(w, "audit judgments from the engineering group left out of the fit (until its weights are post-stratified): %d\n", tc.Engineering)
+	}
 
 	doPlatt, doWeights := *part != "weights", *part != "platt"
 	var notRun []string

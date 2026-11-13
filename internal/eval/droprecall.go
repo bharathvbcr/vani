@@ -154,6 +154,7 @@ type DropRecall struct {
 	Manual      int           `json:"manual"`      // no sampling stratum
 	MarkedOut   int           `json:"marked"`      // counted by the mark instead
 	Selected    int           `json:"selected_on_reading"`
+	Engineering int           `json:"engineering"`
 	Draws       int           `json:"draws"`
 	MinJudged   int           `json:"min_judged_per_cell"`
 	BoundTarget float64       `json:"bound_target"`
@@ -264,6 +265,9 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 			continue
 		case SelectedOnReading(e.Source):
 			out.Selected++ // counted with the marks above, when still in the pool
+			continue
+		case EngineeringStratum(e.Source):
+			out.Engineering++ // a sample of the engineering postings, no cell's
 			continue
 		case !auditStratum(e.Source):
 			out.NotAudit++ // Explore or another surface: not a uniform draw of any cell
@@ -613,7 +617,10 @@ func (d DropRecall) Markdown() string {
 		fmt.Fprintf(&b, "\n%d label(s) were drawn from their cell under an older drop-class name and are counted in it.\n", d.Renamed)
 	}
 	if d.Selected > 0 {
-		fmt.Fprintf(&b, "\n%d label(s) were drawn from the disagreement cells (chosen on a model's reading): each counts as a mark does, a known outcome out of the pool, not as a sample.\n", d.Selected)
+		fmt.Fprintf(&b, "\n%d label(s) were drawn from the disagreement or yes-neighbour cells (chosen on a model's reading or for nearness to a yes): each counts as a mark does, a known outcome out of the pool, not as a sample.\n", d.Selected)
+	}
+	if d.Engineering > 0 {
+		fmt.Fprintf(&b, "\n%d label(s) were drawn by the engineering group, a sample of the engineering postings rather than of any cell, and are left out.\n", d.Engineering)
 	}
 	return b.String()
 }

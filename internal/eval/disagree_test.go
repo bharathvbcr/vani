@@ -307,7 +307,7 @@ func TestDropRecallCountsCellLabelsAsKnownOutcomes(t *testing.T) {
 	if dm.Missed.Observed <= dp.Missed.Observed {
 		t.Errorf("a cell maybe did not raise the wanted share: %v vs %v", dm.Missed.Observed, dp.Missed.Observed)
 	}
-	if md := d.Markdown(); !strings.Contains(md, "disagreement cells") {
+	if md := d.Markdown(); !strings.Contains(md, "yes-neighbour cells") {
 		t.Errorf("the report does not say the cell labels were counted apart:\n%s", md)
 	}
 	mustJSON(t, d)
@@ -438,7 +438,7 @@ func TestSelectedCountsJudgedCellLabelsOnly(t *testing.T) {
 	if r := BuildRelevance(labels, nil, nil, nil, Names{}); r.Selected != 1 || r.Skipped != 1 {
 		t.Errorf("relevance selected %d skipped %d, want 1 and 1", r.Selected, r.Skipped)
 	}
-	if md := BuildRelevance(labels, nil, nil, nil, Names{}).Markdown(); !strings.Contains(md, "disagreement cells and left out of everything below: 1") {
+	if md := BuildRelevance(labels, nil, nil, nil, Names{}).Markdown(); !strings.Contains(md, "yes-neighbour cells and left out of everything below: 1") {
 		t.Errorf("relevance text hides the selected count:\n%s", md)
 	}
 }
