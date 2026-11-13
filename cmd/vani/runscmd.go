@@ -184,8 +184,8 @@ func rowOf(id, source string, r runRecord, at time.Time) runRow {
 
 // runHasFailures says whether a run has anything to report: a failed or
 // interrupted run, a run error, a board that failed to list, a listing that
-// newly mass-marked postings, one that aged nothing on events stamped ahead of
-// the clock, postings that died at the end of a mass hold, a pay fetch that
+// aged nothing on events stamped ahead of the clock, postings that died at the
+// end of a true mass hold (not one only a short listing held), a pay fetch that
 // failed, a backend error, or a stage that could not finish its check
 // (impressions, the per-run log, the shadow, exclusions that could not read a
 // posting, logos, a partial near-duplicate pass, a cosine that did not load,
@@ -193,8 +193,9 @@ func rowOf(id, source string, r runRecord, at time.Time) runRow {
 // off or paused, a fail-open keep other than coverage unknown, a note whose
 // relevance could not be computed). A skipped slot is not a failure. Coverage
 // unknown, a notes floor or budget, deferred or gone details, a pay fetch
-// that was skipped, postings carried through a mass hold and deaths that wait a
-// read are shown and are not failures. The Mac app's button
+// that was skipped, a listing that newly mass-marked postings (attention),
+// postings carried through a mass hold, deaths after a short listing's hold
+// and deaths that wait a read are shown and are not failures. The Mac app's button
 // follows the same rule (LastRun.hasFailures); a contract test holds the two
 // together.
 func runHasFailures(r runRecord, at time.Time) bool {
@@ -205,7 +206,7 @@ func runHasFailures(r runRecord, at time.Time) bool {
 	if st == outcomeFailed || st == outcomeInterrupted || r.Error != "" {
 		return true
 	}
-	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0 || r.Boards.Mass > 0 || r.Boards.ClockBehind > 0 || r.Boards.MassDead > 0) {
+	if r.Boards != nil && (r.Boards.Failed > 0 || failedBoardItems(r.Boards) > 0 || r.Boards.ClockBehind > 0 || r.Boards.MassDead > 0) {
 		return true
 	}
 	if r.ImpressionsError != "" || r.LogDropped > 0 {
@@ -886,6 +887,9 @@ func boardFetchSummary(b *boardsReport) string {
 	}
 	if b.MassDead > 0 {
 		parts = append(parts, fmt.Sprintf("%d posting(s) died after a mass hold", b.MassDead))
+	}
+	if b.ShortDead > 0 {
+		parts = append(parts, fmt.Sprintf("%d posting(s) died after a short listing held them (expected: their boards list short)", b.ShortDead))
 	}
 	if b.DeathsDeferred > 0 {
 		parts = append(parts, fmt.Sprintf("%d death(s) wait one more read (over %s since their last event)", b.DeathsDeferred, pipeline.ClockWindow))

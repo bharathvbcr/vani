@@ -16,8 +16,9 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
-// oracleReconcile folds one board's full listing into the ledger.
-func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
+// oracleReconcile folds one board's full listing (short: a listing that counted
+// more rows than it listed) into the ledger.
+func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []posting.Posting, now time.Time, short bool) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
 	existing := l.All()
@@ -225,7 +226,7 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 		}
 	}
 
-	return oracleAbsence(ctx, l, existing, prefix, seen, now, s)
+	return oracleAbsence(ctx, l, existing, prefix, seen, now, s, short)
 }
 
 // oracleForgetMisses adds the forgetting of every miss mark to ann (a listing
@@ -234,7 +235,7 @@ func oracleForgetMisses(ann map[string]string) map[string]string {
 	if ann == nil {
 		ann = map[string]string{}
 	}
-	ann["missed_since"], ann["mass_missed_since"] = "", ""
+	ann["missed_since"], ann["mass_missed_since"], ann["mass_short"] = "", "", ""
 	return ann
 }
 
@@ -253,11 +254,19 @@ func oracleForgetMisses(ann map[string]string) map[string]string {
 //	reappears; on a board with fewer than 10 open, a listing that leaves more
 //	than half of them absent, and at least 2, does the same; a mass-marked posting dies after at least 2 misses and 14 days
 //	since its own first miss.
+//	A short listing (the board counted more rows than it listed) marks every
+//	absent posting mass, whatever the share. The mark carries a cause: "short"
+//	when only short listings marked the posting in its episode, none of them a
+//	mass absence by the rules above; a listing that is a mass absence by those
+//	rules clears it. A mass-marked posting's death counts as ShortDead when
+//	its cause is "short" and as MassDead otherwise (a mark with no cause is
+//	not short).
 //	The clock: a listing ages nothing when the ledger holds events between 1
 //	hour and 3 days ahead of now on one of the board's own records, or on at
-//	least 3 records anywhere. A death due more than 3 days after the posting's
+//	least 3 records anywhere, or between 3 and 30 days ahead on at least 3 of
+//	the board's own records. A death due more than 3 days after the posting's
 //	last event waits one more read.
-func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Record, prefix string, seen map[posting.Key]bool, now time.Time, s Summary) (Summary, error) {
+func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Record, prefix string, seen map[posting.Key]bool, now time.Time, s Summary, short bool) (Summary, error) {
 	isClosed := func(st posting.Status) bool { return st == "dead" || st == "duplicate" || st == "dropped" }
 	var open, absent []posting.Key
 	for _, r := range existing {
@@ -296,11 +305,27 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 	case !ownNewest.IsZero():
 		s.ClockBehind, s.ClockAhead = true, ownNewest
 	}
+	// Between 3 and 30 days ahead, on at least 3 of the board's own records.
+	far, farNewest := 0, time.Time{}
+	for _, r := range existing {
+		if t := r.LastEvent; strings.HasPrefix(string(r.Key), prefix) && t.After(hi) && !t.After(now.Add(30*24*time.Hour)) {
+			far++
+			if t.After(farNewest) {
+				farNewest = t
+			}
+		}
+	}
+	if far >= 3 {
+		if !s.ClockBehind || farNewest.After(s.ClockAhead) {
+			s.ClockBehind, s.ClockAhead = true, farNewest
+		}
+	}
 	if s.ClockBehind {
 		return s, nil
 	}
 	n, a := len(open), len(absent)
-	mass := (n >= 2 && a == n) || (n >= 10 && 4*a >= n) || (n < 10 && a >= 2 && 2*a > n)
+	trueMass := (n >= 2 && a == n) || (n >= 10 && 4*a >= n) || (n < 10 && a >= 2 && 2*a > n)
+	mass := short || trueMass
 	for _, k := range absent {
 		if err := ctx.Err(); err != nil {
 			return s, err
@@ -316,16 +341,24 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 				first = t
 			}
 		}
-		massed := ""
+		massed, shortOnly := "", false
 		if cur.MissedRuns > 0 && cur.Annotations["mass_missed_since"] != "" {
 			massed = cur.Annotations["mass_missed_since"]
+			shortOnly = cur.Annotations["mass_short"] == "short"
 			if t, err := time.Parse(time.RFC3339Nano, massed); err != nil || t.After(now.Add(time.Hour)) || (!cur.FirstSeen.After(now.Add(time.Hour)) && t.Before(cur.FirstSeen.Add(-time.Hour))) {
 				massed = now.UTC().Format(time.RFC3339Nano)
 			}
 		}
 		if mass && massed == "" {
 			massed = now.UTC().Format(time.RFC3339Nano)
+			shortOnly = !trueMass
 			s.MassMarked++
+		} else if trueMass {
+			shortOnly = false
+		}
+		cause := ""
+		if massed != "" && shortOnly {
+			cause = "short"
 		}
 		hold := 20 * time.Hour
 		if massed != "" {
@@ -333,7 +366,7 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 		}
 		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: k, Status: cur.Status, Reason: "absent from board",
 			Annotations: map[string]string{ledger.MissedRunsKey: strconv.Itoa(misses),
-				"missed_since": first.UTC().Format(time.RFC3339Nano), "mass_missed_since": massed}}
+				"missed_since": first.UTC().Format(time.RFC3339Nano), "mass_missed_since": massed, "mass_short": cause}}
 		due := misses >= 2 && !now.Before(first.Add(hold))
 		waits := false
 		if due && !cur.LastEvent.IsZero() && now.Sub(cur.LastEvent) > window {
@@ -344,7 +377,9 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 			e.Status = posting.Dead
 			e.Annotations["died_from"] = string(cur.Status)
 			s.Dead++
-			if massed != "" {
+			if massed != "" && cause == "short" {
+				s.ShortDead++
+			} else if massed != "" {
 				s.MassDead++
 			}
 		case misses >= 2:

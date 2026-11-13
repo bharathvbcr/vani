@@ -564,7 +564,8 @@ func TestRunHasFailuresRule(t *testing.T) {
 		"deferred details are not a failure": {mk(func(r *runRecord) { r.Boards = &boardsReport{Deferred: 9} }), false},
 		"pay skipped is not a failure":       {mk(func(r *runRecord) { r.Boards = &boardsReport{PaySkipped: 4} }), false},
 		"gone details are not a failure":     {mk(func(r *runRecord) { r.Boards = &boardsReport{Gone: 1} }), false},
-		"a new mass absence":                 {mk(func(r *runRecord) { r.Boards = &boardsReport{Mass: 1, MassMarked: 9} }), true},
+		"a new mass absence is attention":    {mk(func(r *runRecord) { r.Boards = &boardsReport{Mass: 1, MassMarked: 9} }), false},
+		"deaths after a short listing":       {mk(func(r *runRecord) { r.Boards = &boardsReport{ShortDead: 3} }), false},
 		"events ahead of the clock":          {mk(func(r *runRecord) { r.Boards = &boardsReport{ClockBehind: 1} }), true},
 		"postings died after a mass hold":    {mk(func(r *runRecord) { r.Boards = &boardsReport{MassDead: 3} }), true},
 		"a carried mass hold is not a failure": {mk(func(r *runRecord) {

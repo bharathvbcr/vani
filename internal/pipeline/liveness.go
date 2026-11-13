@@ -103,6 +103,14 @@ const (
 	// current episode, with when it was first so marked. Read only while
 	// missed_runs > 0.
 	MassMissedSinceKey = "mass_missed_since"
+	// MassShortKey is "short" on a mass-marked posting whose every mass
+	// listing in the current episode was a short listing (a board that counted
+	// more rows than it listed), never a true mass absence. Its death is an
+	// expected closure, reported (Summary.ShortDead) but not a failure; a
+	// posting with no value (the ledger before this key, or one a true mass
+	// absence ever marked) counts as a mass death. Read only while
+	// mass_missed_since is set; forgotten with it.
+	MassShortKey = "mass_short"
 	// OrdinaryHold is how long an ordinary absence lasts, from its first miss,
 	// before it can kill: a daily run kills on its second miss, two runs an hour
 	// apart cannot.
@@ -252,6 +260,7 @@ func clearMissMarks(ann map[string]string) map[string]string {
 	}
 	ann[MissedSinceKey] = ""
 	ann[MassMissedSinceKey] = ""
+	ann[MassShortKey] = ""
 	return ann
 }
 
@@ -338,7 +347,8 @@ type absence struct {
 	missed, held, dead int
 	massMarked         int // postings this listing newly marked
 	deferred           int // deaths that waited a read for an unwitnessed gap (in held)
-	massDead           int // deaths of mass-marked postings (in dead)
+	massDead           int // deaths of mass-marked postings a true mass absence marked (in dead)
+	shortDead          int // deaths of postings only short listings marked (in dead, not in massDead)
 	mass, clockBehind  bool
 	clockAhead         time.Time
 }
@@ -365,7 +375,8 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		a.clockBehind, a.clockAhead = true, clock.ahead
 		return a, nil
 	}
-	mass := short || massAbsence(lv, len(open), len(absent))
+	trueMass := massAbsence(lv, len(open), len(absent))
+	mass := short || trueMass
 
 	var w absence
 	evs := make([]ledger.Event, 0, len(absent))
@@ -377,11 +388,14 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		if !ok || closed(cur.Status) {
 			continue
 		}
-		e, o := absenceEvent(lv, cur, mass, now)
+		e, o := absenceEvent(lv, cur, mass, trueMass, now)
 		switch o.outcome {
 		case absentDead:
 			w.dead++
-			if o.massed {
+			switch {
+			case o.massed && o.shortOnly:
+				w.shortDead++
+			case o.massed:
 				w.massDead++
 			}
 		case absentHeld:
@@ -401,7 +415,7 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		return a, err
 	}
 	a.missed, a.held, a.dead, a.massMarked, a.mass = w.missed, w.held, w.dead, w.massMarked, mass
-	a.deferred, a.massDead = w.deferred, w.massDead
+	a.deferred, a.massDead, a.shortDead = w.deferred, w.massDead, w.shortDead
 	return a, nil
 }
 
@@ -415,14 +429,17 @@ const (
 
 // absenceResult is what one absence did to a posting.
 type absenceResult struct {
-	outcome  absentOutcome
-	newMark  bool // this listing mass-marked it
-	massed   bool // it is mass marked (after this listing)
-	deferred bool // its death was due only by an unwitnessed gap, and waits a read
+	outcome   absentOutcome
+	newMark   bool // this listing mass-marked it
+	massed    bool // it is mass marked (after this listing)
+	shortOnly bool // ... and only short listings ever marked it in this episode
+	deferred  bool // its death was due only by an unwitnessed gap, and waits a read
 }
 
 // absenceEvent is the event one more full-listing absence writes for cur.
-func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Time) (ledger.Event, absenceResult) {
+// massListing says the listing marks its absent postings mass; trueMass that it
+// does so by the mass rule itself, not only because it was a short listing.
+func absenceEvent(lv Liveness, cur ledger.Record, massListing, trueMass bool, now time.Time) (ledger.Event, absenceResult) {
 	misses := cur.MissedRuns + 1
 	ongoing := cur.MissedRuns > 0
 	first, ok := readStamp(cur, MissedSinceKey, now)
@@ -432,14 +449,23 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Tim
 	// The mass mark persists through the episode; any value counts, so a
 	// mangled mark still holds. A new episode starts unmarked.
 	massSince, newMark := "", false
+	shortOnly := false
 	if ongoing && cur.Annotations[MassMissedSinceKey] != "" {
 		massSince = cur.Annotations[MassMissedSinceKey]
+		shortOnly = cur.Annotations[MassShortKey] == "short"
 		if _, ok := readStamp(cur, MassMissedSinceKey, now); !ok {
 			massSince = stampOf(now)
 		}
 	}
 	if massListing && massSince == "" {
 		massSince, newMark = stampOf(now), true
+		shortOnly = !trueMass // marked by a short listing alone
+	} else if trueMass {
+		shortOnly = false // a true mass absence upgrades the cause: it fails the run if they die
+	}
+	short := ""
+	if massSince != "" && shortOnly {
+		short = "short"
 	}
 	hold := OrdinaryHold
 	if massSince != "" {
@@ -449,13 +475,14 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Tim
 		ledger.MissedRunsKey: strconv.Itoa(misses),
 		MissedSinceKey:       stampOf(first),
 		MassMissedSinceKey:   massSince, // "" forgets a stale mark of an earlier episode
+		MassShortKey:         short,
 	}
 	e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: cur.Key, Status: cur.Status, Annotations: ann,
 		Reason: fmt.Sprintf("absent from board (%d)", misses)}
 	if massSince != "" {
 		e.Reason = fmt.Sprintf("absent from board (%d), mass absence", misses)
 	}
-	res := absenceResult{newMark: newMark, massed: massSince != ""}
+	res := absenceResult{newMark: newMark, massed: massSince != "", shortOnly: short != ""}
 	due := misses >= MissesToDead && !now.Before(first.Add(hold))
 	// An unwitnessed gap: more than ClockWindow since the posting's last event
 	// (its previous miss). A clock that jumped ahead, or came back from being set

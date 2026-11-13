@@ -162,7 +162,7 @@ func TestBoardAttentionLineNamesOngoingProblems(t *testing.T) {
 			"Boards not being read (attention, not a failure): ",
 			"1 stale (no good read for over 36h0m0s): gh:gone 3d",
 			"1 skipped this run: page:careers.example.com",
-			"1 listing short for over 36h0m0s, so nothing on them ages: wd:slow/Site (slow/Site) 4d",
+			"1 listing short for over 36h0m0s, so the postings they leave out are held 14d from their first miss and then die: wd:slow/Site (slow/Site) 4d",
 		} {
 			if !strings.Contains(text.Text, want) {
 				t.Errorf("detail=%v: report missing %q\n%s", detail, want, text.Text)

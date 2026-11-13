@@ -369,11 +369,17 @@ type boardsReport struct {
 	// clock that ran ahead. A failure: those boards age nothing until the clock
 	// passes the events. Additive.
 	ClockBehind int `json:"clock_behind,omitempty"`
-	// MassDead is postings a mass absence had marked that died this run, their
-	// mass hold over and their board still not listing them. A failure, so the
-	// owner sees them: a mass hold usually ends in its postings coming back.
-	// Counted in the items' dead too. Additive.
+	// MassDead is postings a true mass absence (the share rule or an empty
+	// listing) had marked that died this run, their mass hold over and their
+	// board still not listing them. A failure, so the owner sees them: a mass
+	// hold usually ends in its postings coming back. Counted in the items' dead
+	// too. Additive. A new mass marking (Mass) is attention, not a failure.
 	MassDead int `json:"mass_dead,omitempty"`
+	// ShortDead is postings held only because a short listing left them out
+	// (pipeline.MassShortKey) that died this run after the mass hold: expected
+	// closures on a board that lists short, shown on the attention line, not a
+	// failure. Counted in the items' dead too. Additive.
+	ShortDead int `json:"short_dead,omitempty"`
 	// DeathsDeferred is deaths that waited one more read because more than
 	// pipeline.ClockWindow had passed since the posting's last event (a gap a
 	// jumped clock would also make). Shown, not a failure. Additive.
@@ -493,7 +499,8 @@ type reconcileCounts struct {
 	// ClockBehind that it aged nothing because the ledger holds events stamped
 	// ahead of the clock, ClockAhead the newest such event. Deferred is deaths
 	// that waited a read for a gap of more than pipeline.ClockWindow; MassDead
-	// is deaths of mass-marked postings.
+	// is deaths of postings a true mass absence marked, ShortDead of ones only a
+	// short listing held.
 	Open        int       `json:"open,omitempty"`
 	Absent      int       `json:"absent,omitempty"`
 	Held        int       `json:"held,omitempty"`
@@ -503,6 +510,7 @@ type reconcileCounts struct {
 	ClockAhead  time.Time `json:"clock_ahead,omitzero"`
 	Deferred    int       `json:"deaths_deferred,omitempty"`
 	MassDead    int       `json:"mass_dead,omitempty"`
+	ShortDead   int       `json:"short_dead,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {
