@@ -53,6 +53,16 @@ import (
 //     of the events until it passes them (ClockWindow plus the span of the runs
 //     that wrote them), and names the newest event it saw (Summary.ClockAhead).
 //     One or two stray records on another board do not freeze this one.
+//     A second, wider freeze covers a clock set back by days: at least
+//     ClockQuorum of the board's OWN records with events more than ClockWindow
+//     and at most SetBackCap ahead freeze it the same way (a run's burst of
+//     misses is what a set-back leaves ahead). Without it aging goes on under
+//     the set-back clock, stamps first misses early, and ends a mass hold early
+//     by the set-back once the clock is right. One or two own records, records
+//     on other boards and events past SetBackCap freeze nothing, and the freeze
+//     ends when real time passes the newest event; the cost is that a run under
+//     a clock that ran ahead by up to SetBackCap, which touched that many of a
+//     board's postings, freezes the board until real time catches up.
 //   - Unreadable stamps. A stamp more than MaxStampAhead past now, or before
 //     more than MaxStampAhead before the posting was first seen (a clock set
 //     back past its history), is
@@ -116,6 +126,18 @@ const (
 	// Longer than a day's run plus a missed one, so daily runs are never
 	// deferred.
 	ClockWindow = 72 * time.Hour
+	// SetBackCap bounds the second clock guard: a quorum (ClockQuorum) of the
+	// board's own records with events more than ClockWindow and at most
+	// SetBackCap ahead of a read freezes the board's aging, as events within
+	// ClockWindow do. Such a quorum is what a clock set back by days leaves
+	// behind (the last run's burst of misses is that far ahead), and aging under
+	// it would stamp first misses early and end a mass hold early by the
+	// set-back once the clock is right. A month covers a mistyped date or day;
+	// further ahead is read as a clock that ran ahead, as before, because the
+	// ledger cannot tell the two apart and every day of the cap is a day a
+	// ran-ahead run's new postings can freeze their board: the freeze lasts from
+	// the read until real time passes the newest of them, never past the cap.
+	SetBackCap = 30 * 24 * time.Hour
 	// ClockQuorum is how many records anywhere in the ledger must carry events
 	// within ClockWindow ahead for a board none of whose own records do to be
 	// frozen: a clock set back puts the last run's whole burst ahead; one or two
@@ -283,10 +305,29 @@ func (x *ledgerIndex) clockEvidence(prefix string, now time.Time) clockEvidence 
 	if j := sort.Search(len(ev), func(j int) bool { return ev[j].After(hi) }); j-i >= ClockQuorum {
 		c = clockEvidence{behind: true, ahead: ev[j-1]}
 	}
+	capHi := now.Add(SetBackCap)
+	var far int
+	var farNewest time.Time
 	for _, k := range x.board(prefix) {
-		if t := x.info[k].last; t.After(lo) && !t.After(hi) && t.After(c.ahead) {
-			c = clockEvidence{behind: true, ahead: t}
+		t := x.info[k].last
+		switch {
+		case t.After(lo) && !t.After(hi):
+			if t.After(c.ahead) {
+				c = clockEvidence{behind: true, ahead: t}
+			}
+		case t.After(hi) && !t.After(capHi):
+			far++
+			if t.After(farNewest) {
+				farNewest = t
+			}
 		}
+	}
+	// A quorum of the board's own records further ahead than ClockWindow but
+	// within SetBackCap: a clock set back by days (liveness.go "The clock").
+	if far >= ClockQuorum && !c.behind {
+		c = clockEvidence{behind: true, ahead: farNewest}
+	} else if far >= ClockQuorum && farNewest.After(c.ahead) {
+		c.ahead = farNewest
 	}
 	return c
 }

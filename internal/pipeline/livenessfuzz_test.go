@@ -39,7 +39,8 @@ package pipeline
 // leaves more than half of its open postings and at least 2 absent, is a mass absence and marks every
 // absent posting until it reappears. A listing ages nothing while the ledger
 // holds events between 1 hour and 3 days ahead of its clock on one of the
-// board's own records, or on at least 3 records anywhere.
+// board's own records, or on at least 3 records anywhere, or events between 3
+// days and 30 days ahead on at least 3 of the board's own records.
 
 import (
 	"fmt"
@@ -60,6 +61,9 @@ const (
 	fuzzSequences = 250 // VANI_FUZZ_SEQUENCES=2000 is the full run
 	fuzzReads     = 40
 	specWindow    = 72 * time.Hour // the 3 days the owner's text takes on trust
+	// specSetBackCap is how far ahead a quorum of the board's own events
+	// still reads as a clock set back by days (a month).
+	specSetBackCap = 30 * 24 * time.Hour
 )
 
 // fuzzGaps are the spacings between reads: hourly retries, daily runs, a
@@ -293,11 +297,16 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			}
 		}
 		lo, hi := clock.Add(time.Hour), clock.Add(specWindow)
-		inWindow, own := 0, false
+		inWindow, own, setBack := 0, false, 0
 		for _, p := range known {
 			if p.last.After(lo) && !p.last.After(hi) {
 				inWindow++
 				own = own || p.board == r.board
+			}
+			// The owner's text: at least 3 of the board's own records with an
+			// event more than 3 days and at most 30 days ahead.
+			if p.board == r.board && p.last.After(hi) && !p.last.After(clock.Add(specSetBackCap)) {
+				setBack++
 			}
 		}
 
@@ -339,7 +348,7 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 		if s.Open != len(open) || s.Absent != len(absent) {
 			failf(i, "open %d absent %d, oracle %d %d", s.Open, s.Absent, len(open), len(absent))
 		}
-		frozen := len(absent) > 0 && (own || inWindow >= 3)
+		frozen := len(absent) > 0 && (own || inWindow >= 3 || setBack >= 3)
 		if s.ClockBehind != frozen {
 			failf(i, "ClockBehind %v, oracle %v (own %v, %d records in the window, clock %+v)", s.ClockBehind, frozen, own, inWindow, r.off)
 		}
