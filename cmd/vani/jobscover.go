@@ -34,14 +34,14 @@ type jobsCoverSaved struct {
 // jobsCoverUsed is a version the extension may fetch. Paths are under the
 // letters directory. The reply has no letter text and no letterhead.
 type jobsCoverUsed struct {
-	Key       string `json:"key"`
-	Version   int    `json:"version"`
-	PDF       bool   `json:"pdf"`
-	Bytes     int    `json:"bytes,omitempty"`
-	TextPath  string `json:"text_path,omitempty"`
-	PDFPath   string `json:"pdf_path,omitempty"`
-	Error     string `json:"error,omitempty"`
-	Code      string `json:"code,omitempty"`
+	Key      string `json:"key"`
+	Version  int    `json:"version"`
+	PDF      bool   `json:"pdf"`
+	Bytes    int    `json:"bytes,omitempty"`
+	TextPath string `json:"text_path,omitempty"`
+	PDFPath  string `json:"pdf_path,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Code     string `json:"code,omitempty"`
 }
 
 func (e *env) jobsCover(args []string) error {

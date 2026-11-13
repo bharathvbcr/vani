@@ -316,11 +316,11 @@ func TestRefusals(t *testing.T) {
 		"canonical jibeapply suffix":         {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://amd.jibeapply.com.evil.example/jobs/5"})}, want: ErrShape},
 		"canonical jibeapply http":           {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "http://amd.jibeapply.com/jobs/5"})}, want: ErrShape},
 		"canonical jibeapply other id":       {rows: []map[string]any{bad("meta_data", map[string]any{"canonical_url": "https://amd.jibeapply.com/jobs/6"})}, want: ErrShape},
-		"empty title":           {rows: []map[string]any{bad("title", " ")}, want: ErrShape},
-		"bad posted_date":       {rows: []map[string]any{bad("posted_date", "yesterday")}, want: ErrShape},
-		"script apply url":      {rows: []map[string]any{bad("apply_url", "javascript:alert(1)")}, want: nil},
-		"userinfo apply url":    {rows: []map[string]any{bad("apply_url", "https://careers-amd.icims.com@evil.example/")}, want: nil},
-		"duplicate within run":  {rows: []map[string]any{synth(tmpl, "7"), synth(tmpl, "7")}, total: 3, want: ErrShape},
+		"empty title":                        {rows: []map[string]any{bad("title", " ")}, want: ErrShape},
+		"bad posted_date":                    {rows: []map[string]any{bad("posted_date", "yesterday")}, want: ErrShape},
+		"script apply url":                   {rows: []map[string]any{bad("apply_url", "javascript:alert(1)")}, want: nil},
+		"userinfo apply url":                 {rows: []map[string]any{bad("apply_url", "https://careers-amd.icims.com@evil.example/")}, want: nil},
+		"duplicate within run":               {rows: []map[string]any{synth(tmpl, "7"), synth(tmpl, "7")}, total: 3, want: ErrShape},
 	} {
 		total := tc.total
 		if total == 0 {
