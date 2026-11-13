@@ -95,6 +95,23 @@ func withClock(t *testing.T, at time.Time) {
 	old := boardsClock
 	boardsClock = func() time.Time { return at }
 	t.Cleanup(func() { boardsClock = old })
+	withNoWait(t)
+}
+
+// withNoWait makes the waits of the request loop, and a board's wait for a
+// throttled host to cool, instant, and records them.
+func withNoWait(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var mu sync.Mutex
+	var waits []time.Duration
+	restore := srcutil.SetWaitForTest(func(ctx context.Context, d time.Duration) error {
+		mu.Lock()
+		waits = append(waits, d)
+		mu.Unlock()
+		return ctx.Err()
+	})
+	t.Cleanup(restore)
+	return &waits
 }
 
 func cooldownFile(t *testing.T) string { return filepath.Join(t.TempDir(), "hosts", "cooldown.json") }
@@ -108,29 +125,62 @@ func readCooldowns(t *testing.T, path string) map[string]srcutil.HostCooldown {
 	return got
 }
 
-// Within a run: the first board spends its retries, the second asks once, the
-// third not at all. Every one ends rate_limited and none is reconciled, so no
-// posting is touched.
-func TestListBoardsThrottledHostIsAskedOnceMoreThenNotAtAll(t *testing.T) {
+// Within a run: the first board spends its retries, the next three each probe
+// the cooling host once (after waiting its cooldown out), and a host that
+// answers all three probes 429 is not asked again. Every one ends rate_limited
+// and none is reconciled, so no posting is touched.
+func TestListBoardsThrottledHostIsProbedThenNotAtAll(t *testing.T) {
 	withClock(t, cooldownClock)
+	waits := withNoWait(t)
 	site := &hostSite{status: down}
 	var cr reconciled
-	boards := []sources.Board{efBoard("a", msHost), efBoard("b", msHost), efBoard("c", msHost)}
+	boards := []sources.Board{efBoard("a", msHost), efBoard("b", msHost), efBoard("c", msHost), efBoard("d", msHost), efBoard("e", msHost)}
 	var warn warnLog
 	rep, err := listBoards(t.Context(), boards, siteSource(site), nil, cr.wrap(tempReconciler(t)), warn.warnf, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if site.requests() != 6+1 {
-		t.Errorf("%d requests, want 6 for the first board, 1 probe for the second, none for the third", site.requests())
+	if site.requests() != 6+3 {
+		t.Errorf("%d requests, want 6 for the first board, 1 probe each for the next three, none for the fifth", site.requests())
 	}
-	if rep.RateLimited != 3 || rep.Failed != 3 || rep.Read != 0 || len(cr.got) != 0 {
+	if rep.RateLimited != 5 || rep.Failed != 5 || rep.Read != 0 || len(cr.got) != 0 {
 		t.Fatalf("report %+v, reconciled %v", rep, cr.got)
 	}
-	for i, want := range []string{"gave up after 6 attempts", "host rate limited earlier this run; probed once", "host rate limited earlier this run; probed once"} {
+	for i, want := range []string{"gave up after 6 attempts", "probed once", "probed once", "probed once", "probed once"} {
 		if e := rep.Items[i]; e.Outcome != boardRateLimited || !strings.Contains(e.Error, want) {
 			t.Errorf("board %d: %+v, want rate_limited with %q", i, e, want)
 		}
+	}
+	// Retry-After: 0 has a floor, and each failed probe doubles the wait.
+	// The probes are single attempts, so after the first board's own retries
+	// the only waits are the three cooldowns.
+	if w := *waits; len(w) < 3 || w[len(w)-3] != 5*time.Second || w[len(w)-2] != 10*time.Second || w[len(w)-1] != 20*time.Second {
+		t.Errorf("waits %v, want the last three to be the cooldowns 5s, 10s, 20s before the probes", w)
+	}
+}
+
+// A host that recovers during the run is read again: one 429 no longer costs
+// every later board on it.
+func TestListBoardsHostThatRecoversMidRunIsReadAgain(t *testing.T) {
+	withClock(t, cooldownClock)
+	site := &hostSite{status: func(n int) int {
+		if n <= 6 { // the first board's six attempts
+			return 429
+		}
+		return 200
+	}}
+	var cr reconciled
+	boards := []sources.Board{efBoard("a", msHost), efBoard("b", msHost), efBoard("c", msHost), efBoard("d", msHost)}
+	var warn warnLog
+	rep, err := listBoards(t.Context(), boards, siteSource(site), nil, cr.wrap(tempReconciler(t)), warn.warnf, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.RateLimited != 1 || rep.Read != 3 || rep.Failed != 1 || strings.Join(cr.got, ",") != "b,c,d" {
+		t.Fatalf("report %+v, reconciled %v; want a rate limited and b, c, d read", rep, cr.got)
+	}
+	if site.requests() != 6+3 {
+		t.Errorf("%d requests, want 6 and one for each later board", site.requests())
 	}
 }
 

@@ -78,6 +78,8 @@ type reconcileFunc func(ctx context.Context, b sources.Board, listed []posting.P
 func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting.ATS]sources.Source, pageErr error,
 	reconcile reconcileFunc, warnf func(string, ...any), cooldownFile string) (boardsReport, error) {
 	throttle, saveThrottle := openHostThrottle(cooldownFile, warnf)
+	starved, saveStarved := openStarved(starvedFile(cooldownFile), warnf)
+	watchlist = starvedFirst(watchlist, starved) // boards a throttled host refused last run go first
 	ctx, stop := context.WithCancel(ctx)
 	// Cooldowns are saved after in-flight fetches return, so a 429 seen by a
 	// board the run then stops is still remembered. Stop unblocks those fetches.
@@ -107,6 +109,7 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		tried = append(tried, e)
 		return append([]boardReport(nil), tried...)
 	}
+	defer func() { saveStarved(snapshot()) }()
 	report := func() boardsReport { return boardsReportOf(len(watchlist), snapshot()) }
 	total := len(watchlist)
 	if total == 0 {

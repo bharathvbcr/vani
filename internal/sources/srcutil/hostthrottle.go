@@ -24,9 +24,22 @@ import (
 //   - probe: a request ended rate limited (this run), or the last run's
 //     cooldown names the host. The next request is the probe: sent once, with
 //     no retries. Requests that arrive while it is out wait for its answer.
-//   - blocked: the probe was answered 429 again, or a cooldown's backoff
-//     window has not passed. No further request is sent to the host this run;
-//     each one fails as rate limited at once, and says so.
+//   - blocked: the probe of a host that was already in cooldown was answered
+//     429 again, a cooldown's backoff window has not passed, or the host kept
+//     answering 429 through the in-run probes below. No further request is sent
+//     to the host this run; each one fails as rate limited at once, and says so.
+//
+// A host that is first rate limited in this run is not blocked for the rest of
+// it, which would leave every later board on a shared host (a Greenhouse or
+// Lever API serves hundreds) unread because of one 429. It cools: the probe
+// waits out the server's Retry-After when the 429 gave one (a request is
+// retried for at most maxRetryWait, so it is bounded by maxInRunCool), else
+// inRunDefaultCool, charged to the board's and the run's retry budgets. A probe
+// that is answered 429 again lengthens the wait (doubling, up to maxInRunCool)
+// and, after maxInRunProbeFailures of them, blocks the host for the run. A host
+// that asks for more than maxInRunCool is blocked at once. The probe is always
+// one attempt, so a host that keeps refusing is asked at most
+// maxInRunProbeFailures+1 more times, each after a longer wait.
 //
 // A 200 from the host reopens it and clears its cooldown. Nothing here touches
 // a board's postings: a throttled board fails as it always did, only sooner.
@@ -47,6 +60,19 @@ const (
 	// probeGapBase is the window after a host's second consecutive rate-limited
 	// run; it doubles with each further one up to maxProbeGap.
 	probeGapBase = 15 * time.Minute
+
+	// inRunDefaultCool is how long a host first rate limited in this run
+	// cools when its 429 named no Retry-After; inRunMinCool is the shortest a
+	// Retry-After is waited out (Retry-After: 0 is no reason to ask again at
+	// once).
+	inRunDefaultCool = 30 * time.Second
+	inRunMinCool     = 5 * time.Second
+	// maxInRunCool bounds one in-run cooldown. A host that asks for longer is
+	// blocked for the run.
+	maxInRunCool = 2 * time.Minute
+	// maxInRunProbeFailures is how many probes of one in-run cooldown may be
+	// answered 429 before the host is blocked for the run.
+	maxInRunProbeFailures = 3
 )
 
 // probeGap is how long after its last rate-limited run a host with runs
@@ -85,8 +111,15 @@ type hostEntry struct {
 	// prior and last are the cooldown loaded for the host (prior 0: none).
 	prior int
 	last  time.Time
-	// until is the earliest a probe may go out, for a loaded cooldown.
+	// until is the earliest a probe may go out: for a loaded cooldown, the end
+	// of its backoff window; for an in-run one (cooling), the end of the wait.
 	until time.Time
+	// cooling is set when until is an in-run cooldown, which a request waits
+	// out (within its budgets) instead of being refused. A loaded cooldown's
+	// window is hours long and is never waited on.
+	cooling bool
+	// fails counts the in-run probes answered 429.
+	fails int
 	// probing is non-nil while the probe is out; it is closed when it is
 	// answered or abandoned.
 	probing chan struct{}
@@ -168,6 +201,20 @@ func (e *hostEntry) blockedWhy() string {
 	return "host rate limited earlier this run; probed once"
 }
 
+// coolFor is the in-run cooldown after the host's fails-th consecutive 429
+// (0 for the first), and false when the host asked for more than a run waits.
+// rl is the 429 that ended the request, nil when none is known.
+func coolFor(rl *RateLimitedError, fails int) (time.Duration, bool) {
+	base := inRunDefaultCool
+	if rl != nil && rl.hasRA {
+		base = max(rl.ra, inRunMinCool)
+	}
+	if base > maxInRunCool {
+		return 0, false
+	}
+	return min(base<<min(fails, 8), maxInRunCool), true
+}
+
 // coolingWhy is what a request says when a loaded cooldown's window has not
 // passed.
 func (e *hostEntry) coolingWhy() string {
@@ -204,9 +251,18 @@ func HostBlocked(ctx context.Context, host, method, rawURL string) error {
 	case e.phase == hostBlocked:
 		return refusal(host, method, path, e.why)
 	case e.probing == nil && t.clock().Before(e.until):
+		if e.cooling {
+			return refusal(host, method, path, e.inRunCoolingWhy())
+		}
 		return refusal(host, method, path, e.coolingWhy())
 	}
 	return nil
+}
+
+// inRunCoolingWhy is what a request that cannot wait out an in-run cooldown
+// says.
+func (e *hostEntry) inRunCoolingWhy() string {
+	return fmt.Sprintf("host rate limited earlier this run; cooling until %s", e.until.UTC().Format("15:04:05 UTC"))
 }
 
 // admit decides whether a request to host may go out. A non-empty probeWhy
@@ -239,6 +295,24 @@ func (t *HostThrottle) admit(ctx context.Context, host, method, rawURL string) (
 			case <-ctx.Done():
 				return "", fmt.Errorf("sources: %s %s: waiting for the probe of %s: %w", method, path, host, ctx.Err())
 			}
+		case e.cooling && t.clock().Before(e.until):
+			// An in-run cooldown is short: wait it out, charged to the
+			// retry budgets, and let this request be the probe. A request the
+			// budgets cannot cover is refused and the host stays cooling.
+			wait, deadline := e.until.Sub(t.clock()), e.until
+			t.mu.Unlock()
+			if ok, spent := spend(ctx, wait); !ok {
+				return "", refuse(fmt.Sprintf("host rate limited earlier this run; cooling for %s more, and the %s's retry budget is spent", wait.Round(time.Second), spent))
+			}
+			if err := sleep(ctx, wait); err != nil {
+				return "", fmt.Errorf("sources: %s %s: waiting for %s to cool: %w", method, path, host, err)
+			}
+			t.mu.Lock()
+			if cur := t.hosts[host]; cur == e && e.until.Equal(deadline) {
+				e.until = time.Time{} // waited: the next request through is the probe
+			}
+			t.mu.Unlock()
+			continue
 		case t.clock().Before(e.until):
 			e.phase = hostBlocked
 			e.why = e.coolingWhy()
@@ -268,13 +342,20 @@ func (t *HostThrottle) answered(host string) {
 	if e := t.hosts[host]; e != nil {
 		e.settle()
 		e.phase, e.seen, e.prior = hostOpen, sawAnswer, 0
+		e.cooling, e.fails, e.until = false, 0, time.Time{}
 	}
 }
 
 // limited records a request to host that ended in a 429 after the retries the
 // bounds allow. A host with no memory is now in the probe state; a probe that
 // was answered 429 blocks the host for the rest of the run.
-func (t *HostThrottle) limited(host string, probe bool) {
+func (t *HostThrottle) limited(host string, probe bool) { t.limitedBy(host, probe, nil) }
+
+// limitedBy is limited with the 429 that ended the request, whose Retry-After
+// sets the host's in-run cooldown (coolFor). A host that was already in
+// cooldown when this run began is not given one: it has been rate limited run
+// after run, so a probe answered 429 blocks it for the run.
+func (t *HostThrottle) limitedBy(host string, probe bool, rl *RateLimitedError) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e := t.hosts[host]
@@ -285,16 +366,37 @@ func (t *HostThrottle) limited(host string, probe bool) {
 		e = &hostEntry{}
 		t.hosts[host] = e
 	}
-	e.seen, e.limitedAt = sawLimit, t.clock()
+	at := t.clock()
+	e.seen, e.limitedAt = sawLimit, at
 	if probe {
 		e.settle()
-		e.phase = hostBlocked
-		e.why = e.blockedWhy()
+		e.cool(at, rl)
 		return
 	}
 	if e.phase == hostOpen {
 		e.phase = hostProbe
-		e.until = time.Time{}
+		e.until, e.cooling, e.fails = time.Time{}, false, 0
+		e.cool(at, rl)
+	}
+}
+
+// cool sets the host's cooldown after a 429 at at: an in-run one, or the
+// block for the rest of the run when the host was in cooldown before the run,
+// asked for more than maxInRunCool, or has answered maxInRunProbeFailures
+// probes with 429.
+func (e *hostEntry) cool(at time.Time, rl *RateLimitedError) {
+	d, ok := coolFor(rl, e.fails)
+	switch {
+	case e.prior > 0 || !ok || e.fails >= maxInRunProbeFailures:
+		e.phase, e.cooling = hostBlocked, false
+		e.why = e.blockedWhy()
+		if e.prior == 0 && !ok {
+			e.why = fmt.Sprintf("host asked to retry after %s, over the %s a run waits; probed once", rl.ra.Round(time.Second), maxInRunCool)
+		}
+	default:
+		e.phase, e.cooling = hostProbe, true
+		e.until = at.Add(d)
+		e.fails++
 	}
 }
 
