@@ -127,12 +127,16 @@ scratch folder and the bundle verified. What remains, by design or unmeasured:
     `extension/test/vectors/joburl.json` pins `GH_JID=1` as dropped, so IBM's `jobId` is not
     kept. Changing that means changing the shared vector.
 - **Bounded detail step:** `srcutil.PlanDetails` now plans Workday, SmartRecruiters, Oracle HCM,
-  Rippling, Avature and TalentBrew. Not yet on it:
-  - Apple (bounded by board cap and search terms only). Eightfold joined on 2026-11-11: stored
-    postings are reused and re-read on their turn (its search rows carry no updated stamp), new
-    rows are prefiltered by title, and nothing is deferred (the limit is its 200 cap). Microsoft's
-    host had answered 429 in 9 of 12 runs while every run re-read all ~137 details; that reuse
-    ends the 429s is inferred, not yet seen live.
+  Rippling, Avature, TalentBrew, Eightfold and Apple. Eightfold joined on 2026-11-11: stored
+  postings are reused and re-read on their turn (its search rows carry no updated stamp), new
+  rows are prefiltered by title. Both Eightfold and Apple now list up to 500 positions
+  (`eightfold.MaxPostings`, `apple.MaxListed`) with at most 100 detail requests a board a run
+  (`MaxDetails`): new positions first, the rest deferred (`Stats.Deferred`, in the run record;
+  not returned or stored, so their absence ages nothing). Without the stored postings the old
+  bounds stand (Apple 200; Eightfold fails a board over `MaxDetails`). Microsoft's host had
+  answered 429 in 9 of 12 runs while every run re-read all ~137 details; that reuse ends the
+  429s is inferred, not yet seen live. That a board of more than 200 positions is served at
+  deep offsets is also unseen live: the paging is tested against fakes only. Not yet on it:
   - IBM, D. E. Shaw and Atlassian (one-request lists).
 - **Duplicate `maxGone`:** `apple`'s `maxGone` copy is the one left (Avature's and Eightfold's now
   use the shared form); `srcutil.MaxGone` is the shared form.
@@ -720,8 +724,10 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   - The config loader refuses unknown fields, so `max_postings` cannot go into the live config
     until a build with this branch is installed in `Vani Apply.app/Contents/Helpers/vani`. The
     bundled 17:36 helper would reject the whole config.
-  - Eightfold (Microsoft, Qualcomm) has the same 200 cap and per-posting detail request;
-    `max_postings` is refused there until its paging limits are checked.
+  - Eightfold (Microsoft, Qualcomm): the cap is now 500 positions per board with at most 100
+    detail requests a run (`eightfold.MaxPostings`, `MaxDetails`); `max_postings` is still
+    refused there (it is Workday and Oracle HCM only), and the deep offsets the larger cap
+    relies on are unseen live.
   - Intel's board listed 35 postings through this adapter at 21:00 but none during the 09:57 run.
     The cause went to stderr only; the per-board run record (`claude/focused-diffie-81a9b8`) keeps it
     from the next run on.
