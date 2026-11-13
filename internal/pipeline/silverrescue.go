@@ -23,15 +23,21 @@ import (
 // here. It is off unless the owner runs it, capped per day, and the caller
 // decides when the auditor may be trusted (cmd/vani: its AUC verdict).
 //
-// Unlike RescueStaleDrops, these are drops today's rules still make. The
-// runner does not triage an Unsure record again (it goes on to scoring), and
-// retriage reopens only records no backend read, so the rescue holds; an owner
-// exclusion still drops it, as it should.
+// These are drops today's rules still make (a drop the rules no longer make
+// is RetriagePolicyDrops'). A drop on a watched board is not put back at once:
+// a dropped posting is closed, so the ledger cannot say whether its board still
+// lists it, and a long-gone role must not reach scoring and the paid notes
+// call. Like every reopen, it waits as a pending reopen (class "silver") for
+// its board's next full listing to show it, and is judged again there on the
+// listed text (SightingReopen). The runner does not triage an Unsure record
+// again (it goes on to scoring), so the rescue holds; an owner exclusion still
+// drops it, as it should.
 
 // AnnSilverRescue marks a record the silver rescue returned to Unsure: the day
-// (UTC, YYYY-MM-DD) first, then the auditor's score and its comparison counts.
-// The daily cap counts these. The key sits outside the triage.* annotations,
-// which a retriage forgets, so a later event does not lose it.
+// (UTC, YYYY-MM-DD) the rescue was decided first, then the auditor's score and
+// its comparison counts. The daily cap counts these and today's pending
+// "silver" reopens. The key sits outside the triage.* annotations, which a
+// retriage forgets, so a later event does not lose it.
 const AnnSilverRescue = "audit.would_apply.rescue"
 
 // MinSilverRescueGames is the fewest usable comparisons a pick rests on, and
@@ -55,7 +61,7 @@ type SilverRule struct {
 	// counts as wanted; the score is relative to the posting's stratum, so a
 	// dropped stratum's best is not by itself wanted. MinGames is the fewest
 	// comparisons; MaxPerDay the most rescues per UTC day, counted from the
-	// ledger's AnnSilverRescue stamps.
+	// ledger's AnnSilverRescue stamps and the day's pending silver reopens.
 	MinScore  float64
 	MinGames  int
 	MaxPerDay int
@@ -83,12 +89,15 @@ type SilverCandidate struct {
 
 // SilverRescue is what RescueSilverDrops did, or with dryRun would do.
 type SilverRescue struct {
-	// Candidates are every drop the rule admits, best score first; Rescued
-	// those written (or, dry, that would be) within today's cap.
+	// Candidates are every drop the rule admits, best score first. Rescued
+	// are those taken within today's cap (or, dry, that would be): back to
+	// Unsure now, or, for the ones also in Deferred, waiting for their board's
+	// next listing.
 	Candidates []SilverCandidate `json:"candidates"`
 	Rescued    []posting.Key     `json:"rescued"`
-	// Today is how many records were rescued earlier today; CapLeft what the
-	// cap left for this call.
+	Deferred   []posting.Key     `json:"deferred"`
+	// Today is how many rescues were decided earlier today (written or
+	// pending); CapLeft what the cap left for this call.
 	Today   int `json:"today"`
 	CapLeft int `json:"cap_left"`
 	// Left counts the drops the rule passed over, by reason (fixed strings).
@@ -104,23 +113,61 @@ const (
 	silverLeftScore     = "score under the rule's"
 	silverLeftNoBody    = "description could not be read back"
 	silverLeftCap       = "over today's cap"
+	silverLeftStale     = "on a board no longer watched"
+	silverLeftPending   = "already waiting for its board to list it"
+	silverLeftOverBound = "over the pending-reopen bound"
 )
+
+// isModelDrop reports whether a decision model dropped r: a backend recorded
+// its reading, and neither a title reading nor an owner exclusion made the drop.
+func isModelDrop(r ledger.Record) bool {
+	backend := r.Annotations[ledger.AnnTriagePrefix+"backend"]
+	return backend != "" && backend != TitleBackend && backend != ExcludeBackend && !Excluded(r) && !TitleDropped(r)
+}
+
+// silverStamp is the AnnSilverRescue value of a rescue decided on day.
+func silverStamp(day string, c SilverCandidate) string {
+	return fmt.Sprintf("%s score=%.3f games=%d", day, c.Score, c.Games)
+}
+
+// silverEvent is the Unsure event of a silver rescue, stamped stamp.
+func silverEvent(k posting.Key, now time.Time, stamp, why string) ledger.Event {
+	return ledger.Event{V: ledger.SchemaVersion, At: now, Key: k, Status: posting.Unsure,
+		Annotations: map[string]string{
+			AnnSilverRescue:        stamp,
+			ledger.AnnTriageUnsure: "the would_apply auditor picked it over its stratum (" + why + "); the drop rule still holds",
+		},
+		Reason: "silver rescue: the would_apply auditor wants a drop"}
+}
 
 // RescueSilverDrops returns to Unsure, best score first and at most the
 // rule's daily cap, every Dropped record a model dropped whose pick passes the
 // rule. protected reports a drop the auditor must never rescue (a work
-// authorization, work_mode or owner exclusion drop); it is required. With
-// dryRun it only reports. A second call the same day finds the cap spent or
-// nothing left to rescue.
-func RescueSilverDrops(ctx context.Context, l ledger.Ledger, now time.Time, picks map[posting.Key]SilverPick, rule SilverRule, protected func(ledger.Record) bool, dryRun bool) (SilverRescue, error) {
-	out := SilverRescue{Candidates: []SilverCandidate{}, Rescued: []posting.Key{}, Left: map[string]int{}}
+// authorization, work_mode or owner exclusion drop); it is required. sc bounds
+// what may come back as it bounds RetriagePolicyDrops: a drop on a board no
+// longer watched stays dropped, and one sc defers is marked as a pending
+// "silver" reopen in sc.Pending instead of written (it counts against the day's
+// cap all the same). With dryRun it only reports. A second call the same day
+// finds the cap spent or nothing left to rescue.
+func RescueSilverDrops(ctx context.Context, l ledger.Ledger, now time.Time, picks map[posting.Key]SilverPick, rule SilverRule, protected func(ledger.Record) bool, sc ReopenScope, dryRun bool) (SilverRescue, error) {
+	out := SilverRescue{Candidates: []SilverCandidate{}, Rescued: []posting.Key{}, Deferred: []posting.Key{}, Left: map[string]int{}}
 	if err := rule.Check(); err != nil {
 		return out, err
 	}
 	if protected == nil {
 		return out, errors.New("pipeline: silver rescue needs the protected-drop test")
 	}
+	if sc.Defer != nil && sc.Pending == nil {
+		return out, errors.New("pipeline: a deferring rescue needs somewhere to keep its pending reopens")
+	}
 	day := now.UTC().Format(time.DateOnly)
+	if sc.Pending != nil {
+		for _, e := range sc.Pending.Items {
+			if e.Class == reopenClassSilver && e.At.UTC().Format(time.DateOnly) == day {
+				out.Today++
+			}
+		}
+	}
 	byKey := map[posting.Key]ledger.Record{}
 	for _, r := range l.All() {
 		if err := ctx.Err(); err != nil {
@@ -137,7 +184,7 @@ func RescueSilverDrops(ctx context.Context, l ledger.Ledger, now time.Time, pick
 			continue
 		}
 		switch {
-		case dropperOf(r) != DropByModel:
+		case !isModelDrop(r):
 			out.Left[silverLeftNotModel]++
 		case protected(r):
 			out.Left[silverLeftProtected]++
@@ -159,29 +206,63 @@ func RescueSilverDrops(ctx context.Context, l ledger.Ledger, now time.Time, pick
 		return strings.Compare(string(a.Key), string(b.Key))
 	})
 	out.CapLeft = max(rule.MaxPerDay-out.Today, 0)
+	added := 0 // pending reopens this call adds (a dry run adds none to Pending)
 	for _, c := range out.Candidates {
-		if len(out.Rescued) >= out.CapLeft {
+		r := byKey[c.Key]
+		switch {
+		case !sc.reachable(c.Key):
+			out.Left[silverLeftStale]++
+			continue
+		case sc.deferred(c.Key) && sc.Pending.Items[c.Key].Class == reopenClassSilver:
+			out.Left[silverLeftPending]++ // counted in Today on the day it was marked
+			continue
+		case len(out.Rescued) >= out.CapLeft:
 			out.Left[silverLeftCap]++
 			continue
 		}
-		r := byKey[c.Key]
+		stamp := silverStamp(day, c)
+		if sc.deferred(c.Key) {
+			if _, ok := sc.Pending.Items[c.Key]; !ok && sc.Pending.Len()+added >= MaxPendingReopens {
+				out.Left[silverLeftOverBound]++
+				continue
+			}
+			if dryRun {
+				added++
+			} else {
+				sc.Pending.Items[c.Key] = PendingReopen{Class: reopenClassSilver, At: now.UTC(), Reason: stamp}
+			}
+			out.Rescued = append(out.Rescued, c.Key)
+			out.Deferred = append(out.Deferred, c.Key)
+			continue
+		}
 		if full := ledger.Full(l, r); full.BodyEvicted {
 			out.Left[silverLeftNoBody]++ // reopening an evicted record is refused without its body
 			continue
 		}
 		if !dryRun {
-			stamp := fmt.Sprintf("%s score=%.3f games=%d", day, c.Score, c.Games)
-			ev := ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: posting.Unsure,
-				Annotations: map[string]string{
-					AnnSilverRescue:        stamp,
-					ledger.AnnTriageUnsure: fmt.Sprintf("the would_apply auditor picked it over its stratum (score %.2f over %d comparisons); the drop rule still holds", c.Score, c.Games),
-				},
-				Reason: "silver rescue: the would_apply auditor wants a drop"}
-			if err := l.Append(ctx, ev); err != nil {
+			if err := l.Append(ctx, silverEvent(r.Key, now, stamp, fmt.Sprintf("score %.2f over %d comparisons", c.Score, c.Games))); err != nil {
 				return out, fmt.Errorf("pipeline: silver rescue %s: %w", r.Key, err)
 			}
 		}
 		out.Rescued = append(out.Rescued, c.Key)
 	}
 	return out, nil
+}
+
+// silverSightingEvent applies a pending silver reopen at the sighting: the
+// posting goes to Unsure on the listed text when it is still a model drop the
+// exclusions and title rules let through (what a fresh triage would apply
+// before asking a backend); otherwise the reopen is spent and it stays
+// dropped. The stamp is the one the rescue was decided under, so the cap counts
+// it on that day.
+func (s *SightingReopen) silverSightingEvent(rec ledger.Record, listed posting.Posting, stamp string, now time.Time) (ledger.Event, bool) {
+	if !isModelDrop(rec) {
+		return ledger.Event{}, false
+	}
+	if _, _, dropped := s.Policy.EvaluatePosting(listed); dropped {
+		return ledger.Event{}, false
+	}
+	ev := silverEvent(rec.Key, now, stamp, "decided "+strings.SplitN(stamp, " ", 2)[0])
+	ev.Reason += ", listed again"
+	return ev, true
 }

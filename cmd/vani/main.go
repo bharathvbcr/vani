@@ -303,8 +303,7 @@ commands:
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the
                              priority of the roles each blocks; display-only
-  retriage [--json] [--dry-run] [--title-drops | --policy-drops [--refresh-unjudged] |
-           --stale-drops [--rescue]]
+  retriage [--json] [--dry-run] [--title-drops | --policy-drops [--refresh-unjudged]]
                              return postings triaged with no backend reading to live; with
                              --title-drops, let back postings dropped on a title the current
                              title_signals.read and drop rules no longer drop; with
@@ -326,13 +325,8 @@ commands:
                              or no calibration from the configured model or Lappi); a drop on
                              a board no longer on the watchlist (stale: no listing would age
                              it); one whose stored description cannot be read back (a dry run
-                             cannot tell, and says so). --stale-drops is a read-only report of
-                             every dropped posting today's rules (exclude, title_signals.read,
-                             drop_rules on the stored readings) would not drop, by drop class,
-                             with what the drop was made on and today's verdict (keys, no
-                             posting text); adding --rescue returns the model drops among them
-                             to unsure with their readings kept (--dry-run only counts). No
-                             model is asked
+                             cannot tell, and says so). What is let back is also counted by drop
+                             class. No model is asked
   rescore [--json] [--dry-run] [--limit N]
                              score scored and explained postings that have no score (they went
                              through while devprism.binary was empty); status and explanation

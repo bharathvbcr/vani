@@ -5,13 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -21,7 +25,12 @@ import (
 // ones (gh:du:N) it does not. A random auditor (random true) answers at random.
 func silverWorld(t *testing.T, random bool) *psEnv {
 	t.Helper()
-	e := psSetup(t, 14, 44, nil)
+	// The dropped postings' boards are watched, so a rescue of them waits for
+	// the board's next listing, as every reopen of a closed posting does.
+	e := psSetup(t, 14, 44, func(c *config.Config) {
+		c.Watchlist = append(c.Watchlist, sources.Board{ATS: "gh", Token: "dw"}, sources.Board{ATS: "gh", Token: "du"})
+		c.AllowedHosts = append(c.AllowedHosts, "boards-api.greenhouse.io")
+	})
 	l, err := ledger.Open(filepath.Join(e.state, "ledger"))
 	if err != nil {
 		t.Fatal(err)
@@ -103,9 +112,11 @@ func TestSilverDropsReportsRescuesWithinTheCapAndOnlyOnGo(t *testing.T) {
 	snapshotEqual(t, "report and dry run", before, e.tree(t))
 
 	got := silverReply(t, "--rescue", "--max-per-day", "2")
-	if len(got.Rescued) != 2 || got.Today != 0 {
+	if len(got.Rescued) != 2 || !slices.Equal(got.Deferred, got.Rescued) || got.Today != 0 {
 		t.Fatalf("rescue: %+v", got.SilverRescue)
 	}
+	// A dropped posting is closed: the rescue cannot know its role is still
+	// listed, so each waits, still dropped, as a pending silver reopen.
 	snap, err := ledger.ReadSnapshot(filepath.Join(e.state, "ledger"))
 	if err != nil {
 		t.Fatal(err)
@@ -114,10 +125,14 @@ func TestSilverDropsReportsRescuesWithinTheCapAndOnlyOnGo(t *testing.T) {
 	for _, rec := range snap.Records {
 		byKey[rec.Key] = rec
 	}
+	pending, err := pipeline.LoadPendingReopens(filepath.Join(e.state, pipeline.PendingReopenFile), jobsT0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, k := range got.Rescued {
 		rec := byKey[k]
-		if rec.Status != posting.Unsure || rec.Annotations["triage.role_fit"] != "mismatch_domain" {
-			t.Errorf("%s after rescue: %s %v", k, rec.Status, rec.Annotations)
+		if rec.Status != posting.Dropped || pending.Items[k].Class != "silver" || !strings.Contains(pending.Items[k].Reason, "score=") {
+			t.Errorf("%s after rescue: %s, pending %+v", k, rec.Status, pending.Items[k])
 		}
 	}
 	again := silverReply(t, "--rescue", "--max-per-day", "2")
@@ -151,9 +166,11 @@ func TestSilverDropsFlagRefusals(t *testing.T) {
 	setup(t)
 	mustCode(t, 0, "init")
 	for _, args := range [][]string{
-		{"--silver-drops", "--stale-drops"},
+		{"--silver-drops", "--policy-drops"},
 		{"--silver-drops", "--title-drops"},
 		{"--rescue"},
+		{"--policy-drops", "--rescue"},
+		{"--stale-drops"}, // retired: --policy-drops --dry-run reports the same drops by class
 		{"--silver-drops", "--min-score", "0.5"},
 		{"--silver-drops", "--min-games", "2"},
 		{"--silver-drops", "--max-per-day", "0"},

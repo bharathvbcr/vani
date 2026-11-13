@@ -9,16 +9,15 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
-- **Stale-drop report and rescue** (`internal/pipeline/staledrops.go`,
-  `vani retriage --stale-drops [--rescue]`). A drop made under a rule that has since changed was
-  never re-examined: two Databricks Staff roles the owner marked "maybe" were dropped on
-  `seniority = staff_plus` (p 0.912 and 0.917, a rule the live config no longer has). The report
-  re-judges every dropped posting under today's rules and lists those that would not be dropped,
-  by drop class, with the readings the drop was made on and today's verdict. It is read-only, holds
-  no posting text, and counts a drop it cannot re-judge apart instead of calling it stale.
-  `--rescue` returns the stale model drops to `unsure` with their readings kept and asks no model (the
-  next run scores them and, within the daily budget, writes their note); it
-  never touches a drop the rules still make, and a second run changes nothing.
+- **Drops the rules no longer make, by class** (`vani retriage --policy-drops`, its `classes`).
+  A drop made under a rule that has since changed was never re-examined: two Databricks Staff
+  roles the owner marked "maybe" were dropped on `seniority = staff_plus` (p 0.912 and 0.917, a
+  rule the live config no longer has). `--policy-drops` lets such drops back through the pending
+  reopen, and its reply now counts what it lets back (or, with `--dry-run`, would) by the audit's
+  drop class. A separate `--stale-drops` report and `--rescue` were built on the rank branch and
+  retired when main's `--policy-drops` landed: the rescue wrote `unsure` at once, so a role gone
+  from its board would have reached scoring and the paid notes call, and it judged drops with a
+  second copy of the policy check.
 - **Readers and score parts against the owner** (`internal/eval/readeragree.go`,
   `internal/rankfit/partauc.go`, `vani relevance`). The report now sets every triage reader against
   the owner's would_apply labels: each engine backend from the ledger and each teacher model in
@@ -61,10 +60,13 @@ were ported with notice. Source files do not carry an upstream copyright header.
   drops that the pairwise would_apply auditor keeps picking over their stratum. The bar is a score
   of at least `--min-score` over at least `--min-games` comparisons, with no answer of "neither". It
   also reports the rule's precision on gold labels made after the exemplar freeze. `--rescue`
-  returns them to unsure, best first and at most `--max-per-day` per day, but only while the
-  auditor's verdict on gold under today's question is go. It never rescues title drops, owner
-  exclusions, or work authorization and work_mode drops. A rescued posting is scored like any
-  uncertain one and the runner does not triage it again. Nothing runs unless the owner asks.
+  takes them, best first and at most `--max-per-day` per day, but only while the auditor's verdict
+  on gold under today's question is go. A drop on a watched board waits as a pending reopen (class
+  `silver`) for its board's next full listing, then goes to unsure if the exclusions and title
+  rules still let the listed text through; any other goes to unsure at once. Pending marks count
+  against the day's cap. It never rescues title drops, owner exclusions, or work authorization and
+  work_mode drops. A rescued posting is scored like any uncertain one and the runner does not
+  triage it again. Nothing runs unless the owner asks.
 - **Silver-pretrained weight fit** (`vani rankfit --part weights --silver-prior`). The auditor's
   decisive answers fit Score's shares first, and the owner-labelled fit is pulled toward those
   shares instead of the hand weights (`rankfit.Options.Prior`). Answers about any posting the owner

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -16,15 +17,18 @@ import (
 // `vani retriage --silver-drops`: the per-posting rescue rule (D6). It reports
 // the model drops the pairwise would_apply auditor keeps picking over their
 // stratum-mates, and how many of them the owner has answered yes since the
-// exemplar freeze (the rule's precision on gold). With --rescue it returns them
-// to unsure, at most --max-per-day a day, and only while `vani teacher report`
-// says "go" for the auditor under today's question. It asks no model.
+// exemplar freeze (the rule's precision on gold). With --rescue it takes them,
+// at most --max-per-day a day, and only while `vani teacher report` says "go"
+// for the auditor under today's question: a drop on a watched board waits as a
+// pending reopen for the board's next full listing, then goes to unsure; any
+// other goes to unsure at once. It asks no model.
 
-// Defaults of the rule's flags.
+// Defaults of the rule's flags, and how many candidates the text report lists.
 const (
 	defaultSilverMinScore  = 0.7
 	defaultSilverMinGames  = 4
 	defaultSilverMaxPerDay = 10
+	maxSilverItemsText     = 50
 )
 
 // silverDropsReply is `vani retriage --silver-drops --json`.
@@ -105,21 +109,22 @@ func (e *env) silverRescue(cfg config.Config, rule pipeline.SilverRule, dry, res
 		picks[k] = pipeline.SilverPick{Score: s.Score, Games: s.Games, Picked: s.Picked, Neither: s.Neither}
 	}
 
-	var l ledger.Ledger
-	if rescue && !dry {
-		app, err := buildApp(cfg, e.stateDir, e.stderr)
-		if err != nil {
-			return err
-		}
-		defer app.close()
-		l = app.Ledger
-	} else {
-		snap, err := e.readLedgerSnapshot("retriage")
-		if err != nil {
-			return err
-		}
-		l = snap
+	// A real rescue holds the ledger lock, which also serialises the
+	// pending-reopen file's writers (as retriage --policy-drops does).
+	l, closeLedger, err := e.retriageLedger(cfg, dry || !rescue)
+	if err != nil {
+		return err
 	}
+	defer closeLedger()
+	path := filepath.Join(e.stateDir, pipeline.PendingReopenFile)
+	pending, err := pipeline.LoadPendingReopens(path, now())
+	if err != nil {
+		// A set that could not be read is never taken for an empty one, nor
+		// overwritten.
+		return fmt.Errorf("retriage --silver-drops: %w", err)
+	}
+	sc := reopenScope(cfg)
+	sc.Defer, sc.Pending = sc.Watched, pending
 	rules := evalDropRules(cfg)
 	protected := func(r ledger.Record) bool {
 		_, left := stratumLeftOut(eval.DroppedPrefix + eval.DropClass(r, rules))
@@ -127,12 +132,19 @@ func (e *env) silverRescue(cfg config.Config, rule pipeline.SilverRule, dry, res
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	out, err := pipeline.RescueSilverDrops(ctx, l, now(), picks, rule, protected, dry || !rescue)
+	write := rescue && !dry
+	out, err := pipeline.RescueSilverDrops(ctx, l, now(), picks, rule, protected, sc, !write)
+	if write && len(out.Deferred) > 0 {
+		if serr := pending.Save(path, now()); serr != nil {
+			return errors.Join(err, fmt.Errorf("retriage --silver-drops: the rescues waiting for their board were not saved: %w", serr))
+		}
+	}
 	if err != nil {
 		return err
 	}
 	if !rescue {
-		out.Rescued = []posting.Key{} // a report rescues nothing; Candidates says what would qualify
+		// A report rescues nothing; Candidates says what would qualify.
+		out.Rescued, out.Deferred = []posting.Key{}, []posting.Key{}
 	}
 	reply.SilverRescue = out
 
@@ -194,12 +206,12 @@ func (e *env) printSilver(r *silverDropsReply) {
 	case !r.Rescue:
 		fmt.Fprintln(w, "report only: --rescue returns the candidates to unsure within the cap")
 	case r.DryRun:
-		fmt.Fprintf(w, "dry run: %d would be returned to unsure\n", len(r.Rescued))
+		fmt.Fprintf(w, "dry run: %d would be taken (%d of them waiting for their board to list them again, then to unsure)\n", len(r.Rescued), len(r.Deferred))
 	default:
-		fmt.Fprintf(w, "returned to unsure: %d\n", len(r.Rescued))
+		fmt.Fprintf(w, "taken: %d (%d back to unsure now; %d waiting for their board to list them again)\n", len(r.Rescued), len(r.Rescued)-len(r.Deferred), len(r.Deferred))
 	}
 	for i, c := range r.Candidates {
-		if i == maxStaleItemsText {
+		if i == maxSilverItemsText {
 			fmt.Fprintf(w, "(%d more)\n", len(r.Candidates)-i)
 			break
 		}
