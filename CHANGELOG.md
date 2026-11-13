@@ -16,7 +16,8 @@ were ported with notice. Source files do not carry an upstream copyright header.
   re-judges every dropped posting under today's rules and lists those that would not be dropped,
   by drop class, with the readings the drop was made on and today's verdict. It is read-only, holds
   no posting text, and counts a drop it cannot re-judge apart instead of calling it stale.
-  `--rescue` returns the stale model drops to `unsure`, readings kept and nothing asked again; it
+  `--rescue` returns the stale model drops to `unsure` with their readings kept and asks no model (the
+  next run scores them and, within the daily budget, writes their note); it
   never touches a drop the rules still make, and a second run changes nothing.
 - **Readers and score parts against the owner** (`internal/eval/readeragree.go`,
   `internal/rankfit/partauc.go`, `vani relevance`). The report now sets every triage reader against

@@ -186,8 +186,9 @@ not be dropped, by drop class, with the readings the drop was made on and today'
 holds keys and classes, no posting text. A drop it cannot re-judge (no recorded probability, a
 backend today's policy does not calibrate, a description that cannot be read back) is counted
 apart as "not judged", never as stale. `--stale-drops --rescue` returns the stale model drops to
-`unsure` with their readings kept (nothing is asked again, nothing is spent), so they are scored
-and shown like any uncertain posting (Rule 7); `--dry-run` only counts. A drop the rules still make
+`unsure` with their readings kept; the rescue asks no model. They are then scored, and given a
+note within the daily budget, on the next run, and shown like any uncertain posting (Rule 7);
+`--dry-run` only counts. A drop the rules still make
 is never touched, and a second run finds nothing. The stale title and exclusion drops it lists are
 left to `retriage --title-drops` and the run's exclusion stage, which return them to live so a
 backend reads them.

@@ -197,12 +197,44 @@ func TestRetriageStaleDropsRefusals(t *testing.T) {
 	}
 	for _, args := range [][]string{{"retriage", "--stale-drops"}, {"retriage", "--stale-drops", "--rescue"}} {
 		code, out, errOut := do(t, args...)
-		if code == 0 {
-			t.Errorf("vani %v exited 0 with no OpenRouter backend:\n%s%s", args, out, errOut)
+		if code != 1 || !strings.Contains(errOut, "names no OpenRouter backend") || strings.Contains(out, "re-judged") {
+			t.Errorf("vani %v: exit %d, want 1 with the unjudgeable-policy error\nstdout: %s\nstderr: %s", args, code, out, errOut)
 		}
+	}
+	// JSON carries the failure and no counts: nothing was judged.
+	_, jout, _ := do(t, "--json", "retriage", "--stale-drops")
+	var rep staleDropsReply
+	decodeOne(t, jout, &rep)
+	if !strings.Contains(rep.Error, "names no OpenRouter backend") || rep.Dropped != 0 || rep.Stale != 0 || rep.StillDropped != 0 {
+		t.Errorf("json of a refused report: %+v", rep)
 	}
 	if got := ledgerStatusOf(t, stateDir, "gh:databricks:6716344002"); got != posting.Dropped {
 		t.Errorf("a refused rescue wrote: %s", got)
+	}
+}
+
+// A ledger that cannot be read is an error, not a report of nothing: a check
+// that could not run must not look like a pass.
+func TestRetriageStaleDropsUnreadableLedger(t *testing.T) {
+	_, stateDir := seedStale(t)
+	events := filepath.Join(stateDir, "ledger", "events.jsonl")
+	raw, err := os.ReadFile(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("seed wrote %d lines", len(lines))
+	}
+	lines[1] = `{"v":1,"at":` // a corrupt line with intact lines after it
+	if err := os.WriteFile(events, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"retriage", "--stale-drops"}, {"retriage", "--stale-drops", "--rescue", "--dry-run"}} {
+		code, out, errOut := do(t, args...)
+		if code != 1 || !strings.Contains(errOut, "read the ledger") || strings.Contains(out, "re-judged") {
+			t.Errorf("vani %v: exit %d, want 1 naming the ledger\nstdout: %s\nstderr: %s", args, code, out, errOut)
+		}
 	}
 }
 

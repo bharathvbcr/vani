@@ -163,6 +163,9 @@ func (p DropPolicy) judgeDrop(l ledger.Ledger, r ledger.Record) judgement {
 		j.notJudged = reason
 		return j
 	}
+	if st == posting.Triaged {
+		why = "no current drop rule matches its recorded readings"
+	}
 	j.stale, j.today, j.why = true, string(st), why
 	return j
 }
@@ -300,7 +303,9 @@ type StaleRescue struct {
 // no longer drop, keeping what the model read (so nothing is asked again and
 // nothing is spent) and recording why under triage.unsure. Unsure is kept
 // (Rule 7): the posting is scored and shown like any other uncertain one. A
-// record p still drops, or cannot judge, is left alone. Each record is judged
+// record p still drops, or cannot judge, is left alone. The rescue asks no
+// model; the unsure posting then goes through the next run's scoring and notes
+// stages like any other (the notes call is the daily budget's). Each record is judged
 // again just before it is written, so a drop the policy still makes is never
 // touched, and a second run finds nothing. With dryRun it only reports.
 func RescueStaleDrops(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, dryRun bool) (StaleRescue, error) {
@@ -347,5 +352,5 @@ func RescueStaleDrops(ctx context.Context, l ledger.Ledger, now time.Time, p Dro
 // staleUnsure is the triage.unsure reason of a rescued drop. why comes from the
 // drop policy and names slots and thresholds, never posting text.
 func staleUnsure(why string) string {
-	return "dropped under an earlier rule: " + strings.TrimSpace(why)
+	return "dropped under an earlier rule; today " + strings.TrimSpace(why)
 }
