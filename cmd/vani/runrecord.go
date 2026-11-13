@@ -237,14 +237,26 @@ type exclusionSummary struct {
 	OverCap         int `json:"over_cap,omitempty"`
 	Unread          int `json:"unread,omitempty"`
 	BodyUnavailable int `json:"body_unavailable,omitempty"`
+	// UnrecognisedLocation is the part of Dropped that only_locations dropped
+	// because a place of the location names nothing the location tables know
+	// (a US town they lack reads this way): dropped, but possibly wrongly.
+	// `vani prefilter` lists them and the audit draws them as the class
+	// "exclude:location_unrecognised". Additive.
+	UnrecognisedLocation int `json:"unrecognised_location,omitempty"`
 }
 
 func summarizeExclusions(ch pipeline.ExclusionChange) *exclusionSummary {
-	return &exclusionSummary{
+	s := &exclusionSummary{
 		Dropped: len(ch.Drop), Reopened: ch.Reopened, Deferred: ch.Deferred, AlreadyPending: ch.AlreadyPending,
 		Stale: ch.Stale, OverCap: ch.OverCap, Unread: len(ch.Unread),
 		BodyUnavailable: ch.BodyUnavailable,
 	}
+	for _, why := range ch.Reasons {
+		if pipeline.UnrecognisedLocationReason(why) {
+			s.UnrecognisedLocation++
+		}
+	}
+	return s
 }
 
 // logoSummary is logo.Result as counts. MissingHosts is how many hosts were

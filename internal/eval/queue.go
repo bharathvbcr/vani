@@ -110,13 +110,24 @@ func dropWho(backend string) string {
 // "description matches …"), with or without the pipeline's "excluded: "
 // prefix. The matched value is never kept: a class reaches the label file.
 func excludeField(why string) string {
-	why = strings.TrimPrefix(strings.TrimSpace(why), "excluded:")
-	switch f, _, _ := strings.Cut(strings.TrimSpace(why), " "); f {
-	case "title", "company", "location", "description":
+	why = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(why), "excluded:"))
+	switch f, _, _ := strings.Cut(why, " "); f {
+	case "location":
+		if strings.HasPrefix(why, "location is outside only_locations") && strings.HasSuffix(why, "("+UnrecognisedLocationMark+")") {
+			return "location_unrecognised"
+		}
+		return f
+	case "title", "company", "description":
 		return f
 	}
 	return "other"
 }
+
+// UnrecognisedLocationMark is the closing words of the reason an only_locations
+// drop gives when it rests on a place the location tables do not know
+// (config.UnrecognisedLocationMark, pipeline.LocationUnrecognisedMark; a parity
+// test pins them). Its class is "exclude:location_unrecognised".
+const UnrecognisedLocationMark = "unrecognised location"
 
 // classToken keeps the characters of s that are safe in a class name (a-z, 0-9,
 // _ and -), at most 40.

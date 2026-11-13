@@ -106,6 +106,9 @@ func PrefilterRule(reason string) string {
 		case "title", "company", "description":
 			return "exclude_" + field
 		case "location":
+			if UnrecognisedLocationReason(reason) {
+				return "exclude_location_unrecognised"
+			}
 			return "exclude_location"
 		}
 		return "exclude_other"
@@ -117,6 +120,22 @@ func PrefilterRule(reason string) string {
 		}
 	}
 	return "other"
+}
+
+// LocationUnrecognisedMark is in the reason of an only_locations drop that
+// rests on a place the location tables do not know (config.Exclude.Match,
+// config.UnrecognisedLocationMark; a test pins the two). The pipeline does not
+// import the config, so it names the marker here.
+const LocationUnrecognisedMark = "unrecognised location"
+
+// UnrecognisedLocationReason reports whether a drop reason (with or without the
+// pipeline's "excluded: " prefix) is an exclusion on the location that rests on
+// a place nothing recognised.
+func UnrecognisedLocationReason(reason string) bool {
+	why := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(reason), "excluded:"))
+	// Only the only_locations reason carries it, as its last words: an
+	// exclude.locations entry is the owner's own text and may hold any words.
+	return strings.HasPrefix(why, "location is outside only_locations") && strings.HasSuffix(why, "("+LocationUnrecognisedMark+")")
 }
 
 // ruleToken keeps the characters of s a class name may hold (a-z, 0-9, _ and

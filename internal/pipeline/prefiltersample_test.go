@@ -250,6 +250,8 @@ func TestPrefilterRuleNamesTheRuleNeverItsValue(t *testing.T) {
 		`excluded: company is "Acme"`:                            "exclude_company",
 		`excluded: location matches "India"`:                     "exclude_location",
 		`excluded: location is outside only_locations`:           "exclude_location",
+		`excluded: location is outside only_locations (unrecognised location)`: "exclude_location_unrecognised",
+		`excluded: location matches "unrecognised location"`:                   "exclude_location",
 		`excluded: description matches an excluded phrase`:       "exclude_description",
 		`excluded: something new`:                                "exclude_other",
 		`slot "role_fit" = "mismatch_domain": title matched "x"`: "read_role_fit",

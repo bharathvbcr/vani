@@ -48,6 +48,13 @@ type Option struct {
 	// when the option names a region ("Europe") or nothing that tells.
 	Country string
 	Verdict Verdict
+	// Unrecognised is set on a VerdictNotUS option that is not known to be
+	// elsewhere: its name is in none of the tables (a US town missing from
+	// usCityNames reads this way, as does any small place abroad). A rule that
+	// drops on "not US" drops it all the same, but says it did not recognise
+	// the place, which a place abroad the tables do know ("London", "Lagos")
+	// does not.
+	Unrecognised bool
 }
 
 // maxOptionParts bounds the comma parts one place is read for. Parse bounds a
@@ -905,7 +912,7 @@ func (o *optBuild) option() Option {
 	case o.head == headForeign:
 		opt.Verdict, opt.Country = VerdictNotUS, o.headCountry
 	case o.head == headOther:
-		opt.Verdict = VerdictNotUS
+		opt.Verdict, opt.Unrecognised = VerdictNotUS, true
 	case o.wide, o.negUnknown:
 		opt.Verdict = VerdictAmbiguous
 	default:
