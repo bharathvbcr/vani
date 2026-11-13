@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/rankfit"
@@ -53,6 +55,48 @@ func rankWeights(cfg config.Config) (w *jobinsight.Weights, used, warn string) {
 	if err != nil {
 		return nil, rankWeightsHand, "rank_weights_file could not be used, so the hand weights rank: " + oneLine(err.Error(), 300)
 	}
+	used = "fitted " + f.FittedAt.UTC().Format("2006-01-02")
+	if f.Shares != nil {
+		switch refusal, unchecked := sharesVerdict(f); {
+		case refusal != "":
+			// The file's own held-out result puts the shares below the hand
+			// weights (or is not one): they do not rank. Its calibration is a
+			// separate fit and stays.
+			warn = "rank_weights_file's shares are refused, so the hand shares rank: " + refusal
+			f.Shares = nil
+			if len(f.Calibration) == 0 {
+				return nil, rankWeightsHand, warn
+			}
+			used += " (calibration only; shares refused)"
+		case unchecked != "":
+			warn = unchecked // used as the file says, but never silently unchecked
+		}
+	}
 	fitted := f.Apply(jobinsight.DefaultWeights())
-	return &fitted, "fitted " + f.FittedAt.UTC().Format("2006-01-02"), ""
+	return &fitted, used, warn
+}
+
+// sharesVerdict judges a file's fitted shares by the held-out result the file
+// records (rankfit.FitResult: the accuracy of the fitted shares and of the hand
+// weights on the same held-out judged pairs). refusal is non-empty when the
+// shares must not rank: that result puts them below the hand weights, or is not
+// an accuracy over any pair. unchecked is non-empty when the file records no
+// result, so the shares are used on its word alone, and says so. Both are empty
+// for shares at least as good as the hand weights on their own held-out pairs.
+func sharesVerdict(f rankfit.File) (refusal, unchecked string) {
+	if f.Report == nil || f.Report.Weights == nil {
+		return "", "rank_weights_file's shares record no held-out result (a file `vani rankfit` writes does), so they are used unchecked against the hand weights"
+	}
+	r := f.Report.Weights
+	unit := func(v float64) bool { return v >= 0 && v <= 1 } // false for NaN
+	switch {
+	case r.HeldOutPairs <= 0:
+		return "its recorded held-out result has no held-out pairs", ""
+	case !unit(r.FitAccuracy) || !unit(r.HandAccuracy):
+		return fmt.Sprintf("its recorded held-out accuracies (%v fitted, %v hand) are not an accuracy", r.FitAccuracy, r.HandAccuracy), ""
+	case r.FitAccuracy < r.HandAccuracy:
+		return fmt.Sprintf("on its own %d held-out pairs the fitted shares rank %.1f%% right, worse than the hand weights' %.1f%%",
+			r.HeldOutPairs, 100*r.FitAccuracy, 100*r.HandAccuracy), ""
+	}
+	return "", ""
 }
