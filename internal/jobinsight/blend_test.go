@@ -69,7 +69,7 @@ func randInputs(r *rand.Rand) Inputs {
 		HalfLifeDays: []float64{0, 7, 10, 30, -1, 1e9, math.NaN()}[r.IntN(7)],
 	}
 	for range r.IntN(4) {
-		in.Penalties = append(in.Penalties, Penalty{Slot: randSlot(r, fitOptions)})
+		in.Penalties = append(in.Penalties, Penalty{Name: []string{"", "seniority", "work_mode"}[r.IntN(3)], Slot: randSlot(r, fitOptions)})
 	}
 	return in
 }

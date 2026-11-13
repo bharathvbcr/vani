@@ -69,6 +69,34 @@ func TestRepeatedKeys(t *testing.T) {
 	}
 }
 
+// The poll's status file, and `vani status`, carry the same split as the log
+// line, so the app can say what became of every job.
+func TestPollInboxStatusAccountsForEveryJob(t *testing.T) {
+	w, _ := openWired(t, config.Default())
+	gh, _ := posting.GreenhouseKey("acme", "9")
+	if err := w.led.Append(context.Background(), ledger.Event{V: 1, At: time.Now(), Key: gh, Status: posting.Live, Reason: "new",
+		Posting: &posting.Posting{Key: gh, ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote", URL: "https://boards.greenhouse.io/acme/jobs/9"}}); err != nil {
+		t.Fatal(err)
+	}
+	testHookAdvanceNew = func(context.Context, []ledger.Record) error { return nil }
+	t.Cleanup(func() { testHookAdvanceNew = nil })
+	spoolBatch(t, w.stateDir, "careers-acme-com", "Platform Engineer", "Data Engineer")
+	if err := w.pollInbox(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := readInboxStatus(w.stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Jobs != 2 || st.New != 1 || st.ListedDuplicate != 1 || st.Duplicate != 1 || st.Known != 0 || st.Unaccounted != 0 {
+		t.Fatalf("status %+v", st)
+	}
+	f := (&env{stateDir: w.stateDir}).inboxFacet()
+	if f == nil || f.Jobs != 2 || f.ListedDuplicate != 1 || f.New != 1 {
+		t.Fatalf("status facet %+v", f)
+	}
+}
+
 // drainInbox counts every folded job: new ones, ones stored as a duplicate of
 // an ATS record, and ones the ledger already held (whatever the fold did to
 // them), leaving none unaccounted.

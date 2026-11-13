@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -781,12 +783,18 @@ func shortListingLines(b *boardsReport) []string {
 	if b == nil || b.Short <= 0 {
 		return nil
 	}
+	// Largest first: a one-row gap is routine, and many of them must not push
+	// a large one past the bound. Ties keep watchlist order.
+	var short []boardReport
+	for _, it := range b.Items {
+		if it.Short > 0 {
+			short = append(short, it)
+		}
+	}
+	slices.SortStableFunc(short, func(x, y boardReport) int { return cmp.Compare(y.Short, x.Short) })
 	var lines []string
 	named, more, moreRows := 0, 0, 0
-	for _, it := range b.Items {
-		if it.Short <= 0 {
-			continue
-		}
+	for _, it := range short {
 		named += it.Short
 		if len(lines) == maxShortLines {
 			more++

@@ -13,7 +13,7 @@
 import type { Bank, FieldInfo } from "./types";
 import { type FieldRef, filledBy, forgetFill, readRefValue, scanForm, writeStatus } from "./extract";
 import { type FillOutcome, beginFill, clearMarks, fillAll, fillRef, insertDraft, undoCount, undoFill } from "./fill";
-import { readChoice, readGet } from "./contacts";
+import { NOT_RUN_NOTE, readChoice, readGet } from "./contacts";
 import { type Coverage, type PageQuestion, bucketOf, coverageLine, coverageOf, noteLines } from "./coverage";
 import { type FlushResult, MIN_FORM_FIELDS, type Tracker, createTracker } from "./tracker";
 import {
@@ -47,7 +47,8 @@ import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, RESUME_KEYED_TIMEOUT_MS, type 
 import { type OfferAction, type OfferUi, type PickedFile, createResumeOffer } from "./resumeoffer";
 import { emptyBank, type Match } from "./types";
 import { createBankMemo } from "./bankcache";
-import { buildIngestBatch, describeIngest, leftOutText, prepareIngest } from "./ingest";
+import { sendable } from "./ingest";
+import { sendScrape } from "./crawler";
 import { crawlRow } from "./crawlrun";
 import { QUIET_MS, carryMatches, observeRoots, runRounds, waitForQuiet } from "./rounds";
 import { matchAll, settleAmbiguous } from "./samequestion";
@@ -638,8 +639,8 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   drawer.style.display = "flex";
   const ranked = selectJobs(res.jobs, { query: "", minScore: 0, remoteOnly: false });
   const preview = ranked.slice(0, DRAWER_PREVIEW);
-  // Save hands over res.jobs. Job links the scraper did not read (past its bound) are res.unread, said below.
-  const batch = buildIngestBatch(res.jobs);
+  // Save hands over every one of res.jobs, in batches. Job links the scraper did not read (past its bound) are res.unread, said below.
+  const can = sendable(res.jobs);
 
   const header = document.createElement("div");
   header.className = "shead";
@@ -647,7 +648,7 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   const unread = unreadText(res.unread);
   const more = boardTotalText(res.boardTotal, res.jobs.length);
   const skipped = skippedText(res.skipped);
-  titleSpan.textContent = [drawerSummary(res.jobs.length, preview.length, batch.jobs.length, leftOutText(batch)), unread && `${unread}.`, more && `${more}.`, skipped && `${skipped}.`].filter(Boolean).join(" ");
+  titleSpan.textContent = [drawerSummary(res.jobs.length, preview.length, can.count, can.leftOut), unread && `${unread}.`, more && `${more}.`, skipped && `${skipped}.`].filter(Boolean).join(" ");
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "ctrl";
@@ -715,7 +716,9 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   saveBtn.addEventListener("click", () => {
     saveBtn.disabled = true;
     result.textContent = "Sending...";
-    void saveScrapeToVani(res, againBox.checked).then(t => { result.textContent = t; }).finally(() => { saveBtn.disabled = false; });
+    void saveScrapeToVani(res, againBox.checked, (from, to, total) => {
+      if (total > to - from + 1) result.textContent = `Sending ${from}–${to} of ${total}…`;
+    }).then(t => { result.textContent = t; }).finally(() => { saveBtn.disabled = false; });
   });
   // The drawer shows one page; this walks every page of the listing (crawlrun.ts) and sends it the same way.
   const crawl = crawlRow(document, () => ({
@@ -730,17 +733,9 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   toast(`Scraped ${ranked.length} ${ranked.length === 1 ? "job" : "jobs"}.`);
 }
 
-/** Send every scraped job to Vani and say what Vani answered; a failure is reported, never swallowed. */
-async function saveScrapeToVani(res: ScrapeResult, saveSearch: boolean): Promise<string> {
-  const p = prepareIngest(res, saveSearch);
-  if ("error" in p) return p.error;
-  let reply: unknown;
-  try {
-    reply = await send<unknown>(p.req);
-  } catch (e) {
-    return `Could not reach Vani: ${e instanceof Error ? e.message : String(e)}`;
-  }
-  return `${describeIngest(reply).text}${p.leftOut ? `. ${p.leftOut}` : ""}`;
+/** Send every scraped job to Vani, in bounded batches (crawler.ts sendScrape), and say what Vani answered; a failure is reported, never swallowed. */
+async function saveScrapeToVani(res: ScrapeResult, saveSearch: boolean, onBatch: (from: number, to: number, total: number) => void): Promise<string> {
+  return (await sendScrape(res, saveSearch, m => send<unknown>(m as ToBackground), onBatch)).text;
 }
 
 /** How long a message stays up before a rescan may replace it with the coverage line. */
@@ -813,6 +808,8 @@ const REASON: Record<NonNullable<FillOutcome["reason"]>, string> = {
   no_cover: "no cover letter chosen for this job",
   cover_unavailable: "the cover letter could not be had from the Vani Apply Mac app",
   too_long: "the answer is longer than the field allows; shorten it by hand",
+  // fill.ts notRun always sets its own detail; this is the words when one ever arrives without.
+  not_run: NOT_RUN_NOTE,
 };
 
 /** Why a fill or insert did not happen, in words: the outcome's own sentence when it has one (a character limit names its numbers), else the reason's. */

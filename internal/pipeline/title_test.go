@@ -47,7 +47,7 @@ func TestEvaluateTitle(t *testing.T) {
 		"Remote Engineer":         "", // read, but no rule drops it
 		"":                        "",
 	} {
-		a, reason, dropped := p.EvaluateTitle(title)
+		a, reason, dropped := p.EvaluateTitle(title, "")
 		if dropped != (want != "") || reason != want {
 			t.Errorf("%q: dropped %v reason %q, want %q", title, dropped, reason, want)
 		}
@@ -59,27 +59,60 @@ func TestEvaluateTitle(t *testing.T) {
 		}
 	}
 	// A dropped title records every slot it read, not only the dropping one.
-	a, _, _ := p.EvaluateTitle("Staff Sales Remote")
+	a, _, _ := p.EvaluateTitle("Staff Sales Remote", "")
 	if len(a.Slots) != 3 || a.Slots["work_mode"].Value != "remote" || a.Slots["role_fit"].Reading != decide.Answered {
 		t.Fatalf("answer %+v", a)
 	}
 
 	// The owner keeps managers: no rule names manager, so the model reads it.
 	keep := DropPolicy{Rules: []DropRule{{Slot: "seniority", Values: []string{"staff_plus"}, MinOpenRouterProb: 0.9}}, ReadTitle: reader}
-	if _, _, dropped := keep.EvaluateTitle("Engineering Manager"); dropped {
+	if _, _, dropped := keep.EvaluateTitle("Engineering Manager", ""); dropped {
 		t.Fatal("Engineering Manager dropped although no rule drops manager")
 	}
 	// A rule with zero thresholds still drops on a title reading: the
 	// reading is deterministic, and the rule's presence is the owner's call.
 	zero := DropPolicy{Rules: []DropRule{{Slot: "seniority", Values: []string{"manager"}}}, ReadTitle: reader}
-	if _, _, dropped := zero.EvaluateTitle("Engineering Manager"); !dropped {
+	if _, _, dropped := zero.EvaluateTitle("Engineering Manager", ""); !dropped {
 		t.Fatal("rule without thresholds did not drop a title reading")
 	}
 	// No reader, or no rules: nothing drops, nothing is unsure.
 	for name, q := range map[string]DropPolicy{"no reader": {Rules: titleRules}, "no rules": {ReadTitle: reader}} {
-		if a, r, dropped := q.EvaluateTitle("Staff Sales Manager"); dropped || r != "" || a.Slots != nil {
+		if a, r, dropped := q.EvaluateTitle("Staff Sales Manager", ""); dropped || r != "" || a.Slots != nil {
 			t.Errorf("%s: %+v %q %v", name, a, r, dropped)
 		}
+	}
+}
+
+// A "Staff" title is not read as staff_plus when the posting's own figures
+// ask for fewer than staff-level years (expyears.StaffMinYears): some
+// companies title every role "Staff". The reading abstains, so the model reads
+// the posting; with no figure, or staff-level years, the title reading stands.
+func TestEvaluateTitleStaffNeedsStaffYears(t *testing.T) {
+	reader := readsOn(map[string]TitleReading{
+		"Staff": {Slot: "seniority", Value: "staff_plus"},
+		"Sales": {Slot: "role_fit", Value: "mismatch_domain"},
+	})
+	p := DropPolicy{Rules: titleRules, OpenRouter: "d1-ultra", ReadTitle: reader}
+	for _, tc := range []struct {
+		name, title, desc, want string
+	}{
+		{"no figure", "Member of Data Staff (Data Acceleration)", "Build our data platform.", `slot "seniority" = "staff_plus": title matched "Staff"`},
+		{"staff years", "Staff Software Engineer", "10+ years building distributed infrastructure", `slot "seniority" = "staff_plus": title matched "Staff"`},
+		{"6+ years abstains", "Member of Data Staff (Data Acceleration)", "6+ years of experience in data engineering", ""},
+		{"4+ years abstains", "Member of Technical Staff (Software Engineer)", "4+ years of experience", ""},
+		{"a date is no figure", "Staff Software Engineer", "Founded 10 years ago.", `slot "seniority" = "staff_plus": title matched "Staff"`},
+		// Another reading on the same title still drops on its own rule.
+		{"other slot still drops", "Staff Sales Lead", "3+ years of sales experience", `slot "role_fit" = "mismatch_domain": title matched "Sales"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, reason, dropped := p.EvaluateTitle(tc.title, tc.desc)
+			if dropped != (tc.want != "") || reason != tc.want {
+				t.Fatalf("dropped %v reason %q, want %q", dropped, reason, tc.want)
+			}
+			if _, read := a.Slots["seniority"]; dropped && tc.name == "other slot still drops" && read {
+				t.Fatalf("the abstained staff reading was recorded: %+v", a.Slots)
+			}
+		})
 	}
 }
 

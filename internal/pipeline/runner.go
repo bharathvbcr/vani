@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/bharathvbcr/Vani/internal/expyears"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/resume"
@@ -531,7 +533,7 @@ func (p DropPolicy) EvaluatePosting(post posting.Posting) (a decide.Answer, reas
 	if why, ok := p.excluded(post); ok {
 		return decide.Answer{Backend: ExcludeBackend}, why, true
 	}
-	return p.EvaluateTitle(post.Title)
+	return p.EvaluateTitle(post.Title, post.Description)
 }
 
 // TitleReading is one slot value read from a title, and the phrase matched.
@@ -544,11 +546,20 @@ type TitleReading struct {
 // with no calibration threshold; a ruled slot the title does not read is not
 // a reason for Unsure, it is left to the backends. dropped false means the
 // backends must read the posting, and the answer is to be discarded.
-func (p DropPolicy) EvaluateTitle(title string) (a decide.Answer, reason string, dropped bool) {
+//
+// description is the posting's own text, read only for its year figures: a
+// title read as staff_plus abstains when they ask for fewer than staff-level
+// years (expyears.BelowStaff), since some companies title every role "Staff".
+func (p DropPolicy) EvaluateTitle(title, description string) (a decide.Answer, reason string, dropped bool) {
 	if p.ReadTitle == nil {
 		return decide.Answer{}, "", false
 	}
 	reads := p.ReadTitle(title)
+	if slices.ContainsFunc(reads, isStaffReading) {
+		if _, below := expyears.BelowStaff(description); below {
+			reads = slices.DeleteFunc(slices.Clone(reads), isStaffReading)
+		}
+	}
 	if len(reads) == 0 {
 		return decide.Answer{}, "", false
 	}
@@ -564,6 +575,11 @@ func (p DropPolicy) EvaluateTitle(title string) (a decide.Answer, reason string,
 		}
 	}
 	return decide.Answer{}, "", false
+}
+
+// isStaffReading is a title reading of seniority as staff_plus.
+func isStaffReading(r TitleReading) bool {
+	return r.Slot == "seniority" && r.Value == expyears.ValueStaff
 }
 
 // Evaluate maps an answer to Dropped, Unsure or Triaged with a reason that

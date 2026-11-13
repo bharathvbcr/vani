@@ -447,7 +447,7 @@ func pagedTotal(first listPage) (stop int, ok bool) {
 // externalPaths it found, its buckets' included. Over the window the query is
 // split by a facet.
 func (w *walker) walk(ctx context.Context, applied map[string][]string, depth int) (map[string]bool, error) {
-	stubsBefore := w.stubs
+	stubsBefore, shortBefore := w.stubs, w.short
 	first, err := w.page(ctx, applied, 0)
 	if err != nil {
 		return nil, err
@@ -499,6 +499,13 @@ func (w *walker) walk(ctx context.Context, applied map[string][]string, depth in
 		if len(here) < count-shortfall(count) {
 			return nil, fmt.Errorf("%w: split by %s, the board listed %d of the %d jobs it counts",
 				errIncomplete, split.param, len(here), count)
+		}
+		// Rows the allowance let pass are counted (Stats.Short), less those
+		// its buckets already counted as their own shortfall: a bucket whose
+		// total dropped with its rows is not short by itself, and only the
+		// split's count names that gap.
+		if gap, named := count-len(here), w.short-shortBefore; gap > named {
+			w.short += gap - named
 		}
 		return here, nil
 	}

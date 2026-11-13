@@ -121,6 +121,15 @@ export function leftOutText(b: Pick<IngestBatch, "skipped" | "overLimit">): stri
   return parts.join("; ");
 }
 
+/**
+ * What Save can send of a scrape. Save sends in as many batches as it takes (crawler.ts sendScrape), so
+ * only jobs no batch can carry are left out; MAX_INGEST_JOBS bounds a message, not a Save.
+ */
+export function sendable(scraped: readonly IngestSource[]): { count: number; leftOut: string } {
+  const b = buildIngestBatch(scraped);
+  return { count: b.jobs.length + b.overLimit, leftOut: leftOutText({ skipped: b.skipped, overLimit: 0 }) };
+}
+
 export interface IngestRequest { type: "ingestJobs"; page: IngestPage; saveSearch: boolean; jobs: IngestJob[] }
 
 /**
@@ -180,6 +189,8 @@ export function describeIngest(reply: unknown): IngestOutcome {
       return { ok: false, text: "This version of the Vani app cannot take scraped jobs. Update the Vani app." };
     }
     if (code === "unreachable") return { ok: false, text: "The Vani app is not reachable. Open it and try again." };
+    // The message never left the extension (sendCrawl's own catch): nothing refused it.
+    if (code === "transport") return { ok: false, text: `Could not reach Vani: ${reply.error}` };
     return { ok: false, text: `Vani refused the jobs: ${reply.error}` };
   }
   if (!isIngestReply(reply)) return { ok: false, text: "Vani sent an answer this extension does not understand." };

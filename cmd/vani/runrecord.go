@@ -395,7 +395,10 @@ type reconcileCounts struct {
 	Missed     int `json:"missed,omitempty"`
 	Dead       int `json:"dead,omitempty"`
 	Duplicate  int `json:"duplicate,omitempty"`
-	Invalid    int `json:"invalid,omitempty"`
+	// ListedDuplicate is the part of Duplicate that is listed postings stored
+	// as a duplicate; the rest is other records marked as their twins.
+	ListedDuplicate int `json:"listed_duplicate,omitempty"`
+	Invalid         int `json:"invalid,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {
