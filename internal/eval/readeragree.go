@@ -73,6 +73,12 @@ type ReaderRow struct {
 	// construction and lift Specificity; the scored stratum is not.
 	ScoredSensitivity Count `json:"scored_sensitivity"`
 	ScoredSpecificity Count `json:"scored_specificity"`
+	// SeniorityOfMismatch is, among the postings this reader read as
+	// role_fit mismatch_seniority, its own seniority value by the owner's
+	// answer (NoReading when it gave none). It is the evidence for relaxing the
+	// seniority gate: a mismatch the owner still wants, at a level the owner
+	// applies to, is the rubric's early-career anchor showing.
+	SeniorityOfMismatch []ReaderCell `json:"seniority_of_mismatch,omitempty"`
 }
 
 // ReaderAgreement is every reader against the owner's would_apply.
@@ -95,17 +101,41 @@ type readerTally struct {
 	prompts  map[string]bool
 	cells    map[string]map[string]*ReaderCell // slot -> value -> cell
 	slotRead map[string]map[posting.Key]bool
+	// values holds each slot's value per posting, for the cross-tables.
+	values map[string]map[posting.Key]string
 	// scored holds the owner-judged keys drawn from a score decile.
 	scored map[posting.Key]bool
 }
 
 func newTally(reader, kind string, scored map[posting.Key]bool) *readerTally {
 	t := &readerTally{row: ReaderRow{Reader: reader, Kind: kind}, read: map[posting.Key]bool{}, prompts: map[string]bool{},
-		cells: map[string]map[string]*ReaderCell{}, slotRead: map[string]map[posting.Key]bool{}, scored: scored}
+		cells: map[string]map[string]*ReaderCell{}, slotRead: map[string]map[posting.Key]bool{},
+		values: map[string]map[posting.Key]string{}, scored: scored}
 	for _, s := range ReaderSlots {
-		t.cells[s], t.slotRead[s] = map[string]*ReaderCell{}, map[posting.Key]bool{}
+		t.cells[s], t.slotRead[s], t.values[s] = map[string]*ReaderCell{}, map[posting.Key]bool{}, map[posting.Key]string{}
 	}
 	return t
+}
+
+// boundCells lists cells most frequent first, folding those past
+// maxReaderValues into OtherReading.
+func boundCells(m map[string]*ReaderCell) []ReaderCell {
+	cells := make([]ReaderCell, 0, len(m))
+	for _, c := range m {
+		cells = append(cells, *c)
+	}
+	total := func(c ReaderCell) int { return c.Yes + c.Maybe + c.No }
+	slices.SortFunc(cells, func(a, b ReaderCell) int {
+		return cmp.Or(cmp.Compare(total(b), total(a)), cmp.Compare(a.Value, b.Value))
+	})
+	if len(cells) > maxReaderValues {
+		other := ReaderCell{Value: OtherReading}
+		for _, c := range cells[maxReaderValues:] {
+			other.Yes, other.Maybe, other.No = other.Yes+c.Yes, other.Maybe+c.Maybe, other.No+c.No
+		}
+		cells = append(cells[:maxReaderValues:maxReaderValues], other)
+	}
+	return cells
 }
 
 func (c *ReaderCell) add(v string) {
@@ -125,6 +155,7 @@ func (t *readerTally) note(k posting.Key, slot, value, v string) {
 		return // one reading per posting, slot and reader
 	}
 	t.slotRead[slot][k], t.read[k] = true, true
+	t.values[slot][k] = value
 	c := t.cells[slot][value]
 	if c == nil {
 		c = &ReaderCell{Value: value}
@@ -164,25 +195,30 @@ func (t *readerTally) finish(owner map[posting.Key]string) ReaderRow {
 				none.add(v)
 			}
 		}
-		cells := make([]ReaderCell, 0, len(t.cells[slot]))
-		for _, c := range t.cells[slot] {
-			cells = append(cells, *c)
-		}
-		total := func(c ReaderCell) int { return c.Yes + c.Maybe + c.No }
-		slices.SortFunc(cells, func(a, b ReaderCell) int {
-			return cmp.Or(cmp.Compare(total(b), total(a)), cmp.Compare(a.Value, b.Value))
-		})
-		if len(cells) > maxReaderValues {
-			other := ReaderCell{Value: OtherReading}
-			for _, c := range cells[maxReaderValues:] {
-				other.Yes, other.Maybe, other.No = other.Yes+c.Yes, other.Maybe+c.Maybe, other.No+c.No
-			}
-			cells = append(cells[:maxReaderValues:maxReaderValues], other)
-		}
-		if total(none) > 0 {
+		cells := boundCells(t.cells[slot])
+		if none.Yes+none.Maybe+none.No > 0 {
 			cells = append(cells, none)
 		}
 		t.row.Slots = append(t.row.Slots, ReaderSlotTable{Slot: slot, Rows: cells})
+	}
+	mis := map[string]*ReaderCell{}
+	for k, v := range t.values["role_fit"] {
+		if v != "mismatch_seniority" {
+			continue
+		}
+		s, ok := t.values["seniority"][k]
+		if !ok {
+			s = NoReading
+		}
+		c := mis[s]
+		if c == nil {
+			c = &ReaderCell{Value: s}
+			mis[s] = c
+		}
+		c.add(owner[k])
+	}
+	if len(mis) > 0 {
+		t.row.SeniorityOfMismatch = boundCells(mis)
 	}
 	return t.row
 }
@@ -319,6 +355,12 @@ func (a ReaderAgreement) Markdown() string {
 		for _, s := range r.Slots {
 			fmt.Fprintf(&b, "\n%s | yes | maybe | no\n---|---|---|---\n", s.Slot)
 			for _, c := range s.Rows {
+				fmt.Fprintf(&b, "%s | %d | %d | %d\n", c.Value, c.Yes, c.Maybe, c.No)
+			}
+		}
+		if len(r.SeniorityOfMismatch) > 0 {
+			b.WriteString("\nread mismatch_seniority, by its seniority reading | yes | maybe | no\n---|---|---|---\n")
+			for _, c := range r.SeniorityOfMismatch {
 				fmt.Fprintf(&b, "%s | %d | %d | %d\n", c.Value, c.Yes, c.Maybe, c.No)
 			}
 		}

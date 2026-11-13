@@ -112,11 +112,16 @@ func (e *env) cmdRelevance(args []string) error {
 	readers := eval.BuildReaderAgreement(done, b.snap.Records, store, status, names)
 	readers.TeacherDetail = detail
 	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers}
-	if parts, err := e.partAUC(done, b.snap); err != nil {
-		out.PartAUCError = err.Error()
+	base := jobinsight.DefaultWeights()
+	items, itemsErr := e.judgedItems(done, b.snap, base)
+	if itemsErr != nil {
+		out.PartAUCError = itemsErr.Error()
 	} else {
-		out.PartAUC = parts
+		out.PartAUC = partAUCOf(items, base)
 	}
+	eng := engineeringOf(b.snap)
+	sens := buildSensitivity(done, b.snap.Records, store, status, names, items, itemsErr, base, eng)
+	out.Sensitivity = &sens
 	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())
 		fmt.Fprint(e.stdout, recall.Markdown())
@@ -130,7 +135,32 @@ func (e *env) cmdRelevance(args []string) error {
 		for _, p := range out.PartAUC {
 			fmt.Fprint(e.stdout, p.Markdown())
 		}
+		fmt.Fprint(e.stdout, sens.Markdown())
 	})
+}
+
+// engineeringOf reports eval.TitleIsEngineering of each posting in snap, by
+// key, from its title as the ledger holds it; an unknown key is false.
+func engineeringOf(snap ledger.Snapshot) func(posting.Key) bool {
+	titles := make(map[posting.Key]string, len(snap.Records))
+	for _, r := range snap.Records {
+		if _, ok := titles[r.Key]; !ok {
+			titles[r.Key] = r.Posting.Title
+		}
+	}
+	return func(k posting.Key) bool {
+		t, ok := titles[k]
+		return ok && eval.TitleIsEngineering(t)
+	}
+}
+
+// partAUCOf is BuildPartAUC over each scope of judged items.
+func partAUCOf(items []rankfit.Item, base jobinsight.Weights) []rankfit.PartAUC {
+	out := make([]rankfit.PartAUC, 0, len(partAUCScopes))
+	for _, s := range partAUCScopes {
+		out = append(out, rankfit.BuildPartAUC(items, base, s.name, s.keep, rankfit.DefaultPartAUCResamples, 1))
+	}
+	return out
 }
 
 // partAUCScopes are the judged postings the part AUC is computed over: all of
@@ -143,12 +173,11 @@ var partAUCScopes = []struct {
 	{"scored stratum (score deciles)", func(it *rankfit.Item) bool { return rankfit.StratumOf(it.Source) == rankfit.StratumScored }},
 }
 
-// partAUC sets each Score part against the owner's audit judgments, building
-// the parts exactly as `vani rankfit` does (rankfitItems) under the hand
-// weights. Marks and impressions are read for the scores the owner saw and
-// the company factor; neither becomes a label here. A source that cannot be
-// read is an error, never an empty table.
-func (e *env) partAUC(done map[posting.Key]eval.Entry, snap ledger.Snapshot) ([]rankfit.PartAUC, error) {
+// judgedItems builds each audit-judged posting's Score parts exactly as `vani
+// rankfit` does (rankfitItems) under base. Marks and impressions are read for
+// the scores the owner saw and the company factor; neither becomes a label
+// here. A source that cannot be read is an error, never an empty table.
+func (e *env) judgedItems(done map[posting.Key]eval.Entry, snap ledger.Snapshot, base jobinsight.Weights) ([]rankfit.Item, error) {
 	me, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
 		return nil, fmt.Errorf("read marks: %w", err)
@@ -166,16 +195,8 @@ func (e *env) partAUC(done map[posting.Key]eval.Entry, snap ledger.Snapshot) ([]
 			delete(targets, k) // passed-over impressions: not the owner's answer
 		}
 	}
-	base := jobinsight.DefaultWeights()
 	items, _, _, err := e.rankfitItems(snap, me, targets, base)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]rankfit.PartAUC, 0, len(partAUCScopes))
-	for _, s := range partAUCScopes {
-		out = append(out, rankfit.BuildPartAUC(items, base, s.name, s.keep, rankfit.DefaultPartAUCResamples, 1))
-	}
-	return out, nil
+	return items, err
 }
 
 // relevanceReply is `vani relevance --json`. DropAgreementError replaces
@@ -197,6 +218,9 @@ type relevanceReply struct {
 	Readers      *eval.ReaderAgreement `json:"readers,omitempty"`
 	PartAUC      []rankfit.PartAUC     `json:"part_auc,omitempty"`
 	PartAUCError string                `json:"part_auc_error,omitempty"`
+	// Sensitivity repeats Readers and the all-postings PartAUC under each
+	// eval.LabelMode, so a verdict that holds in one reading only shows as such.
+	Sensitivity *sensitivityReply `json:"sensitivity,omitempty"`
 }
 
 // dropAgreement is the drop-candidate agreement for a run that has not read
