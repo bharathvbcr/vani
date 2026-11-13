@@ -11,7 +11,7 @@ import (
 )
 
 func TestQuestionBoundsTitleLocationAndDigest(t *testing.T) {
-	digest, err := DigestOf(testProfile())
+	digest, err := DigestOf(testProfile(), noTerms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestQuestionBoundsTitleLocationAndDigest(t *testing.T) {
 		"digest":   {posting.Posting{Title: "Engineer", Description: "Build things."}, Digest{Text: huge, SHA256: "x"}},
 	}
 	for name, c := range cases {
-		q, truncated := Question(c.p, "target roles", c.d, nil)
+		q, truncated := question(c.p, "target roles", c.d, nil)
 		if len(q.Context) > jdtriage.MaxContextBytes {
 			t.Errorf("%s: context is %d bytes, over %d", name, len(q.Context), jdtriage.MaxContextBytes)
 		}
@@ -39,13 +39,13 @@ func TestQuestionBoundsTitleLocationAndDigest(t *testing.T) {
 }
 
 func TestQuestionCutsTitleAndLocationToRuneCaps(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	p := posting.Posting{
 		Title:       strings.Repeat("世", draft.MaxTitleRunes+50),
 		Location:    strings.Repeat("界", MaxLocationRunes+50),
 		Description: "Build things.",
 	}
-	q, truncated := Question(p, "t", digest, nil)
+	q, truncated := question(p, "t", digest, nil)
 	if !truncated {
 		t.Error("cutting a field must set truncated")
 	}
@@ -56,7 +56,7 @@ func TestQuestionCutsTitleAndLocationToRuneCaps(t *testing.T) {
 		t.Errorf("location kept %d runes, want %d", n, MaxLocationRunes)
 	}
 	// Within the caps nothing is cut and truncated stays false.
-	_, truncated = Question(posting.Posting{Title: "Engineer", Location: "Remote", Description: "Build things."}, "t", digest, nil)
+	_, truncated = question(posting.Posting{Title: "Engineer", Location: "Remote", Description: "Build things."}, "t", digest, nil)
 	if truncated {
 		t.Error("a small posting was reported truncated")
 	}

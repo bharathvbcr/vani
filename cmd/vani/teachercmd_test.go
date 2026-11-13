@@ -99,21 +99,23 @@ func (f *tcFake) Decide(_ context.Context, q decide.Question) (decide.Answer, er
 
 func tcUse(t *testing.T, f *tcFake) {
 	t.Helper()
-	oldD, oldS := teacherDecider, teacherSpent
-	t.Cleanup(func() { teacherDecider, teacherSpent = oldD, oldS })
+	oldD, oldS, oldR := teacherDecider, teacherSpent, teacherResolved
+	t.Cleanup(func() { teacherDecider, teacherSpent, teacherResolved = oldD, oldS, oldR })
 	teacherDecider = func(context.Context, *wired, string) (decide.Decider, error) { return f, nil }
 	teacherSpent = func(context.Context, string) (int64, error) { return f.meter.Load(), nil }
+	teacherResolved = func(context.Context, string) (int64, error) { return f.meter.Load(), nil }
 }
 
 func tcNoModel(t *testing.T) {
 	t.Helper()
-	oldD, oldS := teacherDecider, teacherSpent
-	t.Cleanup(func() { teacherDecider, teacherSpent = oldD, oldS })
+	oldD, oldS, oldR := teacherDecider, teacherSpent, teacherResolved
+	t.Cleanup(func() { teacherDecider, teacherSpent, teacherResolved = oldD, oldS, oldR })
 	teacherDecider = func(context.Context, *wired, string) (decide.Decider, error) {
 		t.Fatal("the model's decider was built")
 		return nil, nil
 	}
 	teacherSpent = func(context.Context, string) (int64, error) { return 0, nil }
+	teacherResolved = func(context.Context, string) (int64, error) { return 0, nil }
 }
 
 func TestTeacherDryRunAsksNothingAndPricesFromTheTable(t *testing.T) {

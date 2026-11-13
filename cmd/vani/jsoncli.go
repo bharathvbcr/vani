@@ -95,6 +95,8 @@ var jsonLeaves = []jsonLeaf{
 	{"kbmatch run", jsonFlag, ""},
 	{"kbmatch status", jsonFlag, ""},
 	{"teacher", jsonFlag, ""},
+	{"auditor calibrate", jsonFlag, ""},
+	{"auditor report", jsonFlag, ""},
 	{"impressions log", jsonFlag, ""},
 	{"labels", jsonFlag, ""},
 	{"jobs list", jsonFlag, ""},

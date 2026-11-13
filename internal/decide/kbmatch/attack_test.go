@@ -12,7 +12,7 @@ import (
 )
 
 func TestAttackTitleLocationAtCapAndOver(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	for _, c := range []struct {
 		name       string
 		title, loc int
@@ -24,7 +24,7 @@ func TestAttackTitleLocationAtCapAndOver(t *testing.T) {
 		{"cap-1", draft.MaxTitleRunes - 1, MaxLocationRunes - 1, false},
 	} {
 		p := posting.Posting{Title: strings.Repeat("世", c.title), Location: strings.Repeat("界", c.loc), Description: "Build things."}
-		q, truncated := Question(p, "t", digest, nil)
+		q, truncated := question(p, "t", digest, nil)
 		if truncated != c.want || q.Facts[jdtriage.FactContextTruncated] != map[bool]string{true: "true", false: "false"}[c.want] {
 			t.Errorf("%s: truncated=%v fact=%q, want %v", c.name, truncated, q.Facts[jdtriage.FactContextTruncated], c.want)
 		}
@@ -40,9 +40,9 @@ func TestAttackTitleLocationAtCapAndOver(t *testing.T) {
 // The stated contract is a rune boundary; a combining mark at the cut is
 // separated from its base. Documented here, not asserted as a break.
 func TestAttackCombiningMarkAtCut(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	title := strings.Repeat("a", draft.MaxTitleRunes-1) + "é" // base is rune 300, mark is rune 301
-	q, truncated := Question(posting.Posting{Title: title, Description: "x"}, "t", digest, nil)
+	q, truncated := question(posting.Posting{Title: title, Description: "x"}, "t", digest, nil)
 	if !truncated || !utf8.Valid(q.Context) {
 		t.Fatalf("truncated=%v valid=%v", truncated, utf8.Valid(q.Context))
 	}
@@ -52,23 +52,23 @@ func TestAttackCombiningMarkAtCut(t *testing.T) {
 }
 
 func TestAttackFourByteRunesAtByteCap(t *testing.T) {
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	for pad := range 5 {
 		body := strings.Repeat("a", pad) + strings.Repeat("\U0001F600", jdtriage.MaxContextBytes)
-		q, truncated := Question(posting.Posting{Title: "E", Description: body}, "t", digest, nil)
+		q, truncated := question(posting.Posting{Title: "E", Description: body}, "t", digest, nil)
 		if len(q.Context) > jdtriage.MaxContextBytes || !utf8.Valid(q.Context) || !truncated {
 			t.Errorf("pad %d: len %d valid %v truncated %v", pad, len(q.Context), utf8.Valid(q.Context), truncated)
 		}
 	}
 	// A body that exactly fills the room is not "truncated".
-	_, base := Question(posting.Posting{Title: "E", Description: ""}, "t", digest, nil)
-	q0, _ := Question(posting.Posting{Title: "E", Description: ""}, "t", digest, nil)
+	_, base := question(posting.Posting{Title: "E", Description: ""}, "t", digest, nil)
+	q0, _ := question(posting.Posting{Title: "E", Description: ""}, "t", digest, nil)
 	room := jdtriage.MaxContextBytes - len(q0.Context)
-	q, truncated := Question(posting.Posting{Title: "E", Description: strings.Repeat("a", room)}, "t", digest, nil)
+	q, truncated := question(posting.Posting{Title: "E", Description: strings.Repeat("a", room)}, "t", digest, nil)
 	if base || truncated || len(q.Context) != jdtriage.MaxContextBytes {
 		t.Errorf("exact fit: len %d truncated %v base %v", len(q.Context), truncated, base)
 	}
-	q, truncated = Question(posting.Posting{Title: "E", Description: strings.Repeat("a", room+1)}, "t", digest, nil)
+	q, truncated = question(posting.Posting{Title: "E", Description: strings.Repeat("a", room+1)}, "t", digest, nil)
 	if !truncated || len(q.Context) != jdtriage.MaxContextBytes {
 		t.Errorf("room+1: len %d truncated %v", len(q.Context), truncated)
 	}
@@ -84,7 +84,7 @@ func TestAttackContextNeverExceedsCapProperty(t *testing.T) {
 		}
 		return sb.String()
 	}
-	digest, _ := DigestOf(testProfile())
+	digest, _ := DigestOf(testProfile(), noTerms)
 	for i := range 300 {
 		d := digest
 		if rng.Intn(3) == 0 {
@@ -95,7 +95,7 @@ func TestAttackContextNeverExceedsCapProperty(t *testing.T) {
 			focus = append(focus, Focus{Label: gen(400), Text: gen(400)})
 		}
 		p := posting.Posting{Title: gen(900), Location: gen(400), Description: gen(30000)}
-		q, truncated := Question(p, gen(3000), d, focus)
+		q, truncated := question(p, gen(3000), d, focus)
 		if len(q.Context) > jdtriage.MaxContextBytes {
 			t.Fatalf("case %d: context %d bytes", i, len(q.Context))
 		}

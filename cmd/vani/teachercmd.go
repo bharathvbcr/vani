@@ -28,6 +28,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/track"
 	"github.com/bharathvbcr/decide"
 )
 
@@ -100,13 +101,29 @@ var (
 		return lb, nil
 	}
 	// teacherSpent reads the day's committed llm spend (nano-USD) from the
-	// budget ledger at path, which every llm call is metered into.
+	// budget ledger at path, which every llm call is metered into: everything
+	// counted against the daily cap, so the cap's headroom is the cap less it.
 	teacherSpent = func(ctx context.Context, path string) (int64, error) {
 		s, err := budget.Inspect(ctx, path)
 		if err != nil {
 			return 0, err
 		}
 		return s.CommittedNanoUSD(), nil
+	}
+	// teacherResolved reads the day's resolved llm spend (nano-USD): what the
+	// ledger settled from provider usage plus the reservations it kept
+	// unproven, leaving out attempts still in flight. It is a run's own meter
+	// (eval.TeacherRun.Spent). Each of the run's attempts is resolved into it
+	// before its question returns and it never falls, so its growth over a run
+	// is at least what the run spent. The committed total is not: it counts
+	// other callers' in-flight reservations, and one settling for less during
+	// the run made its growth understate the run's spend.
+	teacherResolved = func(ctx context.Context, path string) (int64, error) {
+		s, err := budget.Inspect(ctx, path)
+		if err != nil {
+			return 0, err
+		}
+		return s.SpentNanoUSD + s.RetainedNanoUSD, nil
 	}
 	// teacherSettled reads the budget ledger at path as it stands, for the
 	// run's report (settled spend, kept reservations).
@@ -134,6 +151,7 @@ func (e *env) cmdTeacher(args []string) error {
 	readingsOf := fs.String("with-readings-of", "", "keep only postings that already have a current reading by this model (this task, fixture and prompt, and for kb_match this knowledge-base digest), applied before --sample")
 	taskFlag := fs.String("task", teacherTaskJD, fmt.Sprintf("the question asked: %s (the triage question) or %s (does the work match your knowledge base; the full digest is sent)", teacherTaskJD, teacherTaskKB))
 	keysFile := fs.String("keys", "", "ask only about the posting keys this file lists, one per line (an unknown or duplicate key is refused); without --sample they are asked in the file's order")
+	allowMissing := fs.Bool(kbAllowMissingFlag, false, "with --task kb_match: send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+", or one with no terms (without it, either refuses)")
 	drawOut := fs.String("draw-out", "", "save the drawn keys, in the order they are asked, to this file (default: a new file under the state directory's teacher_draws/); pass it back with --keys to resume the same sample")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what the run did (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
@@ -174,7 +192,8 @@ func (e *env) cmdTeacher(args []string) error {
 		return usagef("teacher: --max must not be negative")
 	}
 	o := teacherOpts{dry: *dry, budgetUSD: *budgetUSD, model: *modelFlag, of: *of, conc: *conc, maxN: *maxN,
-		sample: sampleSet, sampleN: *sampleN, seed: *seed, readingsOf: *readingsOf, task: *taskFlag, keys: *keysFile, drawOut: *drawOut}
+		sample: sampleSet, sampleN: *sampleN, seed: *seed, readingsOf: *readingsOf, task: *taskFlag, keys: *keysFile, drawOut: *drawOut,
+		allowMissingWords: *allowMissing}
 	jr := &teacherReply{DryRun: *dry}
 	err := e.textToStderr(*asJSON, func() error { return e.teacherRun(o, jr) })
 	if !*asJSON {
@@ -192,6 +211,8 @@ type teacherOpts struct {
 	conc, maxN, sampleN   int
 	sample                bool
 	seed                  uint64
+	// allowMissingWords is --allow-missing-identifying-words (kb_match only).
+	allowMissingWords bool
 }
 
 // The --task names.
@@ -218,15 +239,20 @@ func teacherKBMatchFixture() string {
 // empty posting and an empty digest, so the frame, the section headings, the
 // options and the target summary are all in it, and the summary once more, as
 // eval.PromptHash does.
-func teacherKBMatchPromptHash(summary string) string {
-	q, _ := kbmatch.Question(posting.Posting{}, summary, kbmatch.Digest{}, nil)
+func teacherKBMatchPromptHash(d kbmatch.Digest, summary string) (string, error) {
+	// Frame, not a question built from a digest: it carries no knowledge-base text,
+	// and refuses a digest the redactor did not make or a summary holding a term.
+	q, err := d.Frame(summary)
+	if err != nil {
+		return "", err
+	}
 	sys, user := llmbackend.Messages(q)
 	h := sha256.New()
 	for _, s := range []string{sys, user, summary} {
 		fmt.Fprintf(h, "%d:", len(s))
 		io.WriteString(h, s)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // teacherKBMatchTask is the kb_match question in full-digest mode (`vani
@@ -234,23 +260,38 @@ func teacherKBMatchPromptHash(summary string) string {
 // posting, never the compact digest with embedding-picked lines, so every
 // question for one digest shares one head. The model's answer is kept as it
 // is, an abstention included (kbmatch.Judge would turn that into an error).
-func teacherKBMatchTask(summary string, d kbmatch.Digest) eval.TeacherTask {
+func teacherKBMatchTask(summary string, d kbmatch.Digest) (eval.TeacherTask, error) {
+	prompt, err := teacherKBMatchPromptHash(d, summary)
+	if err != nil {
+		return eval.TeacherTask{}, err
+	}
 	return eval.TeacherTask{
-		Name: kbmatch.Task, Fixture: teacherKBMatchFixture(), Prompt: teacherKBMatchPromptHash(summary), Digest: d.SHA256,
+		Name: kbmatch.Task, Fixture: teacherKBMatchFixture(), Prompt: prompt, Digest: d.SHA256,
 		Ask: func(ctx context.Context, dc decide.Decider, p posting.Posting) (decide.Answer, error) {
-			q, _ := kbmatch.Question(p, summary, d, nil)
+			// Prepare, the only way to a question: a digest not built through the redactor, or a
+			// term that survived it, is refused here, per posting, as well as once
+			// before the run (teacherRun).
+			q, _, err := kbmatch.Prepare(p, summary, d, nil)
+			if err != nil {
+				return decide.Answer{}, err
+			}
 			return dc.Decide(ctx, q)
 		},
-	}
+	}, nil
 }
 
 // teacherReply is `vani teacher --json`. Plan is what would be asked and what
 // it could cost; Run is what a real run did. A run that stopped carries the
 // failure beside them.
 type teacherReply struct {
-	DryRun bool             `json:"dry_run"`
-	Plan   *teacherPlanJSON `json:"plan,omitempty"`
-	Run    *teacherRunJSON  `json:"run,omitempty"`
+	DryRun bool `json:"dry_run"`
+	// IdentifyingWords and Redactions are set for --task kb_match only (the
+	// jd_triage question carries no knowledge base): the identifying-words
+	// file's state and how many terms the digest had removed (never which).
+	IdentifyingWords string           `json:"identifying_words,omitempty"`
+	Redactions       *int             `json:"redactions,omitempty"`
+	Plan             *teacherPlanJSON `json:"plan,omitempty"`
+	Run              *teacherRunJSON  `json:"run,omitempty"`
 	failure
 }
 
@@ -339,11 +380,27 @@ func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
 		// The knowledge base only through eligibleBank, which fails closed: with
 		// no selections or no rkb there is no digest and nothing is asked, a dry
 		// run included (its prompt hash and measure need the digest).
-		_, d, s, derr := kbmatchDigest(cfg)
+		// Redacted with the owner's identifying-words list, which must exist
+		// (or --allow-missing-identifying-words), and checked once here so a term
+		// in the summary or digest stops the run before anything is asked.
+		w, words, werr := kbmatchWords(cfg, e.stateDir, true, o.allowMissingWords)
+		jr.IdentifyingWords = words
+		if werr != nil {
+			return fmt.Errorf("teacher: %w", werr)
+		}
+		_, d, s, derr := kbmatchDigest(cfg, w)
 		if derr != nil {
 			return fmt.Errorf("teacher: %w", derr)
 		}
-		summary, task, digestBytes = s, teacherKBMatchTask(s, d), len(d.Text)
+		jr.Redactions = &d.Redactions
+		if cerr := kbmatch.CheckOwner(s, d); cerr != nil {
+			return fmt.Errorf("teacher: %w", cerr)
+		}
+		kt, terr := teacherKBMatchTask(s, d)
+		if terr != nil {
+			return fmt.Errorf("teacher: %w", terr)
+		}
+		summary, task, digestBytes = s, kt, len(d.Text)
 	}
 	var keys []posting.Key
 	if o.keys != "" {
@@ -468,11 +525,11 @@ func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
 	if err != nil {
 		return err
 	}
-	spent := func(c context.Context) (int64, error) { return teacherSpent(c, ledgerPath) }
-	committed, err := spent(ctx)
+	committed, err := teacherSpent(ctx, ledgerPath)
 	if err != nil {
 		return fmt.Errorf("teacher: reading today's llm spend: %w", err)
 	}
+	spent := func(c context.Context) (int64, error) { return teacherResolved(c, ledgerPath) }
 	before, beforeErr := teacherSettled(ctx, ledgerPath)
 	limit := min(int64(o.budgetUSD*1e9), capNano-committed)
 	if limit <= 0 {
@@ -511,7 +568,7 @@ func (e *env) teacherSummary(res eval.TeacherResult, already, planned int, befor
 		res.Asked, res.Stored, res.Unusable, res.Unread, res.Skipped+already)
 	if err := cmp.Or(beforeErr, afterErr); err != nil {
 		out.MeteredUSD, out.LedgerError = dollars(res.SpentNano), err.Error()
-		fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (committed delta, not settled) %s\n", err, usd(res.SpentNano))
+		fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (resolved delta: settled plus kept reservations, at least this run's own) %s\n", err, usd(res.SpentNano))
 	} else {
 		out.SettledUSD, out.RetainedUSD = dollars(after.SpentNanoUSD-before.SpentNanoUSD), dollars(after.RetainedNanoUSD-before.RetainedNanoUSD)
 		out.RemainingTodayUSD = dollars(max(capNano-after.CommittedNanoUSD(), 0))
