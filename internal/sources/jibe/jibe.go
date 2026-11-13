@@ -134,11 +134,15 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	queries := plan(b)
 	l := &lister{s: s, host: host, client: client, b: b, seen: s.now(), have: map[string]bool{},
-		pace: srcutil.Pacer{Every: crawlDelay, Budget: paceBudget, Sleep: s.wait}}
+		pace: srcutil.Pacer{Every: crawlDelay, Budget: paceBudget, Sleep: s.wait},
+		bad:  srcutil.NewRows(ctx, b, 0)}
 	for _, q := range queries {
 		if err := l.run(ctx, q); err != nil {
 			return nil, fmt.Errorf("jibe %q: %s: %w", b.Token, q, err)
 		}
+	}
+	if err := l.bad.Done(); err != nil {
+		return nil, fmt.Errorf("jibe %q: %w", b.Token, err)
 	}
 	return l.out, nil
 }
@@ -192,6 +196,7 @@ type lister struct {
 	have   map[string]bool
 	out    []posting.Posting
 	pace   srcutil.Pacer // spaces every request of the board
+	bad    *srcutil.Rows // rows that could not be read, skipped and counted
 }
 
 func (l *lister) get(ctx context.Context, q query, page int) (listing, error) {
@@ -258,12 +263,16 @@ func (l *lister) run(ctx context.Context, q query) error {
 			}
 			read[lid] = true
 			added++
+			l.bad.Add(1)
 			if l.have[lid] {
 				continue // already listed by an earlier query
 			}
 			p, err := l.posting(*r.Data, id)
 			if err != nil {
-				return fmt.Errorf("req %s: %w", id, err)
+				if ferr := l.bad.Bad(err); ferr != nil {
+					return fmt.Errorf("req %s: %w", id, ferr)
+				}
+				continue
 			}
 			l.have[lid] = true
 			l.out = append(l.out, p)

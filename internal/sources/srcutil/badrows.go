@@ -60,6 +60,11 @@ func NewRows(ctx context.Context, b sources.Board, total int) *Rows {
 // Add counts n more rows of the listing.
 func (r *Rows) Add(n int) { r.total += n }
 
+// Skipped is how many rows Bad has skipped so far. An adapter whose board
+// counts its own rows adds it to the postings it kept, so a skipped row still
+// counts as a row the board sent.
+func (r *Rows) Skipped() int { return r.skipped }
+
 // Bad is called with the error that made one row unusable. A nil return means
 // the row is skipped and counted: the caller moves on to the next row. A
 // non-nil return is the error to fail the board with, because no sink is
