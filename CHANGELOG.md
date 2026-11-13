@@ -33,6 +33,13 @@ were ported with notice. Source files do not carry an upstream copyright header.
   wanted, yes only, maybes left out, and engineering titles only (a word-list title check; a
   non-engineering word wins). A verdict that holds in one reading only shows as such. The reader
   table also gives the seniority each reader read on its mismatch_seniority readings.
+- **The reason for a maybe or a no** (`vani audit answer --reason R`, label slot
+  `would_apply_reason`). An answer that is not a yes may name the one factor that kept it from
+  one, in the pointwise auditor's vocabulary (level, domain, location, employer_type, other), so
+  the owner's reasons and the auditor's can be compared. The reason travels with the answer: a
+  triage re-label keeps it, a new answer replaces it, and it is never a triage slot. A reason on a
+  yes or a skip, on its own, or outside the vocabulary is refused. The Mac app does not ask for it
+  yet.
 - **One-tap would you apply** (`vani audit answer --shown`, the Mac app's job detail). A posting
   answered from a surface takes the stratum and inclusion probability of its newest impression
   that carries them, else is recorded as a manual label; an impression log that cannot be read is

@@ -362,6 +362,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	fs := e.newFlags("audit answer")
 	key := fs.String("key", "", "the posting's key")
 	verdict := fs.String("verdict", "", "yes, maybe, no or skip")
+	reason := fs.String("reason", "", "with --verdict maybe or no: the one factor that kept it from a yes ("+strings.Join(eval.WouldApplyReasons, ", ")+")")
 	source := fs.String("source", "", "the stratum the posting was drawn from (with --p-select)")
 	p := fs.Float64("p-select", 0, "the posting's inclusion probability in that draw (with --source)")
 	seed := fs.String("seed", "", "draw to look the stratum up in (default: this ISO week)")
@@ -381,6 +382,10 @@ func (e *env) cmdAuditAnswer(args []string) error {
 		return usagef("audit answer: --key is required and at most %d bytes", maxAuditKeyBytes)
 	case *verdict != eval.Skip && !slices.Contains(eval.WouldApplyOptions, *verdict):
 		return usagef("audit answer: --verdict %q must be one of %s or %s", *verdict, strings.Join(eval.WouldApplyOptions, ", "), eval.Skip)
+	case *reason != "" && !eval.ReasonAllowed(*verdict):
+		return usagef("audit answer: --reason goes with --verdict maybe or no (what kept it from a yes)")
+	case *reason != "" && !slices.Contains(eval.WouldApplyReasons, *reason):
+		return usagef("audit answer: --reason %q must be one of %s", *reason, strings.Join(eval.WouldApplyReasons, ", "))
 	case given["source"] != given["p-select"]:
 		return usagef("audit answer: --source and --p-select go together")
 	case *shown && (given["source"] || given["seed"]):
@@ -398,9 +403,13 @@ func (e *env) cmdAuditAnswer(args []string) error {
 		}
 		explicit = true
 	}
-	reply, err := e.answerAudit(posting.Key(*key), *verdict, src, prob, explicit, *seed, q, *labels)
+	reply, err := e.answerAudit(posting.Key(*key), *verdict, *reason, src, prob, explicit, *seed, q, *labels)
 	return e.reply(*asJSON, reply, err, func() {
-		fmt.Fprintf(e.stdout, "answered %s: %s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
+		why := ""
+		if reply.Reason != "" {
+			why = ", reason " + reply.Reason
+		}
+		fmt.Fprintf(e.stdout, "answered %s: %s%s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, why, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
 	})
 }
 
@@ -433,13 +442,15 @@ func (e *env) shownSampling(k posting.Key) (source string, p float64, err error)
 type auditAnswerJSON struct {
 	Key     posting.Key `json:"key"`
 	Verdict string      `json:"verdict"`
+	Reason  string      `json:"reason,omitempty"`
 	Stratum string      `json:"stratum"`
 	PSelect float64     `json:"p_select"`
 }
 
-// answerAudit writes one would_apply label (see cmdAuditAnswer). explicit says
-// source and p came from the caller; otherwise they are the draw's.
-func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, labels string) (auditAnswerJSON, error) {
+// answerAudit writes one would_apply label (see cmdAuditAnswer), with its
+// reason when one is given. explicit says source and p came from the caller;
+// otherwise they are the draw's.
+func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
 	var snap ledger.Snapshot
 	src, prob := source, p
@@ -472,6 +483,9 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the ledger", k)
 	}
 	answer := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: verdict}, Source: src, PSelect: prob}
+	if reason != "" {
+		answer.Labels[eval.WouldApplyReason] = reason
+	}
 	if err := answer.Validate(); err != nil {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %w", err)
 	}
@@ -491,5 +505,5 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 	if err != nil {
 		return auditAnswerJSON{}, err
 	}
-	return auditAnswerJSON{Key: k, Verdict: verdict, Stratum: src, PSelect: prob}, nil
+	return auditAnswerJSON{Key: k, Verdict: verdict, Reason: reason, Stratum: src, PSelect: prob}, nil
 }

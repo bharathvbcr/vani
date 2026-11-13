@@ -131,9 +131,11 @@ commands:
                              --json prints keys, strata and p_select only (no posting text),
                              --blind hides the model's readings while you answer
                              (audit-sample is the old name)
-  audit answer --key K --verdict yes|maybe|no|skip [--source S --p-select P]
+  audit answer --key K --verdict yes|maybe|no|skip [--reason R] [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from
-                             the flags (an Explore row's, or an audit --json pick's) or the draw
+                             the flags (an Explore row's, or an audit --json pick's) or the draw;
+                             with a maybe or a no, --reason names what kept it from a yes
+                             (level, domain, location, employer_type, other)
   doctor [--json] [--dry-run [--show]] [--budget-usd N] [--model M] [--runs N] [--sample N] [--seed S]
                              the pipeline doctor: the llm model (llm.model, Opus) reads per-board
                              signals over the newest run records, the run logs' trouble lines and
