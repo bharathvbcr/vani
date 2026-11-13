@@ -26,7 +26,7 @@ func (e *env) cmdRelevance(args []string) error {
 	fs := e.newFlags("relevance")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	ks := fs.String("k", "", "comma list of k for precision@k (default 5,10,20)")
-	asJSON := e.jsonFlag(fs, `{"relevance","drop_agreement"} on stdout: the raw counts the tables are built from`)
+	asJSON := e.jsonFlag(fs, `{"relevance","drop_recall","teacher_proxy","drop_agreement","readers","part_auc"} on stdout: the raw counts the tables are built from`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}

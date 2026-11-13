@@ -39,8 +39,12 @@ const (
 )
 
 // PartAUCRow is one part's AUC. Known counts the wanted and unwanted postings
-// whose part was known evidence; an unknown part takes the prior, so a part
-// mostly unknown reads near 0.5 for that reason alone.
+// whose part was known evidence; an unknown part takes the prior. AUC is over
+// every judged posting, prior included, so it mixes "how the value orders"
+// with "whether the part was known at all": when one class is known more
+// often, AUC can move for that reason alone. KnownAUC is over the postings
+// whose part was known in both classes, and only it gives the verdict;
+// KnownOK is false when either class has fewer than MinPartAUCClass known.
 type PartAUCRow struct {
 	Part     string  `json:"part"`
 	KnownPos int     `json:"known_pos"`
@@ -49,6 +53,10 @@ type PartAUCRow struct {
 	Lo       float64 `json:"lo"`
 	Hi       float64 `json:"hi"`
 	OK       bool    `json:"ok"`
+	KnownAUC float64 `json:"known_auc"`
+	KnownLo  float64 `json:"known_lo"`
+	KnownHi  float64 `json:"known_hi"`
+	KnownOK  bool    `json:"known_ok"`
 }
 
 // PartAUC is the report for one scope of judged postings.
@@ -109,24 +117,31 @@ func BuildPartAUC(items []Item, base jobinsight.Weights, scope string, keep func
 	cols = append(cols, column{PartMatchGate, score, func(*Item) bool { return true }})
 	for ci, c := range cols {
 		pv, nv := make([]float64, len(pos)), make([]float64, len(neg))
+		var kp, kn []float64
 		row := PartAUCRow{Part: c.name}
 		for i, it := range pos {
 			pv[i] = c.value(it)
 			if c.known(it) {
-				row.KnownPos++
+				kp = append(kp, pv[i])
 			}
 		}
 		for i, it := range neg {
 			nv[i] = c.value(it)
 			if c.known(it) {
-				row.KnownNeg++
+				kn = append(kn, nv[i])
 			}
 		}
+		row.KnownPos, row.KnownNeg = len(kp), len(kn)
 		row.AUC = auc(pv, nv)
-		// Each column draws from its own stream so adding a part never moves
+		// Each column draws from its own streams so adding a part never moves
 		// another part's interval.
-		row.Lo, row.Hi = bootstrapAUC(pv, nv, resamples, rand.New(rand.NewPCG(seed, uint64(ci)+1)))
+		row.Lo, row.Hi = bootstrapAUC(pv, nv, resamples, rand.New(rand.NewPCG(seed, 2*uint64(ci)+1)))
 		row.OK = !math.IsNaN(row.AUC)
+		if len(kp) >= MinPartAUCClass && len(kn) >= MinPartAUCClass {
+			row.KnownAUC = auc(kp, kn)
+			row.KnownLo, row.KnownHi = bootstrapAUC(kp, kn, resamples, rand.New(rand.NewPCG(seed, 2*uint64(ci)+2)))
+			row.KnownOK = !math.IsNaN(row.KnownAUC)
+		}
 		out.Rows = append(out.Rows, row)
 	}
 	return out
@@ -182,19 +197,26 @@ func (r PartAUC) Markdown() string {
 		fmt.Fprintf(&b, "not computed: %d wanted and %d unwanted judged postings, over the bound of %d per class\n", r.Pos, r.Neg, MaxPartAUCItems)
 		return b.String()
 	}
-	fmt.Fprintf(&b, "%d wanted, %d unwanted. AUC: the chance a wanted posting's value is above an unwanted one's (ties half); 0.5 is no better than chance. 95%% interval from %d stratified resamples (seed %d). \"known\" counts postings where the part was evidence rather than the prior.\n\n", r.Pos, r.Neg, r.Resamples, r.Seed)
-	b.WriteString("| part | AUC | 95% interval | known (wanted / unwanted) | reading |\n|---|---|---|---|---|\n")
+	fmt.Fprintf(&b, "%d wanted, %d unwanted. AUC: the chance a wanted posting's value is above an unwanted one's (ties half); 0.5 is no better than chance. 95%% intervals from %d stratified resamples (seed %d). \"known\" counts postings where the part was evidence rather than the prior. The all-postings AUC mixes how the value orders with whether the part was known at all, so only the known-only AUC gives a reading, and only with at least %d known in each class.\n\n", r.Pos, r.Neg, r.Resamples, r.Seed, MinPartAUCClass)
+	b.WriteString("| part | AUC, all (95%) | known (wanted / unwanted) | AUC, known only (95%) | reading |\n|---|---|---|---|---|\n")
 	for _, x := range r.Rows {
-		reading := "unclear"
-		switch {
-		case !x.OK:
-			reading = "no data"
-		case x.Lo > 0.5:
-			reading = "orders the owner's taste"
-		case x.Hi < 0.5:
-			reading = "reversed: orders against the owner"
+		all, known := "no data", "too few known"
+		if x.OK {
+			all = fmt.Sprintf("%.2f (%.2f-%.2f)", x.AUC, x.Lo, x.Hi)
 		}
-		fmt.Fprintf(&b, "| %s | %.2f | %.2f-%.2f | %d / %d | %s |\n", x.Part, x.AUC, x.Lo, x.Hi, x.KnownPos, x.KnownNeg, reading)
+		reading := "too few known to read"
+		if x.KnownOK {
+			known = fmt.Sprintf("%.2f (%.2f-%.2f)", x.KnownAUC, x.KnownLo, x.KnownHi)
+			switch {
+			case x.KnownLo > 0.5:
+				reading = "orders the owner's taste"
+			case x.KnownHi < 0.5:
+				reading = "reversed: orders against the owner"
+			default:
+				reading = "unclear"
+			}
+		}
+		fmt.Fprintf(&b, "| %s | %s | %d / %d | %s | %s |\n", x.Part, all, x.KnownPos, x.KnownNeg, known, reading)
 	}
 	return b.String()
 }

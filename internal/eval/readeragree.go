@@ -67,6 +67,12 @@ type ReaderRow struct {
 	// Specificity is how many of the unwanted ones it did not (Wanted), of N.
 	Sensitivity Count `json:"sensitivity"`
 	Specificity Count `json:"specificity"`
+	// ScoredSensitivity and ScoredSpecificity are the same counts over the
+	// postings drawn from a score decile only. A drop stratum is defined by
+	// these very readings, so its unwanted postings are read as unfit by
+	// construction and lift Specificity; the scored stratum is not.
+	ScoredSensitivity Count `json:"scored_sensitivity"`
+	ScoredSpecificity Count `json:"scored_specificity"`
 }
 
 // ReaderAgreement is every reader against the owner's would_apply.
@@ -89,11 +95,13 @@ type readerTally struct {
 	prompts  map[string]bool
 	cells    map[string]map[string]*ReaderCell // slot -> value -> cell
 	slotRead map[string]map[posting.Key]bool
+	// scored holds the owner-judged keys drawn from a score decile.
+	scored map[posting.Key]bool
 }
 
-func newTally(reader, kind string) *readerTally {
+func newTally(reader, kind string, scored map[posting.Key]bool) *readerTally {
 	t := &readerTally{row: ReaderRow{Reader: reader, Kind: kind}, read: map[posting.Key]bool{}, prompts: map[string]bool{},
-		cells: map[string]map[string]*ReaderCell{}, slotRead: map[string]map[posting.Key]bool{}}
+		cells: map[string]map[string]*ReaderCell{}, slotRead: map[string]map[posting.Key]bool{}, scored: scored}
 	for _, s := range ReaderSlots {
 		t.cells[s], t.slotRead[s] = map[string]*ReaderCell{}, map[posting.Key]bool{}
 	}
@@ -127,16 +135,22 @@ func (t *readerTally) note(k posting.Key, slot, value, v string) {
 		return
 	}
 	pos := PositiveReadings[value]
-	if h, _ := wanted(v); h {
-		t.row.Sensitivity.N++
-		if pos {
-			t.row.Sensitivity.Wanted++
+	count := func(sens, spec *Count) {
+		if h, _ := wanted(v); h {
+			sens.N++
+			if pos {
+				sens.Wanted++
+			}
+		} else {
+			spec.N++
+			if !pos {
+				spec.Wanted++
+			}
 		}
-	} else {
-		t.row.Specificity.N++
-		if !pos {
-			t.row.Specificity.Wanted++
-		}
+	}
+	count(&t.row.Sensitivity, &t.row.Specificity)
+	if t.scored[k] {
+		count(&t.row.ScoredSensitivity, &t.row.ScoredSpecificity)
 	}
 }
 
@@ -187,6 +201,7 @@ func BuildReaderAgreement(labels map[posting.Key]Entry, recs []ledger.Record, te
 		out.TeacherStatus = TeacherProxyMissing
 	}
 	owner := map[posting.Key]string{}
+	scored := map[posting.Key]bool{}
 	for k, e := range labels {
 		v, ok := e.Labels[WouldApply]
 		if !ok {
@@ -196,6 +211,7 @@ func BuildReaderAgreement(labels map[posting.Key]Entry, recs []ledger.Record, te
 			continue
 		}
 		owner[k] = v
+		scored[k] = strings.HasPrefix(e.Source, "decile:")
 		out.Judged++
 		switch v {
 		case "yes":
@@ -214,7 +230,7 @@ func BuildReaderAgreement(labels map[posting.Key]Entry, recs []ledger.Record, te
 		id := kind + "\x00" + reader
 		t := tallies[id]
 		if t == nil {
-			t = newTally(reader, kind)
+			t = newTally(reader, kind, scored)
 			tallies[id] = t
 		}
 		return t
@@ -299,6 +315,7 @@ func (a ReaderAgreement) Markdown() string {
 			fmt.Fprintf(&b, "; readings span %d prompts", r.Prompts)
 		}
 		fmt.Fprintf(&b, "\n- sensitivity (wanted read as a fit): %s\n- specificity (unwanted not read as a fit): %s\n", r.Sensitivity, r.Specificity)
+		fmt.Fprintf(&b, "- scored stratum only (drop strata are defined by these readings, so they lift specificity by construction): sensitivity %s, specificity %s\n", r.ScoredSensitivity, r.ScoredSpecificity)
 		for _, s := range r.Slots {
 			fmt.Fprintf(&b, "\n%s | yes | maybe | no\n---|---|---|---\n", s.Slot)
 			for _, c := range s.Rows {

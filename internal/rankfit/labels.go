@@ -209,14 +209,12 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 	return out, c, nil
 }
 
-// recordedScores reports whether an impression recorded Score's parts:
-// feedback.ScoresOf always writes gate and fresh, so a record without them was
-// logged by a surface that keeps no scores.
-func recordedScores(s feedback.Scores) bool {
-	_, g := s.Factors["gate"]
-	_, f := s.Factors["fresh"]
-	return g && f
-}
+// recordedScores reports whether an impression recorded Score's parts at all.
+// Only a record with no factors was logged by a surface that keeps no scores
+// (an audit card, a Jobs row). A partial record (factors without gate or
+// fresh) is still taken, so ItemFromScores refuses it loudly rather than the
+// fit quietly rescoring a posting whose record is broken.
+func recordedScores(s feedback.Scores) bool { return len(s.Factors) > 0 }
 
 // PlattSamples sets each labelled triage slot (internal/eval, read only)
 // against the reading the ledger holds for it: one sample per answered slot

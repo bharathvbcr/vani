@@ -54,3 +54,27 @@ func TestTargetsSkipImpressionsThatRecordedNoScores(t *testing.T) {
 		t.Errorf("passed: %+v ok=%v passed=%d", p, ok, c.Passed)
 	}
 }
+
+// A record that kept some factors but lost gate or fresh is broken, not
+// scoreless: it is still the posting's scores, and building it fails loudly.
+func TestTargetsKeepAPartialScoreRecordSoItFailsLoudly(t *testing.T) {
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	labels := map[posting.Key]eval.Entry{
+		"gh:a:p": {Labels: map[string]string{eval.WouldApply: "yes"}, Source: "decile:9", PSelect: 0.5},
+	}
+	shown := []feedback.Impression{
+		{At: at, SlateID: "2026-11-01", Surface: feedback.SurfaceDigest, Key: "gh:a:p", Position: 1,
+			Scores: feedback.Scores{Factors: map[string]float64{"semantic": 0.7}}},
+	}
+	got, _, err := Targets(labels, shown, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := got["gh:a:p"]
+	if p.Scores == nil {
+		t.Fatal("a partial record was dropped as scoreless")
+	}
+	if _, err := ItemFromScores("gh:a:p", *p.Scores, jobinsight.DefaultWeights(), p); err == nil {
+		t.Error("a partial record must still be refused")
+	}
+}

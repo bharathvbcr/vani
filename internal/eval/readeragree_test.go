@@ -85,6 +85,11 @@ func TestReaderAgreementCountsEachReaderAgainstTheOwner(t *testing.T) {
 	if eng.Read != 3 || eng.Sensitivity != (Count{Wanted: 2, N: 2}) || eng.Specificity != (Count{Wanted: 1, N: 1}) {
 		t.Errorf("engine row: %+v", eng)
 	}
+	// Scored stratum only: 1 (yes, strong) and 2 (maybe, partial) are deciles;
+	// 3 is a drop stratum and leaves the scored specificity.
+	if eng.ScoredSensitivity != (Count{Wanted: 2, N: 2}) || eng.ScoredSpecificity != (Count{}) {
+		t.Errorf("engine scored stratum: %+v %+v", eng.ScoredSensitivity, eng.ScoredSpecificity)
+	}
 	if got := cell(eng, "role_fit", "strong_fit"); got != (ReaderCell{Value: "strong_fit", Yes: 1}) {
 		t.Errorf("engine strong_fit: %+v", got)
 	}

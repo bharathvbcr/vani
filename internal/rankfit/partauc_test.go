@@ -72,6 +72,46 @@ func TestPartAUCOrdersEachPartAgainstTheOwner(t *testing.T) {
 	}
 }
 
+// A part known only on wanted postings (the unwanted ones sit at the prior)
+// separates the classes by whether it was known, not by its value: the
+// all-postings AUC is high, but the row must not read as ordering taste.
+func TestPartAUCDoesNotReadKnownnessAsTaste(t *testing.T) {
+	prior := jobinsight.DefaultWeights().UnknownPrior
+	var items []Item
+	for i := range 4 {
+		var v [NumParts]float64
+		v[PartSemantic] = prior + 0.1 + 0.01*float64(i)
+		items = append(items, aucItem("w"+string(rune('a'+i)), GradeYes, "decile:8", v))
+	}
+	for i := range 6 {
+		var v [NumParts]float64
+		v[PartSemantic] = prior
+		it := aucItem("u"+string(rune('a'+i)), GradeNo, "decile:3", v)
+		it.Known[PartSemantic], it.Conf[PartSemantic] = false, 0
+		items = append(items, it)
+	}
+	r := BuildPartAUC(items, jobinsight.DefaultWeights(), "all judged", nil, 200, 3)
+	var sem PartAUCRow
+	for _, x := range r.Rows {
+		if x.Part == "semantic" {
+			sem = x
+		}
+	}
+	if sem.AUC != 1 || sem.KnownPos != 4 || sem.KnownNeg != 0 || sem.KnownOK {
+		t.Fatalf("semantic: %+v", sem)
+	}
+	md := r.Markdown()
+	line := ""
+	for _, l := range strings.Split(md, "\n") {
+		if strings.HasPrefix(l, "| semantic |") {
+			line = l
+		}
+	}
+	if !strings.Contains(line, "too few known") || strings.Contains(line, "orders the owner's taste") {
+		t.Errorf("semantic row reads knownness as taste: %q", line)
+	}
+}
+
 func TestPartAUCRefusesTooFewOfAClass(t *testing.T) {
 	items := []Item{
 		aucItem("a", GradeYes, "decile:9", [NumParts]float64{}),
