@@ -181,9 +181,14 @@ func TestTeacherKBMatchRefusesWithoutAnIdentifyingWordsFile(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(e.state, eval.TeacherFile)); err == nil {
 		t.Fatal("a refused run wrote the readings log")
 	}
-	// jd_triage carries no knowledge base: it needs no list.
+	// jd_triage carries no knowledge base, but its prompt carries target_summary,
+	// which cannot be checked without the list: it refuses, and the existing
+	// flag proceeds with the built-in list alone.
 	code, _, stderr := do(t, "teacher", "--of", "d1-ultra", "--dry-run")
-	if code != 0 {
-		t.Fatalf("jd_triage refused without the list: %s", stderr)
+	if code == 0 || !strings.Contains(stderr, "target_summary") {
+		t.Fatalf("jd_triage ran without the list: exit %d, %s", code, stderr)
+	}
+	if code, _, stderr := do(t, "teacher", "--of", "d1-ultra", "--dry-run", "--allow-missing-identifying-words"); code != 0 {
+		t.Fatalf("jd_triage refused with the flag: %s", stderr)
 	}
 }

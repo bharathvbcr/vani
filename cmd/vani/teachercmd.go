@@ -151,7 +151,7 @@ func (e *env) cmdTeacher(args []string) error {
 	readingsOf := fs.String("with-readings-of", "", "keep only postings that already have a current reading by this model (this task, fixture and prompt, and for kb_match this knowledge-base digest), applied before --sample")
 	taskFlag := fs.String("task", teacherTaskJD, fmt.Sprintf("the question asked: %s (the triage question) or %s (does the work match your knowledge base; the full digest is sent)", teacherTaskJD, teacherTaskKB))
 	keysFile := fs.String("keys", "", "ask only about the posting keys this file lists, one per line (an unknown or duplicate key is refused); without --sample they are asked in the file's order")
-	allowMissing := fs.Bool(kbAllowMissingFlag, false, "with --task kb_match: send with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+", or one with no terms (without it, either refuses)")
+	allowMissing := fs.Bool(kbAllowMissingFlag, false, "proceed with the built-in identifying-words list alone when the tracks directory has no "+track.WordsFile+", or one with no terms, for the target_summary check and with --task kb_match for what is sent (without it, either refuses)")
 	drawOut := fs.String("draw-out", "", "save the drawn keys, in the order they are asked, to this file (default: a new file under the state directory's teacher_draws/); pass it back with --keys to resume the same sample")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what the run did (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
@@ -352,7 +352,7 @@ type teacherRunJSON struct {
 }
 
 func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
-	cfg, err := e.loadConfig()
+	cfg, err := e.loadPromptConfig(o.allowMissingWords)
 	if err != nil {
 		return err
 	}

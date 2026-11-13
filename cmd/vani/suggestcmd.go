@@ -75,7 +75,7 @@ func (e *env) suggestOnce() ([]suggest.Suggestion, string, error) {
 		return nil, draft.CodeBadRequest, err
 	}
 
-	cfg, err := e.loadConfig()
+	cfg, err := e.loadPromptConfig(false)
 	if err != nil {
 		return nil, codeConfig, err
 	}

@@ -158,7 +158,7 @@ func (e *env) cmdBench(args []string) error {
 			*name = "endpoint"
 		}
 	}
-	cfg, err := e.loadConfig()
+	cfg, err := e.loadPromptConfig(false)
 	if err != nil {
 		return err
 	}

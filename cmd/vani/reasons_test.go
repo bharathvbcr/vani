@@ -53,6 +53,7 @@ func reasonsSetup(t *testing.T, p *draftLLM) (cfgPath, stateDir string) {
 	old := reasonsProvider
 	reasonsProvider = func(context.Context, *wired) (llm.Provider, error) { return p, nil }
 	t.Cleanup(func() { reasonsProvider = old })
+	writeKBWords(t, stateDir, kbTestOwnWord)
 	return cfgPath, stateDir
 }
 

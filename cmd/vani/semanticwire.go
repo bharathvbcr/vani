@@ -176,6 +176,9 @@ type semanticReport struct {
 	Rescored    int  `json:"rescored,omitempty"`
 	Unavailable bool `json:"unavailable,omitempty"`
 	Canceled    bool `json:"canceled,omitempty"`
+	// GenericTarget: target_summary is empty, so the profile's target is the
+	// generic default and the ranking is not against the owner's roles.
+	GenericTarget bool `json:"generic_target,omitempty"`
 	// Rebuilt: the score cache could not be read and was started again.
 	Rebuilt bool `json:"cache_rebuilt,omitempty"`
 	// The chunk-vector log (semantic.Report's Vectors* fields). VectorsRebuilt
@@ -512,6 +515,7 @@ func warmSemanticWith(ctx context.Context, cfg config.Config, stateDir string, d
 	if err != nil {
 		return notRun(rep, "the knowledge base profile could not be built", err)
 	}
+	rep.GenericTarget = prof.GenericTarget
 	if len(docs) == 0 {
 		rep.Ran = true
 		return rep
@@ -549,6 +553,9 @@ func warmSemanticWith(ctx context.Context, cfg config.Config, stateDir string, d
 func (e *env) logSemantic(rep semanticReport) {
 	if rep.Ran {
 		fmt.Fprintf(e.stderr, "vani: semantic: %s\n", rep.countsLine())
+	}
+	if rep.GenericTarget {
+		fmt.Fprintf(e.stderr, "vani: semantic: target_summary is empty: ranking against the generic default target (%q), not your roles; set target_summary in the config, or apply a track (vani track apply)\n", semantic.DefaultTarget)
 	}
 	if rep.Rebuilt {
 		fmt.Fprintln(e.stderr, "vani: semantic: the score cache was unreadable and was started again")

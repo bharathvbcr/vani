@@ -69,6 +69,11 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// Every prompt the run builds carries target_summary: refuse before the
+	// ledger is opened or anything starts (the daemon does not start).
+	if err := checkPromptSummary(cfg, stateDir, false); err != nil {
+		return nil, err
+	}
 	led, err := ledger.Open(filepath.Join(stateDir, "ledger"))
 	if err != nil {
 		return nil, fmt.Errorf("ledger: %w", err)

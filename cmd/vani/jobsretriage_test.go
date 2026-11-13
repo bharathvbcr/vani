@@ -158,6 +158,7 @@ func rtSetup(t *testing.T, p *retriageLLM, mutate func(*config.Config)) (cfgPath
 		t.Fatal(err)
 	}
 	cfg.TargetSummary = rtSummary
+	writeKBWords(t, state, kbTestOwnWord)
 	cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-opus-4-7", TriageModel: rtSonnet,
 		InputNanoUSDPerToken: 5000, OutputNanoUSDPerToken: 25000}
 	if mutate != nil {

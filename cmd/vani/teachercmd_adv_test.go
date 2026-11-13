@@ -39,6 +39,7 @@ func advSetup(t *testing.T, mut func(*config.Config), posts []advPost) string {
 	fixedNow(t)
 	cfg := config.Default()
 	cfg.TargetSummary = "early-career ML systems roles"
+	writeKBWords(t, state, kbTestOwnWord)
 	cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-test", TriageModel: tcHaiku, InputNanoUSDPerToken: 3000, OutputNanoUSDPerToken: 15000}
 	cfg.Decide.DailyUSD.LLM = 5
 	if mut != nil {

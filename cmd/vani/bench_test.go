@@ -76,6 +76,7 @@ func seedBench(t *testing.T, stateDir string, key, desc, backend string, overrid
 func benchSetup(t *testing.T) (state, bin, model string) {
 	cfgPath, state := setup(t)
 	writeTarget(t, cfgPath, "Inference engineering roles.")
+	writeKBWords(t, state, kbTestOwnWord)
 	bin = filepath.Join(t.TempDir(), "llama-server")
 	writeLlama(t, bin, true)
 	model = filepath.Join(t.TempDir(), "fake-d1.gguf")
@@ -193,6 +194,7 @@ func TestBenchLocalModelThatAnsweredNothingFails(t *testing.T) {
 // batch and slots, so the numbers describe the server a run starts.
 func TestBenchLocalUsesTheConfiguredServer(t *testing.T) {
 	cfgPath, state := setup(t)
+	writeKBWords(t, state, kbTestOwnWord)
 	bin := filepath.Join(t.TempDir(), "llama-server")
 	argsFile := filepath.Join(t.TempDir(), "args")
 	self, err := os.Executable()

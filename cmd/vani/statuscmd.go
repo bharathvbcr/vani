@@ -74,6 +74,13 @@ type statusJSON struct {
 	LastSkip *skipFacet `json:"last_skip,omitempty"`
 	// Inbox is the last extension-spool poll. Absent when none has been recorded.
 	Inbox *inboxFacet `json:"inbox,omitempty"`
+	// TargetSummary is config.target_summary: may a model prompt be built from
+	// it (ok false: it holds an identifying term, or cannot be checked), and is
+	// it empty, so the ranking uses the generic default target. Additive.
+	TargetSummary targetSummaryFacet `json:"target_summary"`
+	// KnowledgeBase is the age of the bank file against kb.stale_after_days.
+	// Absent when no kb.bank is configured. Additive.
+	KnowledgeBase *kbFacet `json:"knowledge_base,omitempty"`
 }
 
 // pathsJSON is config.Resolved for status --json.
@@ -285,6 +292,10 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	}
 	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
+	out.TargetSummary = e.targetSummaryFacetOf(cfg, cfgErr)
+	if cfgErr == nil {
+		out.KnowledgeBase = kbFacetOf(cfg, at)
+	}
 	out.RunRequest = e.runRequestFacet(at)
 	return out
 }
