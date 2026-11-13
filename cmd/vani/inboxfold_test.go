@@ -75,7 +75,7 @@ func TestPollInboxStatusAccountsForEveryJob(t *testing.T) {
 	w, _ := openWired(t, config.Default())
 	gh, _ := posting.GreenhouseKey("acme", "9")
 	if err := w.led.Append(context.Background(), ledger.Event{V: 1, At: time.Now(), Key: gh, Status: posting.Live, Reason: "new",
-		Posting: &posting.Posting{Key: gh, ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote", URL: "https://boards.greenhouse.io/acme/jobs/9"}}); err != nil {
+		Posting: &posting.Posting{Key: gh, ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote", URL: "https://careers.acme.com/jobs/aP123"}}); err != nil {
 		t.Fatal(err)
 	}
 	testHookAdvanceNew = func(context.Context, []ledger.Record) error { return nil }
@@ -104,7 +104,7 @@ func TestDrainInboxAccountsForEveryJob(t *testing.T) {
 	w, _ := openWired(t, config.Default())
 	gh, _ := posting.GreenhouseKey("acme", "9")
 	if err := w.led.Append(context.Background(), ledger.Event{V: 1, At: time.Now(), Key: gh, Status: posting.Live, Reason: "new",
-		Posting: &posting.Posting{Key: gh, ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote", URL: "https://boards.greenhouse.io/acme/jobs/9"}}); err != nil {
+		Posting: &posting.Posting{Key: gh, ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote", URL: "https://careers.acme.com/jobs/aP123"}}); err != nil {
 		t.Fatal(err)
 	}
 	protect := func(posting.Key) bool { return false }
