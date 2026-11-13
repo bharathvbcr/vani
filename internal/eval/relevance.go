@@ -122,7 +122,7 @@ type Relevance struct {
 	Precision []PrecisionRow `json:"precision"`
 	Deciles   []StratumRow   `json:"deciles"`
 	Drops     []StratumRow   `json:"drops"`
-	// Closed are the closed-status strata (closed:dead, closed:duplicate):
+	// Closed are the closed-status strata (closed:dead, closed:duplicate:<method>):
 	// postings the engine took out of every view without a drop rule.
 	Closed   []StratumRow `json:"closed"`
 	Backends []BackendRow `json:"backends"`

@@ -115,7 +115,7 @@ commands:
                              per-backend precision and coverage on the labelled set
   audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N] [--closed N]
                              weekly stratified would-I-apply sample (deciles + drop classes,
-                             and --closed postings the engine closed: dead or duplicate);
+                             and --closed postings the engine closed: dead, or duplicate by fold method);
                              --json prints keys, strata and p_select only (no posting text),
                              --blind hides the model's readings while you answer
                              (audit-sample is the old name)

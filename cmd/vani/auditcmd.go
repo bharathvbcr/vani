@@ -15,6 +15,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -129,9 +130,19 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 	if err != nil {
 		return nil, err
 	}
+	// A reading copied from another posting is not one this posting's model
+	// made, so a label on it is no evidence about that model: the draw leaves
+	// copies out, as the label queue does (eval.Inherited, the one owner).
+	// A closed posting was closed by the engine, not by a reading.
+	inherited := map[posting.Key]bool{}
+	for _, r := range b.snap.Records {
+		if eval.Inherited(r) {
+			inherited[r.Key] = true
+		}
+	}
 	var cands []eval.AuditCandidate
 	for _, k := range kept {
-		if b.m[k.Job.Key].Mark != marks.None {
+		if b.m[k.Job.Key].Mark != marks.None || inherited[k.Job.Key] {
 			continue // judged by its mark already, as in the digest's Explore
 		}
 		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
@@ -141,7 +152,7 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 		if b.m[r.Key].Mark != marks.None {
 			continue
 		}
-		if c, ok := closedOrDropped(r, rules); ok {
+		if c, ok := closedOrDropped(r, rules); ok && !(inherited[r.Key] && !c.Closed) {
 			cands = append(cands, c)
 		}
 	}
@@ -159,8 +170,16 @@ func closedOrDropped(r ledger.Record, rules []eval.DropRule) (eval.AuditCandidat
 	switch r.Status {
 	case posting.Dropped:
 		return eval.AuditCandidate{Key: r.Key, Dropped: true, Class: eval.DropClass(r, rules)}, true
-	case posting.Dead, posting.Duplicate:
+	case posting.Dead:
 		return eval.AuditCandidate{Key: r.Key, Closed: true, Class: string(r.Status)}, true
+	case posting.Duplicate:
+		// A duplicate is its own stratum per fold method (dup.method); one folded
+		// by identity rather than overlap carries none.
+		method := r.Annotations[pipeline.AnnDupMethod]
+		if method == "" {
+			method = "other"
+		}
+		return eval.AuditCandidate{Key: r.Key, Closed: true, Class: string(r.Status) + ":" + method}, true
 	}
 	return eval.AuditCandidate{}, false
 }
