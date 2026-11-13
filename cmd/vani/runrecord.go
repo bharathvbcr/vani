@@ -443,6 +443,14 @@ type boardReport struct {
 	// behind those rows go unseen and stored ones age toward dead.
 	Short int `json:"short,omitempty"`
 
+	// DeferredSince and ShortSince, set when Deferred or Short is, are when the
+	// board's current streak of good reads with that count began (board
+	// health, boardbacklog.go). The oldest deferred row is no older than
+	// DeferredSince; a short board ages nothing while ShortSince is open.
+	// Additive.
+	DeferredSince *time.Time `json:"deferred_since,omitempty"`
+	ShortSince    *time.Time `json:"short_since,omitempty"`
+
 	// endedRun marks the board whose failure ended the listing (the run was
 	// cancelled, or the ledger failed under it): its outcome says nothing
 	// about the board, so board health leaves it out. Never written.

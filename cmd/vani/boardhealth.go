@@ -91,6 +91,12 @@ type boardHealthRec struct {
 	// file was first made. Run records keep failed boards and may leave read
 	// ones out, so a seeded streak can overstate.
 	Seeded bool `json:"seeded,omitempty"`
+	// DeferredSince and ShortSince start the streak of good reads in which the
+	// board deferred new rows past its detail cap, or listed fewer rows than it
+	// counted (boardbacklog.go); zero while the last good read did neither. A
+	// failed attempt leaves them as they are.
+	DeferredSince time.Time `json:"deferred_since,omitzero"`
+	ShortSince    time.Time `json:"short_since,omitzero"`
 }
 
 type boardHealthDoc struct {
@@ -116,6 +122,12 @@ func (r boardHealthRec) sane(at time.Time) boardHealthRec {
 	}
 	if ahead(r.LastTried) {
 		r.LastTried = time.Time{}
+	}
+	if ahead(r.DeferredSince) {
+		r.DeferredSince = at
+	}
+	if ahead(r.ShortSince) {
+		r.ShortSince = at
 	}
 	return r
 }
@@ -160,7 +172,7 @@ func goodRead(e boardReport) bool { return e.Outcome == boardRead }
 func applyAttempt(r boardHealthRec, e boardReport, at time.Time, seeded bool) boardHealthRec {
 	r = r.sane(at)
 	if goodRead(e) {
-		return boardHealthRec{LastOK: at, LastTried: at, Outcome: boardRead}
+		return boardHealthRec{LastOK: at, LastTried: at, Outcome: boardRead, DeferredSince: r.DeferredSince, ShortSince: r.ShortSince}
 	}
 	r.LastTried = at
 	r.Outcome = e.Outcome
@@ -194,6 +206,9 @@ func (r boardHealthRec) isStale(at time.Time) (since time.Time, stale bool) {
 type boardHealth struct {
 	path string
 	doc  boardHealthDoc
+	// fetches are this run's per-board fetch counts, set before record so a
+	// good read can start or end a deferred or short streak (boardbacklog.go).
+	fetches map[boardKey]boardFetch
 }
 
 // openBoardHealth loads the file, seeding it from the kept run history when
@@ -302,7 +317,7 @@ func (h *boardHealth) record(watched []sources.Board, tried []boardReport, compl
 		if _, known := h.doc.Boards[k]; !known && len(h.doc.Boards) >= maxBoardHealthEntries {
 			continue
 		}
-		h.doc.Boards[k] = applyAttempt(h.doc.Boards[k], e, at, false)
+		h.doc.Boards[k] = trackBacklog(applyAttempt(h.doc.Boards[k], e, at, false), e, h.fetches[boardKey{e.ATS, e.Token}], at)
 	}
 	if complete && len(watched) > 0 {
 		keys := watchedHealthKeys(watched)

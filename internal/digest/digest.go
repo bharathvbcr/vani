@@ -81,6 +81,10 @@ type Counts struct {
 	// line naming the boards and when the holds end; empty when none).
 	MassDead int
 	MassHeld string
+	// BoardAttention is the attention line for boards skipped this run or
+	// listing short for days (not the stale ones: StaleBoards lists those);
+	// not a failure, one line, empty when none.
+	BoardAttention string
 }
 
 // Unchecked is one cause a posting was kept unchecked and how many were.
@@ -590,6 +594,9 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	}
 	if c.MassHeld != "" {
 		fmt.Fprintf(&b, "\n%s\n", Escape(c.MassHeld, 4*maxFieldRunes))
+	}
+	if c.BoardAttention != "" {
+		fmt.Fprintf(&b, "\n%s\n", Escape(c.BoardAttention, 4*maxFieldRunes))
 	}
 	boardSection := func(title string, lines []string, total int) {
 		n := max(total, len(lines))

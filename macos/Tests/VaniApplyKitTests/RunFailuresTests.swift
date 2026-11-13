@@ -62,6 +62,10 @@ final class RunFailuresTests: XCTestCase {
             // Postings still in a mass hold (an attention line) and deaths that wait a read
             // after a long gap are shown and are not failures.
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"held":20,"mass_held_count":1,"mass_held_postings":20,"deaths_deferred":4,"mass_held":[{"ats":"gh","token":"snap","held":20,"until":"2026-11-26T09:00:00Z"}]}}"#,
+            // Ongoing board problems (an attention line, never a failure): stale boards,
+            // a skipped board, a listing short for days and a deferred backlog with
+            // the dates board health keeps for them.
+            #"{"ok":true,"state":"ok","boards":{"configured":3,"read":2,"failed":0,"skipped":1,"listed":3,"stale_count":2,"short":4,"deferred":1,"items":[{"ats":"wd","token":"a/B","outcome":"read","listed":3,"short":4,"short_since":"2026-11-08T09:00:00Z","deferred":1,"deferred_since":"2026-11-01T09:00:00Z"},{"ats":"pg","token":"h","outcome":"skipped"}]}}"#,
             #"{"ok":true,"state":"ok","near_dup":{"similarity_note":"vector cache off"}}"#,
             #"{"ok":true,"state":"ok","shadow":{"errors":0,"busy_skips":0}}"#,
             #"{"ok":true,"state":"ok","explain":{}}"#,

@@ -389,6 +389,9 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// read as "no stale board". Only a listing that reached every board prunes,
 	// and only against the config's whole watchlist, never this run's cut.
 	at := now()
+	if health != nil {
+		health.fetches = w.fetchSnapshot()
+	}
 	boards.Stale, boards.StaleCount, boards.HealthError = health.record(w.watchedBoards(), boards.all, err == nil, at, w.warnf)
 	for _, s := range boards.Stale {
 		w.warnf("stale board: %s", staleBoardLine(s, at))
@@ -408,6 +411,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	}
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
+	applyBacklogLocked(&boards, health)
 	w.boards = &boards
 	w.mu.Unlock()
 	return pipeline.BoardCounts{Configured: boards.Configured, Read: boards.Read}, err

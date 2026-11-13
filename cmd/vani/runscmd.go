@@ -530,6 +530,9 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 			for _, l := range shortListingLines(r.Boards) {
 				b.add(b.clean(l))
 			}
+			for _, l := range deferredBacklogLines(r.Boards, runReportAt(r, at)) {
+				b.add(b.clean(l))
+			}
 		}
 		if a := r.Advance; a != nil {
 			b.add(b.clean(fmt.Sprintf("Advance: %d of %d eligible attempted (cap %d), %d unread, %d failed, %d deferred; stopped: %s",
@@ -757,6 +760,10 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 	// "no failures" alone from its second day.
 	if r.Boards != nil {
 		if l := massHeldLine(r.Boards.MassHeld, r.Boards.MassHeldCount, r.Boards.MassHeldPostings); l != "" {
+			b.add(b.clean(l))
+		}
+		// Boards with an ongoing problem that is not a failure (boardbacklog.go).
+		if l := boardAttentionLine(r.Boards, runReportAt(r, at), true); l != "" {
 			b.add(b.clean(l))
 		}
 	}
