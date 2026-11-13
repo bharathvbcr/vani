@@ -597,7 +597,7 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		if len(detailLines) > 0 {
 			detailLines = append([]string{fmt.Sprintf("Failed boards (%d of %d):", r.Boards.Failed, r.Boards.Configured)}, detailLines...)
 		}
-		var mass, behind, massDead []string
+		var mass, behind, massDead, setBack []string
 		for _, it := range r.Boards.Items {
 			if it.Outcome != boardRead || it.Reconcile == nil {
 				continue
@@ -608,9 +608,16 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 			if it.Reconcile.MassDead > 0 {
 				massDead = append(massDead, b.clean(massDeadLine(it)))
 			}
-			if it.Reconcile.ClockBehind {
+			switch {
+			case it.Reconcile.ClockBehind && it.Reconcile.ClockSetBack:
+				setBack = append(setBack, b.clean(clockBehindLine(it)))
+			case it.Reconcile.ClockBehind:
 				behind = append(behind, b.clean(clockBehindLine(it)))
 			}
+		}
+		if len(setBack) > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Not aged, clock set back (%d, attention, not a failure): a quorum of these boards' own events are days ahead of this run's clock, so nothing absent was aged; nothing was killed:", r.Boards.ClockSetBack))
+			detailLines = append(detailLines, setBack...)
 		}
 		if hidden := r.Boards.Mass - len(mass); hidden > 0 {
 			mass = append(mass, fmt.Sprintf("(%d more mass absence(s) are not in the record: it keeps a bounded number)", hidden))
@@ -881,6 +888,9 @@ func boardFetchSummary(b *boardsReport) string {
 	}
 	if b.Held > 0 {
 		parts = append(parts, fmt.Sprintf("%d absent posting(s) held alive", b.Held))
+	}
+	if b.ClockSetBack > 0 {
+		parts = append(parts, fmt.Sprintf("%d board(s) not aged: clock set back, their own events are days ahead (attention, nothing killed)", b.ClockSetBack))
 	}
 	if b.ClockBehind > 0 {
 		parts = append(parts, fmt.Sprintf("%d board(s) not aged: events stamped ahead of the clock", b.ClockBehind))

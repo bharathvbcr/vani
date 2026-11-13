@@ -388,6 +388,10 @@ type boardsReport struct {
 	// clock that ran ahead. A failure: those boards age nothing until the clock
 	// passes the events. Additive.
 	ClockBehind int `json:"clock_behind,omitempty"`
+	// ClockSetBack counts read boards whose full listing aged nothing only because
+	// a quorum of their own events lie days ahead of the clock (a clock set back by
+	// days). A freeze kills nothing, so it is attention, not a failure. Additive.
+	ClockSetBack int `json:"clock_set_back,omitempty"`
 	// MassDead is postings a true mass absence (the share rule or an empty
 	// listing) had marked that died this run, their mass hold over and their
 	// board still not listing them. A failure, so the owner sees them: a mass
@@ -526,6 +530,9 @@ type reconcileCounts struct {
 	Mass        bool      `json:"mass,omitempty"`
 	MassMarked  int       `json:"mass_marked,omitempty"`
 	ClockBehind bool      `json:"clock_behind,omitempty"`
+	// ClockSetBack: the freeze (ClockBehind) rests only on events days ahead (a clock
+	// set back by days), which is attention and not a failure.
+	ClockSetBack bool `json:"clock_set_back,omitempty"`
 	ClockAhead  time.Time `json:"clock_ahead,omitzero"`
 	Deferred    int       `json:"deaths_deferred,omitempty"`
 	MassDead    int       `json:"mass_dead,omitempty"`

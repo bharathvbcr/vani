@@ -301,6 +301,9 @@ func stampOf(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 // newest event that says so. Aging resumes once the clock passes it.
 type clockEvidence struct {
 	behind bool
+	// setBack: behind only by a quorum of the board's own events further ahead than
+	// ClockWindow (a clock set back by days); none lies within the window.
+	setBack bool
 	ahead  time.Time
 }
 
@@ -342,7 +345,7 @@ func (x *ledgerIndex) clockEvidence(prefix string, now time.Time) clockEvidence 
 	// A quorum of the board's own records further ahead than ClockWindow but
 	// within SetBackCap: a clock set back by days (liveness.go "The clock").
 	if far >= ClockQuorum && !c.behind {
-		c = clockEvidence{behind: true, ahead: farNewest}
+		c = clockEvidence{behind: true, ahead: farNewest, setBack: true}
 	} else if far >= ClockQuorum && farNewest.After(c.ahead) {
 		c.ahead = farNewest
 	}
@@ -359,6 +362,7 @@ type absence struct {
 	shortDead          int // deaths of postings only short listings marked (in dead, not in massDead)
 	unreadableDead     int // deaths of postings an unreadable-row listing held (in massDead)
 	mass, clockBehind  bool
+	clockSetBack       bool
 	clockAhead         time.Time
 }
 
@@ -381,7 +385,7 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		return a, nil
 	}
 	if clock.behind {
-		a.clockBehind, a.clockAhead = true, clock.ahead
+		a.clockBehind, a.clockAhead, a.clockSetBack = true, clock.ahead, clock.setBack
 		return a, nil
 	}
 	// Only a listing that is the board's whole word can be a true mass absence

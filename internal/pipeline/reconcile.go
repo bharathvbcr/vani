@@ -85,6 +85,9 @@ type Summary struct {
 	// clock passes it. Either the clock is behind or those events were written
 	// under a clock that ran ahead; the ledger cannot tell which.
 	ClockBehind bool
+	// ClockSetBack says the freeze rests only on a quorum of the board's own events
+	// further ahead than ClockWindow (a clock set back by days), none within it.
+	ClockSetBack bool
 	ClockAhead  time.Time
 	// Duplicate counts every record this fold stored or marked as a
 	// duplicate: listed postings stored as one (ListedDuplicate) and other
@@ -418,6 +421,7 @@ func (s *Summary) addAbsence(a absence) {
 	s.MassMarked += a.massMarked
 	s.Mass = s.Mass || a.mass
 	s.ClockBehind = s.ClockBehind || a.clockBehind
+	s.ClockSetBack = s.ClockSetBack || a.clockSetBack
 	if a.clockAhead.After(s.ClockAhead) {
 		s.ClockAhead = a.clockAhead
 	}

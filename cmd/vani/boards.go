@@ -594,7 +594,7 @@ func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Kept: s.Kept, Redated: s.Redated,
 		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
 		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate, Reopened: s.Reopened, Invalid: s.Invalid,
-		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind,
+		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind, ClockSetBack: s.ClockSetBack,
 		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead, ShortDead: s.ShortDead, UnreadableDead: s.UnreadableDead}
 }
 
@@ -622,7 +622,10 @@ func boardsReportOf(configured int, tried []boardReport) boardsReport {
 			if e.Reconcile.MassMarked > 0 { // a listing that only carries earlier marks is not news
 				r.Mass++
 			}
-			if e.Reconcile.ClockBehind {
+			switch {
+			case e.Reconcile.ClockBehind && e.Reconcile.ClockSetBack:
+				r.ClockSetBack++ // a freeze that kills nothing: attention, not a failure
+			case e.Reconcile.ClockBehind:
 				r.ClockBehind++
 			}
 			r.MassDead += e.Reconcile.MassDead
