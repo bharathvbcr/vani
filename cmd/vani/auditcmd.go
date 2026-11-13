@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
+	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -317,6 +318,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	dropped := fs.Int("dropped", eval.AuditDropped, "dropped quota of that draw")
 	closed := fs.Int("closed", eval.AuditClosed, "closed quota of that draw")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
+	shown := fs.Bool("shown", false, "answered from a surface row (a digest Explore pick, a Jobs row): take the stratum and p_select of the newest sampled impression, else record a manual label")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
 		return err
@@ -330,15 +332,50 @@ func (e *env) cmdAuditAnswer(args []string) error {
 		return usagef("audit answer: --verdict %q must be one of %s or %s", *verdict, strings.Join(eval.WouldApplyOptions, ", "), eval.Skip)
 	case given["source"] != given["p-select"]:
 		return usagef("audit answer: --source and --p-select go together")
+	case *shown && (given["source"] || given["seed"]):
+		return usagef("audit answer: --shown takes the stratum from the impression log; leave out --source, --p-select and --seed")
 	}
 	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed}
 	if err := checkAuditDraw(q, *seed); err != nil {
 		return err
 	}
-	reply, err := e.answerAudit(posting.Key(*key), *verdict, *source, *p, given["source"], *seed, q, *labels)
+	src, prob, explicit := *source, *p, given["source"]
+	if *shown {
+		var err error
+		if src, prob, err = e.shownSampling(posting.Key(*key)); err != nil {
+			return err
+		}
+		explicit = true
+	}
+	reply, err := e.answerAudit(posting.Key(*key), *verdict, src, prob, explicit, *seed, q, *labels)
 	return e.reply(*asJSON, reply, err, func() {
 		fmt.Fprintf(e.stdout, "answered %s: %s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
 	})
+}
+
+// shownSampling is the stratum and inclusion probability of an answer given
+// from a surface row (`audit answer --shown`): those of the posting's newest
+// impression that carried both (an Explore pick or an audit card, drawn with a
+// known probability), else eval.SourceManual with none. An impression log that
+// cannot be read is an error: guessing "manual" would drop a real stratum.
+func (e *env) shownSampling(k posting.Key) (source string, p float64, err error) {
+	shown, err := feedback.ReadImpressions(e.stateDir)
+	if err != nil {
+		return "", 0, fmt.Errorf("audit answer --shown: read impressions: %w", err)
+	}
+	best := -1
+	for i, im := range shown.Rows {
+		if im.Key != k || im.Source == "" || !(im.PSelect >= eval.MinInclusionProbability && im.PSelect <= 1) {
+			continue
+		}
+		if best < 0 || !im.At.Before(shown.Rows[best].At) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return eval.SourceManual, 0, nil
+	}
+	return shown.Rows[best].Source, shown.Rows[best].PSelect, nil
 }
 
 // auditAnswerJSON is what `audit answer --json` reports: the label written.
