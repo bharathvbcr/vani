@@ -85,6 +85,10 @@ type statusJSON struct {
 	// KnowledgeBase is the age of the bank file against kb.stale_after_days.
 	// Absent when no kb.bank is configured. Additive.
 	KnowledgeBase *kbFacet `json:"knowledge_base,omitempty"`
+	// UnwatchedCompanies is the companies the owner saved, applied to or had the
+	// extension ingest a posting of that no watched board covers (unwatched.go).
+	// Absent when the config or the ledger could not be read. Additive.
+	UnwatchedCompanies *unwatchedFacet `json:"unwatched_companies,omitempty"`
 }
 
 // pathsJSON is config.Resolved for status --json.
@@ -148,6 +152,10 @@ type ledgerFacet struct {
 	// snapshot as ByStatus; nil when the ledger was not read. It is not part of
 	// the ledger facet's wire shape: the schedule facet reports it.
 	liveUS *int
+	// recs is the snapshot the counts came from, for the facets that read the
+	// postings themselves (unwatched.go); nil when the ledger was not read. Not
+	// part of the wire shape.
+	recs []ledger.Record
 }
 
 type lastRunFacet struct {
@@ -314,6 +322,10 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	}
 	out.RunRequest = e.runRequestFacet(at)
 	if cfgErr == nil {
+		if out.Ledger.recs != nil {
+			u := unwatchedCompaniesOf(out.Ledger.recs, cfg, e.stateDir)
+			out.UnwatchedCompanies = &u
+		}
 		bh := e.boardHealthFacet(cfg, at)
 		out.BoardHealth = &bh
 	}
@@ -375,6 +387,7 @@ func (e *env) ledgerFacet() ledgerFacet {
 		f.facet, f.Exists, f.Total, f.Torn = facet{OK: true}, true, len(snap.Records), snap.Torn
 		f.ByStatus = statusCounts(snap.Records)
 		f.liveUS = new(liveInUS(snap.Records))
+		f.recs = snap.Records
 	}
 	f.PendingReopens, f.PendingReopensError = e.pendingReopens()
 	return f
