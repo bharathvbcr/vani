@@ -26,6 +26,29 @@ import (
 // Its messages never quote a matched term or any part of the summary.
 var errTargetSummary = errors.New("config target_summary")
 
+// errMotivationNotes marks a refusal to send motivation_notes to a model. Its
+// messages never quote a matched term or any part of the note.
+var errMotivationNotes = errors.New("config motivation_notes")
+
+// checkMotivationNotes returns nil when notes may enter the drafter's prompt.
+// The owner's identifying-words file is not applied (drafts keep project
+// names), but the built-in list is: contact handles and links (@, linkedin,
+// github) and work-authorization wording (visa, h-1b, opt, sponsorship,
+// nonprofit, cap-exempt...) never go to a model. A note that names one is
+// refused, so the owner rewords it; an innocent use of one of those words is
+// refused too, which is the price of one matcher for every text bound for a
+// provider. It only narrows what is sent.
+func checkMotivationNotes(notes string) error {
+	if track.Blank(notes) {
+		return nil
+	}
+	n := len(track.BuiltinWords().Found(notes))
+	if n == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: contains %d term(s) from the built-in list (contact handles or links, or work-authorization wording; the terms are not shown); the note is sent to the drafter's model. Reword it without them (vani config motivation --set)", errMotivationNotes, n)
+}
+
 // checkPromptSummary returns nil when cfg.TargetSummary may enter a model
 // prompt. It fails closed: an unreadable identifying-words list, and a missing
 // or term-less one unless allowMissing (--allow-missing-identifying-words, the

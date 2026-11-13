@@ -147,6 +147,10 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 // drafter on p. timeout 0 is the package default. On failure it returns the
 // reply code to report.
 func (e *env) drafterWith(ctx context.Context, cfg config.Config, p llm.Provider, timeout time.Duration) (*draft.Drafter, string, error) {
+	// Whichever way cfg was built, its note is checked before a prompt can be.
+	if err := checkMotivationNotes(cfg.MotivationNotes); err != nil {
+		return nil, codeConfig, err
+	}
 	var evidence []draft.Evidence
 	if cfg.KB.Bank != "" && cfg.KB.RKB != "" {
 		b, claims, el, err := eligibleBank(ctx, cfg)
