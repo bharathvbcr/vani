@@ -154,23 +154,17 @@ before running one.
 - `vani jobs retriage KEY`
 - `vani jobs resume build KEY`
 - `vani reasons draft`
-- `vani doctor` has the `llm.model` (Opus) read per-board signals from the newest run records,
-  the run logs' trouble lines and a seeded sample of dropped postings (none about sponsorship),
-  and says which boards fail in silence and which drops look wrong. It is a report only
-  (`<state dir>/doctor/`): nothing in the ledger, the rules or the watchlist changes. Its key
-  comes from the environment only. `--dry-run --show` prints both requests and their worst-case
-  cost and sends nothing; a real run needs `--budget-usd` covering that cost. A part that fails
-  is written as failed and the command exits 1.
 - `vani kbmatch run`
 - `vani teacher`
 - `vani draft`, `vani suggest` and `vani resume` take a JSON request on stdin and write a
   JSON reply.
 - `vani doctor` asks Opus whether boards that read nothing are failing silently and whether a
-  random sample of dropped postings were dropped for the right reason. It only reports, never
-  changes a posting, and writes `<state>/doctor/<UTC>.md` and `.json`. A run needs
-  `--budget-usd N` covering its worst case; it exits 1 when a part failed or judged fewer
-  boards or postings than it was sent. `vani --json doctor --last` reads the newest report and
-  spends nothing.
+  random sample of dropped postings were dropped for the right reason (no drop about
+  sponsorship is sampled). It only reports, never changes a posting, and writes
+  `<state>/doctor/<UTC>.md` and `.json`. Its key comes from the environment only. A run needs
+  `--budget-usd N` covering its worst case (`--dry-run --show` prints both requests and that
+  cost); it exits 1 when a part failed or judged fewer boards or postings than it was sent.
+  `vani --json doctor --last` reads the newest report and spends nothing.
 
 `jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher` and `doctor` take `--dry-run`,
 which prices the work and asks nothing.
