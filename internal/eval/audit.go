@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/decide"
 )
 
 // Default weekly audit quotas (owner-approved: 15 postings, 5 scored and 10
@@ -22,23 +23,95 @@ const (
 
 // AuditQuotas are the places of one draw per group. A group's places are
 // never lent to another (that would change the inclusion probabilities).
+// Disagree is the disagreement cells' group (DisagreePrefix); at 0, the
+// default, there are no such cells and every posting stays in its random
+// stratum.
 type AuditQuotas struct {
-	Scored, Dropped, Closed int
+	Scored, Dropped, Closed, Disagree int
 }
 
-// DefaultAuditQuotas are the weekly draw's quotas.
+// DefaultAuditQuotas are the weekly draw's quotas. The disagreement cells are
+// off by default: their quota is the owner's call.
 var DefaultAuditQuotas = AuditQuotas{Scored: AuditScored, Dropped: AuditDropped, Closed: AuditClosed}
+
+// RandomShareOK reports whether at least a third of q's places are drawn from
+// the random strata (scored, dropped and closed) rather than the disagreement
+// cells, as the plan keeps them.
+func (q AuditQuotas) RandomShareOK() bool {
+	return q.Disagree <= 2*(q.Scored+q.Dropped+q.Closed)
+}
+
+// TeacherView is a teacher model's role_fit reading of a candidate, as the
+// disagreement cells read it.
+type TeacherView int8
+
+const (
+	// TeacherUnread is no usable reading (or one the caller keeps out).
+	TeacherUnread TeacherView = iota
+	// TeacherWants is a reading among PositiveReadings.
+	TeacherWants
+	// TeacherRejects is any other answered reading except adjacent.
+	TeacherRejects
+)
+
+// TeacherViewOf is how the disagreement cells read one teacher row's role_fit
+// slot: TeacherWants for an answered reading among PositiveReadings,
+// TeacherRejects for any other answered reading but adjacent (a near miss is
+// no disagreement), TeacherUnread for a row without the slot, an unanswered
+// reading or an empty value.
+func TeacherViewOf(row TeacherRow) TeacherView {
+	sl, ok := row.Slots["role_fit"]
+	if !ok || sl.Reading != string(decide.Answered) || sl.Value == "" {
+		return TeacherUnread
+	}
+	switch {
+	case PositiveReadings[sl.Value]:
+		return TeacherWants
+	case sl.Value == "adjacent":
+		return TeacherUnread
+	}
+	return TeacherRejects
+}
 
 // AuditCandidate is a posting the weekly audit may draw: a kept one with its
 // priority score, a dropped one with its DropClass, or a closed one (Closed,
 // with Class its status: "dead", or "duplicate:<method>" for a duplicate).
+// Teacher is the teacher's reading the disagreement cells use; a closed
+// posting's is never read.
 type AuditCandidate struct {
 	Key     posting.Key
 	Score   float64
 	Dropped bool
 	Closed  bool
 	Class   string
+	Teacher TeacherView
 }
+
+// The disagreement cells (stage 5 of build/fable-plan-2026-11-12-ranking.md):
+// where the teacher's reading and the engine disagree, which is where a yes the
+// engine missed is likeliest. A posting the teacher wants that was dropped or
+// sits in the lowest three score deciles is in CellTeacherWants; one the
+// teacher rejects in the top decile is in CellTeacherRejects. The cells are an
+// overlay: their members stay in their random stratum, which draws as if the
+// cells did not exist (AuditDraw), so no random stratum loses the postings
+// likeliest to be a missed yes.
+//
+// A label drawn from them was chosen because of a model's reading, so it is
+// kept out of every estimate that takes the audit's strata as a random sample
+// (SelectedOnReading); drop recall counts it as a known outcome, as a mark.
+const (
+	DisagreePrefix     = "disagree:"
+	CellTeacherWants   = DisagreePrefix + "teacher_wants_dropped_or_low"
+	CellTeacherRejects = DisagreePrefix + "teacher_rejects_top"
+	// lowDeciles is how many of the lowest score deciles CellTeacherWants takes.
+	lowDeciles = 3
+)
+
+// SelectedOnReading reports whether a label's source is a disagreement cell:
+// drawn because of a model's reading, so it says nothing unbiased about that
+// model or the score. The relevance report, drop recall, the reader table, the
+// auditor gates and the weight fit leave such labels out and count them apart.
+func SelectedOnReading(source string) bool { return strings.HasPrefix(source, DisagreePrefix) }
 
 // Audit cell and stratum prefixes. A kept posting's stratum is its score
 // decile ("decile:N"); for the recall estimate all kept postings are one cell.
@@ -151,13 +224,35 @@ func AuditSample(cands []AuditCandidate, labeled map[posting.Key]Entry, seed str
 // classes are.
 // The scored and dropped groups draw exactly what AuditSample draws for the
 // same seed, whatever q.Closed is: each group spends only its own places.
+//
+// With q.Disagree places the disagreement cells (CellTeacherWants,
+// CellTeacherRejects) are a fourth group laid over the others: the random
+// groups are bucketed and drawn exactly as without it, so their picks and every
+// p_select they carry are the same whatever q.Disagree is, and the cells then
+// draw from their members the random groups did not take. A cell pick's
+// p_select is its cell's share (taken over members left), descriptive only:
+// those labels are kept out of every estimate (SelectedOnReading). An empty
+// cell draws nothing; its places are not lent to the random groups.
 func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed string, q AuditQuotas) AuditPlan {
-	deciles, classes, shut := auditBuckets(cands, labeled)
+	deciles, classes, shut, disagree := auditBuckets(cands, labeled)
 	var plan AuditPlan
 	drawGroup(&plan, deciles, q.Scored, seed, false)
 	drawGroup(&plan, classes, q.Dropped, seed, true)
 	if q.Closed > 0 {
 		drawGroup(&plan, shut, q.Closed, seed, true)
+	}
+	if q.Disagree > 0 {
+		picked := make(map[posting.Key]bool, len(plan.Picks))
+		for _, p := range plan.Picks {
+			picked[p.Key] = true
+		}
+		for name, ks := range disagree {
+			disagree[name] = slices.DeleteFunc(ks, func(k posting.Key) bool { return picked[k] })
+			if len(disagree[name]) == 0 {
+				delete(disagree, name)
+			}
+		}
+		drawGroup(&plan, disagree, q.Disagree, seed, false)
 	}
 	return plan
 }
@@ -169,7 +264,7 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 // with an entry in labeled is left out, so pass nil to keep the labelled ones.
 // Members are in no particular order; a key listed twice counts once.
 func AuditStrata(cands []AuditCandidate, labeled map[posting.Key]Entry) map[string][]posting.Key {
-	deciles, classes, shut := auditBuckets(cands, labeled)
+	deciles, classes, shut, _ := auditBuckets(cands, labeled)
 	out := make(map[string][]posting.Key, len(deciles)+len(classes)+len(shut))
 	for _, m := range []map[string][]posting.Key{deciles, classes, shut} {
 		for name, ks := range m {
@@ -193,9 +288,12 @@ func AuditStratumOf(cands []AuditCandidate) map[posting.Key]string {
 	return out
 }
 
-// auditBuckets sorts the unlabelled candidates into the audit's three groups of
-// strata: score deciles, drop classes and closed statuses.
-func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (deciles, classes, shut map[string][]posting.Key) {
+// auditBuckets sorts the unlabelled candidates into the audit's groups of
+// strata: score deciles, drop classes and closed statuses, which partition
+// them, and the disagreement cells, whose members are also in a decile or a
+// drop class (an overlay; AuditDraw keeps the two from drawing one key twice).
+// Deciles are cut over the whole scored pool.
+func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (deciles, classes, shut, disagree map[string][]posting.Key) {
 	var scored, dropped, closed []AuditCandidate
 	seen := map[posting.Key]bool{}
 	for _, c := range cands {
@@ -220,18 +318,27 @@ func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (decile
 		}
 		return scored[i].Key < scored[j].Key
 	})
-	deciles = map[string][]posting.Key{}
+	deciles, disagree = map[string][]posting.Key{}, map[string][]posting.Key{}
 	for i, c := range scored {
 		if _, done := labeled[c.Key]; done {
 			continue
 		}
 		src := decileSource(i, len(scored))
 		deciles[src] = append(deciles[src], c.Key)
+		switch d := i*10/len(scored) + 1; {
+		case c.Teacher == TeacherWants && d <= lowDeciles:
+			disagree[CellTeacherWants] = append(disagree[CellTeacherWants], c.Key)
+		case c.Teacher == TeacherRejects && d == 10:
+			disagree[CellTeacherRejects] = append(disagree[CellTeacherRejects], c.Key)
+		}
 	}
 	classes = map[string][]posting.Key{}
 	for _, c := range dropped {
 		if _, done := labeled[c.Key]; done {
 			continue
+		}
+		if c.Teacher == TeacherWants {
+			disagree[CellTeacherWants] = append(disagree[CellTeacherWants], c.Key)
 		}
 		src := droppedSource(c.Class)
 		classes[src] = append(classes[src], c.Key)
@@ -244,7 +351,7 @@ func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (decile
 		src := closedSource(c.Class)
 		shut[src] = append(shut[src], c.Key)
 	}
-	return deciles, classes, shut
+	return deciles, classes, shut, disagree
 }
 
 // decileSource is the stratum of the i'th (from 0, in score order) of n scored

@@ -117,8 +117,9 @@ type Relevance struct {
 	Labels    int            `json:"labels"` // would_apply labels in the store
 	Judged    int            `json:"judged"` // of those, yes/maybe/no
 	Skipped   int            `json:"skipped"`
-	Manual    int            `json:"manual"`    // judged outside a sample (no p_select): kept out of the strata
-	Malformed int            `json:"malformed"` // label lines the store could not read, set by the caller
+	Manual    int            `json:"manual"`              // judged outside a sample (no p_select): kept out of the strata
+	Selected  int            `json:"selected_on_reading"` // drawn from the disagreement cells (SelectedOnReading): kept out of everything below
+	Malformed int            `json:"malformed"`           // label lines the store could not read, set by the caller
 	Precision []PrecisionRow `json:"precision"`
 	Deciles   []StratumRow   `json:"deciles"`
 	Drops     []StratumRow   `json:"drops"`
@@ -166,6 +167,10 @@ func BuildRelevance(labels map[posting.Key]Entry, recs []ledger.Record, ordering
 			continue
 		}
 		out.Labels++
+		if SelectedOnReading(e.Source) {
+			out.Selected++ // drawn because of a model's reading: not a sample of the score
+			continue
+		}
 		h, j := wanted(v)
 		if !j {
 			out.Skipped++

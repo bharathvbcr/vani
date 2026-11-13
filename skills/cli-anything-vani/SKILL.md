@@ -88,7 +88,11 @@ and work while a run holds the ledger.
 - `vani labels` prints the label vocabularies (fit, status, category, triage).
 - `vani watchlist list` lists the boards. `vani prefilter`, `vani eval` and `vani relevance`
   report on the filter and the label set. `vani relevance --what-if-summary FILE` measures a
-  draft target summary locally and writes nothing.
+  draft target summary locally and writes nothing. Its yes-yield table is raw counts per audit
+  stratum and disagreement cell, never a population estimate.
+- `vani audit --list --disagree N` shows a draw with N picks from the disagreement cells
+  (the teacher's stored role_fit against the engine). It needs `teacher_readings.jsonl`, and those
+  labels stay out of every estimate. The quota is the owner's call; do not answer for the owner.
 - `vani version` prints the build and `vani config check` validates the config.
 - `vani track list|show`, `vani lca lookup`, `vani employer lookup`, `vani kbmatch status`
   and `vani semantic status` print smaller reports.

@@ -67,6 +67,10 @@ func TestAnswersMatchTheOwnersAuditVocabulary(t *testing.T) {
 	if strings.Join(Answers[:], ",") != strings.Join(eval.WouldApplyOptions, ",") {
 		t.Errorf("answers %v differ from the audit's %v", Answers, eval.WouldApplyOptions)
 	}
+	// The owner's one-tap reasons are the auditor's, so the two can be compared.
+	if strings.Join(Reasons[:], ",") != strings.Join(eval.WouldApplyReasons, ",") {
+		t.Errorf("reasons %v differ from the audit's %v", Reasons, eval.WouldApplyReasons)
+	}
 	for i, a := range Answers {
 		s, ok := Score(a)
 		if !ok || s != float64(len(Answers)-1-i) {

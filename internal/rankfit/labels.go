@@ -96,6 +96,10 @@ type TargetCounts struct {
 	// liveness and the duplicate fold, not what the ranking orders. A skip
 	// there counts in Skipped.
 	Closed int
+	// Selected counts yes, maybe and no judgments drawn from the audit's
+	// disagreement cells (eval.SelectedOnReading), kept out of the fit: they
+	// were chosen because of a model's reading.
+	Selected int
 }
 
 // Judged is the usable judgment count the weight fit's threshold is on.
@@ -157,6 +161,17 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 			continue // a triage-slot label only
 		}
 		e := labels[k]
+		if eval.SelectedOnReading(e.Source) {
+			// Drawn because of a model's reading: a weight here would make the
+			// fit chase that model, so it is kept out, and no pass brings it back.
+			excluded[k] = true
+			if v != eval.Skip {
+				c.Selected++
+			} else {
+				c.Skipped++
+			}
+			continue
+		}
 		if err := checkInclusion(string(k), e.Source, e.PSelect); err != nil {
 			return nil, TargetCounts{}, err
 		}

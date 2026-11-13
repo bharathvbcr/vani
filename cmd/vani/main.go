@@ -129,7 +129,10 @@ commands:
                              weekly stratified would-I-apply sample (deciles + drop classes,
                              and --closed postings the engine closed: dead, or duplicate by fold method);
                              --json prints keys, strata and p_select only (no posting text),
-                             --blind hides the model's readings while you answer
+                             --blind hides the model's readings while you answer;
+                             [--disagree N [--teacher M]] adds N picks from the disagreement cells
+                             (teacher M's role_fit against the engine), over an unchanged random
+                             draw; those labels stay out of every estimate (at most 2x random)
                              (audit-sample is the old name)
   audit answer --key K --verdict yes|maybe|no|skip [--reason R] [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from

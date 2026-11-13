@@ -87,6 +87,10 @@ type ReaderAgreement struct {
 	Yes    int `json:"yes"`
 	Maybe  int `json:"maybe"`
 	No     int `json:"no"`
+	// Selected counts the judged labels drawn from the disagreement cells
+	// (SelectedOnReading), kept out of every reader's figures.
+	Selected int `json:"selected_on_reading"`
+
 	// TeacherStatus is TeacherProxyAvailable when the log was read; any other
 	// value says why no teacher reader is listed.
 	TeacherStatus string      `json:"teacher_status"`
@@ -244,6 +248,12 @@ func BuildReaderAgreement(labels map[posting.Key]Entry, recs []ledger.Record, te
 			continue
 		}
 		if _, j := wanted(v); !j {
+			continue
+		}
+		if SelectedOnReading(e.Source) {
+			// Drawn because a teacher's reading disagreed with the engine: it
+			// would tilt that teacher's sensitivity and specificity.
+			out.Selected++
 			continue
 		}
 		owner[k] = v

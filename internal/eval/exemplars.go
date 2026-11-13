@@ -247,6 +247,10 @@ type EvalLabelStats struct {
 	// compare against the exemplars with. Maybe, Skipped and Closed are classes
 	// that are not part of the yes-against-no question.
 	BeforeFreeze, Exemplar, Repost, NotInLedger, Maybe, Skipped, Closed int
+	// Selected are labels drawn from the audit's disagreement cells
+	// (SelectedOnReading): chosen on a model's reading, they would tilt the
+	// auditor's verdict, so they are left out.
+	Selected int
 }
 
 // EvaluationLabels is the set the auditor is scored on: the owner's yes and no
@@ -266,6 +270,8 @@ func EvaluationLabels(labels map[posting.Key]Entry, set ExemplarSet, byKey map[p
 			continue
 		case strings.HasPrefix(l.Source, ClosedPrefix):
 			st.Closed++
+		case SelectedOnReading(l.Source):
+			st.Selected++
 		case v == Skip:
 			st.Skipped++
 		case v == "maybe":

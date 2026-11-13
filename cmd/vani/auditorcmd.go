@@ -250,6 +250,10 @@ type auditorJudged struct {
 	keys     []posting.Key // sorted, each once
 	labelled int
 	marked   int
+	// selected counts the answers drawn from the audit's disagreement cells
+	// (eval.SelectedOnReading): chosen because a teacher's reading disagreed
+	// with the engine, they would tilt the auditor's agreement and are left out.
+	selected int
 }
 
 func (e *env) auditorJudgedSet() (auditorJudged, error) {
@@ -268,6 +272,10 @@ func (e *env) auditorJudgedSet() (auditorJudged, error) {
 	j := auditorJudged{labels: map[posting.Key]eval.Entry{}, marks: map[posting.Key]marks.Entry{}}
 	set := map[posting.Key]bool{}
 	for k, en := range done {
+		if eval.SelectedOnReading(en.Source) {
+			j.selected++
+			continue
+		}
 		if slices.Contains(eval.WouldApplyOptions, en.Labels[eval.WouldApply]) {
 			j.labels[k] = en
 			j.labelled++
@@ -614,6 +622,10 @@ type auditorReportReply struct {
 	Reasons         map[string]int         `json:"auditor_reasons"`
 	MissedReasons   map[string]int         `json:"auditor_reasons_when_owner_wanted_and_auditor_said_no"`
 	Agreement       *eval.AuditorAgreement `json:"agreement,omitempty"`
+
+	// SelectedOnReading counts the answers drawn from the audit's
+	// disagreement cells, left out of the comparison.
+	SelectedOnReading int `json:"selected_on_reading"`
 	failure
 }
 
@@ -710,7 +722,7 @@ func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag 
 	if err != nil {
 		return err
 	}
-	out.Labelled, out.Marked = judged.labelled, judged.marked
+	out.Labelled, out.Marked, out.SelectedOnReading = judged.labelled, judged.marked, judged.selected
 	aud, err := eval.OpenTeacherStore(e.auditorPath())
 	if err != nil {
 		return err

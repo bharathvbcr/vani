@@ -53,6 +53,13 @@ func (e *env) cmdRelevance(args []string) error {
 	if err != nil {
 		return fmt.Errorf("labels unreadable, refusing to report: %w", err)
 	}
+	// sampled is done less the disagreement-cell labels, for the reports below
+	// that read the labels as a sample and have no exclusion of their own (the
+	// seniority shadow, the summary what-if, the score parts). The relevance
+	// counts, drop recall, drop agreement and the reader table exclude them
+	// themselves and say how many; the yes yield is where they are counted.
+	sampled, _ := eval.WithoutSelectedOnReading(done)
+	yield := eval.BuildYesYield(done)
 	// With nothing judged there is nothing to order or score: no ledger read.
 	if rep := eval.BuildRelevance(done, nil, nil, nil, eval.Names{}); rep.Judged == 0 {
 		if *whatIf != "" {
@@ -63,12 +70,13 @@ func (e *env) cmdRelevance(args []string) error {
 		// cannot be read the reply says so: that is not "no data".
 		agree, err := e.dropAgreement(done)
 		recall := eval.InsufficientDropRecall("no judged would_apply labels yet (run `vani audit`)")
-		out := relevanceReply{Relevance: rep, DropAgreement: agree, DropRecall: &recall}
+		out := relevanceReply{Relevance: rep, DropAgreement: agree, DropRecall: &recall, YesYield: &yield}
 		if err != nil {
 			out.DropAgreement, out.DropAgreementError = nil, err.Error()
 		}
 		return e.reply(*asJSON, out, nil, func() {
 			fmt.Fprint(e.stdout, rep.Markdown())
+			fmt.Fprint(e.stdout, yield.Markdown())
 			fmt.Fprint(e.stdout, recall.Markdown())
 			if err != nil {
 				fmt.Fprintf(e.stdout, "\n## Drop candidates\n\nnot computed: %v\n", err)
@@ -116,27 +124,28 @@ func (e *env) cmdRelevance(args []string) error {
 	store, status, detail := e.openTeacherLog()
 	readers := eval.BuildReaderAgreement(done, b.snap.Records, store, status, names)
 	readers.TeacherDetail = detail
-	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers}
+	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers, YesYield: &yield}
 	base := jobinsight.DefaultWeights()
-	items, itemsErr := e.judgedItems(done, b.snap, base, nil)
+	items, itemsErr := e.judgedItems(sampled, b.snap, base, nil)
 	if itemsErr != nil {
 		out.PartAUCError = itemsErr.Error()
 	} else {
 		out.PartAUC = partAUCOf(items, base)
 	}
 	eng := engineeringOf(b.snap)
-	sens := buildSensitivity(done, b.snap.Records, store, status, names, items, itemsErr, base, eng)
+	sens := buildSensitivity(sampled, b.snap.Records, store, status, names, items, itemsErr, base, eng)
 	out.Sensitivity = &sens
-	shadow := e.buildSeniorityShadow(done, b.snap)
+	shadow := e.buildSeniorityShadow(sampled, b.snap)
 	out.SeniorityShadow = &shadow
 	if *whatIf != "" {
 		ctx, stop := signalContext()
-		w := e.buildSummaryWhatIf(ctx, done, b.snap, *whatIf)
+		w := e.buildSummaryWhatIf(ctx, sampled, b.snap, *whatIf)
 		stop()
 		out.SummaryWhatIf = &w
 	}
 	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())
+		fmt.Fprint(e.stdout, yield.Markdown())
 		fmt.Fprint(e.stdout, recall.Markdown())
 		fmt.Fprint(e.stdout, proxy.Markdown())
 		fmt.Fprint(e.stdout, agree.Markdown())
@@ -225,7 +234,11 @@ func (e *env) judgedItems(done map[posting.Key]eval.Entry, snap ledger.Snapshot,
 // TeacherProxy the model-against-model count of candidate misses; with no
 // judged labels the ledger is not read and TeacherProxy is absent.
 type relevanceReply struct {
-	Relevance          eval.Relevance         `json:"relevance"`
+	Relevance eval.Relevance `json:"relevance"`
+	// YesYield is the raw yes yield per stratum and disagreement cell, with the
+	// yes-rich stratum named when one is clearly above the random strata.
+	YesYield *eval.YesYield `json:"yes_yield,omitempty"`
+
 	DropRecall         *eval.DropRecall       `json:"drop_recall,omitempty"`
 	TeacherProxy       *eval.TeacherDropProxy `json:"teacher_proxy,omitempty"`
 	DropAgreement      *eval.DropAgreement    `json:"drop_agreement,omitempty"`

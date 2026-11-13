@@ -19,7 +19,6 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
-	"github.com/bharathvbcr/Vani/internal/decide/wouldapply"
 	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -84,8 +83,11 @@ const (
 // WouldApplyOptions are the would_apply values besides Skip.
 var WouldApplyOptions = []string{"yes", "maybe", "no"}
 
-// WouldApplyReasons are the WouldApplyReason values (wouldapply.Reasons).
-var WouldApplyReasons = wouldapply.Reasons[:]
+// WouldApplyReasons are the WouldApplyReason values. They are the pointwise
+// auditor's wouldapply.Reasons, kept here as a copy because that package's
+// tests import this one; its TestAnswersMatchTheOwnersAuditVocabulary fails if
+// the two lists drift.
+var WouldApplyReasons = []string{"level", "domain", "location", "employer_type", "other"}
 
 // auditSlot reports whether slot is one of the owner's audit slots
 // (WouldApply and the WouldApplyReason that travels with it) rather than a

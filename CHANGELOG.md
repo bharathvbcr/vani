@@ -9,6 +9,18 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Disagreement cells and the yes yield** (`vani audit --disagree N [--teacher M]`,
+  `internal/eval/yesyield.go`, `vani relevance`). The weekly draw can add N postings where the
+  teacher's stored role_fit reading (default Sonnet) disagrees with the engine: wanted but dropped
+  or in the lowest three score deciles, or rejected in the top decile. That is where a missed yes
+  is likeliest. The cells sit over the random strata without changing them: the random picks
+  and their p_select are the same with or without `--disagree`, and at least a third of the draw
+  stays random. Labels drawn there are kept out of every estimate (relevance counts, readers, drop
+  agreement, auditor gates, the weight fit); drop recall counts each as a known outcome, as it
+  counts a mark. Postings in strata the auditor leaves out (work authorization, work mode, owner
+  exclusions) are never read for a cell. `vani relevance` now shows the raw yes yield per stratum
+  and cell, and names a yes-rich stratum only when its 95% lower bound beats the random strata's
+  yes rate. Off by default; the quota is the owner's call.
 - **Drops the rules no longer make, by class** (`vani retriage --policy-drops`, its `classes`).
   A drop made under a rule that has since changed was never re-examined: two Databricks Staff
   roles the owner marked "maybe" were dropped on `seniority = staff_plus` (p 0.912 and 0.917, a

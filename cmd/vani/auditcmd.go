@@ -88,6 +88,15 @@ func (b *browsing) view(view, sortBy string, openOnly bool) ([]jobview.Selected,
 // maxAuditKeyBytes bounds --key of `audit answer`.
 const maxAuditKeyBytes = 512
 
+// disagreeFlags are the disagreement-cell flags `audit` and `audit answer`
+// share: the cells' quota (0, the default, draws none and never opens the
+// teacher log) and whose readings define them.
+func disagreeFlags(fs *flag.FlagSet) (disagree *int, teacher *string) {
+	disagree = fs.Int("disagree", 0, "postings drawn from the disagreement cells, where the teacher's role_fit reading and the engine disagree (kept out of every estimate; at most twice the random quotas)")
+	teacher = fs.String("teacher", sonnetReader, "the teacher model whose stored role_fit readings define the disagreement cells")
+	return disagree, teacher
+}
+
 // auditDraw is one week's draw with the state it was made from.
 type auditDraw struct {
 	b     *browsing
@@ -108,6 +117,12 @@ func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 	if q.Scored+q.Dropped+q.Closed < 1 {
 		return usagef("audit: --scored, --dropped and --closed must be within 0..%d and not all 0", maxAuditQuota)
 	}
+	if q.Disagree < 0 || q.Disagree > maxAuditQuota {
+		return usagef("audit: --disagree must be within 0..%d", maxAuditQuota)
+	}
+	if !q.RandomShareOK() {
+		return usagef("audit: --disagree %d is more than twice --scored + --dropped + --closed (%d): at least a third of the draw stays random", q.Disagree, q.Scored+q.Dropped+q.Closed)
+	}
 	if len(seed) > maxSeedBytes {
 		return usagef("audit: --seed is longer than %d bytes", maxSeedBytes)
 	}
@@ -116,8 +131,10 @@ func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 
 // drawAudit makes the draw for seed ("" is this ISO week). It fails closed,
 // as `label` does: a draw made without the labels could repeat a posting
-// already answered.
-func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, error) {
+// already answered. With q.Disagree places the candidates carry teacher's
+// role_fit readings (teacherViews), and a teacher log that cannot be read is
+// an error; with none the log is never opened.
+func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*auditDraw, error) {
 	s, err := e.openEvalStore(labels)
 	if err != nil {
 		return nil, err
@@ -138,11 +155,45 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 		return nil, err
 	}
 	cands = b.withoutInherited(cands)
+	if q.Disagree > 0 {
+		if err := e.teacherViews(cands, teacher); err != nil {
+			return nil, err
+		}
+	}
 	if seed == "" {
 		seed = eval.WeekSeed(now())
 	}
 	plan := eval.AuditDraw(cands, done, seed, q)
 	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
+}
+
+// teacherViews sets each candidate's Teacher from model's newest jd_triage
+// role_fit reading in the teacher log (eval.TeacherViewOf), for the
+// disagreement cells. A closed posting is never read, nor a dropped one in a
+// stratum the auditor leaves out (stratumLeftOut: work authorization, work
+// mode, owner exclusions), so no such posting is ever drawn because of a
+// reading or shown as an exemplar from a cell. A log that is missing, empty or
+// unreadable is an error: cells drawn from nothing would look like cells
+// with no disagreement.
+func (e *env) teacherViews(cands []eval.AuditCandidate, model string) error {
+	store, status, detail := e.openTeacherLog()
+	if store == nil {
+		return fmt.Errorf("audit --disagree: the teacher readings log is not usable (%s %s); the disagreement cells need %s's role_fit readings (vani teacher)", status, strings.TrimSpace(detail), model)
+	}
+	for i := range cands {
+		c := &cands[i]
+		c.Teacher = eval.TeacherUnread
+		if c.Closed {
+			continue
+		}
+		if _, left := stratumLeftOut(eval.AuditCell(*c)); left {
+			continue
+		}
+		if row, ok := store.LatestByModel("", c.Key)[model]; ok {
+			c.Teacher = eval.TeacherViewOf(row)
+		}
+	}
+	return nil
 }
 
 // auditCandidates is every posting the audit's strata stand over: each kept
@@ -277,6 +328,7 @@ func (e *env) cmdAudit(args []string) error {
 	scored := fs.Int("scored", eval.AuditScored, "postings drawn across the score deciles")
 	dropped := fs.Int("dropped", eval.AuditDropped, "postings drawn across the drop classes")
 	closed := fs.Int("closed", eval.AuditClosed, "postings drawn across the closed statuses (dead, duplicate)")
+	disagree, teacher := disagreeFlags(fs)
 	seed := fs.String("seed", "", "draw seed (default: this ISO week, so a batch stays the same all week)")
 	labels := fs.String("labels", "", "label directory (default: state dir; use the repo's eval/jd_triage to keep labels in git)")
 	list := fs.Bool("list", false, "print the draw (stratum, p_select, key) and ask nothing")
@@ -288,11 +340,11 @@ func (e *env) cmdAudit(args []string) error {
 	if *list && *asJSON {
 		return usagef("audit: --list and --json are two ways to print the draw; pick one")
 	}
-	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed}
+	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed, Disagree: *disagree}
 	if err := checkAuditDraw(q, *seed); err != nil {
 		return err
 	}
-	d, err := e.drawAudit(q, *seed, *labels)
+	d, err := e.drawAudit(q, *teacher, *seed, *labels)
 	if *asJSON { // a failure is {"error"} on stdout, as every --json command reports it
 		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}}
 		if err == nil {
@@ -310,10 +362,10 @@ func (e *env) cmdAudit(args []string) error {
 		return err
 	}
 	if len(d.picks) == 0 {
-		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored or dropped pool")
+		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored, dropped, closed or disagreement pools")
 		return nil
 	}
-	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d scored + %d dropped + %d closed)\n", d.seed, len(d.picks), *scored, *dropped, *closed)
+	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d scored + %d dropped + %d closed + %d disagreement)\n", d.seed, len(d.picks), *scored, *dropped, *closed, *disagree)
 	if !*blind { // a stratum name says whether the model dropped the posting
 		for _, st := range d.plan.Strata {
 			fmt.Fprintf(e.stdout, "  %-34s pool %4d, drawn %d\n", st.Source, st.Pool, st.Taken)
@@ -369,6 +421,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	scored := fs.Int("scored", eval.AuditScored, "scored quota of that draw")
 	dropped := fs.Int("dropped", eval.AuditDropped, "dropped quota of that draw")
 	closed := fs.Int("closed", eval.AuditClosed, "closed quota of that draw")
+	disagree, teacher := disagreeFlags(fs)
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	shown := fs.Bool("shown", false, "answered from a surface row (a digest Explore pick, a Jobs row): take the stratum and p_select of the newest sampled impression, else record a manual label")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
@@ -391,7 +444,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	case *shown && (given["source"] || given["seed"]):
 		return usagef("audit answer: --shown takes the stratum from the impression log; leave out --source, --p-select and --seed")
 	}
-	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed}
+	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed, Disagree: *disagree}
 	if err := checkAuditDraw(q, *seed); err != nil {
 		return err
 	}
@@ -403,7 +456,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 		}
 		explicit = true
 	}
-	reply, err := e.answerAudit(posting.Key(*key), *verdict, *reason, src, prob, explicit, *seed, q, *labels)
+	reply, err := e.answerAudit(posting.Key(*key), *verdict, *reason, src, prob, explicit, *seed, q, *teacher, *labels)
 	return e.reply(*asJSON, reply, err, func() {
 		why := ""
 		if reply.Reason != "" {
@@ -450,7 +503,7 @@ type auditAnswerJSON struct {
 // answerAudit writes one would_apply label (see cmdAuditAnswer), with its
 // reason when one is given. explicit says source and p came from the caller;
 // otherwise they are the draw's.
-func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, labels string) (auditAnswerJSON, error) {
+func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, teacher, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
 	var snap ledger.Snapshot
 	src, prob := source, p
@@ -465,7 +518,7 @@ func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float
 		}
 		snap = b.snap
 	} else {
-		d, err := e.drawAudit(q, seed, labels)
+		d, err := e.drawAudit(q, teacher, seed, labels)
 		if err != nil {
 			return auditAnswerJSON{}, err
 		}
