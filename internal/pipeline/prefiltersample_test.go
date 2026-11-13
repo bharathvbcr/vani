@@ -246,16 +246,16 @@ func TestPrefilterKeyIsStableAndNeverALedgerFallbackKey(t *testing.T) {
 
 func TestPrefilterRuleNamesTheRuleNeverItsValue(t *testing.T) {
 	for reason, want := range map[string]string{
-		`excluded: title matches "intern"`:                       "exclude_title",
-		`excluded: company is "Acme"`:                            "exclude_company",
-		`excluded: location matches "India"`:                     "exclude_location",
-		`excluded: location is outside only_locations`:           "exclude_location",
+		`excluded: title matches "intern"`:                                     "exclude_title",
+		`excluded: company is "Acme"`:                                          "exclude_company",
+		`excluded: location matches "India"`:                                   "exclude_location",
+		`excluded: location is outside only_locations`:                         "exclude_location",
 		`excluded: location is outside only_locations (unrecognised location)`: "exclude_location_unrecognised",
 		`excluded: location matches "unrecognised location"`:                   "exclude_location",
-		`excluded: description matches an excluded phrase`:       "exclude_description",
-		`excluded: something new`:                                "exclude_other",
-		`slot "role_fit" = "mismatch_domain": title matched "x"`: "read_role_fit",
-		`slot "seniority" = "staff_plus": title matched "Staff"`: "read_seniority",
+		`excluded: description matches an excluded phrase`:                     "exclude_description",
+		`excluded: something new`:                                              "exclude_other",
+		`slot "role_fit" = "mismatch_domain": title matched "x"`:               "read_role_fit",
+		`slot "seniority" = "staff_plus": title matched "Staff"`:               "read_seniority",
 		``:        "other",
 		`unknown`: "other",
 	} {
