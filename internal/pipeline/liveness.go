@@ -375,10 +375,12 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		a.clockBehind, a.clockAhead = true, clock.ahead
 		return a, nil
 	}
-	// Only a listing that is the board's whole word can be a true mass absence:
-	// a short listing leaves out what it leaves out because it is short, however
-	// much that is, so what it holds dies as a short death (MassShortKey).
-	trueMass := !short && massAbsence(lv, len(open), len(absent))
+	// Only a listing that is the board's whole word can be a true mass absence
+	// by share: a short listing leaves out what it leaves out because it is
+	// short, however much that is, so what it holds dies as a short death
+	// (MassShortKey). A listing that shows none of the board's open postings is
+	// one whether or not it is short (the Snap case: an empty read).
+	trueMass := massAbsence(lv, len(open), len(absent)) && (!short || len(absent) == len(open))
 	mass := short || trueMass
 
 	var w absence

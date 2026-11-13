@@ -390,9 +390,10 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			continue
 		}
 		nOpen, nAbsent := len(open), len(absent)
-		// A short listing is never itself a true mass absence (its cause is short).
-		trueMass := !r.short && ((nOpen >= 2 && nAbsent == nOpen) || (nOpen >= rule.floor && nAbsent*rule.den >= rule.num*nOpen) ||
-			(nOpen < rule.floor && nAbsent >= 2 && 2*nAbsent > nOpen))
+		// A short listing is a true mass absence only when it shows none of at
+		// least 2 open postings, never by share (its cause is short).
+		trueMass := (nOpen >= 2 && nAbsent == nOpen) || (!r.short && ((nOpen >= rule.floor && nAbsent*rule.den >= rule.num*nOpen) ||
+			(nOpen < rule.floor && nAbsent >= 2 && 2*nAbsent > nOpen)))
 		mass := r.short || trueMass // a short listing marks every absent posting mass
 		if mass && nAbsent > 0 {
 			tally.massReads.Add(1)
