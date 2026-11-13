@@ -55,7 +55,7 @@ func bruteTwinOf(p posting.Posting, now time.Time, existing []ledger.Record) (po
 	if weakKey(p.Key) {
 		// Rule 3: the first ATS-keyed record, in key order, with p's tuple, that is not Dead.
 		for _, r := range existing {
-			if t, ok := tupleOf(r.Posting); ok && !weakKey(r.Key) && t == fk && r.Status != posting.Dead {
+			if t, ok := tupleOf(r.Posting); ok && !weakKey(r.Key) && t == fk && r.Status != posting.Dead && bruteShares(p, r.Posting, r.Key) {
 				return r.Key, "", true
 			}
 		}
@@ -66,6 +66,22 @@ func bruteTwinOf(p posting.Posting, now time.Time, existing []ledger.Record) (po
 		return s, "same role on another ats", true
 	}
 	return "", "", false
+}
+
+// bruteShares: p and the record (other, under otherKey) share a link or a
+// requisition id, by plain scans of both lists.
+func bruteShares(p, other posting.Posting, otherKey posting.Key) bool {
+	for _, a := range urlKeys(p) {
+		if slices.Contains(urlKeys(other), a) {
+			return true
+		}
+	}
+	for _, a := range requisitionIDs(p.Key, p) {
+		if slices.Contains(requisitionIDs(otherKey, other), a) {
+			return true
+		}
+	}
+	return false
 }
 
 func bruteCrossCandidates(p posting.Posting, fk posting.Key, existing []ledger.Record) []ledger.Record {

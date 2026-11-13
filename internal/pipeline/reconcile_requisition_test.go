@@ -174,20 +174,60 @@ func TestTwinsFoldedByTheTupleOnlyStayFoldedAndReviveSafely(t *testing.T) {
 	})
 }
 
-// Pinned, not changed: a weakly keyed posting (an inbox or page job, x: or pg:)
-// still folds into an ATS record on the tuple alone (rule 3, markWeakTwins). It
-// has no requisition id to share; whether it should need one is the owner's call.
-func TestWeakKeyedPostingStillFoldsOnTheTupleAlone(t *testing.T) {
-	gh := ghBare(t, "1", "Staff Engineer", "Remote")
+// A fallback- or page-keyed posting (an inbox or page job) is held to the same
+// rule as an ATS one: it folds into an ATS record only when the two share a
+// link or a requisition id. The same company, title and place alone leaves both
+// records, in either arrival order.
+func TestWeakKeyedPostingFoldsOnlyOnASharedLinkOrRequisitionID(t *testing.T) {
 	fk, err := posting.FallbackKey("Acme", "Staff Engineer", "Remote")
 	if err != nil {
 		t.Fatal(err)
 	}
-	weak := posting.Posting{Key: fk, ATS: posting.Other, Company: "Acme", Title: "Staff Engineer", Location: "Remote", Description: "d"}
-	l := openLedger(t)
-	reconcileOne(t, l, board, t0, gh)
-	reconcileOne(t, l, sources.Board{ATS: posting.Other, Token: "x"}, t0.Add(time.Hour), weak)
-	wantDuplicate(t, l, weak.Key, gh.Key)
+	pgKey, err := posting.PageKey("acmepage", "https://careers.acme.test/jobs/777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBoard := sources.Board{ATS: posting.Page, Token: "acmepage", Company: "Acme", URL: "https://careers.acme.test/jobs"}
+	xBoard := sources.Board{ATS: posting.Other, Token: "x"}
+	for _, tc := range []struct {
+		name     string
+		ghURL    string
+		weak     posting.Posting
+		bd       sources.Board
+		wantFold bool
+	}{
+		{"x key, tuple only", "https://boards.greenhouse.io/acme", posting.Posting{Key: fk, ATS: posting.Other}, xBoard, false},
+		{"pg key, tuple only", "https://boards.greenhouse.io/acme", posting.Posting{Key: pgKey, ATS: posting.Page, URL: "https://careers.acme.test/jobs/777"}, pageBoard, false},
+		{"x key, another requisition id", "https://boards.greenhouse.io/acme/jobs/1?req_id=R-10234", posting.Posting{Key: fk, ATS: posting.Other, URL: "https://x.example/a?req_id=R-99999"}, xBoard, false},
+		{"x key, the same requisition id", "https://boards.greenhouse.io/acme/jobs/1?req_id=R-10234", posting.Posting{Key: fk, ATS: posting.Other, URL: "https://x.example/a?req_id=r10234"}, xBoard, true},
+		{"pg key, the same requisition id", "https://boards.greenhouse.io/acme/jobs/1?req_id=R-10234", posting.Posting{Key: pgKey, ATS: posting.Page, URL: "https://careers.acme.test/jobs/777?req_id=R10234"}, pageBoard, true},
+		{"pg key, the same link", "https://careers.acme.test/jobs/777", posting.Posting{Key: pgKey, ATS: posting.Page, URL: "https://careers.acme.test/jobs/777"}, pageBoard, true},
+	} {
+		weak := tc.weak
+		weak.Company, weak.Title, weak.Location, weak.Description = "Acme", "Staff Engineer", "Remote", "d"
+		gh := ghBare(t, "1", "Staff Engineer", "Remote")
+		gh.URL = tc.ghURL
+		check := func(t *testing.T, l ledger.Ledger) {
+			if tc.wantFold {
+				wantDuplicate(t, l, weak.Key, gh.Key)
+				wantLive(t, l, gh.Key)
+			} else {
+				wantLive(t, l, weak.Key, gh.Key)
+			}
+		}
+		t.Run(tc.name+", ats first", func(t *testing.T) {
+			l := openLedger(t)
+			reconcileOne(t, l, board, t0, gh)
+			reconcileOne(t, l, tc.bd, t0.Add(time.Hour), weak)
+			check(t, l)
+		})
+		t.Run(tc.name+", weak first", func(t *testing.T) {
+			l := openLedger(t)
+			reconcileOne(t, l, tc.bd, t0, weak)
+			reconcileOne(t, l, board, t0.Add(time.Hour), gh)
+			check(t, l)
+		})
+	}
 }
 
 func TestRequisitionIDsReadKeysAndLinksAndFoldThem(t *testing.T) {

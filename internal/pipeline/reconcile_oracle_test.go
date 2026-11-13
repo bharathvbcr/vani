@@ -375,6 +375,9 @@ func oracleMarkWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting
 		if !ok || r.Status.Terminal() {
 			continue
 		}
+		if !bruteShares(p, r.Posting, k) {
+			continue
+		}
 		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: k, Status: posting.Duplicate,
 			Annotations: map[string]string{DuplicateOfKey: string(p.Key)}, Reason: "duplicate of " + string(p.Key)}
 		if err := l.Append(ctx, e); err != nil {
@@ -382,6 +385,8 @@ func oracleMarkWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting
 		}
 		n++
 	}
-	delete(weak, fk)
+	if n > 0 {
+		delete(weak, fk)
+	}
 	return n, nil
 }

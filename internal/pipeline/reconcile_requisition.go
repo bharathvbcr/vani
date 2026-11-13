@@ -90,6 +90,29 @@ func foldReq(s string) string {
 	return b.String()
 }
 
+// sharesIdentity reports whether record in and posting p have a link
+// (urlKeys) or a requisition id in common: the proof a weakly keyed posting
+// and an ATS record of one tuple are one job. The tuple alone is not.
+func sharesIdentity(p posting.Posting, in recInfo) bool {
+	for _, u := range urlKeys(p) {
+		if slices.Contains(in.urls, u) {
+			return true
+		}
+	}
+	return sharesRequisition(requisitionIDs(p.Key, p), in.reqs)
+}
+
+// atsTwinSharing is the first live ATS-keyed record of tuple that shares a link
+// or requisition id with p (rule 3 of twinOf).
+func (x *ledgerIndex) atsTwinSharing(p posting.Posting, tuple posting.Key) (posting.Key, bool) {
+	for _, k := range x.ats[tuple] {
+		if x.info[k].status != posting.Dead && sharesIdentity(p, x.info[k]) {
+			return k, true
+		}
+	}
+	return "", false
+}
+
 // sharesRequisition reports whether two sorted id lists have an id in common.
 func sharesRequisition(a, b []string) bool {
 	for _, x := range a {

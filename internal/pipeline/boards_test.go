@@ -13,6 +13,7 @@ var pageBoard = sources.Board{ATS: posting.Page, Token: "acme-careers", Company:
 
 func pagePost(t *testing.T, url, title string) posting.Posting {
 	t.Helper()
+	url += "?req_id=" + roleReq(title, "Remote")
 	k, err := posting.PageKey(pageBoard.Token, url)
 	if err != nil {
 		t.Fatal(err)
@@ -93,6 +94,7 @@ func TestLanguageTitlesAreDifferentRoles(t *testing.T) {
 	l := openLedger(t)
 	cpp := ghPost(t, "1", "jd")
 	cpp.Title = "Senior C++ Engineer"
+	cpp.URL = roleLink("boards.greenhouse.io", "1", cpp.Title, "Remote")
 	if _, err := Reconcile(ctx, l, board, []posting.Posting{cpp}, t0); err != nil {
 		t.Fatal(err)
 	}

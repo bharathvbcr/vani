@@ -77,7 +77,7 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			out = append(out, parityPosting{board: b, key: fk, p: posting.Posting{Key: fk, ATS: posting.Other, Company: bd.Company, Title: "Engineer", Location: "Remote"}})
+			out = append(out, parityPosting{board: b, key: fk, p: posting.Posting{Key: fk, ATS: posting.Other, Company: bd.Company, Title: "Engineer", Location: "Remote", URL: "https://inbox.acme.test/j?req_id=" + roleReq("Engineer", "Remote")}})
 		}
 	}
 	return boards, out

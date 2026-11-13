@@ -90,8 +90,9 @@ func urlKeys(p posting.Posting) []string {
 //     Records already folded by an earlier build stay folded: nothing here
 //     unfolds a Duplicate, and one comes back only when its survivor is gone
 //     (reviveDuplicate), judged by these rules.
-//  3. p is weakly keyed (fallback or careers page) and an ATS record has its
-//     tuple.
+//  3. p is weakly keyed (fallback or careers page) and a live ATS record has
+//     its tuple and shares a link or requisition id with it (the tuple alone is
+//     not proof, as in rule 2).
 //
 // ok is false when p repeats nothing. It decides p alone; markCrossTwins is
 // its mirror for the record that arrives second but ranks first.
@@ -101,7 +102,7 @@ func twinOf(p posting.Posting, now time.Time, idx *ledgerIndex) (orig posting.Ke
 	}
 	if weakKey(p.Key) {
 		if fk, err := posting.FallbackKey(p.Company, p.Title, p.Location); err == nil {
-			if k, found := idx.atsFor(fk); found {
+			if k, found := idx.atsTwinSharing(p, fk); found {
 				return k, "", true
 			}
 		}

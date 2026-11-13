@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -20,9 +22,21 @@ var lvBoard = sources.Board{ATS: posting.Lever, Token: "acmelv", Company: "Acme"
 // postings of one role share an id (rule 2 folds them) and a different role
 // does not. roleLink is that link; its path is per-posting, so only the id
 // ties two of them (rule 1 needs the whole link to match).
+// foldAlnum keeps a string's letters and digits, lower case: the same role
+// written two ways ("engineer 1!", "Engineer 1") has one requisition.
+func foldAlnum(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func roleReq(title, loc string) string {
 	h := fnv.New32a()
-	h.Write([]byte(title + "|" + loc))
+	h.Write([]byte(foldAlnum(title) + "|" + foldAlnum(loc)))
 	return fmt.Sprintf("RQ%08x", h.Sum32())
 }
 
