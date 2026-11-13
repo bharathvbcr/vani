@@ -584,7 +584,7 @@ func openHostThrottle(path string, warnf func(string, ...any)) (*srcutil.HostThr
 func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Kept: s.Kept, Redated: s.Redated,
 		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
-		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate, Invalid: s.Invalid,
+		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate, Reopened: s.Reopened, Invalid: s.Invalid,
 		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind,
 		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead}
 }
