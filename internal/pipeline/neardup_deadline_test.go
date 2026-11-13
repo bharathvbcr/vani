@@ -228,7 +228,14 @@ func TestNearDupPrewarmDoesNotShingleUnrelatedTitlesOrStarveNewest(t *testing.T)
 		})
 	}
 
-	rep, err := AnnotateNearDuplicates(ctx, l, t1, NearDupOptions{Deadline: 60 * time.Millisecond})
+	// What starves the newest postings is the work the pre-warm spends on
+	// descriptions nothing will compare, so that work is what is asserted: the
+	// number of descriptions read (rep.Shingled), not how far a 60ms wall-clock
+	// deadline happened to get on a loaded machine. The deadline here is far
+	// past anything the run needs, so a cut can only mean the machine was slow,
+	// never the code; the regression this guards shows as Shingled climbing to
+	// the unrelated postings' count.
+	rep, err := AnnotateNearDuplicates(ctx, l, t1, NearDupOptions{Deadline: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,5 +244,8 @@ func TestNearDupPrewarmDoesNotShingleUnrelatedTitlesOrStarveNewest(t *testing.T)
 	}
 	if rep.Partial || rep.Examined != unrelated+2 || rep.Compared != 1 {
 		t.Fatalf("expected all %d records examined with 1 comparison and no partial cut, got %+v", unrelated+2, rep)
+	}
+	if rep.Shingled != 2 {
+		t.Fatalf("shingled %d descriptions, want the 2 of the one candidate pair and none of the %d unrelated titles: %+v", rep.Shingled, unrelated, rep)
 	}
 }

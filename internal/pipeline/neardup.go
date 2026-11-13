@@ -118,7 +118,12 @@ type NearDupReport struct {
 	// the similarity's budget ran out (SimilarityBudgetSpent) or its breaker
 	// opened (SimilarityBreakerOpen); a reading the budget cut off mid-way is
 	// one of them. Their statuses and shingle annotations are decided as usual.
-	SimilaritySkipped     int
+	SimilaritySkipped int
+	// Shingled counts the descriptions read and shingled, the work the
+	// deadline is spent on. A posting whose title matches no earlier one at its
+	// company is never read, so this stays far under Records on a ledger of
+	// unrelated postings.
+	Shingled              int
 	SimilarityBudgetSpent bool
 	SimilarityBreakerOpen bool
 	// SetupTook is the ledger read and the per-posting preparation, which the
@@ -214,6 +219,7 @@ type dupRec struct {
 	role       string // roleTitle: equal only for the same role, seniority and bracketed qualifier
 	loc        string
 	desc       string // the board's text (srcutil.SourceText), for the optional similarity
+	read       bool   // text() ran: the description was read (and shingled, if long enough)
 	shingle    textsim.Set
 	words      int
 	once       sync.Once
@@ -225,6 +231,7 @@ type dupRec struct {
 // text computes the description side of a record once.
 func (d *dupRec) text() {
 	d.once.Do(func() {
+		d.read = true
 		d.desc = srcutil.SourceText(d.rec.Posting.Description)
 		ws := textsim.Words(d.desc, textsim.DefaultMaxBytes)
 		d.words = len(ws)
@@ -414,6 +421,13 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 	for _, o := range d.out {
 		if o != nil {
 			rep.Examined++
+		}
+	}
+	// The pre-warm workers were joined above and decide ran on this goroutine,
+	// so every read flag is settled.
+	for _, r := range recs {
+		if r.read {
+			rep.Shingled++
 		}
 	}
 
