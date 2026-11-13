@@ -71,6 +71,14 @@ were ported with notice. Source files do not carry an upstream copyright header.
   judged are left out. Only judgments made after the exemplar freeze are held out
   (`Options.TrainOnly`). The gold-only fit on the same split is reported beside it, and the gold
   gate (`Beats`) still decides whether anything is written.
+- **Cluster strata study** (`vani export pooled-vectors`, `vani strata compare`,
+  `docs/CLUSTER_STUDY.md`). An offline study of whether embedding clusters (Ojas e-means, fitted
+  outside Vani by `scripts/cluster-study/vani_cluster.rs`) would be a better audit stratum than the
+  job category. It reads the chunk-vector log read-only (`semantic.OpenVectorReader`) and measures
+  the drop in within-stratum variance of Sonnet's role_fit reading against the categories and the
+  audit's own strata (`eval.AuditStratumOf`). On a copy of live state (8,420 pooled postings, 2,805
+  with a category), e-means at 8 cells cut the variance by 18.6% (median of 5 seeds, best 19.2%),
+  under the 25% bar, so clusters are not adopted. Lloyd's k-means did as well at 13 cells and above.
 - **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
   (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
   `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings

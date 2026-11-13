@@ -155,6 +155,20 @@ func AuditStrata(cands []AuditCandidate, labeled map[posting.Key]Entry) map[stri
 	return out
 }
 
+// AuditStratumOf is AuditStrata turned around: the stratum each candidate is
+// filed under, labelled or not (deciles are cut over the whole scored pool).
+// It draws nothing; the strata comparison (internal/clusterstudy) reads the
+// audit's current cells from it.
+func AuditStratumOf(cands []AuditCandidate) map[posting.Key]string {
+	out := make(map[posting.Key]string, len(cands))
+	for name, ks := range AuditStrata(cands, nil) {
+		for _, k := range ks {
+			out[k] = name
+		}
+	}
+	return out
+}
+
 // auditBuckets sorts the unlabelled candidates into the audit's three groups of
 // strata: score deciles, drop classes and closed statuses.
 func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (deciles, classes, shut map[string][]posting.Key) {
@@ -187,7 +201,7 @@ func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (decile
 		if _, done := labeled[c.Key]; done {
 			continue
 		}
-		src := fmt.Sprintf("decile:%d", i*10/len(scored)+1)
+		src := decileSource(i, len(scored))
 		deciles[src] = append(deciles[src], c.Key)
 	}
 	classes = map[string][]posting.Key{}
@@ -208,6 +222,10 @@ func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (decile
 	}
 	return deciles, classes, shut
 }
+
+// decileSource is the stratum of the i'th (from 0, in score order) of n scored
+// postings: "decile:1" is the lowest tenth, "decile:10" the highest.
+func decileSource(i, n int) string { return fmt.Sprintf("decile:%d", i*10/n+1) }
 
 // WeekSeed is the ISO week of t ("2026-W43"): a draw stays the same all week.
 func WeekSeed(t time.Time) string {

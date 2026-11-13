@@ -203,6 +203,10 @@ owner's calls.
   the gold gate still decides.
 - `vani kb sync` copies the knowledge base into DevPrism.
 - `vani bench local` benchmarks local models.
+- `vani export pooled-vectors` and `vani strata compare` are an offline clustering experiment
+  (docs/CLUSTER_STUDY.md): they read state and write only under the `--out` directory, which must
+  not be the state dir. `strata compare` opens the ledger as `vani audit` does, which can save the
+  read-model checkpoint, so point `VANI_STATE_DIR` at a copy for a read-only run.
 - `vani semantic warm` embeds postings.
 - `vani answers similar` compares form-question wordings.
 - `vani jobs export`, `vani jobs ingest` and `vani jobs resume ...` (`render`, `show`, `use`,
