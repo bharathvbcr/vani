@@ -144,8 +144,8 @@ func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []p
 // left out, so every open posting absent from it is treated as a mass absence
 // (liveness.go): kept and held for MassHold from its own first miss, and
 // never killed by the ordinary rule. Pending reopens the listing leaves out
-// expire as in a full listing, after the same PendingReopenExpiry that a
-// mass hold lasts.
+// are not aged by it at all (only a clean full listing counts toward
+// PendingReopenExpiry): it cannot say the posting is gone.
 func (rc *Reconciler) ReconcileShort(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
 	return rc.reconcile(ctx, b, listed, now, true, shortCounted)
 }
@@ -381,7 +381,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	// (pendingreopen.go). Dropped records are closed: the absence pass below
 	// never ages them, so the two never touch the same record.
 	clock := idx.clockEvidence(prefix, now)
-	rc.reopen.expire(l, prefix, seen, now, clock.behind)
+	rc.reopen.expire(l, prefix, seen, now, clock.behind, short != shortNone)
 	// The absence pass (liveness.go). open is the board's open keys as the
 	// index held them when the board started, before this listing.
 	var open []posting.Key

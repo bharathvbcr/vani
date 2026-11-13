@@ -33,7 +33,7 @@ const (
 	// PendingReopenFile is where the set is kept, under the state dir.
 	PendingReopenFile = "reopen/pending.json"
 	// PendingReopenExpiry is how long a pending reopen waits for its board to
-	// list it. Once the board's full or short listings have left it out for this
+	// list it. Once the board's clean full listings (not short, no skipped rows) have left it out for this
 	// much read time it is cleared and counted: absence from two weeks of daily
 	// listings is far past the two misses and 20 hours a live posting dies on,
 	// and long enough to ride out a board that fails or is rate limited for days
@@ -409,6 +409,10 @@ func (s *SightingReopen) sighted(k posting.Key) bool {
 // listings left out (not in seen) for PendingReopenExpiry, and those whose
 // record is no longer dropped (a changed description already reopened it).
 //
+// Only a clean full listing counts (short: a listing short of its count or one
+// that skipped unreadable rows counts nothing, since the posting may be behind
+// the rows it did not read or list).
+//
 // The time counted is read time, not calendar time since the mark: each read
 // that leaves the entry out adds the time since the entry's last counted read,
 // at most ClockWindow (a board that failed for a week then answers once adds
@@ -419,7 +423,7 @@ func (s *SightingReopen) sighted(k posting.Key) bool {
 //
 // An expired exclusion drop is remembered in Gone, so the next exclusion pass
 // does not mark it again until a listing shows it.
-func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting.Key]bool, now time.Time, frozen bool) {
+func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting.Key]bool, now time.Time, frozen, short bool) {
 	if s == nil || s.Pending == nil || prefix == "" {
 		return
 	}
@@ -432,6 +436,17 @@ func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting
 			continue
 		}
 		if seen[k] || frozen {
+			continue
+		}
+		if short {
+			// A listing short of its count, or one that skipped rows it could not
+			// read, cannot say the posting is gone: it counts nothing, and the
+			// time it spans is not counted by the next clean listing either.
+			if !e.Last.IsZero() && e.Last.Before(now) {
+				e.Last = now
+				s.Pending.Items[k] = e
+				s.changed = true
+			}
 			continue
 		}
 		if e.Last.IsZero() || e.Last.After(now) {
