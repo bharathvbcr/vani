@@ -18,9 +18,9 @@ func TestReusedRowCarriesTheListedPlace(t *testing.T) {
 		want      string
 		relocated int
 	}{
-		"moved":              {"Paris, France", listed, 1},
-		"unchanged":          {listed, listed, 0},
-		"case and spacing":   {"  austin,  texas, UNITED STATES", "  austin,  texas, UNITED STATES", 0},
+		"moved":               {"Paris, France", listed, 1},
+		"unchanged":           {listed, listed, 0},
+		"case and spacing":    {"  austin,  texas, UNITED STATES", "  austin,  texas, UNITED STATES", 0},
 		"stored had no place": {"", listed, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
