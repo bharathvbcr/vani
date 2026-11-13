@@ -21,11 +21,23 @@ final class AuditModel {
     /// The last failed answer, shown as an alert.
     var answerError: String?
 
+    /// Picks from the "teacher wants" disagreement cell, added to the next draw.
+    /// 0 (the default) draws none; the quota is the owner's call. Kept across
+    /// launches.
+    var disagree: Int {
+        didSet { defaults.set(disagree, forKey: Self.disagreeKey) }
+    }
+
+    static let disagreeKey = "audit.disagree"
+
     private let client: () -> AuditClient
+    private let defaults: UserDefaults
     private var cardGeneration = 0
 
-    init(client: @escaping () -> AuditClient) {
+    init(client: @escaping () -> AuditClient, defaults: UserDefaults = .standard) {
         self.client = client
+        self.defaults = defaults
+        disagree = min(max(defaults.integer(forKey: Self.disagreeKey), 0), AuditClient.maxDisagree)
     }
 
     /// Fetches this week's draw (labelled postings are never drawn again) and
@@ -35,7 +47,8 @@ final class AuditModel {
         loading = true
         loadError = nil
         let c = client()
-        let result = await BlockingWork.run { try c.draw() }
+        let n = disagree
+        let result = await BlockingWork.run { try c.draw(disagree: n) }
         loading = false
         switch result {
         case let .success(d):

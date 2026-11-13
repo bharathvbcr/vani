@@ -90,9 +90,10 @@ and work while a run holds the ledger.
   report on the filter and the label set. `vani relevance --what-if-summary FILE` measures a
   draft target summary locally and writes nothing. Its yes-yield table is raw counts per audit
   stratum and disagreement cell, never a population estimate.
-- `vani audit --list --disagree N` shows a draw with N picks from the disagreement cells
-  (the teacher's stored role_fit against the engine). It needs `teacher_readings.jsonl`, and those
-  labels stay out of every estimate. The quota is the owner's call; do not answer for the owner.
+- `vani audit --list --disagree N` shows a draw with N picks from the "teacher wants" disagreement
+  cell (the teacher's stored role_fit against the engine); `--disagree-rejects N` adds the
+  "teacher rejects" cell, off by default. It needs `teacher_readings.jsonl`, and those labels stay
+  out of every estimate. The quotas are the owner's call; do not answer for the owner.
 - `vani version` prints the build and `vani config check` validates the config.
 - `vani track list|show`, `vani lca lookup`, `vani employer lookup`, `vani kbmatch status`
   and `vani semantic status` print smaller reports.

@@ -579,6 +579,9 @@ func (e *env) cmdTeacherFreeze(args []string) error {
 		fmt.Fprintf(e.stdout, "teacher freeze: wrote %s\n", rep.Path)
 		fmt.Fprintf(e.stdout, "teacher freeze: frozen %s, sha256 %s: %d yes and %d no exemplars, of %d yes and %d no labels (left out: %d maybe, %d skip, %d closed-stratum; %d with no ledger record, %d repeated jobs)\n",
 			rep.FrozenAt, rep.SHA256, st.YesKept, st.NoKept, st.YesLabels, st.NoLabels, st.Maybe, st.Skipped, st.Closed, st.NotInLedger, st.Repeats)
+		if st.YesFromCells+st.NoFromCells > 0 {
+			fmt.Fprintf(e.stdout, "teacher freeze: %d yes and %d no exemplars came from the disagreement cells (chosen on a teacher's reading; a yes there echoes the auditor's prior)\n", st.YesFromCells, st.NoFromCells)
+		}
 		fmt.Fprintln(e.stdout, "teacher freeze: labels you make from now on are the auditor's evaluation set; this file is never overwritten without --replace")
 	})
 }

@@ -41,8 +41,28 @@ final class AuditModelTests: XCTestCase {
         return Fake(vani: url, log: log)
     }
 
-    private func model(_ f: Fake) -> AuditModel {
-        AuditModel { AuditClient(jobs: JobsClient(vaniBinary: f.vani, timeout: 10)) }
+    /// A defaults suite of its own, so no test reads a quota another stored.
+    private func freshDefaults() -> UserDefaults {
+        let name = "vani-audit-model-\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults.standard.removePersistentDomain(forName: name) }
+        return UserDefaults(suiteName: name)!
+    }
+
+    private func model(_ f: Fake, defaults: UserDefaults? = nil) -> AuditModel {
+        AuditModel(client: { AuditClient(jobs: JobsClient(vaniBinary: f.vani, timeout: 10)) }, defaults: defaults ?? freshDefaults())
+    }
+
+    func testTheDisagreementQuotaReachesTheDrawAndIsKept() async throws {
+        let f = try fake()
+        let d = freshDefaults()
+        let m = model(f, defaults: d)
+        XCTAssertEqual(m.disagree, 0, "off until the owner sets it")
+        m.disagree = 4
+        await m.start()
+        XCTAssertEqual(f.calls.first, "audit --json --blind --disagree=4")
+        XCTAssertEqual(model(f, defaults: d).disagree, 4, "the quota is kept across launches")
+        d.set(999, forKey: AuditModel.disagreeKey)
+        XCTAssertEqual(model(f, defaults: d).disagree, AuditClient.maxDisagree, "a stored value out of range is clamped")
     }
 
     func testStartDrawsBlindAndShowsTheFirstCard() async throws {

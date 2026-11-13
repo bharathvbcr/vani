@@ -23,22 +23,31 @@ const (
 
 // AuditQuotas are the places of one draw per group. A group's places are
 // never lent to another (that would change the inclusion probabilities).
-// Disagree is the disagreement cells' group (DisagreePrefix); at 0, the
-// default, there are no such cells and every posting stays in its random
-// stratum.
+// Disagree is CellTeacherWants' places and DisagreeRejects CellTeacherRejects';
+// each cell is a group of its own, so a short cell lends nothing. At 0, the
+// default for both, the cells are not drawn. The rejects cell stays at 0
+// unless asked for: a teacher that rejects most of what it reads makes it a
+// large slice of the top decile rather than a rare disagreement, and its
+// labels are kept out of every estimate (second Fable review, 2026-11-13).
 type AuditQuotas struct {
-	Scored, Dropped, Closed, Disagree int
+	Scored, Dropped, Closed, Disagree, DisagreeRejects int
 }
 
 // DefaultAuditQuotas are the weekly draw's quotas. The disagreement cells are
 // off by default: their quota is the owner's call.
 var DefaultAuditQuotas = AuditQuotas{Scored: AuditScored, Dropped: AuditDropped, Closed: AuditClosed}
 
+// Cells is the disagreement cells' places in all.
+func (q AuditQuotas) Cells() int { return q.Disagree + q.DisagreeRejects }
+
 // RandomShareOK reports whether at least a third of q's places are drawn from
-// the random strata (scored, dropped and closed) rather than the disagreement
-// cells, as the plan keeps them.
+// the random strata the estimates use (scored and dropped) rather than the
+// disagreement cells, as the plan keeps them. Closed places do not count:
+// their labels are in no ranking or recall estimate. It checks quotas; a
+// random group drawn short can still leave the draw under a third
+// (AuditPlan.RandomShare says what was drawn).
 func (q AuditQuotas) RandomShareOK() bool {
-	return q.Disagree <= 2*(q.Scored+q.Dropped+q.Closed)
+	return q.Cells() <= 2*(q.Scored+q.Dropped)
 }
 
 // TeacherView is a teacher model's role_fit reading of a candidate, as the
@@ -225,14 +234,14 @@ func AuditSample(cands []AuditCandidate, labeled map[posting.Key]Entry, seed str
 // The scored and dropped groups draw exactly what AuditSample draws for the
 // same seed, whatever q.Closed is: each group spends only its own places.
 //
-// With q.Disagree places the disagreement cells (CellTeacherWants,
-// CellTeacherRejects) are a fourth group laid over the others: the random
-// groups are bucketed and drawn exactly as without it, so their picks and every
-// p_select they carry are the same whatever q.Disagree is, and the cells then
-// draw from their members the random groups did not take. A cell pick's
-// p_select is its cell's share (taken over members left), descriptive only:
-// those labels are kept out of every estimate (SelectedOnReading). An empty
-// cell draws nothing; its places are not lent to the random groups.
+// With cell places (q.Disagree for CellTeacherWants, q.DisagreeRejects for
+// CellTeacherRejects) the disagreement cells are laid over the others: the
+// random groups are bucketed and drawn exactly as without them, so their picks
+// and every p_select they carry are the same whatever the cell quotas are, and
+// each cell then draws its own places from its members the random groups did
+// not take. A cell pick's p_select is its cell's share (taken over members
+// left), descriptive only: those labels are kept out of every estimate
+// (SelectedOnReading). A short or empty cell lends its places to nothing.
 func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed string, q AuditQuotas) AuditPlan {
 	deciles, classes, shut, disagree := auditBuckets(cands, labeled)
 	var plan AuditPlan
@@ -241,20 +250,34 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 	if q.Closed > 0 {
 		drawGroup(&plan, shut, q.Closed, seed, true)
 	}
-	if q.Disagree > 0 {
+	if q.Cells() > 0 {
 		picked := make(map[posting.Key]bool, len(plan.Picks))
 		for _, p := range plan.Picks {
 			picked[p.Key] = true
 		}
-		for name, ks := range disagree {
-			disagree[name] = slices.DeleteFunc(ks, func(k posting.Key) bool { return picked[k] })
-			if len(disagree[name]) == 0 {
-				delete(disagree, name)
+		for _, cell := range []struct {
+			name   string
+			places int
+		}{{CellTeacherWants, q.Disagree}, {CellTeacherRejects, q.DisagreeRejects}} {
+			left := slices.DeleteFunc(disagree[cell.name], func(k posting.Key) bool { return picked[k] })
+			if cell.places > 0 && len(left) > 0 {
+				drawGroup(&plan, map[string][]posting.Key{cell.name: left}, cell.places, seed, false)
 			}
 		}
-		drawGroup(&plan, disagree, q.Disagree, seed, false)
 	}
 	return plan
+}
+
+// RandomShare is the drawn picks from the random strata the estimates use
+// (deciles and drop classes) and all the picks, for a caller that reports
+// how much of a short draw stayed random.
+func (p AuditPlan) RandomShare() (random, all int) {
+	for _, pk := range p.Picks {
+		if strings.HasPrefix(pk.Source, "decile:") || strings.HasPrefix(pk.Source, DroppedPrefix) {
+			random++
+		}
+	}
+	return random, len(p.Picks)
 }
 
 // AuditStrata is every stratum the audit draws from, with its members: the

@@ -130,9 +130,11 @@ commands:
                              and --closed postings the engine closed: dead, or duplicate by fold method);
                              --json prints keys, strata and p_select only (no posting text),
                              --blind hides the model's readings while you answer;
-                             [--disagree N [--teacher M]] adds N picks from the disagreement cells
-                             (teacher M's role_fit against the engine), over an unchanged random
-                             draw; those labels stay out of every estimate (at most 2x random)
+                             [--disagree N] [--disagree-rejects N] [--teacher M] add picks from the
+                             disagreement cells (teacher M's role_fit against the engine: wants but
+                             dropped or low; rejects but top decile, off by default), over an
+                             unchanged random draw; those labels stay out of every estimate
+                             (together at most 2x --scored + --dropped)
                              (audit-sample is the old name)
   audit answer --key K --verdict yes|maybe|no|skip [--reason R] [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from

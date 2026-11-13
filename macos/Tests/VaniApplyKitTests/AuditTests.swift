@@ -67,6 +67,17 @@ final class AuditTests: XCTestCase {
                                  AuditPick(key: "gh:acme:2", stratum: "dropped:title:role_fit", pSelect: 0.5)])
     }
 
+    func testDisagreementPicksAreAskedForOnlyWhenWantedAndBounded() throws {
+        let f = try fakeAuditVani(self, draw: drawReply)
+        _ = try client(f).draw(disagree: 5)
+        _ = try client(f).draw(disagree: 0)
+        XCTAssertEqual(f.calls, ["audit --json --blind --disagree=5", "audit --json --blind"])
+        for bad in [-1, AuditClient.maxDisagree + 1] {
+            XCTAssertThrowsError(try client(f).draw(disagree: bad))
+        }
+        XCTAssertEqual(f.calls.count, 2, "an out-of-range quota must not reach vani")
+    }
+
     func testAnswerWritesThroughVaniAuditAnswerWithTheDrawnNumbers() throws {
         let reply = #"{"key":"gh:acme:2","verdict":"maybe","stratum":"dropped:title:role_fit","p_select":0.5}"#
         let f = try fakeAuditVani(self, draw: drawReply, answer: reply)

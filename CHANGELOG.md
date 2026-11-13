@@ -23,6 +23,13 @@ were ported with notice. Source files do not carry an upstream copyright header.
   95% upper bound. A teacher log with no reading by `--teacher` of any candidate is refused (a
   misspelt model would otherwise look like no disagreement). Off by default; the quota is the
   owner's call.
+  After Fable's second review: each cell has its own quota (`--disagree` for the "teacher wants"
+  cell, `--disagree-rejects` for the "teacher rejects" cell, which stays at 0 unless asked: the
+  teachers reject most of what they read, so it is a large slice of the top decile). The 2x cap no
+  longer counts closed places. The yes yield gains group rows (all deciles, top three deciles, all
+  drop classes) and a kill rule per cell (at 20 judged: 0-1 yes turns it off, 4+ keeps it, 2-3 runs
+  to 40). `vani teacher freeze` says how many exemplars came from the cells. The Mac app's Audit
+  tab gains a "Disagreement picks" stepper, 0 by default.
 - **Drops the rules no longer make, by class** (`vani retriage --policy-drops`, its `classes`).
   A drop made under a rule that has since changed was never re-examined: two Databricks Staff
   roles the owner marked "maybe" were dropped on `seniority = staff_plus` (p 0.912 and 0.917, a

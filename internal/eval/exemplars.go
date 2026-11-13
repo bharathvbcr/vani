@@ -160,6 +160,11 @@ type FreezeStats struct {
 	NotInLedger, Repeats int
 	// YesKept and NoKept are what the set holds.
 	YesKept, NoKept int
+	// YesFromCells and NoFromCells are the kept exemplars drawn from the
+	// audit's disagreement cells (SelectedOnReading). A yes there is a posting
+	// the teacher already wanted, so it echoes the auditor's own prior; the
+	// count makes that tilt visible at the freeze.
+	YesFromCells, NoFromCells int
 }
 
 // FreezeExemplars builds the exemplar set from the owner's labels: each yes and
@@ -228,6 +233,15 @@ func FreezeExemplars(labels map[posting.Key]Entry, recs []ledger.Record, at time
 	}
 	set := ExemplarSet{V: ExemplarsSchema, FrozenAt: at.UTC(), Yes: pick(yes), No: pick(no)}
 	st.YesKept, st.NoKept = len(set.Yes), len(set.No)
+	fromCells := func(es []ExemplarEntry) (n int) {
+		for _, e := range es {
+			if SelectedOnReading(labels[e.Key].Source) {
+				n++
+			}
+		}
+		return n
+	}
+	st.YesFromCells, st.NoFromCells = fromCells(set.Yes), fromCells(set.No)
 	set.SHA256 = set.contentSHA256()
 	if st.YesKept < MinExemplarsPerClass || st.NoKept < MinExemplarsPerClass {
 		return ExemplarSet{}, st, fmt.Errorf("eval: %d yes and %d no exemplars; a freeze needs at least %d of each (maybe, skip and closed labels do not count)",

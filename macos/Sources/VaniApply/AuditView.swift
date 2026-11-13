@@ -23,6 +23,13 @@ struct AuditView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .navigationTitle("Audit")
+        .toolbar {
+            ToolbarItem {
+                Stepper("Disagreement picks: \(model.disagree)", value: $model.disagree, in: 0...AuditClient.maxDisagree)
+                    .help("Postings a teacher model wants that the engine dropped or ranked low, added to the next draw. Their answers stay out of every estimate.")
+                    .disabled(model.loading)
+            }
+        }
         .task { if model.session == nil, !model.loading { await model.start() } }
         .alert("Vani Apply", isPresented: Binding(get: { model.answerError != nil }, set: { if !$0 { model.answerError = nil } })) {
             Button("OK", role: .cancel) {}

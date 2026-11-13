@@ -69,7 +69,7 @@ func TestDisagreeCellsLeaveTheRandomDrawUnchanged(t *testing.T) {
 			t.Fatalf("%s: the base draw is empty", seed)
 		}
 		for _, n := range []int{0, 1, 3, 8, 22} {
-			got := AuditDraw(cands, labeled, seed, AuditQuotas{Scored: 6, Dropped: 4, Closed: 1, Disagree: n})
+			got := AuditDraw(cands, labeled, seed, AuditQuotas{Scored: 6, Dropped: 4, Closed: 1, Disagree: n, DisagreeRejects: n / 2})
 			if !slices.Equal(randomPicks(got), base.Picks) {
 				t.Errorf("%s, disagree %d: random picks changed:\n got %v\nwant %v", seed, n, randomPicks(got), base.Picks)
 			}
@@ -87,7 +87,7 @@ func TestDisagreeCellsLeaveTheRandomDrawUnchanged(t *testing.T) {
 func TestDisagreeCellMembersAndNoKeyTwice(t *testing.T) {
 	cands := disagreePool()
 	labeled := map[posting.Key]Entry{"gh:s:002": {}}
-	p := AuditDraw(cands, labeled, "2026-W46", AuditQuotas{Scored: 10, Dropped: 10, Closed: 1, Disagree: 40})
+	p := AuditDraw(cands, labeled, "2026-W46", AuditQuotas{Scored: 10, Dropped: 10, Closed: 1, Disagree: 40, DisagreeRejects: 40})
 	seen := map[posting.Key]string{}
 	for _, pk := range p.Picks {
 		if prev, dup := seen[pk.Key]; dup {
@@ -155,6 +155,37 @@ func TestDisagreeEmptyCellsDrawNothing(t *testing.T) {
 	}
 }
 
+// Each cell is its own group: a short "wants" cell lends nothing to the
+// "rejects" cell, which draws only its own places (0 by default).
+func TestDisagreeCellsHaveTheirOwnQuotas(t *testing.T) {
+	cands := disagreePool()
+	count := func(p AuditPlan) map[string]int {
+		m := map[string]int{}
+		for _, pk := range p.Picks {
+			if SelectedOnReading(pk.Source) {
+				m[pk.Source]++
+			}
+		}
+		return m
+	}
+	// 15 wants members, 5 rejects members; random groups take none here.
+	p := AuditDraw(cands, nil, "2026-W46", AuditQuotas{Disagree: 40})
+	if c := count(p); c[CellTeacherWants] != 15 || c[CellTeacherRejects] != 0 {
+		t.Errorf("wants 40, rejects 0: drew %v; want all 15 wants members and no rejects", c)
+	}
+	p = AuditDraw(cands, nil, "2026-W46", AuditQuotas{Disagree: 2, DisagreeRejects: 3})
+	if c := count(p); c[CellTeacherWants] != 2 || c[CellTeacherRejects] != 3 {
+		t.Errorf("2 and 3: drew %v", c)
+	}
+	p = AuditDraw(cands, nil, "2026-W46", AuditQuotas{DisagreeRejects: 9})
+	if c := count(p); c[CellTeacherRejects] != 5 || c[CellTeacherWants] != 0 {
+		t.Errorf("rejects 9 over 5 members: drew %v; want 5 and no wants", c)
+	}
+	if random, all := p.RandomShare(); random != 0 || all != 5 {
+		t.Errorf("RandomShare %d of %d, want 0 of 5", random, all)
+	}
+}
+
 func TestAuditQuotasRandomShareOK(t *testing.T) {
 	for _, c := range []struct {
 		q  AuditQuotas
@@ -163,8 +194,11 @@ func TestAuditQuotasRandomShareOK(t *testing.T) {
 		{AuditQuotas{Scored: 5, Dropped: 10}, true},
 		{AuditQuotas{Scored: 5, Dropped: 10, Disagree: 30}, true}, // a third random exactly
 		{AuditQuotas{Scored: 5, Dropped: 10, Disagree: 31}, false},
-		{AuditQuotas{Closed: 1, Disagree: 2}, true},
-		{AuditQuotas{Closed: 1, Disagree: 3}, false},
+		{AuditQuotas{Scored: 5, Dropped: 10, Disagree: 20, DisagreeRejects: 10}, true},
+		{AuditQuotas{Scored: 5, Dropped: 10, Disagree: 20, DisagreeRejects: 11}, false}, // both cells count
+		{AuditQuotas{Scored: 1, Disagree: 2}, true},
+		{AuditQuotas{Closed: 5, Disagree: 1}, false}, // closed places are not random for this
+		{AuditQuotas{Scored: 1, Closed: 5, Disagree: 3}, false},
 		{AuditQuotas{Disagree: 1}, false},
 		{AuditQuotas{}, true},
 	} {
@@ -316,6 +350,81 @@ func TestYesYieldNamesARichStratumOnlyWhenClearlyAbove(t *testing.T) {
 	}
 	if y := BuildYesYield(nil); len(y.Rows) != 0 || !strings.Contains(y.Markdown(), "no data") {
 		t.Fatalf("empty: %+v", y)
+	}
+}
+
+// Single deciles take months to reach the naming minimum; the groups pool
+// them so the scored-versus-dropped question can be answered.
+func TestYesYieldGroupsCanBeNamed(t *testing.T) {
+	labels := map[posting.Key]Entry{}
+	for d := 1; d <= 10; d++ {
+		yes := 0
+		if d >= 8 {
+			yes = 2 // the yeses sit in the top deciles, 2 of 3 judged each
+		}
+		judge(labels, fmt.Sprintf("gh:d%02d", d), fmt.Sprintf("decile:%d", d), 0, 3, yes, 0, 0.1)
+	}
+	judge(labels, "gh:dr", "dropped:model:role_fit", 0, 30, 0, 0, 0.1)
+	y := BuildYesYield(labels)
+	for _, r := range y.Rows {
+		if r.N >= MinYieldJudged && strings.HasPrefix(r.Source, "decile:") {
+			t.Fatalf("a single decile reached the minimum: %+v", r)
+		}
+	}
+	g := map[string]YieldRow{}
+	for _, r := range y.Groups {
+		g[r.Source] = r
+	}
+	if g[GroupDeciles].N != 30 || g[GroupDeciles].Yes != 6 || g[GroupTopDeciles].N != 9 || g[GroupTopDeciles].Yes != 6 || g[GroupDrops].N != 30 {
+		t.Fatalf("groups %+v", y.Groups)
+	}
+	if y.Richest != GroupTopDeciles || !strings.Contains(y.Advice, "from --dropped to --scored") {
+		t.Fatalf("richest %q advice %q", y.Richest, y.Advice)
+	}
+}
+
+// The kill rule, fixed before any cell label exists.
+func TestYesYieldKillRule(t *testing.T) {
+	for _, c := range []struct {
+		n, yes int
+		want   string
+	}{
+		{0, 0, CellCollecting}, {19, 0, CellCollecting}, {19, 19, CellCollecting},
+		{20, 0, CellTurnOff}, {20, 1, CellTurnOff}, {20, 2, CellRunOn}, {20, 3, CellRunOn}, {20, 4, CellKeep},
+		{39, 1, CellTurnOff}, {39, 3, CellRunOn}, {40, 3, CellOwnerCall}, {60, 20, CellOwnerCall},
+	} {
+		if got := killVerdict(c.n, c.yes); got != c.want {
+			t.Errorf("%d yes of %d: %s, want %s", c.yes, c.n, got, c.want)
+		}
+	}
+	labels := map[posting.Key]Entry{}
+	judge(labels, "gh:w", CellTeacherWants, 0, 20, 1, 5, 0.5)
+	judge(labels, "gh:j", CellTeacherRejects, 0, 7, 0, 0, 0.5)
+	y := BuildYesYield(labels)
+	want := []CellVerdict{{CellTeacherWants, 20, 1, CellTurnOff}, {CellTeacherRejects, 7, 0, CellCollecting}}
+	if !slices.Equal(y.Cells, want) {
+		t.Fatalf("cells %+v, want %+v", y.Cells, want)
+	}
+	if !strings.Contains(y.Markdown(), "Kill rule, "+CellTeacherWants+": 1 yes of 20 judged: turn_off") {
+		t.Errorf("markdown lacks the verdict:\n%s", y.Markdown())
+	}
+}
+
+// The freeze counts the exemplars that came from the cells, so a tilt toward
+// the teacher's own prior is visible.
+func TestFreezeCountsExemplarsFromCells(t *testing.T) {
+	labels, recs := exLabels(4, 4, pairT0)
+	for _, k := range []posting.Key{"y0", "y1", "n0"} {
+		e := labels[k]
+		e.Source, e.PSelect = CellTeacherWants, 0.5
+		labels[k] = e
+	}
+	_, st, err := FreezeExemplars(labels, recs, pairT0.Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.YesFromCells != 2 || st.NoFromCells != 1 || st.YesKept != 4 || st.NoKept != 4 {
+		t.Fatalf("stats %+v, want 2 yes and 1 no from the cells of 4 and 4", st)
 	}
 }
 

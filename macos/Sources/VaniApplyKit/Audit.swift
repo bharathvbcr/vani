@@ -158,9 +158,16 @@ public struct AuditClient: Sendable {
 
     public init(jobs: JobsClient) { self.jobs = jobs }
 
+    /// The most "teacher wants" picks the app asks for: vani's own cap is twice the
+    /// random scored and dropped places, 2 x (5 + 10) with the default quotas.
+    public static let maxDisagree = 30
+
     /// This week's draw, with the model's readings left out of it (`--blind`).
-    public func draw() throws -> AuditDraw {
-        let d: AuditDraw = try call(Self.drawArguments)
+    /// `disagree` adds that many picks from the cell where a teacher model wants
+    /// a posting the engine dropped or ranked low (`vani audit --disagree`); their
+    /// labels stay out of every estimate. 0 draws none.
+    public func draw(disagree: Int = 0) throws -> AuditDraw {
+        let d: AuditDraw = try call(try Self.drawArguments(disagree: disagree))
         guard d.picks.count <= Self.maxPicks else { throw BankError("vani audit drew \(d.picks.count) postings; this app shows at most \(Self.maxPicks)") }
         for p in d.picks { _ = try Self.answerArguments(p, .skip) } // a malformed pick fails here, not mid-session
         return d
@@ -197,7 +204,13 @@ public struct AuditClient: Sendable {
         return ["audit", "answer", "--json", "--shown", "--key=\(key)", "--verdict=\(verdict.rawValue)"]
     }
 
-    static let drawArguments = ["audit", "--json", "--blind"]
+    static func drawArguments(disagree: Int) throws -> [String] {
+        guard (0...maxDisagree).contains(disagree) else {
+            throw BankError("the disagreement picks must be within 0 to \(maxDisagree), got \(disagree)")
+        }
+        let args = ["audit", "--json", "--blind"]
+        return disagree == 0 ? args : args + ["--disagree=\(disagree)"]
+    }
 
     /// `=` forms, so a key that begins with a dash can never be read as a flag.
     static func answerArguments(_ pick: AuditPick, _ verdict: AuditVerdict) throws -> [String] {

@@ -47,7 +47,14 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 		return d
 	}
 	base := draw()
-	with := draw("--disagree", "4")
+	// Only the wants cell by default: the rejects cell draws nothing unless asked.
+	for _, p := range draw("--disagree", "4").Picks {
+		if p.Stratum == eval.CellTeacherRejects {
+			t.Fatalf("--disagree alone drew from the rejects cell: %+v", p)
+		}
+	}
+	cellArgs := []string{"--disagree", "2", "--disagree-rejects", "2"}
+	with := draw(cellArgs...)
 	var random, cell []auditPickJSON
 	for _, p := range with.Picks {
 		if eval.SelectedOnReading(p.Stratum) {
@@ -64,8 +71,8 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 	if !slices.Equal(sortPicks(random), sortPicks(base.Picks)) {
 		t.Fatalf("the random picks changed with --disagree:\n got %v\nwant %v", random, base.Picks)
 	}
-	if len(cell) != 4 {
-		t.Fatalf("%d cell picks, want 4: %v", len(cell), with.Picks)
+	if len(cell) < 3 || len(cell) > 4 {
+		t.Fatalf("%d cell picks, want 2 wants and 1-2 rejects (the top decile holds 3): %v", len(cell), with.Picks)
 	}
 	var wantsPick, rejectsPick *auditPickJSON
 	for i, p := range cell {
@@ -83,7 +90,7 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 	}
 
 	// Answered through the draw lookup, the label records the cell.
-	mustCode(t, 0, "audit", "answer", "--key", string(wantsPick.Key), "--verdict", "yes", "--seed", "w1", "--disagree", "4")
+	mustCode(t, 0, append([]string{"audit", "answer", "--key", string(wantsPick.Key), "--verdict", "yes", "--seed", "w1"}, cellArgs...)...)
 	if e := readLabels(t, state)[wantsPick.Key]; e.Source != eval.CellTeacherWants || e.PSelect != wantsPick.PSelect {
 		t.Fatalf("label %+v, want source %s p %v", e, eval.CellTeacherWants, wantsPick.PSelect)
 	}
@@ -91,7 +98,7 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 	if _, e := mustCode(t, 1, "audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1"); !strings.Contains(e, "not in the draw") {
 		t.Errorf("stderr %q", e)
 	}
-	mustCode(t, 0, "audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1", "--disagree", "4")
+	mustCode(t, 0, append([]string{"audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1"}, cellArgs...)...)
 	// One random kept pick, answered yes.
 	var randomKept *auditPickJSON
 	for i, p := range random {
@@ -220,8 +227,11 @@ func TestAuditDisagreeFlagBounds(t *testing.T) {
 	seedAudit(t, state, 10, 2, 2)
 	for _, args := range [][]string{
 		{"--disagree", "-1"},
+		{"--disagree-rejects", "-1"},
 		{"--disagree", fmt.Sprint(maxAuditQuota + 1)},
 		{"--scored", "1", "--dropped", "0", "--closed", "0", "--disagree", "3"}, // under a third random
+		{"--scored", "1", "--dropped", "0", "--closed", "0", "--disagree", "2", "--disagree-rejects", "1"}, // both cells count
+		{"--scored", "0", "--dropped", "0", "--closed", "5", "--disagree", "1"},                            // closed places are not random
 	} {
 		mustCode(t, 2, append([]string{"audit", "--list"}, args...)...)
 		mustCode(t, 2, append([]string{"audit", "answer", "--key", "gh:k:001", "--verdict", "no"}, args...)...)
