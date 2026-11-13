@@ -32,15 +32,55 @@ const daemonStartSlack = time.Second
 // after the recorded started_at (beyond daemonStartSlack) is not. The file's
 // mtime is not that time.
 func daemonIsLive(d daemonRecord) bool {
+	state, _ := classifyDaemon(d)
+	return state == daemonThisBinary
+}
+
+// daemonState is what daemon.json's pid is, as far as this process can tell.
+type daemonState int
+
+const (
+	// daemonGone: no such process, one this process cannot inspect, or one that
+	// started after the announcement (a reused pid).
+	daemonGone daemonState = iota
+	// daemonThisBinary: the announced daemon, running this executable.
+	daemonThisBinary
+	// daemonOtherBinary: the announced daemon, running another vani binary: the
+	// process started no later than the announcement and runs the executable
+	// the announcement recorded, which is not this one.
+	daemonOtherBinary
+	// daemonUnconfirmed: a process that started in time but runs neither this
+	// executable nor one the announcement names (an older daemon.json names
+	// none). Nothing ties it to the announcement, so it is not called a daemon.
+	daemonUnconfirmed
+)
+
+// Values of daemonFacet.Binary.
+const (
+	daemonBinaryThis  = "this"
+	daemonBinaryOther = "other"
+)
+
+// classifyDaemon says what d's pid is and, for any live process that is not
+// this binary, the executable found there. The reused-pid guard is the same
+// for every outcome: the process must have started no later than the
+// announcement (beyond daemonStartSlack) and be inspectable. Past that guard,
+// only an executable that is this one, or the one recorded, names a daemon.
+func classifyDaemon(d daemonRecord) (daemonState, string) {
 	id := daemonIdentity(d.PID)
 	if !id.OK || id.Exe == "" || id.Started.IsZero() {
-		return false
+		return daemonGone, ""
 	}
-	self, err := os.Executable()
-	if err != nil || !sameExecutable(id.Exe, self) {
-		return false
+	if id.Started.After(d.StartedAt.Add(daemonStartSlack)) {
+		return daemonGone, ""
 	}
-	return !id.Started.After(d.StartedAt.Add(daemonStartSlack))
+	if self, err := os.Executable(); err == nil && sameExecutable(id.Exe, self) {
+		return daemonThisBinary, id.Exe
+	}
+	if d.Exe != "" && sameExecutable(id.Exe, d.Exe) {
+		return daemonOtherBinary, id.Exe
+	}
+	return daemonUnconfirmed, id.Exe
 }
 
 // sameExecutable reports whether two paths name the same binary. Symlinks

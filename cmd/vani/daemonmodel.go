@@ -84,13 +84,17 @@ func daemonModelFor(cfg config.Config, lookup keyLookup) *daemonModel {
 // daemonLines is what the text status says about a running daemon beyond
 // whether it keeps the schedule: only a problem, one line.
 func daemonLines(d daemonFacet) []string {
+	var lines []string
+	if d.Running && d.Binary == daemonBinaryOther {
+		lines = append(lines, "daemon: "+d.Reason)
+	}
 	if !d.Running || d.Model == nil || d.Model.Enabled {
-		return nil
+		return lines
 	}
 	fix := "  fix: add the key to the login Keychain (service openrouter-api-key) and turn Run on schedule off and on in Vani Apply's Pipeline tab, or start the daemon with " + d.Model.KeyEnv + " set"
 	if d.Model.Keychain != "" {
 		// This daemon looked in the Keychain itself (a daemon the app started is told not to).
 		fix += "; a daemon the app did not start reads the item itself when it starts, unless " + noKeychainEnv + " is set"
 	}
-	return []string{"daemon: model disabled: " + d.Model.Reason, fix}
+	return append(lines, "daemon: model disabled: "+d.Model.Reason, fix)
 }

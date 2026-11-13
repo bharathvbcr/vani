@@ -95,15 +95,20 @@ type pathsJSON struct {
 	AppSettings string `json:"app_settings"`
 }
 
-// daemonFacet is daemon.json checked against this vani process. Running is
-// false when no daemon announced itself, or the recorded pid is not this
-// binary: gone, uninspectable, a different executable, or started after the
-// announcement.
+// daemonFacet is daemon.json checked against the process it names. Running is
+// true for the announced daemon of this binary and for the announced daemon of
+// another vani binary (Binary says which; Exe is that binary's path), and
+// false when no daemon announced itself, the pid is gone or uninspectable,
+// started after the announcement (a reused pid), or runs an executable that is
+// neither this one nor the one daemon.json records.
 type daemonFacet struct {
 	facet
-	Running bool      `json:"running"`
-	PID     int       `json:"pid,omitempty"`
-	Since   time.Time `json:"since,omitzero"`
+	Running bool `json:"running"`
+	// Binary is "this" or "other" while Running; absent otherwise.
+	Binary string    `json:"binary,omitempty"`
+	Exe    string    `json:"exe,omitempty"`
+	PID    int       `json:"pid,omitempty"`
+	Since  time.Time `json:"since,omitzero"`
 	// Model is whether the decision model can answer in the running daemon
 	// (daemonmodel.go): absent when the daemon did not say.
 	Model *daemonModel `json:"model,omitempty"`
@@ -329,10 +334,18 @@ func (e *env) daemonFacet() daemonFacet {
 		return daemonFacet{facet: unknown(err)}
 	}
 	since := d.StartedAt
-	if !daemonIsLive(d) {
-		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: since}
+	state, exe := classifyDaemon(d)
+	switch state {
+	case daemonThisBinary:
+		return daemonFacet{facet: facet{OK: true}, Running: true, Binary: daemonBinaryThis, PID: d.PID, Since: since, Model: d.Model}
+	case daemonOtherBinary:
+		// Running: the pid, its start time and its executable all match what
+		// the daemon announced. Only the binary asking is another build.
+		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon, pid %d, is running a different vani binary: %s", d.PID, exe)}, Running: true, Binary: daemonBinaryOther, Exe: exe, PID: d.PID, Since: since, Model: d.Model}
+	case daemonUnconfirmed:
+		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("pid %d, recorded as the daemon, is running %s, which is neither this binary nor one daemon.json names, so it is not confirmed as the daemon", d.PID, exe)}, PID: d.PID, Since: since}
 	}
-	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: since, Model: d.Model}
+	return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: since}
 }
 
 // runRequestFacet reads the pending and the claimed request; it removes
