@@ -55,7 +55,7 @@ func bruteTwinOf(p posting.Posting, now time.Time, existing []ledger.Record) (po
 	if weakKey(p.Key) {
 		// Rule 3: the first ATS-keyed record, in key order, with p's tuple, that is not Dead.
 		for _, r := range existing {
-			if t, ok := tupleOf(r.Posting); ok && !weakKey(r.Key) && t == fk && r.Status != posting.Dead {
+			if t, ok := tupleOf(r.Posting); ok && !weakKey(r.Key) && t == fk && r.Status != posting.Dead && bruteShares(p, r.Posting, r.Key) {
 				return r.Key, "", true
 			}
 		}
@@ -68,12 +68,39 @@ func bruteTwinOf(p posting.Posting, now time.Time, existing []ledger.Record) (po
 	return "", "", false
 }
 
+// bruteShares: p and the record (other, under otherKey) share a link or a
+// requisition id, by plain scans of both lists.
+func bruteShares(p, other posting.Posting, otherKey posting.Key) bool {
+	for _, a := range urlKeys(p) {
+		if slices.Contains(urlKeys(other), a) {
+			return true
+		}
+	}
+	for _, a := range requisitionIDs(p.Key, p) {
+		if slices.Contains(requisitionIDs(otherKey, other), a) {
+			return true
+		}
+	}
+	return false
+}
+
 func bruteCrossCandidates(p posting.Posting, fk posting.Key, existing []ledger.Record) []ledger.Record {
 	var out []ledger.Record
+	mine := requisitionIDs(p.Key, p)
 	for _, r := range existing {
 		t, ok := tupleOf(r.Posting)
 		if ok && t == fk && !weakKey(r.Key) && r.Key != p.Key && r.Key.ATS() != p.Key.ATS() && !closed(r.Status) {
-			out = append(out, r)
+			// The tuple is not proof: a shared requisition id is. A brute scan
+			// of both lists, with none of the index's binary search.
+			shared := false
+			for _, a := range mine {
+				for _, b := range requisitionIDs(r.Key, r.Posting) {
+					shared = shared || a == b
+				}
+			}
+			if shared {
+				out = append(out, r)
+			}
 		}
 	}
 	return out

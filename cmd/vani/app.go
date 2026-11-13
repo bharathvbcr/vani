@@ -828,6 +828,12 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	for _, l := range boardHealthLines(e.boardHealthFacet(cfg, at), at) {
 		fmt.Fprintln(e.stdout, l)
 	}
+	for _, l := range unwatchedLines(unwatchedCompaniesOf(recs, cfg, e.stateDir)) {
+		fmt.Fprintln(e.stdout, l)
+	}
+	for _, l := range rankWeightsLines(rankWeightsFacetOf(cfg)) {
+		fmt.Fprintln(e.stdout, l)
+	}
 	sched := withAwaitingUS(scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, last, &live, at), &us)
 	for _, l := range unkeptLines(sched, at) {
 		fmt.Fprintln(e.stdout, l)

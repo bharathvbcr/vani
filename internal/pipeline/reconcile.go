@@ -540,6 +540,9 @@ func markWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting, idx 
 	}
 	var evs []ledger.Event
 	for _, k := range idx.weak[fk] {
+		if !sharesIdentity(p, idx.info[k]) {
+			continue // the tuple alone is not proof (reconcile_requisition.go)
+		}
 		r, ok := l.Get(k)
 		if !ok || r.Status.Terminal() {
 			continue
@@ -551,6 +554,8 @@ func markWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting, idx 
 	if err != nil {
 		return n, err
 	}
-	twinned[fk] = true
+	if n > 0 {
+		twinned[fk] = true
+	}
 	return n, nil
 }
