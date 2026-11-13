@@ -90,7 +90,8 @@ func TestBoardHealthBoundsAndWorstCaseFitsItsFile(t *testing.T) {
 	for i := 0; i < maxBoardHealthEntries; i++ {
 		key := boardHealthKey("gh", fmt.Sprintf("%0120d", i)) // the longest token the run record keeps
 		doc.Boards[key] = boardHealthRec{LastOK: bhNow, FailSince: bhNow, LastTried: bhNow, Fails: maxBoardFailCount,
-			Outcome: boardRateLimited, LastError: healthErrorText(long), Seeded: true, DeferredSince: bhNow, ShortSince: bhNow}
+			Outcome: boardRateLimited, LastError: healthErrorText(long), Seeded: true, DeferredSince: bhNow, ShortSince: bhNow,
+			ZeroSince: bhNow, ZeroReads: maxBoardFailCount}
 	}
 	raw, err := encodeBoardHealth(doc)
 	if err != nil {

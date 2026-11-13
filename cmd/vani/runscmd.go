@@ -768,6 +768,13 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		if l := boardAttentionLine(r.Boards, runReportAt(r, at), true); l != "" {
 			b.add(b.clean(l))
 		}
+		// Boards that have never listed anything (boardszero.go): board health's
+		// streak as it stands now, so only the latest run speaks for it.
+		if detail && ref.Source == "last" {
+			for _, l := range e.runZeroLines(r.Boards, at) {
+				b.add(b.clean(l))
+			}
+		}
 	}
 	if len(detailLines) == 0 && !has {
 		b.add("No failures in this run.")

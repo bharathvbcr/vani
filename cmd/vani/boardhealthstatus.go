@@ -25,6 +25,12 @@ type boardHealthFacet struct {
 	UntrackedCount int          `json:"untracked_count,omitempty"`
 	Empty          []emptyBoard `json:"empty,omitempty"`
 	EmptyCount     int          `json:"empty_count,omitempty"`
+	// ListsNothing are watched boards whose good reads keep listing 0 with
+	// nothing of theirs in the ledger (boardszero.go); ListsNothingNote says the
+	// check could not run (the ledger could not be read).
+	ListsNothing      []zeroBoard `json:"lists_nothing,omitempty"`
+	ListsNothingCount int         `json:"lists_nothing_count,omitempty"`
+	ListsNothingNote  string      `json:"lists_nothing_note,omitempty"`
 }
 
 // boardHealthFacet reads board health and the last run's report as they stand,
@@ -33,6 +39,7 @@ func (e *env) boardHealthFacet(cfg config.Config, at time.Time) boardHealthFacet
 	v := readBoardHealthView(e.stateDir, cfg.Watchlist, at)
 	f := boardHealthFacet{facet: facet{OK: true}, Tracked: v.Tracked, Updated: v.Updated, Stale: v.Stale, StaleCount: v.StaleCount,
 		Untracked: v.Untracked, UntrackedCount: v.UntrackedN}
+	f.ListsNothing, f.ListsNothingCount, f.ListsNothingNote = e.zeroBoardsOf(v.ZeroCandidates)
 	if v.Warn != "" {
 		f.OK, f.Reason = false, oneLine(v.Warn, 300)
 	}
@@ -77,5 +84,5 @@ func boardHealthLines(f boardHealthFacet, at time.Time) []string {
 			out = append(out, fmt.Sprintf("  (%d more)", hidden))
 		}
 	}
-	return out
+	return append(out, zeroBoardLines(f.ListsNothing, f.ListsNothingCount, f.ListsNothingNote)...)
 }
