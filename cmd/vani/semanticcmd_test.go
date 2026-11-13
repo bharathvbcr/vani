@@ -54,7 +54,7 @@ func semanticSetup(t *testing.T) (cfgPath, stateDir string) {
 	cfg := config.Default()
 	cfg.TargetSummary = "Senior platform engineer building Kubernetes and Go infrastructure services"
 	cfg.KB.Bank = bank
-	wireEligibleKB(t, &cfg, bank, semBank) // the profile reads eligible bullets only
+	wireEligibleKB(t, &cfg, bank, semBank)   // the profile reads eligible bullets only
 	writeKBWords(t, stateDir, kbTestOwnWord) // a summary needs a words file (run and daemon refuse without one)
 	cfg.Semantic.Snapshot = filepath.Join(t.TempDir(), "snapshot")
 	if err := config.Save(cfgPath, cfg); err != nil {

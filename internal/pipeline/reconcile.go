@@ -88,7 +88,7 @@ type Summary struct {
 	// ClockSetBack says the freeze rests only on a quorum of the board's own events
 	// further ahead than ClockWindow (a clock set back by days), none within it.
 	ClockSetBack bool
-	ClockAhead  time.Time
+	ClockAhead   time.Time
 	// Duplicate counts every record this fold stored or marked as a
 	// duplicate: listed postings stored as one (ListedDuplicate) and other
 	// records this listing marked as their twins.

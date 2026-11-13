@@ -527,19 +527,19 @@ type reconcileCounts struct {
 	// that waited a read for a gap of more than pipeline.ClockWindow; MassDead
 	// is deaths of postings a true mass absence marked, ShortDead of ones only a
 	// short listing held.
-	Open        int       `json:"open,omitempty"`
-	Absent      int       `json:"absent,omitempty"`
-	Held        int       `json:"held,omitempty"`
-	Mass        bool      `json:"mass,omitempty"`
-	MassMarked  int       `json:"mass_marked,omitempty"`
-	ClockBehind bool      `json:"clock_behind,omitempty"`
+	Open        int  `json:"open,omitempty"`
+	Absent      int  `json:"absent,omitempty"`
+	Held        int  `json:"held,omitempty"`
+	Mass        bool `json:"mass,omitempty"`
+	MassMarked  int  `json:"mass_marked,omitempty"`
+	ClockBehind bool `json:"clock_behind,omitempty"`
 	// ClockSetBack: the freeze (ClockBehind) rests only on events days ahead (a clock
 	// set back by days), which is attention and not a failure.
-	ClockSetBack bool `json:"clock_set_back,omitempty"`
-	ClockAhead  time.Time `json:"clock_ahead,omitzero"`
-	Deferred    int       `json:"deaths_deferred,omitempty"`
-	MassDead    int       `json:"mass_dead,omitempty"`
-	ShortDead   int       `json:"short_dead,omitempty"`
+	ClockSetBack bool      `json:"clock_set_back,omitempty"`
+	ClockAhead   time.Time `json:"clock_ahead,omitzero"`
+	Deferred     int       `json:"deaths_deferred,omitempty"`
+	MassDead     int       `json:"mass_dead,omitempty"`
+	ShortDead    int       `json:"short_dead,omitempty"`
 	// UnreadableDead is the part of MassDead held by a listing that skipped rows
 	// it could not read: they fail the run like any mass death.
 	UnreadableDead int `json:"unreadable_dead,omitempty"`

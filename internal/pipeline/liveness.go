@@ -304,7 +304,7 @@ type clockEvidence struct {
 	// setBack: behind only by a quorum of the board's own events further ahead than
 	// ClockWindow (a clock set back by days); none lies within the window.
 	setBack bool
-	ahead  time.Time
+	ahead   time.Time
 }
 
 // clockEvidence reads the board under prefix (liveness.go "The clock"): an
