@@ -1,0 +1,188 @@
+# Held-out US-location set 2 (2026-11-12): 170 distinct (board location string,
+# remote flag) pairs, 160 distinct strings (10 drawn once with each remote
+# flag; header corrected 2026-11-12, it said 170 distinct strings), from the
+# live ledger (7,606 distinct strings over 69,024 postings), none in
+# us_oracle.tsv or us_heldout.tsv, drawn AFTER the per-option change by a
+# seeded sample (seed 20261112) with probability proportional to each
+# string's posting count (Efraimidis-Spirakis, without replacement), so the
+# plain mean over rows estimates a posting-level rate. Hand-labelled from a
+# sheet holding only the string and the remote flag: no verdict column.
+# Columns, tab-separated: label, remote, location, stratum, postings.
+#   label  U: every option the string lists is in the United States (or Puerto
+#             Rico); M: some option is and some is not; N: none is; A: as
+#             likely US as not, unresolvable from the string; ?: no place.
+#          A remote role listed at a place is remote within that place.
+#          (Relabelled 2026-11-12 by the owner's decision, two rows N -> A:
+#          "Paris" and "Helsinki, Stockholm, Paris, Munich". A bare Paris,
+#          with no state or country, is not judged, alone or as an option of
+#          a list; "Paris, France" stays N. Other rows are as first labelled.)
+N	false	London, UK	heldout2	193
+U	false	San Francisco	heldout2	1588
+U	true	New York	heldout2	213
+U	false	South San Francisco, CA, United States	heldout2	14
+U	false	Mountain View, CA, USA	heldout2	141
+U	false	United States, Washington, Redmond; United States, California, Mountain View	heldout2	18
+U	false	Redmond, WA	heldout2	391
+U	false	San Francisco, CA	heldout2	806
+N	true	Singapore	heldout2	293
+N	false	Amsterdam, Netherlands	heldout2	144
+N	false	Belo Horizonte, Minas Gerais, Brasil	heldout2	4
+N	false	India - Bangalore; India - Hyderabad	heldout2	12
+U	true	San Francisco Office (Fremont St)	heldout2	43
+N	true	Taipei, Taiwan	heldout2	127
+U	false	New York, NY	heldout2	432
+U	false	Washington, D.C.	heldout2	278
+U	false	South San Francisco, CA	heldout2	51
+N	false	Chennai, TN, IN; Pune, Maharashtra, India	heldout2	26
+U	false	Greater Seattle Area; Los Angeles, CA; Denver, CO	heldout2	9
+N	false	Saudi Arabia	heldout2	35
+U	true	Poughkeepsie, United States; Lowell, United States; Rochester, United States; Tucson, United States; Research Triangle Park, United States; Armonk, United States; Boston, United States; Bellevue, United States; Atlanta, United States; San Jose, United States; Dallas, United States; Austin, United States; San Francisco, United States; Seattle, United States	heldout2	30
+U	false	San Mateo, CA	heldout2	23
+A	false	Helsinki, Stockholm, Paris, Munich	heldout2	1
+U	true	United States	heldout2	440
+U	false	Dallas, Texas	heldout2	288
+U	false	Boston, Massachusetts, United States; Las Vegas, Nevada, United States; Remote U.S.	heldout2	1
+U	false	Chicago	heldout2	115
+U	false	San Mateo	heldout2	23
+N	false	Budapest, HU	heldout2	43
+U	false	United States	heldout2	711
+U	false	San Francisco, California, United States	heldout2	120
+A	false	San Jose	heldout2	169
+U	false	Austin, Texas	heldout2	412
+U	false	New York, New York	heldout2	58
+U	false	Costa Mesa, California, United States	heldout2	1316
+U	false	Greater Seattle Area; Huntsville, AL	heldout2	17
+U	true	Remote in the U.S.	heldout2	23
+N	true	Israel	heldout2	3
+U	false	Seattle, Washington, United States of America	heldout2	145
+U	false	US, Oregon, Hillsboro; US, Massachusetts, Beaver Brook; US, California, Folsom; US, California, Santa Clara; US, Arizona, Phoenix	heldout2	1
+N	false	Remote; United Kingdom	heldout2	133
+N	false	Costa Rica	heldout2	17
+U	false	Hybrid - San Francisco, CA	heldout2	6
+N	false	Singapore, SG	heldout2	139
+U	false	Cupertino, California, United States	heldout2	59
+N	true	IL-Israel-Remote	heldout2	3
+U	false	Union Square, New York City	heldout2	31
+U	false	San Jose, California	heldout2	200
+U	false	US, CA, Santa Clara; US, TX, Austin; US, TX, Remote; US, WA, Remote; US, CA, Remote; US, WA, Redmond	heldout2	4
+M	false	San Francisco, CA, New York, NY, Portland, OR, or Remote within Canada or United States	heldout2	71
+U	true	New York City, NY	heldout2	25
+U	false	USA.VA.Reston	heldout2	33
+N	false	Penang, Malaysia	heldout2	68
+U	false	Arlington, VA	heldout2	10
+U	false	Foster City, CA	heldout2	244
+N	false	Toronto, Ontario, Canada	heldout2	126
+N	false	MARKHAM, Canada	heldout2	126
+U	false	San Jose, CA	heldout2	129
+U	true	San Jose Office (Zanker)	heldout2	10
+U	true	San Francisco, California; Remote; Seattle, Washington	heldout2	5
+U	true	San Mateo	heldout2	70
+N	false	Melbourne	heldout2	73
+N	false	Bengaluru, Karnataka, India	heldout2	189
+U	false	San Carlos, CA	heldout2	149
+U	false	San Jose, California, United States of America	heldout2	479
+N	false	Santana De Parnaiba, Sao Paulo, Brasil	heldout2	1
+N	true	London	heldout2	164
+U	false	Greater Seattle Area; Los Angeles, CA	heldout2	4
+U	false	Seattle, San Francisco	heldout2	3
+U	false	Indiana - Indianapolis	heldout2	8
+U	false	Seattle, Washington, USA; Arlington, Virginia, USA; New York, New York, USA	heldout2	6
+N	true	China	heldout2	206
+N	false	Pune, MH, IN	heldout2	189
+U	true	Lincoln, NE, United States	heldout2	1
+U	false	South San Francisco, California, USA	heldout2	266
+U	false	Starbase, TX	heldout2	482
+U	false	US Remote	heldout2	66
+U	false	Cary,North Carolina,United States	heldout2	57
+N	false	Mississauga, ON, CA	heldout2	90
+N	false	Mexico City	heldout2	47
+U	false	Austin; Boston; Dallas; Denver; Houston; Los Angeles; Nashville; New York City; Palo Alto; Philadelphia; San Francisco; Seattle; United States	heldout2	1
+N	false	Mexico | Mexico City	heldout2	2
+U	false	Austin, Texas, USA; Seattle, Washington, USA; New York, New York, USA; East Palo Alto, California, USA; San Francisco, California, USA	heldout2	1
+N	false	Paris, France	heldout2	135
+N	false	Mumbai, India	heldout2	42
+N	true	Indonesia	heldout2	171
+N	false	Sao Paulo	heldout2	7
+U	false	Palo Alto, CA	heldout2	303
+U	false	Redwood City, CA	heldout2	70
+U	false	Jersey City, NJ, United States; New York, NY, United States	heldout2	13
+N	false	Metepec, MX	heldout2	4
+N	false	London	heldout2	537
+U	false	Hybrid - San Francisco, New York City	heldout2	18
+U	false	Memphis, TN	heldout2	117
+U	false	New York	heldout2	343
+M	false	Bellevue, Washington; Chicago, Illinois; Toronto, Ontario, Canada	heldout2	5
+N	false	City of Taguig, NCR, PH	heldout2	42
+U	false	McGregor, TX	heldout2	74
+U	false	NYC	heldout2	70
+M	true	Europe or US	heldout2	2
+U	true	Sunnyvale, California USA	heldout2	68
+U	false	San Mateo, CA, United States	heldout2	303
+N	false	Taiwan, Taipei; Taiwan, Hsinchu	heldout2	8
+N	false	Jalisco, Mexico	heldout2	2
+U	false	San Francisco Bay Area	heldout2	96
+U	true	New York, NY (HQ)	heldout2	151
+U	false	Seattle	heldout2	89
+U	false	Remote - United States	heldout2	197
+U	false	Remote (United States)	heldout2	52
+U	true	San Francisco Office (Second St)	heldout2	16
+U	false	San Francisco, CA | New York City, NY	heldout2	213
+U	false	Seattle, Washington	heldout2	431
+N	false	Tokyo, Japan	heldout2	260
+U	false	New York, NY, US	heldout2	164
+U	false	San Juan, Puerto Rico, Puerto Rico	heldout2	11
+U	false	Greater Seattle Area	heldout2	203
+U	false	Portland, OR; Seattle, WA	heldout2	3
+U	false	Livermore, CA, United States	heldout2	193
+N	false	Stuttgart	heldout2	16
+N	false	London, United Kingdom	heldout2	334
+N	false	GB-London	heldout2	28
+U	false	Remote - California	heldout2	13
+N	true	Sweden	heldout2	100
+U	false	Columbus, OH, United States	heldout2	89
+N	false	Hermosillo, MX	heldout2	1
+U	false	San Francisco, CA (Hybrid)	heldout2	14
+N	true	Sydney	heldout2	22
+U	false	Bellevue, Washington; Boston, Massachusetts; Chicago, Illinois; Denver, Colorado; Seattle, Washington; Washington, D.C.	heldout2	1
+U	false	San Francisco, CA • New York, NY • United States	heldout2	89
+U	false	O'Fallon, MO, US	heldout2	13
+A	true	San Jose	heldout2	2
+A	false	Paris	heldout2	135
+U	true	Redwood City, CA	heldout2	20
+N	true	Thailand	heldout2	118
+U	false	US-CA-Menlo Park	heldout2	77
+U	false	Bastrop, TX	heldout2	606
+U	false	Millbrae, CA	heldout2	9
+N	false	Bengaluru, India	heldout2	322
+U	false	Dallas, TX	heldout2	78
+U	false	Space Coast, FL	heldout2	231
+U	false	San Jose, California, United States	heldout2	142
+U	false	South San Francisco, California, United States	heldout2	46
+N	false	Chennai, TN, IN	heldout2	155
+N	false	Hong Kong, Hong Kong	heldout2	142
+U	true	San Francisco	heldout2	990
+N	false	Munich, Germany	heldout2	71
+N	false	Longueuil, Canada	heldout2	6
+N	false	Kuala Lumpur, MY	heldout2	39
+N	false	Singapore	heldout2	429
+U	false	Boston, MA	heldout2	86
+U	false	Denver, Colorado, USA	heldout2	19
+U	true	San Francisco, CA	heldout2	118
+U	false	Santa Ana, California, United States	heldout2	122
+N	false	Spain (Remote)	heldout2	22
+U	false	Brooklyn, NY, United States; Newark, DE, United States; Jersey City, NJ, United States	heldout2	1
+U	true	New York City Office	heldout2	54
+N	true	Sydney, Australia; Melbourne, Australia; Brisbane, Australia; Remote	heldout2	1
+U	false	San Diego, CA	heldout2	33
+U	false	New York, NY, US; Remote, US	heldout2	5
+U	false	Fremont Office	heldout2	36
+N	false	India	heldout2	89
+U	false	New York, NY; San Francisco, CA; Seattle, WA; Los Angeles, CA; Chicago, IL; Tempe, AZ; Denver, CO; Washington, DC	heldout2	1
+U	true	Minneapolis, MN, United States	heldout2	6
+U	false	US-Remote	heldout2	16
+U	false	Chicago, Illinois, United States	heldout2	38
+U	false	San Francisco, California	heldout2	193
+N	false	Sydney, Australia	heldout2	154
+N	true	Tokyo, Japan	heldout2	191
+U	false	New York, NY, United States	heldout2	258
+U	false	Chicago, Illinois; New York, New York; Seattle, Washington; Washington, DC	heldout2	3

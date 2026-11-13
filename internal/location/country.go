@@ -7,10 +7,15 @@ import (
 
 // Countries returns the distinct countries l names, as canonical names
 // ("United States", "Germany"), places first and then any country a remote
-// scope adds. A US state is the United States. A remote scope counts only
-// when it names a country ("US", "Canada"), not a region ("Europe",
-// "Anywhere", "North America"). Empty means no country was listed: "none"
-// for a --country filter.
+// scope adds. Each place contributes the countries of its options
+// (PlaceOptions), the same verdicts InUS reads, so "United States" is listed
+// exactly when some place reads as the US: a US state, a US token or a city
+// of the US table; a foreign country, province or region; or a city of the
+// foreign lists ("Toronto" is Canada). A name nothing places ("Lagos" is
+// listed, "Accra" is not) adds none. A remote scope counts only when it
+// names a country ("US", "Canada"), not a region ("Europe", "Anywhere",
+// "North America"). Empty means no country was listed: "none" for a
+// --country filter.
 //
 // It reads Parse's output and does not change it. Near-duplicate detection
 // and the exclusions read Parse as an engine rule.
@@ -60,40 +65,18 @@ func CanonicalCountry(s string) (string, bool) {
 	return "", false
 }
 
+// placeCountries lists the countries of p's options (PlaceOptions), in order:
+// the same verdicts PlaceInUS reads, so "United States" is listed exactly when
+// some option is in the US. An option names a country when it is a US place,
+// names a country or province ("Markham, Ontario"), or is a city of the
+// foreign city lists ("Toronto"); an option that names nothing that tells
+// ("London", "Lagos") lists none.
 func placeCountries(p Place) []string {
-	if p.State != "" {
-		return []string{"United States"}
-	}
-	parts := placeParts(p)
 	var out []string
-	add := func(c string) {
-		if c != "" && !slices.Contains(out, c) {
-			out = append(out, c)
+	for _, o := range PlaceOptions(p) {
+		if o.Country != "" && !slices.Contains(out, o.Country) {
+			out = append(out, o.Country)
 		}
-	}
-	for _, part := range parts {
-		if c, ok := namedCountry(part); ok {
-			add(c)
-		}
-	}
-	for i, part := range parts {
-		code, ok := collidingCode(part)
-		if !ok {
-			continue
-		}
-		for j, other := range parts {
-			if i != j && isCountryCity(code, part, other) {
-				add(collidingCountry[code])
-			}
-		}
-	}
-	for _, part := range parts {
-		if canadaProvinces[strings.TrimSuffix(strings.TrimSpace(part), ".")] {
-			add("Canada")
-		}
-	}
-	if len(out) == 0 && placeInUS(p) {
-		return []string{"United States"}
 	}
 	return out
 }
@@ -108,24 +91,6 @@ func placeParts(p Place) []string {
 		}
 	}
 	return parts
-}
-
-// collidingCode is a USPS code that Parse left as a region because the city
-// is one of that country's, or a two-letter token Parse did not take as a
-// state. A capitalised state with no such city never reaches here: Parse
-// sets Place.State.
-func collidingCode(part string) (string, bool) {
-	if code, ok := stateOf(part); ok {
-		if collidingCountry[code] != "" {
-			return code, true
-		}
-		return "", false
-	}
-	tok := strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(part), "."))
-	if len(tok) == 2 && collidingCountry[tok] != "" {
-		return tok, true
-	}
-	return "", false
 }
 
 // namedCountry is the country one part names, or false when it names a US
@@ -262,9 +227,156 @@ var countryAliases = func() map[string]string {
 	add("Saudi Arabia")
 	add("Russia", "russian federation")
 	add("Pakistan")
+	// Added 2026-11-12 (ISO 3166-1 English short names, the countries boards
+	// list that the vocabulary lacked: "Santa Clara, Cuba", "Lima, Peru",
+	// "Phoenix, Mauritius" read as US before).
+	add("Cuba")
+	add("Peru", "perú")
+	add("Mauritius")
+	add("Serbia")
+	add("Uruguay")
+	add("Paraguay")
+	add("Bolivia")
+	add("Ecuador")
+	add("Venezuela")
+	add("Guatemala")
+	add("Honduras")
+	add("El Salvador")
+	add("Nicaragua")
+	add("Dominican Republic")
+	add("Jamaica")
+	add("Trinidad and Tobago")
+	add("Barbados")
+	add("Bahamas", "the bahamas")
+	add("Belize")
+	add("Bangladesh")
+	add("Sri Lanka")
+	add("Nepal")
+	add("Cambodia")
+	add("Myanmar")
+	add("Laos")
+	add("Macau", "macao")
+	add("Jordan")
+	add("Lebanon")
+	add("Kuwait")
+	add("Bahrain")
+	add("Oman")
+	add("Cyprus")
+	add("Tunisia")
+	add("Algeria")
+	add("Ghana")
+	add("Ethiopia")
+	add("Rwanda")
+	add("Uganda")
+	add("Tanzania")
+	add("Senegal")
+	add("Côte d'Ivoire", "cote d ivoire", "ivory coast")
+	add("Cameroon")
+	add("Belarus")
+	add("Kazakhstan")
+	add("Uzbekistan")
+	add("Armenia")
+	add("Bosnia and Herzegovina", "bosnia")
+	add("North Macedonia", "macedonia")
+	add("Montenegro")
+	add("Kosovo")
+	add("Liechtenstein")
+	add("Monaco")
+	add("Andorra")
 	// "georgia" as a lone word is the US state to Parse. Drop that alias so a
 	// place named only "Georgia" stays the state; the country is the city
 	// list, "Republic of Georgia", or an explicit --country Georgia.
 	delete(m, "georgia")
+	return m
+}()
+
+// foreignCities are the foreign cities location.go's lists name (the tech-
+// office cities of the countries whose ISO code or name collides with a US
+// state), read as that country when written bare: "Toronto" is Canada,
+// "Toronto, Austin" is Toronto or Austin. Names as likely a US place
+// (Vancouver, Waterloo, Panama City) or of two foreign countries (Córdoba) are
+// left out; ambiguousNames holds the first.
+var foreignCities = func() map[string]string {
+	m := map[string]string{}
+	for code, cities := range countryByCode {
+		for c := range cities {
+			m[c] = collidingCountry[code]
+		}
+	}
+	for code, cities := range countryByName {
+		for c := range cities {
+			m[c] = collidingCountry[code]
+		}
+	}
+	for _, c := range []string{"vancouver", "waterloo", "panama city", "córdoba", "cordoba"} {
+		delete(m, NormArea(c))
+	}
+	// The foreign tech hubs boards list beside a US city ("San Francisco,
+	// Amsterdam"), each far more often that city than any US namesake (a US
+	// namesake comes with its state: "Dublin, OH", "Lima, OH", which
+	// PlaceOptions reads as the US). Paris is not here: by the owner's
+	// decision (2026-11-12) a bare "Paris" is ambiguous (us.go).
+	for c, country := range map[string]string{
+		"london": "United Kingdom", "manchester": "United Kingdom", "edinburgh": "United Kingdom",
+		"amsterdam": "Netherlands", "dublin": "Ireland", "zurich": "Switzerland",
+		"zürich": "Switzerland", "geneva": "Switzerland", "stockholm": "Sweden", "copenhagen": "Denmark",
+		"oslo": "Norway", "helsinki": "Finland", "madrid": "Spain", "barcelona": "Spain", "lisbon": "Portugal",
+		"warsaw": "Poland", "krakow": "Poland", "kraków": "Poland", "prague": "Czechia", "budapest": "Hungary",
+		"bucharest": "Romania", "milan": "Italy", "rome": "Italy", "tokyo": "Japan", "osaka": "Japan",
+		"seoul": "South Korea", "taipei": "Taiwan", "beijing": "China", "shanghai": "China",
+		"shenzhen": "China", "sydney": "Australia", "melbourne": "Australia", "auckland": "New Zealand",
+		"são paulo": "Brazil", "sao paulo": "Brazil", "mexico city": "Mexico", "lima": "Peru",
+		"santiago": "Chile", "kyiv": "Ukraine", "lviv": "Ukraine", "istanbul": "Turkey", "dubai": "United Arab Emirates",
+		"tel aviv": "Israel", "delhi": "India", "nairobi": "Kenya", "lagos": "Nigeria", "cairo": "Egypt",
+	} {
+		m[NormArea(c)] = country
+	}
+	return m
+}()
+
+// foreignRegions are first-level subdivisions abroad, read as their country
+// when they qualify a city ("Bay Area, Ontario", "Houston, Scotland",
+// "Austin, Victoria", "Andover, Hampshire", "Henderson, Auckland"). A city's
+// own name in first place, or before a US state, stays a city ("Victoria,
+// BC", "Ontario, CA"). Source: ISO 3166-2 subdivision names for the countries
+// boards list most, 2026-11-12. UK counties that are also common US county
+// names after a city (Middlesex, Suffolk, Essex, Norfolk, Somerset, Kent,
+// Durham, Cheshire, Berkshire, Devon, Rutland) are left out: after a US city
+// they read as unknown, which the exclusions keep.
+var foreignRegions = func() map[string]string {
+	m := map[string]string{}
+	add := func(country string, names ...string) {
+		for _, n := range names {
+			m[NormArea(n)] = country
+		}
+	}
+	add("Canada", "ontario", "quebec", "québec", "british columbia", "alberta", "manitoba", "saskatchewan",
+		"nova scotia", "new brunswick", "newfoundland", "newfoundland and labrador", "prince edward island",
+		"yukon", "northwest territories", "nunavut")
+	add("Australia", "new south wales", "nsw", "victoria", "queensland", "western australia",
+		"south australia", "tasmania", "australian capital territory", "northern territory")
+	add("United Kingdom", "scotland", "wales", "northern ireland", "greater london", "greater manchester",
+		"west midlands", "tyne and wear", "merseyside", "south yorkshire", "west yorkshire", "north yorkshire",
+		"east riding of yorkshire", "yorkshire", "east sussex", "west sussex", "isle of wight", "hampshire",
+		"surrey", "oxfordshire", "cambridgeshire", "buckinghamshire", "hertfordshire", "bedfordshire",
+		"lincolnshire", "nottinghamshire", "leicestershire", "derbyshire", "staffordshire", "warwickshire",
+		"worcestershire", "gloucestershire", "wiltshire", "dorset", "cornwall", "cumbria", "lancashire",
+		"northamptonshire", "shropshire", "herefordshire", "northumberland", "county durham")
+	add("New Zealand", "auckland", "waikato", "otago", "bay of plenty", "wellington region")
+	add("India", "karnataka", "maharashtra", "telangana", "tamil nadu", "haryana", "uttar pradesh", "kerala",
+		"west bengal", "gujarat", "andhra pradesh", "rajasthan", "delhi", "delhi ncr")
+	add("Germany", "bavaria", "bayern", "baden württemberg", "baden wurttemberg", "north rhine westphalia",
+		"nordrhein westfalen", "hesse", "hessen", "saxony", "sachsen", "lower saxony", "niedersachsen")
+	add("Ireland", "county dublin", "co dublin", "county cork", "co cork", "leinster", "munster")
+	add("Mexico", "jalisco", "nuevo león", "nuevo leon", "cdmx", "ciudad de méxico", "ciudad de mexico")
+	add("China", "guangdong", "zhejiang", "jiangsu", "sichuan")
+	add("Brazil", "são paulo", "sao paulo", "minas gerais", "rio de janeiro", "santa catarina",
+		"rio grande do sul")
+	add("Spain", "catalonia", "cataluña", "catalunya", "comunidad de madrid")
+	add("Netherlands", "north holland", "noord holland")
+	add("Philippines", "metro manila")
+	// "Paris, Île-de-France" is France: with a bare Paris ambiguous, its
+	// region has to say so.
+	add("France", "île de france", "ile de france")
 	return m
 }()
