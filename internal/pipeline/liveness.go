@@ -111,6 +111,14 @@ const (
 	// absence ever marked) counts as a mass death. Read only while
 	// mass_missed_since is set; forgotten with it.
 	MassShortKey = "mass_short"
+	// massShortValue and massUnreadableValue are MassShortKey's values. The
+	// second is a posting a short listing that skipped unreadable rows marked: it
+	// is held for as long as any listing skips rows, and its death (on a listing
+	// that skipped none) is a mass death, a failure naming the board
+	// (Summary.UnreadableDead). An older build reads it as "not short": a mass
+	// death, which also fails the run.
+	massShortValue      = "short"
+	massUnreadableValue = "unreadable"
 	// OrdinaryHold is how long an ordinary absence lasts, from its first miss,
 	// before it can kill: a daily run kills on its second miss, two runs an hour
 	// apart cannot.
@@ -349,6 +357,7 @@ type absence struct {
 	deferred           int // deaths that waited a read for an unwitnessed gap (in held)
 	massDead           int // deaths of mass-marked postings a true mass absence marked (in dead)
 	shortDead          int // deaths of postings only short listings marked (in dead, not in massDead)
+	unreadableDead     int // deaths of postings an unreadable-row listing held (in massDead)
 	mass, clockBehind  bool
 	clockAhead         time.Time
 }
@@ -357,7 +366,7 @@ type absence struct {
 // keys before the listing, seen the keys it listed, clock what the ledger says
 // about now. It writes the miss, hold and death events in one batched append;
 // its counts say what was written, so a pass that failed reports none of them.
-func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, clock clockEvidence, now time.Time, short bool) (absence, error) {
+func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, clock clockEvidence, now time.Time, kind shortKind) (absence, error) {
 	lv = lv.resolved()
 	var a absence
 	a.open = len(open)
@@ -380,6 +389,8 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 	// short, however much that is, so what it holds dies as a short death
 	// (MassShortKey). A listing that shows none of the board's open postings is
 	// one whether or not it is short (the Snap case: an empty read).
+	short := kind != shortNone
+	unreadable := kind == shortUnreadable
 	trueMass := massAbsence(lv, len(open), len(absent)) && (!short || len(absent) == len(open))
 	mass := short || trueMass
 
@@ -393,7 +404,7 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		if !ok || closed(cur.Status) {
 			continue
 		}
-		e, o := absenceEvent(lv, cur, mass, trueMass, now)
+		e, o := absenceEvent(lv, cur, mass, trueMass, unreadable, now)
 		switch o.outcome {
 		case absentDead:
 			w.dead++
@@ -402,6 +413,9 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 				w.shortDead++
 			case o.massed:
 				w.massDead++
+				if o.unreadable {
+					w.unreadableDead++
+				}
 			}
 		case absentHeld:
 			w.held++
@@ -420,7 +434,7 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		return a, err
 	}
 	a.missed, a.held, a.dead, a.massMarked, a.mass = w.missed, w.held, w.dead, w.massMarked, mass
-	a.deferred, a.massDead, a.shortDead = w.deferred, w.massDead, w.shortDead
+	a.deferred, a.massDead, a.shortDead, a.unreadableDead = w.deferred, w.massDead, w.shortDead, w.unreadableDead
 	return a, nil
 }
 
@@ -438,13 +452,19 @@ type absenceResult struct {
 	newMark   bool // this listing mass-marked it
 	massed    bool // it is mass marked (after this listing)
 	shortOnly bool // ... and only short listings ever marked it in this episode
-	deferred  bool // its death was due only by an unwitnessed gap, and waits a read
+	// unreadable: ... and a listing that skipped unreadable rows marked it, and no
+	// true mass absence since (MassShortKey "unreadable"): a death is a failing one.
+	unreadable bool
+	deferred   bool // its death was due only by an unwitnessed gap, and waits a read
 }
 
 // absenceEvent is the event one more full-listing absence writes for cur.
 // massListing says the listing marks its absent postings mass; trueMass that it
-// does so by the mass rule itself, not only because it was a short listing.
-func absenceEvent(lv Liveness, cur ledger.Record, massListing, trueMass bool, now time.Time) (ledger.Event, absenceResult) {
+// does so by the mass rule itself, not only because it was a short listing;
+// unreadable that the listing skipped rows it could not read, which may be
+// the posting itself: such a listing kills nothing (the posting is held), and
+// what it marked dies only on a later listing that skipped nothing.
+func absenceEvent(lv Liveness, cur ledger.Record, massListing, trueMass, unreadable bool, now time.Time) (ledger.Event, absenceResult) {
 	misses := cur.MissedRuns + 1
 	ongoing := cur.MissedRuns > 0
 	first, ok := readStamp(cur, MissedSinceKey, now)
@@ -454,23 +474,30 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing, trueMass bool, no
 	// The mass mark persists through the episode; any value counts, so a
 	// mangled mark still holds. A new episode starts unmarked.
 	massSince, newMark := "", false
-	shortOnly := false
+	shortOnly, unread := false, false
 	if ongoing && cur.Annotations[MassMissedSinceKey] != "" {
 		massSince = cur.Annotations[MassMissedSinceKey]
-		shortOnly = cur.Annotations[MassShortKey] == "short"
+		shortOnly = cur.Annotations[MassShortKey] == massShortValue
+		unread = cur.Annotations[MassShortKey] == massUnreadableValue
 		if _, ok := readStamp(cur, MassMissedSinceKey, now); !ok {
 			massSince = stampOf(now)
 		}
 	}
 	if massListing && massSince == "" {
 		massSince, newMark = stampOf(now), true
-		shortOnly = !trueMass // marked by a short listing alone
-	} else if trueMass {
-		shortOnly = false // a true mass absence upgrades the cause: it fails the run if they die
+		shortOnly = !trueMass && !unreadable // marked by a short listing alone
+	} else if trueMass || unreadable {
+		shortOnly = false // a true mass absence, or unreadable rows, upgrade the cause: it fails the run if they die
 	}
+	// Unreadable rows mark the episode until a true mass absence takes it over;
+	// the cause is kept through later short or complete listings.
+	unread = (unread || (unreadable && massSince != "")) && !trueMass
 	short := ""
-	if massSince != "" && shortOnly {
-		short = "short"
+	switch {
+	case massSince != "" && shortOnly:
+		short = massShortValue
+	case massSince != "" && unread:
+		short = massUnreadableValue
 	}
 	hold := OrdinaryHold
 	if massSince != "" {
@@ -487,8 +514,12 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing, trueMass bool, no
 	if massSince != "" {
 		e.Reason = fmt.Sprintf("absent from board (%d), mass absence", misses)
 	}
-	res := absenceResult{newMark: newMark, massed: massSince != "", shortOnly: short != ""}
+	res := absenceResult{newMark: newMark, massed: massSince != "", shortOnly: short == massShortValue, unreadable: short == massUnreadableValue}
 	due := misses >= MissesToDead && !now.Before(first.Add(hold))
+	unreadableHeld := due && unreadable
+	if unreadableHeld {
+		due = false // the posting may be the row this listing could not read
+	}
 	// An unwitnessed gap: more than ClockWindow since the posting's last event
 	// (its previous miss). A clock that jumped ahead, or came back from being set
 	// back, looks the same as that long a gap, so the next read decides: this
@@ -507,6 +538,9 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing, trueMass bool, no
 			e.Reason = fmt.Sprintf("absent from board %d times over %s", misses, OrdinaryHold)
 		}
 		res.outcome = absentDead
+	case unreadableHeld:
+		e.Reason += ", held: this listing skipped rows it could not read, and the posting may be one of them"
+		res.outcome = absentHeld
 	case res.deferred:
 		e.Reason += fmt.Sprintf(", held one more read: %s since its last event is more than the %s the rule takes on trust (a clock that jumped looks the same)",
 			gap.Round(time.Hour), ClockWindow)

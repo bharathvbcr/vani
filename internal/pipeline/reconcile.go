@@ -67,6 +67,10 @@ type Summary struct {
 	// closures, reported and not counted in MassDead.
 	MassDead  int
 	ShortDead int
+	// UnreadableDead of MassDead were held by a listing that skipped rows it
+	// could not read (MassShortKey "unreadable"): counted in MassDead, so they
+	// fail the run, and named apart so the report says why.
+	UnreadableDead int
 	// Open counts the board's open postings before a full listing; Absent how
 	// many of them it left out. Zero for a partial listing.
 	Open, Absent int
@@ -127,7 +131,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 // ledger as it stands when the board starts, as a fresh scan would: the
 // boards before it included, this board's own writes not.
 func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, true, false)
+	return rc.reconcile(ctx, b, listed, now, true, shortNone)
 }
 
 // ReconcileShort folds a board's listing that counted more rows than it listed
@@ -140,20 +144,42 @@ func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []p
 // expire as in a full listing, after the same PendingReopenExpiry that a
 // mass hold lasts.
 func (rc *Reconciler) ReconcileShort(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, true, true)
+	return rc.reconcile(ctx, b, listed, now, true, shortCounted)
 }
+
+// ReconcileUnreadable folds a short listing whose shortfall includes rows the
+// adapter could not read (srcutil.BadRowSink). It is ReconcileShort with one
+// difference that matters: a posting behind an unreadable row looks exactly like
+// one its board stopped listing, so this listing never kills what it leaves
+// out, however long it has been held, and a posting it marked dies later only on
+// a listing that skipped nothing, as a mass death (it fails the run, and counts
+// in Summary.UnreadableDead so the report says why). A board whose rows are
+// unreadable on every run therefore keeps its postings, held, rather than
+// losing them as an "expected closure".
+func (rc *Reconciler) ReconcileUnreadable(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
+	return rc.reconcile(ctx, b, listed, now, true, shortUnreadable)
+}
+
+// shortKind is what a full listing says about the postings it leaves out.
+type shortKind int
+
+const (
+	shortNone       shortKind = iota // it is the board's whole word
+	shortCounted                     // it counted more rows than it listed
+	shortUnreadable                  // ... and some rows it skipped could not be read
+)
 
 // ReconcilePartial folds postings that are part of a board's listing, not the
 // whole of it (a page the user scraped in the browser): it shares Reconcile's
 // listing loop but runs no absence pass, so a posting missing from the batch is
 // never missed or aged. A partial listing says nothing about what is absent.
 func (rc *Reconciler) ReconcilePartial(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, false, false)
+	return rc.reconcile(ctx, b, listed, now, false, shortNone)
 }
 
 // reconcile is the listing loop both entry points share; full says the listing
 // is the board's whole, so records it lacks are aged.
-func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full, short bool) (Summary, error) {
+func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full bool, short shortKind) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
 	idx := rc.index()
@@ -388,6 +414,7 @@ func (s *Summary) addAbsence(a absence) {
 	s.Dead += a.dead
 	s.MassDead += a.massDead
 	s.ShortDead += a.shortDead
+	s.UnreadableDead += a.unreadableDead
 	s.MassMarked += a.massMarked
 	s.Mass = s.Mass || a.mass
 	s.ClockBehind = s.ClockBehind || a.clockBehind

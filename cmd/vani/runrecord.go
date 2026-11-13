@@ -530,6 +530,9 @@ type reconcileCounts struct {
 	Deferred    int       `json:"deaths_deferred,omitempty"`
 	MassDead    int       `json:"mass_dead,omitempty"`
 	ShortDead   int       `json:"short_dead,omitempty"`
+	// UnreadableDead is the part of MassDead held by a listing that skipped rows
+	// it could not read: they fail the run like any mass death.
+	UnreadableDead int `json:"unreadable_dead,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {

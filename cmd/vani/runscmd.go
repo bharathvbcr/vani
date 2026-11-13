@@ -948,8 +948,13 @@ func massDeadLine(it boardReport) string {
 	if it.Listed != nil {
 		listed = *it.Listed
 	}
+	unreadable := 0
 	if it.Reconcile != nil {
 		dead = it.Reconcile.MassDead
+		unreadable = it.Reconcile.UnreadableDead
+	}
+	if unreadable > 0 {
+		return fmt.Sprintf("%s: listed %d; %d posting(s) died at the end of a hold that began when the board's rows were unreadable (%d of them): they may still be open, check the board", name, listed, dead, unreadable)
 	}
 	return fmt.Sprintf("%s: listed %d; %d posting(s) held after a mass absence died at the end of the hold", name, listed, dead)
 }

@@ -114,6 +114,10 @@ type boardFetch struct {
 	// Prefiltered is new listed rows the drop policy rejected before any
 	// detail request (the adapter's Stats.Prefiltered): never stored.
 	Prefiltered int
+	// BadRows is rows the adapter skipped because it could not read them
+	// (srcutil.BadRowSink); they are also in Short. A listing with any is
+	// reconciled so that it never kills what it leaves out (ReconcileUnreadable).
+	BadRows int
 	// Short is rows the board counted but did not list (workday.Stats.Short).
 	Short int
 }
@@ -167,6 +171,7 @@ func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	prev.Gone += f.Gone
 	prev.Prefiltered += f.Prefiltered
 	prev.Short += f.Short
+	prev.BadRows += f.BadRows
 	if prev.PayError == "" {
 		prev.PayError = f.PayError
 	}

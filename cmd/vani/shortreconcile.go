@@ -13,9 +13,14 @@ import (
 // (boardFetch.Short). Adapters report it from List, before the board is
 // reconciled, so it is known by the time reconcileBoard asks.
 func (w *wired) boardShort(b sources.Board) int {
+	return w.boardFetchOf(b).Short
+}
+
+// boardFetchOf is the fetch counts the adapters reported for b this run.
+func (w *wired) boardFetchOf(b sources.Board) boardFetch {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.fetches[fetchKey(b.ATS, b.Token)].Short
+	return w.fetches[fetchKey(b.ATS, b.Token)]
 }
 
 // reconcileBoard folds one board's listing into the ledger through rec.
@@ -32,7 +37,14 @@ func (w *wired) boardShort(b sources.Board) int {
 // that is short on every run still ages, after the hold. The run record names
 // the shortfall (Boards.Short) and the newly held postings (Boards.Mass).
 func (w *wired) reconcileBoard(ctx context.Context, rec *pipeline.Reconciler, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
-	if short := w.boardShort(b); short > 0 {
+	f := w.boardFetchOf(b)
+	if f.BadRows > 0 {
+		// Rows it could not read may be postings the ledger holds: this listing
+		// holds what it leaves out and kills none of it (ReconcileUnreadable).
+		w.warnf("board %s/%s: %d row(s) could not be read; folded as a full listing that holds every posting it leaves out and kills none of them", b.ATS, b.Token, f.BadRows)
+		return rec.ReconcileUnreadable(ctx, b, listed, now)
+	}
+	if short := f.Short; short > 0 {
 		w.warnf("board %s/%s: counted %d job(s) it did not list; folded as a full listing whose absent postings are held as a mass absence, not aged by the ordinary rule", b.ATS, b.Token, short)
 		return rec.ReconcileShort(ctx, b, listed, now)
 	}

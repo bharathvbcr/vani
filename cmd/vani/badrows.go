@@ -17,5 +17,5 @@ const maxBadRowNote = 160
 // stored.
 func (w *wired) badRowSink(b sources.Board, skipped int, first string) {
 	w.warnf("board %s/%s: skipped %d row(s) that could not be read (first: %q)", b.ATS, b.Token, skipped, oneLine(first, maxBadRowNote))
-	w.noteBoardFetch(b, boardFetch{Short: skipped})
+	w.noteBoardFetch(b, boardFetch{Short: skipped, BadRows: skipped})
 }

@@ -223,6 +223,9 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		if sum.MassDead > 0 {
 			warnf("board %s/%s: %d postings held by a mass absence died: the mass hold ended and the board still does not list them", b.ATS, b.Token, sum.MassDead)
 		}
+		if sum.UnreadableDead > 0 {
+			warnf("board %s/%s: %d of those were held because rows the adapter could not read may have been them", b.ATS, b.Token, sum.UnreadableDead)
+		}
 		if sum.ShortDead > 0 {
 			warnf("board %s/%s: %d postings held because its listing was short died: the hold ended and the board still does not list them", b.ATS, b.Token, sum.ShortDead)
 		}
@@ -592,7 +595,7 @@ func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
 		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate, Reopened: s.Reopened, Invalid: s.Invalid,
 		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind,
-		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead, ShortDead: s.ShortDead}
+		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead, ShortDead: s.ShortDead, UnreadableDead: s.UnreadableDead}
 }
 
 // recordFirst is whether a board's entry is kept before plain read ones when
