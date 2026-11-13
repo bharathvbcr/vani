@@ -10,7 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/eval"
+	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -33,6 +35,11 @@ func (e *env) dropRules() []eval.DropRule {
 		fmt.Fprintf(e.stderr, "vani: drop classes unavailable (%v); dropped postings are classed <who>:other\n", err)
 		return nil
 	}
+	return evalDropRules(cfg)
+}
+
+// evalDropRules is cfg's drop rules as the drop-class names need them.
+func evalDropRules(cfg config.Config) []eval.DropRule {
 	out := make([]eval.DropRule, 0, len(cfg.DropRules))
 	for _, r := range cfg.DropRules {
 		out = append(out, eval.DropRule{Slot: r.Slot, Values: r.Values})
@@ -81,6 +88,47 @@ func (b *browsing) view(view, sortBy string, openOnly bool) ([]jobview.Selected,
 // maxAuditKeyBytes bounds --key of `audit answer`.
 const maxAuditKeyBytes = 512
 
+// disagreeFlags are the overlay flags `audit` and `audit answer` share: each
+// disagreement cell's quota and whose readings define them, the yes-neighbour
+// cell's quota and the engineering group's. 0, the default, draws none; with
+// both disagreement quotas at 0 the teacher log is never opened, and with the
+// neighbour quota at 0 the vector store is never opened.
+type disagreeOpts struct {
+	wants, rejects        *int
+	neighbours, engineers *int
+	teacher               *string
+}
+
+func disagreeFlags(fs *flag.FlagSet) disagreeOpts {
+	return disagreeOpts{
+		wants:      fs.Int("disagree", 0, "postings drawn from the cell where the teacher wants a posting the engine dropped or ranked in the lowest three deciles (kept out of every estimate)"),
+		rejects:    fs.Int("disagree-rejects", 0, "postings drawn from the cell where the teacher rejects a top-decile posting (kept out of every estimate; off by default)"),
+		neighbours: fs.Int("yes-neighbours", 0, "postings drawn from the 50 unlabelled postings nearest the owner's yes answers (kept out of every estimate; refused unless the taste column beats the title part)"),
+		engineers:  fs.Int("engineering", 0, "postings drawn at random from the engineering-titled postings, kept and dropped (kept out of the deciles, drop recall and the weight fit)"),
+		teacher:    fs.String("teacher", sonnetReader, "the teacher model whose stored role_fit readings define the disagreement cells"),
+	}
+}
+
+// quotas is q with the overlays' places set.
+func (d disagreeOpts) quotas(q eval.AuditQuotas) eval.AuditQuotas {
+	q.Disagree, q.DisagreeRejects = *d.wants, *d.rejects
+	q.Neighbour, q.Engineering = *d.neighbours, *d.engineers
+	return q
+}
+
+// overlayEligible reports whether an overlay (a disagreement cell, the
+// yes-neighbour cell, the engineering group) may draw c: never a closed
+// posting, nor a dropped one in a stratum the auditor leaves out
+// (stratumLeftOut: work authorization, work mode, owner exclusions), so no
+// such posting is drawn because of a reading, a nearness or a title.
+func overlayEligible(c eval.AuditCandidate) bool {
+	if c.Closed {
+		return false
+	}
+	_, left := stratumLeftOut(eval.AuditCell(c))
+	return !left
+}
+
 // auditDraw is one week's draw with the state it was made from.
 type auditDraw struct {
 	b     *browsing
@@ -116,6 +164,14 @@ func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 	if q.Scored+q.Dropped+q.Closed < 1 {
 		return usagef("audit: --scored, --dropped and --closed must be within 0..%d and not all 0", maxAuditQuota)
 	}
+	for _, n := range []int{q.Disagree, q.DisagreeRejects, q.Neighbour, q.Engineering} {
+		if n < 0 || n > maxAuditQuota {
+			return usagef("audit: --disagree, --disagree-rejects, --yes-neighbours and --engineering must be within 0..%d", maxAuditQuota)
+		}
+	}
+	if !q.RandomShareOK() {
+		return usagef("audit: --disagree + --disagree-rejects + --yes-neighbours (%d) is more than twice --scored + --dropped (%d): at least a third of the draw stays random (closed and engineering places count on neither side)", q.Cells(), q.Scored+q.Dropped)
+	}
 	if len(seed) > maxSeedBytes {
 		return usagef("audit: --seed is longer than %d bytes", maxSeedBytes)
 	}
@@ -124,8 +180,10 @@ func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 
 // drawAudit makes the draw for seed ("" is this ISO week). It fails closed,
 // as `label` does: a draw made without the labels could repeat a posting
-// already answered.
-func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, error) {
+// already answered. With cell places the candidates carry teacher's
+// role_fit readings (teacherViews), and a teacher log that cannot be read is
+// an error; with none the log is never opened.
+func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*auditDraw, error) {
 	s, err := e.openEvalStore(labels)
 	if err != nil {
 		return nil, err
@@ -141,38 +199,34 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 	if err != nil {
 		return nil, err
 	}
-	kept, err := b.view("all", "default", false)
+	cands, err := b.auditCandidates(e.dropRules(), true)
 	if err != nil {
 		return nil, err
 	}
-	// A reading copied from another posting is not one this posting's model
-	// made, so a label on it is no evidence about that model: the draw leaves
-	// copies out, as the label queue does (eval.Inherited, the one owner).
-	// A closed posting was closed by the engine, not by a reading.
-	inherited := map[posting.Key]bool{}
-	for _, r := range b.snap.Records {
-		if eval.Inherited(r) {
-			inherited[r.Key] = true
+	cands = b.withoutInherited(cands)
+	if seed == "" {
+		seed = eval.WeekSeed(now())
+	}
+	if q.Disagree+q.DisagreeRejects > 0 {
+		if err := e.teacherViews(cands, teacher); err != nil {
+			return nil, err
 		}
 	}
-	var cands []eval.AuditCandidate
-	for _, k := range kept {
-		if b.m[k.Job.Key].Mark != marks.None || inherited[k.Job.Key] {
-			continue // judged by its mark already, as in the digest's Explore
+	if q.Engineering > 0 {
+		isEng := engineeringOf(b.snap)
+		for i := range cands {
+			cands[i].Engineering = overlayEligible(cands[i]) && isEng(cands[i].Key)
 		}
-		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
 	}
-	rules := e.dropRules()
-	for _, r := range b.snap.Records {
-		if b.m[r.Key].Mark != marks.None {
-			continue
-		}
-		if c, ok := closedOrDropped(r, rules); ok && !(inherited[r.Key] && !c.Closed) {
-			cands = append(cands, c)
+	if q.Neighbour > 0 {
+		if err := e.markYesNeighbours(cands, done, b.snap, seed); err != nil {
+			return nil, err
 		}
 	}
 	// The listing-time drops never reached the ledger, so the sample the run
 	// kept stands in for them: each row is a dropped candidate of its own class.
+	// They join after the inherited filter: a sampled row is no ledger record
+	// and carries no inherited reading.
 	sample := e.loadPrefilterSample()
 	rows := prefilterRows(sample)
 	for _, r := range sample.Rows() {
@@ -181,13 +235,94 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 		}
 		cands = append(cands, eval.AuditCandidate{Key: r.Key, Dropped: true, Class: r.Class()})
 	}
-	if seed == "" {
-		seed = eval.WeekSeed(now())
-	}
 	plan := eval.AuditDraw(cands, done, seed, q)
 	held, seen := sample.Week(eval.WeekSeed(now()))
 	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed),
 		prefilter: rows, pfWeek: len(held), pfSeen: seen}, nil
+}
+
+// teacherViews sets each candidate's Teacher from model's newest jd_triage
+// role_fit reading in the teacher log (eval.TeacherViewOf), for the
+// disagreement cells. A closed posting is never read, nor a dropped one in a
+// stratum the auditor leaves out (stratumLeftOut: work authorization, work
+// mode, owner exclusions), so no such posting is ever drawn because of a
+// reading or shown as an exemplar from a cell. A log that is missing, empty or
+// unreadable is an error, and so is one with no row by model for any
+// candidate (a misspelt --teacher): cells drawn from nothing would look like
+// cells with no disagreement. Rows that were read but disagree nowhere are a
+// clean empty draw.
+func (e *env) teacherViews(cands []eval.AuditCandidate, model string) error {
+	store, status, detail := e.openTeacherLog()
+	if store == nil {
+		return fmt.Errorf("audit --disagree: the teacher readings log is not usable (%s %s); the disagreement cells need %s's role_fit readings (vani teacher)", status, strings.TrimSpace(detail), model)
+	}
+	rows := 0
+	for i := range cands {
+		c := &cands[i]
+		c.Teacher = eval.TeacherUnread
+		if !overlayEligible(*c) {
+			continue
+		}
+		if row, ok := store.LatestByModel("", c.Key)[model]; ok {
+			rows++
+			c.Teacher = eval.TeacherViewOf(row)
+		}
+	}
+	if rows == 0 {
+		return fmt.Errorf("audit --disagree: the teacher readings log has no %s reading of any posting the audit may draw (is --teacher the model `vani teacher` ran?)", model)
+	}
+	return nil
+}
+
+// auditCandidates is every posting the audit's strata stand over: each kept
+// posting with its priority score, each dropped one with its drop class and each
+// closed one with its status. skipMarked leaves out a posting the owner already
+// judged with a mark, as the digest's Explore does.
+func (b *browsing) auditCandidates(rules []eval.DropRule, skipMarked bool) ([]eval.AuditCandidate, error) {
+	kept, err := b.view("all", "default", false)
+	if err != nil {
+		return nil, err
+	}
+	var cands []eval.AuditCandidate
+	for _, k := range kept {
+		if skipMarked && b.m[k.Job.Key].Mark != marks.None {
+			continue // judged by its mark already, as in the digest's Explore
+		}
+		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
+	}
+	for _, r := range b.snap.Records {
+		if skipMarked && b.m[r.Key].Mark != marks.None {
+			continue
+		}
+		if c, ok := closedOrDropped(r, rules); ok {
+			cands = append(cands, c)
+		}
+	}
+	return cands, nil
+}
+
+// withoutInherited is cands less the kept and dropped postings whose triage
+// reading was copied from another posting (eval.Inherited, the one owner, as
+// the label queue uses it). A label on a copy is no evidence about the model
+// that would have read it, so the weekly draw leaves copies out. A closed
+// posting stays: the engine closed it, not a reading. Only the draw applies
+// this; the pair planner's strata and the cluster study still stand over the
+// whole pool, copies included.
+func (b *browsing) withoutInherited(cands []eval.AuditCandidate) []eval.AuditCandidate {
+	inherited := map[posting.Key]bool{}
+	for _, r := range b.snap.Records {
+		if eval.Inherited(r) {
+			inherited[r.Key] = true
+		}
+	}
+	out := cands[:0:0]
+	for _, c := range cands {
+		if inherited[c.Key] && !c.Closed {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // closedOrDropped is r as an audit candidate when the engine dropped it (with
@@ -283,6 +418,7 @@ func (e *env) cmdAudit(args []string) error {
 	scored := fs.Int("scored", eval.AuditScored, "postings drawn across the score deciles")
 	dropped := fs.Int("dropped", eval.AuditDropped, "postings drawn across the drop classes")
 	closed := fs.Int("closed", eval.AuditClosed, "postings drawn across the closed statuses (dead, duplicate)")
+	cells := disagreeFlags(fs)
 	seed := fs.String("seed", "", "draw seed (default: this ISO week, so a batch stays the same all week)")
 	labels := fs.String("labels", "", "label directory (default: state dir; use the repo's eval/jd_triage to keep labels in git)")
 	list := fs.Bool("list", false, "print the draw (stratum, p_select, key) and ask nothing")
@@ -294,11 +430,11 @@ func (e *env) cmdAudit(args []string) error {
 	if *list && *asJSON {
 		return usagef("audit: --list and --json are two ways to print the draw; pick one")
 	}
-	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed}
+	q := cells.quotas(eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed})
 	if err := checkAuditDraw(q, *seed); err != nil {
 		return err
 	}
-	d, err := e.drawAudit(q, *seed, *labels)
+	d, err := e.drawAudit(q, *cells.teacher, *seed, *labels)
 	if *asJSON { // a failure is {"error"} on stdout, as every --json command reports it
 		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}}
 		if err == nil {
@@ -320,10 +456,14 @@ func (e *env) cmdAudit(args []string) error {
 		return err
 	}
 	if len(d.picks) == 0 {
-		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored or dropped pool")
+		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored, dropped, closed, engineering, disagreement or yes-neighbour pools")
 		return nil
 	}
-	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d scored + %d dropped + %d closed)\n", d.seed, len(d.picks), *scored, *dropped, *closed)
+	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d: %d scored + %d dropped + %d closed + %d engineering + %d teacher-wants + %d teacher-rejects + %d yes-neighbours)\n",
+		d.seed, len(d.picks), q.Scored+q.Dropped+q.Closed+q.Engineering+q.Cells(), *scored, *dropped, *closed, q.Engineering, q.Disagree, q.DisagreeRejects, q.Neighbour)
+	if random, all := d.plan.RandomShare(); q.Cells() > 0 && 3*random < all {
+		fmt.Fprintf(e.stdout, "note: %d of %d picks come from the random scored and dropped strata, under a third (closed picks do not count, and a random stratum may have been drawn short)\n", random, all)
+	}
 	if !*blind { // a stratum name says whether the model dropped the posting
 		for _, st := range d.plan.Strata {
 			fmt.Fprintf(e.stdout, "  %-34s pool %4d, drawn %d\n", st.Source, st.Pool, st.Taken)
@@ -376,13 +516,16 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	fs := e.newFlags("audit answer")
 	key := fs.String("key", "", "the posting's key")
 	verdict := fs.String("verdict", "", "yes, maybe, no or skip")
+	reason := fs.String("reason", "", "with --verdict maybe or no: the one factor that kept it from a yes ("+strings.Join(eval.WouldApplyReasons, ", ")+")")
 	source := fs.String("source", "", "the stratum the posting was drawn from (with --p-select)")
 	p := fs.Float64("p-select", 0, "the posting's inclusion probability in that draw (with --source)")
 	seed := fs.String("seed", "", "draw to look the stratum up in (default: this ISO week)")
 	scored := fs.Int("scored", eval.AuditScored, "scored quota of that draw")
 	dropped := fs.Int("dropped", eval.AuditDropped, "dropped quota of that draw")
 	closed := fs.Int("closed", eval.AuditClosed, "closed quota of that draw")
+	cells := disagreeFlags(fs)
 	labels := fs.String("labels", "", "label directory (default: state dir)")
+	shown := fs.Bool("shown", false, "answered from a surface row (a digest Explore pick, a Jobs row): take the stratum and p_select of the newest sampled impression, else record a manual label")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout")
 	if err := parse(fs, args); err != nil {
 		return err
@@ -394,30 +537,75 @@ func (e *env) cmdAuditAnswer(args []string) error {
 		return usagef("audit answer: --key is required and at most %d bytes", maxAuditKeyBytes)
 	case *verdict != eval.Skip && !slices.Contains(eval.WouldApplyOptions, *verdict):
 		return usagef("audit answer: --verdict %q must be one of %s or %s", *verdict, strings.Join(eval.WouldApplyOptions, ", "), eval.Skip)
+	case *reason != "" && !eval.ReasonAllowed(*verdict):
+		return usagef("audit answer: --reason goes with --verdict maybe or no (what kept it from a yes)")
+	case *reason != "" && !slices.Contains(eval.WouldApplyReasons, *reason):
+		return usagef("audit answer: --reason %q must be one of %s", *reason, strings.Join(eval.WouldApplyReasons, ", "))
 	case given["source"] != given["p-select"]:
 		return usagef("audit answer: --source and --p-select go together")
+	case *shown && (given["source"] || given["seed"]):
+		return usagef("audit answer: --shown takes the stratum from the impression log; leave out --source, --p-select and --seed")
 	}
-	q := eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed}
+	q := cells.quotas(eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed})
 	if err := checkAuditDraw(q, *seed); err != nil {
 		return err
 	}
-	reply, err := e.answerAudit(posting.Key(*key), *verdict, *source, *p, given["source"], *seed, q, *labels)
+	src, prob, explicit := *source, *p, given["source"]
+	if *shown {
+		var err error
+		if src, prob, err = e.shownSampling(posting.Key(*key)); err != nil {
+			return err
+		}
+		explicit = true
+	}
+	reply, err := e.answerAudit(posting.Key(*key), *verdict, *reason, src, prob, explicit, *seed, q, *cells.teacher, *labels)
 	return e.reply(*asJSON, reply, err, func() {
-		fmt.Fprintf(e.stdout, "answered %s: %s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
+		why := ""
+		if reply.Reason != "" {
+			why = ", reason " + reply.Reason
+		}
+		fmt.Fprintf(e.stdout, "answered %s: %s%s (stratum %s, p_select %s)\n", reply.Key, reply.Verdict, why, reply.Stratum, strconv.FormatFloat(reply.PSelect, 'g', 6, 64))
 	})
+}
+
+// shownSampling is the stratum and inclusion probability of an answer given
+// from a surface row (`audit answer --shown`): those of the posting's newest
+// impression that carried both (an Explore pick or an audit card, drawn with a
+// known probability), else eval.SourceManual with none. An impression log that
+// cannot be read is an error: guessing "manual" would drop a real stratum.
+func (e *env) shownSampling(k posting.Key) (source string, p float64, err error) {
+	shown, err := feedback.ReadImpressions(e.stateDir)
+	if err != nil {
+		return "", 0, fmt.Errorf("audit answer --shown: read impressions: %w", err)
+	}
+	best := -1
+	for i, im := range shown.Rows {
+		if im.Key != k || im.Source == "" || !(im.PSelect >= eval.MinInclusionProbability && im.PSelect <= 1) {
+			continue
+		}
+		if best < 0 || !im.At.Before(shown.Rows[best].At) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return eval.SourceManual, 0, nil
+	}
+	return shown.Rows[best].Source, shown.Rows[best].PSelect, nil
 }
 
 // auditAnswerJSON is what `audit answer --json` reports: the label written.
 type auditAnswerJSON struct {
 	Key     posting.Key `json:"key"`
 	Verdict string      `json:"verdict"`
+	Reason  string      `json:"reason,omitempty"`
 	Stratum string      `json:"stratum"`
 	PSelect float64     `json:"p_select"`
 }
 
-// answerAudit writes one would_apply label (see cmdAuditAnswer). explicit says
-// source and p came from the caller; otherwise they are the draw's.
-func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, labels string) (auditAnswerJSON, error) {
+// answerAudit writes one would_apply label (see cmdAuditAnswer), with its
+// reason when one is given. explicit says source and p came from the caller;
+// otherwise they are the draw's.
+func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, teacher, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
 	var find func(posting.Key) (ledger.Record, bool)
 	src, prob := source, p
@@ -437,7 +625,7 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 			return prefilterRecord(prefilterRows(e.loadPrefilterSample()), k)
 		}
 	} else {
-		d, err := e.drawAudit(q, seed, labels)
+		d, err := e.drawAudit(q, teacher, seed, labels)
 		if err != nil {
 			return auditAnswerJSON{}, err
 		}
@@ -455,6 +643,9 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the ledger", k)
 	}
 	answer := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: verdict}, Source: src, PSelect: prob}
+	if reason != "" {
+		answer.Labels[eval.WouldApplyReason] = reason
+	}
 	if err := answer.Validate(); err != nil {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %w", err)
 	}
@@ -474,5 +665,5 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 	if err != nil {
 		return auditAnswerJSON{}, err
 	}
-	return auditAnswerJSON{Key: k, Verdict: verdict, Stratum: src, PSelect: prob}, nil
+	return auditAnswerJSON{Key: k, Verdict: verdict, Reason: reason, Stratum: src, PSelect: prob}, nil
 }

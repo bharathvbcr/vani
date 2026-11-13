@@ -67,6 +67,47 @@ final class AuditTests: XCTestCase {
                                  AuditPick(key: "gh:acme:2", stratum: "dropped:title:role_fit", pSelect: 0.5)])
     }
 
+    func testDisagreementPicksAreAskedForOnlyWhenWantedAndBounded() throws {
+        let f = try fakeAuditVani(self, draw: drawReply)
+        _ = try client(f).draw(disagree: 5)
+        _ = try client(f).draw(disagree: 0)
+        XCTAssertEqual(f.calls, ["audit --json --blind --disagree=5", "audit --json --blind"])
+        for bad in [-1, AuditClient.maxDisagree + 1] {
+            XCTAssertThrowsError(try client(f).draw(disagree: bad))
+        }
+        XCTAssertEqual(f.calls.count, 2, "an out-of-range quota must not reach vani")
+    }
+
+    func testOverlayPicksAreSentOnlyWhenWantedAndBounded() throws {
+        let f = try fakeAuditVani(self, draw: drawReply)
+        _ = try client(f).draw(AuditOverlays(disagree: 3, neighbours: 4, engineering: 10))
+        _ = try client(f).draw(AuditOverlays(neighbours: 2))
+        _ = try client(f).draw(AuditOverlays(engineering: AuditClient.maxEngineering))
+        _ = try client(f).draw(AuditOverlays())
+        XCTAssertEqual(f.calls, ["audit --json --blind --disagree=3 --yes-neighbours=4 --engineering=10",
+                                 "audit --json --blind --yes-neighbours=2",
+                                 "audit --json --blind --engineering=\(AuditClient.maxEngineering)",
+                                 "audit --json --blind"])
+        for bad in [AuditOverlays(neighbours: -1), AuditOverlays(neighbours: AuditClient.maxNeighbours + 1),
+                    AuditOverlays(disagree: 20, neighbours: 11), // the two share vani's cap
+                    AuditOverlays(engineering: -1), AuditOverlays(engineering: AuditClient.maxEngineering + 1)] {
+            XCTAssertThrowsError(try client(f).draw(bad), "\(bad)")
+        }
+        XCTAssertEqual(f.calls.count, 4, "an out-of-range quota must not reach vani")
+    }
+
+    func testAReasonGoesOnlyWithMaybeOrNo() throws {
+        let pick = AuditPick(key: "gh:acme:2", stratum: "decile:3", pSelect: 0.5)
+        XCTAssertEqual(try AuditClient.answerArguments(pick, .no, reason: .employerType).last, "--reason=employer_type")
+        XCTAssertEqual(try AuditClient.answerArguments(pick, .maybe, reason: .level).last, "--reason=level")
+        XCTAssertFalse(try AuditClient.answerArguments(pick, .no, reason: nil).contains { $0.hasPrefix("--reason") })
+        XCTAssertThrowsError(try AuditClient.answerArguments(pick, .yes, reason: .domain))
+        XCTAssertThrowsError(try AuditClient.answerArguments(pick, .skip, reason: .other))
+        // The values are vani's (eval.WouldApplyReasons), in its order, with shortcuts 1 to 5.
+        XCTAssertEqual(AuditReason.allCases.map(\.rawValue), ["level", "domain", "location", "employer_type", "other"])
+        XCTAssertEqual(AuditReason.allCases.map(\.shortcut), ["1", "2", "3", "4", "5"])
+    }
+
     func testAnswerWritesThroughVaniAuditAnswerWithTheDrawnNumbers() throws {
         let reply = #"{"key":"gh:acme:2","verdict":"maybe","stratum":"dropped:title:role_fit","p_select":0.5}"#
         let f = try fakeAuditVani(self, draw: drawReply, answer: reply)
@@ -99,6 +140,38 @@ final class AuditTests: XCTestCase {
         var dash = good
         dash.key = "--verdict=yes"
         XCTAssertEqual(try AuditClient.answerArguments(dash, .no)[3], "--key=--verdict=yes")
+    }
+
+    func testShownAnswerArgumentsAreExactAndCarryNoSampleFlags() throws {
+        XCTAssertEqual(try AuditClient.shownAnswerArguments(key: "gh:acme:1", verdict: .maybe),
+                       ["audit", "answer", "--json", "--shown", "--key=gh:acme:1", "--verdict=maybe"])
+        // A key that looks like a flag stays one `=` argument.
+        let dash = try AuditClient.shownAnswerArguments(key: "--verdict=yes", verdict: .no)
+        XCTAssertEqual(dash[3...], ["--shown", "--key=--verdict=yes", "--verdict=no"])
+        for a in dash { XCTAssertFalse(a.hasPrefix("--source") || a.hasPrefix("--p-select") || a.hasPrefix("--seed"), a) }
+    }
+
+    func testShownAnswerRefusesUnusableKeys() {
+        for key in ["", "k\0x", String(repeating: "k", count: 513)] {
+            XCTAssertThrowsError(try AuditClient.shownAnswerArguments(key: key, verdict: .yes), "\(key.count)")
+        }
+        XCTAssertNoThrow(try AuditClient.shownAnswerArguments(key: String(repeating: "k", count: 512), verdict: .yes))
+    }
+
+    func testAnswerShownCallsVaniAndDecodesTheReply() throws {
+        let reply = #"{"key":"gh:acme:1","verdict":"yes","stratum":"manual","p_select":1}"#
+        let f = try fakeAuditVani(self, draw: drawReply, answer: reply)
+        let a = try client(f).answerShown(key: "gh:acme:1", .yes)
+        XCTAssertEqual(f.calls, ["audit answer --json --shown --key=gh:acme:1 --verdict=yes"])
+        XCTAssertEqual(a, AuditAnswered(key: "gh:acme:1", verdict: "yes", stratum: "manual", pSelect: 1))
+    }
+
+    func testShownSecondAnswerIsRecognisedAsAlreadyAnswered() throws {
+        let f = try fakeAuditVani(self, draw: drawReply, answer: #"{"error":"audit answer: gh:acme:1 is already answered"}"#, answerStatus: 1)
+        XCTAssertThrowsError(try client(f).answerShown(key: "gh:acme:1", .no)) {
+            XCTAssertTrue(AuditClient.isAlreadyAnswered($0), "\($0)")
+        }
+        XCTAssertFalse(AuditClient.isAlreadyAnswered(BankError("vani exited 1 without a reply")))
     }
 
     func testADrawWithABadPickOrTooManyPicksIsRefusedWhole() throws {

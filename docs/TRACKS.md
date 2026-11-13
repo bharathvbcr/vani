@@ -190,3 +190,8 @@ watched board waits, still dropped, until the board's next listing shows it (a c
 nothing), and then returns to live with its title reading forgotten; the next run triages it with
 the models. An inbox or page posting returns at once. A posting the current rules still drop
 stays dropped. `vani retriage --policy-drops` does the same for title and model drops together.
+
+A model drop can go stale the same way: the rule that dropped it was removed or narrowed, or its
+threshold raised. Nothing re-examines drops when the rules change on their own; `vani retriage
+--policy-drops --dry-run` lists what today's rules would let back, counted by drop class
+(`classes` in its JSON), and without `--dry-run` marks them as pending reopens.

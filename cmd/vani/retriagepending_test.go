@@ -44,6 +44,7 @@ func TestRetriageMarksWatchedDropsPending(t *testing.T) {
 		"waiting for their board to list them again: 2",
 		"title drops, back to live for the backends to read: 1",
 		"model drops, back on their stored reading (no model asked): 1",
+		"by drop class:",
 	} {
 		if !strings.Contains(o, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, o)
@@ -58,6 +59,18 @@ func TestRetriageMarksWatchedDropsPending(t *testing.T) {
 	decodeOne(t, o, &rt)
 	if rt.Returned != 2 || rt.Deferred == nil || *rt.Deferred != 2 || rt.Reopened == nil || *rt.Reopened != 0 {
 		t.Fatalf("reply %s", o)
+	}
+	// The drop classes of what was let back, as the audit names them, account
+	// for every returned posting (the stale-drops report's breakdown).
+	classed := 0
+	for c, n := range rt.Classes {
+		if c == "" {
+			t.Errorf("a returned posting has no drop class: %s", o)
+		}
+		classed += n
+	}
+	if classed != rt.Returned || !strings.Contains(o, `"classes"`) {
+		t.Errorf("classes %v cover %d of %d returned", rt.Classes, classed, rt.Returned)
 	}
 	s := loadPending(t, stateDir)
 	if s.Len() != 2 || s.Items[model].Class != "model" || s.Items[title].Class != "title" {

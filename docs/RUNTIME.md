@@ -141,6 +141,7 @@ nothing and needs no file.
 | `vani watchlist discover` (boards to consider; `--profile` searches your `title_signals.include` and most-listed eligible KB skills) | you | `--profile` reads the eligible bank's stacks only | none; asks freehire.me keyless, which must be in `allowed_hosts` (`--allow-host` adds it); the config is otherwise written only by `--profile --add N` (boards, and with `--allow-board-hosts` their hosts) |
 | `vani daemon` (scheduled runs) | launchd, from `vani launchd plist` | `vani`'s own Keychain read at start (the plist pins only `VANI_CONFIG` and `VANI_STATE_DIR`) | none |
 | `vani doctor` (the pipeline doctor; report only) | you | not used | environment only; a real run needs `--budget-usd` covering both requests' worst case, `--dry-run --show` prints them first |
+| `vani teacher` (the second reader, and `--task would_apply_pair`, the pairwise auditor; `teacher report`, `cap` and `freeze` read or set files and ask nothing) | you | not used | environment only; a real run needs `--budget-usd`, and the auditor also its own cap file (below) |
 | `vani` in a terminal | you | environment, else Keychain | environment only |
 | `vani` in an agent shell | an agent | none with `VANI_NO_KEYCHAIN=1` | environment only |
 
@@ -688,6 +689,16 @@ sent, is written into the report as such and the command exits 1; so does a run 
 run record. The report is `<state dir>/doctor/<UTC time>.md` and `.json`. Nothing in the ledger, the
 rules or the watchlist is changed.
 
+When the drops part ran, each of its verdicts is appended to `<state dir>/silver_doctor.jsonl`: key,
+stratum, p_select, verdict, cause, model, run id (the report's stamp), the sha256 of the drops
+system prompt and of the posting text the doctor saw, never the model's free-text why. It is
+idempotent on (run id, key), never written by a dry run, and holds no verdict from a work
+authorization, work mode or owner-exclusion stratum. It is silver: no row is a label, a mark or a
+known outcome, and neither the rescue rule nor the silver prior reads it. `vani relevance` compares
+it with the owner's would_apply answers per prompt, and says "insufficient" below 10 yes and 30 no
+owner answers on postings the doctor judged. A log that cannot be appended to fails the command
+after the report is written.
+
 With `--json` the reply is the plan (runs read, boards signalled, the drop sample's `seed`, each
 request's size, `worst_case_usd`), `sent` (false when a refusal came before any request, so nothing
 was spent), and for a real run the report itself as `result` and the `.md` path as `report`. A
@@ -705,6 +716,54 @@ the patterns and fixes, and what the logs held back. A refusal, a partial review
 request was sent, and a stop each read differently. The reply's shape is pinned by
 `macos/Tests/VaniApplyKitTests/Fixtures/doctor/reply.json`, which
 `go test ./cmd/vani -run TestDoctorReplyGolden -update` writes and the app's tests decode.
+
+## The pairwise would_apply auditor (`vani teacher --task would_apply_pair`)
+
+A second opinion on the owner's taste, kept apart from it. The role_fit question says "fit" a few
+percent of the time, so a pointwise model verdict has no spread to compare with the owner's labels;
+a forced comparison inside one stratum has a 50% base rate by construction. `vani teacher --task
+would_apply_pair` shows the model two postings of one audit stratum (a score decile or a drop class,
+`eval.AuditStrata`) and asks which the owner would rather apply to: `a`, `b`, `neither`, or the
+backend's own abstention. Its answers are **silver labels**: they go to `<state>/silver_pairs.jsonl`
+and nowhere else. Nothing writes `labels.jsonl`, changes a ranking or drops a posting.
+
+- **What is sent** (`internal/decide/wouldapplypair`): the fixed pair prompt, the target summary, the
+  frozen exemplar titles (job titles and companies the owner labelled yes and no; maybes are not
+  in it) and each posting's title, location and description, all inside the backend's
+  untrusted-content frame. No name, contact detail, work authorization, mark, note or vault text.
+  Each posting has its own body budget, so a huge A cannot cut B off.
+- **The freeze** (`vani teacher freeze`, once): writes `<state>/silver_exemplars.json` from the
+  labels (at most 30 of each class, a hash-ordered subset; at least 3 of each; closed strata left out),
+  with the sha256 of its content. A second freeze needs `--replace` and keeps the old file beside the
+  new one. The freeze time is the line the evaluation rests on: only labels made **after** it, of postings
+  that are not exemplars and not the same job (title and company) as one, are the evaluation set.
+  Every pair row records the exemplar sha256, so an answer is always tied to the lists the model read.
+- **The pairs**: within a stratum, deterministic for `--seed` (default the ISO week), `--pairs N` at a
+  time (at most 500), resumable. Closed strata, work_mode drops, owner-exclusion drops and every drop
+  class about work authorization (the doctor's own test, `sponsorshipSlot`) are not drawn, labels from
+  those strata are not exemplars, and neither are the exemplar postings. The live drop classes
+  on 2026-11-13 held none of them, so nothing was left out on that account. Each gold label made after the freeze is compared with three
+  stratum-mates chosen by a hash of the seed and keys, never by the label. The A/B order is a hash of
+  the pair; `--both-orders` asks both. Rows hold keys, order, stratum, text and render hashes, model,
+  fixture, prompt and exemplar hashes, the answer and the time, and no text.
+- **Spend**: a real run needs `--budget-usd`, and **its own daily cap**, `state/budget/wouldapply-cap.json`,
+  which refuses until the owner sets it (`vani teacher cap --usd N`; unset, zero, unreadable or spent all
+  mean no spend, checked before any provider or key is touched). The run's limit is the least of
+  `--budget-usd`, the cap's headroom and the llm daily ceiling's, each question is admitted at its worst
+  case as `vani teacher` does, and each question's cost (the llm ledger's settled spend plus kept
+  reservations, so it only grows) is written to the cap file as it is paid. The cap is read again once the
+  run holds the log's lock. Another spender's cost inside the same window counts against the auditor.
+  `--dry-run` prints the pair count, the worst case and one rendered question with the postings' text
+  elided, and writes nothing; with no frozen set it says so and bounds the cost from the largest question
+  the context cap allows.
+- **The score and the verdict** (`vani teacher report`): a posting's score is its pick rate over its
+  pair answers shrunk toward the pool's own rate by two pseudo-games (neither counts as not picked for
+  both; an abstention counts for nothing); it is stratum-relative. Bradley-Terry was not used: the
+  comparison graph is too sparse to identify it. The report gives the AUC of that score, yes against no
+  (maybes out), on the post-freeze gold labels with a 95% bootstrap interval, beside the title part on
+  the same postings, and the share of answers that said A and, for pairs asked both ways, how often the
+  two orders agreed. At 10 yes and 30 no scored postings it says go when the lower bound is above 0.5
+  and the point AUC is above the title part's. Below those counts it says "insufficient" and shows no AUC.
 
 ## Runtime state, cooldowns and locks
 
@@ -724,7 +783,7 @@ State directory files and locks created during operations:
 | `<state>/suggest/outcomes.jsonl` | Autocomplete and fill suggestion outcomes logged by the browser extension under flock. |
 | `<state>/export/exported.json` | Record of keys written by `jobs export`, tracking at most 50,000 keys across runs under its own flock. |
 | `<state>/marks/stages.jsonl` | Post-apply stage history tracking (`screening`, `interview`, `offer`, `rejected`, `withdrawn`, `unstage`), append-only. |
-| `<state>/reopen/pending.json` | Pending reopens (`internal/pipeline` `PendingReopens`): dropped postings `vani retriage --title-drops` or `--policy-drops` let back on a watched board, kept dropped until the board's next full listing shows them, then reopened, judged again on the listed text. Its board's clean full listings (a short listing, or one that skipped unreadable rows, counts nothing) must leave it out for 14 days of read time to clear it: each such read adds the time since the entry's last counted read, at most 72 hours (so a board that failed for a week, or a clock that jumped, adds three days, not seven), and nothing while the board's aging is frozen for events ahead of the clock or the clock is behind the last count. An exclusion drop cleared this way is remembered (`gone`) and the exclusion pass does not mark it again until a full listing shows it, which judges it at once; it is counted in the run's pending-reopens line. Nothing is cleared for age on load (a clock 28 or more days ahead used to wipe the set, ledger-wide); entries of a board no longer on the watchlist are cleared, clock-free. The file gained `out`, `last` and `gone` keys without a version bump: an older installed `vani` refuses it (unknown fields) until upgraded. At most 40,000 entries (at most 30,000 of them exclusion marks, so a loosened broad rule cannot make title and model marks over-cap) and 16 MiB; written atomically by the retriage command and the run's listing, both under the ledger lock. An unreadable file is never taken for an empty one or overwritten: the run applies nothing and says so, and `vani status` prints the count (or "unknown"). Kept beside the ledger rather than as ledger annotations so marking a drop does not move its last event, which dates the drop the digest footer counts. |
+| `<state>/reopen/pending.json` | Pending reopens (`internal/pipeline` `PendingReopens`): dropped postings `vani retriage --title-drops` or `--policy-drops` let back on a watched board, and model drops `--silver-drops --rescue` takes there (class `silver`), kept dropped until the board's next full listing shows them, then reopened, judged again on the listed text (a silver one goes to unsure when the exclusions and title rules let the listed text through). Its board's clean full listings (a short listing, or one that skipped unreadable rows, counts nothing) must leave it out for 14 days of read time to clear it: each such read adds the time since the entry's last counted read, at most 72 hours (so a board that failed for a week, or a clock that jumped, adds three days, not seven), and nothing while the board's aging is frozen for events ahead of the clock or the clock is behind the last count. An exclusion drop cleared this way is remembered (`gone`) and the exclusion pass does not mark it again until a full listing shows it, which judges it at once; it is counted in the run's pending-reopens line. Nothing is cleared for age on load (a clock 28 or more days ahead used to wipe the set, ledger-wide); entries of a board no longer on the watchlist are cleared, clock-free. The file gained `out`, `last` and `gone` keys without a version bump: an older installed `vani` refuses it (unknown fields) until upgraded. At most 40,000 entries (at most 30,000 of them exclusion marks, so a loosened broad rule cannot make title and model marks over-cap; silver marks count toward the 40,000 only, at most 50 a day, and a silver one that expires is not remembered in `gone`, so a later `--rescue` may mark it again) and 16 MiB; written atomically by the retriage command and the run's listing, both under the ledger lock. An unreadable file is never taken for an empty one or overwritten: the run applies nothing and says so, and `vani status` prints the count (or "unknown"). Kept beside the ledger rather than as ledger annotations so marking a drop does not move its last event, which dates the drop the digest footer counts. |
 | `<state>/audit/prefilter-sample.json` | Prefilter sample (`internal/pipeline` `PrefilterSample`): per ISO week, 50 of the listing-time drops (rows a board's listing drops before the ledger), chosen by hash of week and row, 8 weeks kept, no description. The weekly `vani audit` draws them as `dropped:prefilter:<rule>`. Not the ledger. |
 | `<state>/retriage/readings.jsonl` | Manual triage readings from `vani jobs retriage` (and `--batch`), append-only, written without holding the ledger lock. |
 | `<state>/resume-build.lock` | Process try-lock serializing paid model builds and renders per state directory. |

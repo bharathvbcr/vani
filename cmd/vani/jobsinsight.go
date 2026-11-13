@@ -583,10 +583,16 @@ func (in *insight) warn(w string) {
 // title names and those only the rest of it names (a term in both counts once,
 // as a title term), with the company's blurb terms left out.
 func (in *insight) targetHits(r ledger.Record) (title, body int) {
+	return in.hitsAgainst(in.target, r)
+}
+
+// hitsAgainst is targetHits against target in place of the config's terms
+// (the summary what-if's draft).
+func (in *insight) hitsAgainst(target map[string]bool, r ledger.Record) (title, body int) {
 	boiler := in.boiler[companyKey(r.Posting.Company)]
 	inTitle := map[string]bool{}
 	for _, h := range jobinsight.Without(in.titleHits(r.Posting.Title), boiler) {
-		if in.target[h.Term] {
+		if target[h.Term] {
 			inTitle[h.Term] = true
 		}
 	}
@@ -595,7 +601,7 @@ func (in *insight) targetHits(r ledger.Record) (title, body int) {
 		whole = in.hitsOf(r)
 	}
 	for _, h := range jobinsight.Without(whole, boiler) {
-		if in.target[h.Term] && !inTitle[h.Term] {
+		if target[h.Term] && !inTitle[h.Term] {
 			body++
 		}
 	}

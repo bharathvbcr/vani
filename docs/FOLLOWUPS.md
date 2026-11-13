@@ -943,6 +943,14 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   `/opt/homebrew/bin`; no `~/Library/Caches/qd/` (the default socket dir); no launchd agent; no `qd`
   process. Nothing reads Lappi until an R2 cap is ruled and the four families are pooled, trained,
   calibrated and served.
+  **Superseded 2026-11-13 (read-only check):** the four per-slot `career.jd_*` families are still
+  zero-train in `v6-allocation.json`, but Lappi v2's job model is now its own lane in Lappi-decision
+  ("Lappi V2 job model training plan"). J3 is done (`HANDOFF/job-model-j3-2026-11-12.md`, ledger
+  `job-model-j3-2026-11-12.jsonl`, code e16d29d7): a pool of 4,703 train lines and a decidability
+  report (jd sponsorship classes decidable; role_fit strong_fit undecidable everywhere). J4 waits on
+  owner questions q1 (unredacted text for head arms, default no) and q2 (train the single-reader
+  pools, default not trained). Still no `qd` binary, socket or process on this Mac. The Vani side of
+  the swap is built; see RANKING_PLAN row 6.
 - **d1-3B against your own labels.** `.state/config.json` runs d1 (`decide.local.server`) as the
   shadow. The ledger holds d1 shadow readings for 382 postings that d1-ultra read (all four
   slots answered by both). The verdict is `vani label` then `vani eval`, and it needs at least 30

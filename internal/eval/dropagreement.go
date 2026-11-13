@@ -78,7 +78,10 @@ func BuildDropAgreement(labels map[posting.Key]Entry, recs []ledger.Record, rule
 	}
 	wantedLabel := func(k posting.Key) (judged, hit bool) {
 		e, ok := labels[k]
-		if !ok {
+		if !ok || SelectedOnReading(e.Source) {
+			// A disagreement-cell label was drawn because a model's reading
+			// disagreed with the engine: counted here it would inflate the very
+			// disagreements this row measures.
 			return false, false
 		}
 		v, ok := e.Labels[WouldApply]

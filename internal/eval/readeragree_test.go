@@ -116,6 +116,46 @@ func TestReaderAgreementCountsEachReaderAgainstTheOwner(t *testing.T) {
 	}
 }
 
+func TestReaderAgreementCrossesMismatchSeniorityWithTheLevel(t *testing.T) {
+	labels := map[posting.Key]Entry{
+		"gh:a:1": judged("yes", "decile:9"),
+		"gh:a:2": judged("maybe", "decile:5"),
+		"gh:a:3": judged("no", "decile:2"),
+		"gh:a:4": judged("no", "decile:1"),
+	}
+	ann := func(roleFit, seniority string) map[string]string {
+		a := map[string]string{"triage.role_fit": roleFit, "triage.role_fit.reading": "answered", "triage.role_fit.backend": "d1-ultra"}
+		if seniority != "" {
+			a["triage.seniority"], a["triage.seniority.reading"], a["triage.seniority.backend"] = seniority, "answered", "d1-ultra"
+		}
+		return a
+	}
+	recs := []ledger.Record{
+		{Key: "gh:a:1", Annotations: ann("mismatch_seniority", "senior")},
+		{Key: "gh:a:2", Annotations: ann("mismatch_seniority", "staff_plus")},
+		{Key: "gh:a:3", Annotations: ann("mismatch_seniority", "")}, // no seniority reading
+		{Key: "gh:a:4", Annotations: ann("mismatch_domain", "senior")},
+	}
+	a := BuildReaderAgreement(labels, recs, nil, TeacherProxyMissing, Names{})
+	r := a.Readers[0]
+	want := map[string]ReaderCell{
+		"senior":     {Value: "senior", Yes: 1},
+		"staff_plus": {Value: "staff_plus", Maybe: 1},
+		NoReading:    {Value: NoReading, No: 1},
+	}
+	if len(r.SeniorityOfMismatch) != len(want) {
+		t.Fatalf("cross table: %+v", r.SeniorityOfMismatch)
+	}
+	for _, c := range r.SeniorityOfMismatch {
+		if c != want[c.Value] {
+			t.Errorf("%s: %+v, want %+v", c.Value, c, want[c.Value])
+		}
+	}
+	if md := a.Markdown(); !strings.Contains(md, "read mismatch_seniority, by its seniority reading") {
+		t.Errorf("markdown lacks the cross table:\n%s", md)
+	}
+}
+
 func cell(r ReaderRow, slot, value string) ReaderCell {
 	for _, s := range r.Slots {
 		if s.Slot != slot {

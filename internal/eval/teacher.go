@@ -467,9 +467,16 @@ func LockFileFor(path string) string {
 // at most wait (and until ctx ends), so two runs never read the same store and
 // ask twice.
 func LockTeacher(ctx context.Context, path string, wait time.Duration) (unlock func(), err error) {
-	f, _, err := atomicfile.OpenAppend(LockFileFor(path), 0)
+	return lockBeside(ctx, LockFileFor(path), "teacher", ErrTeacherBusy, wait)
+}
+
+// lockBeside takes the exclusive lock file at lockPath, waiting at most wait
+// (and until ctx ends); what prefixes its errors and busy is the error for a
+// lock another holder keeps. It is the one lock loop every readings log uses.
+func lockBeside(ctx context.Context, lockPath, what string, busy error, wait time.Duration) (unlock func(), err error) {
+	f, _, err := atomicfile.OpenAppend(lockPath, 0)
 	if err != nil {
-		return nil, fmt.Errorf("teacher: open lock: %w", err)
+		return nil, fmt.Errorf("%s: open lock: %w", what, err)
 	}
 	deadline := time.Now().Add(wait)
 	for {
@@ -479,14 +486,14 @@ func LockTeacher(ctx context.Context, path string, wait time.Duration) (unlock f
 		}
 		if !errors.Is(err, filelock.ErrWouldBlock) {
 			_ = f.Close()
-			return nil, fmt.Errorf("teacher: lock: %w", err)
+			return nil, fmt.Errorf("%s: lock: %w", what, err)
 		}
 		if ctx.Err() != nil || !time.Now().Before(deadline) {
 			_ = f.Close()
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, ErrTeacherBusy
+			return nil, busy
 		}
 		select {
 		case <-ctx.Done():
@@ -704,13 +711,19 @@ type teacherState struct {
 }
 
 func (s *teacherState) admit(ctx context.Context, r *TeacherRun, worst int64) error {
+	return s.admitWithin(ctx, r.Spent, r.LimitNano, worst)
+}
+
+// admitWithin is admit for any run: limit is the most the run may add to the
+// metered total spentNow reads.
+func (s *teacherState) admitWithin(ctx context.Context, spentNow func(context.Context) (int64, error), limit, worst int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	spent, err := r.Spent(ctx)
+	spent, err := spentNow(ctx)
 	if err != nil {
 		return fmt.Errorf("eval: reading the spend: %w", err)
 	}
-	if spent-s.base+s.inflight+worst > r.LimitNano {
+	if spent-s.base+s.inflight+worst > limit {
 		return errTeacherLimit
 	}
 	s.inflight += worst

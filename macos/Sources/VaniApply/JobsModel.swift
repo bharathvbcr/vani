@@ -419,6 +419,36 @@ final class JobsModel {
         }
     }
 
+    /// What the "Would you apply?" control shows for a posting this session: its recorded verdict,
+    /// or that it was answered earlier (vani refused a second answer; a notice, not an error).
+    enum WouldApplyState: Equatable {
+        case answered(AuditVerdict)
+        case alreadyAnswered
+    }
+
+    private(set) var wouldApply: [String: WouldApplyState] = [:]
+    /// Keys whose answer is being written, so a double tap sends one.
+    private(set) var wouldApplyInFlight: Set<String> = []
+
+    /// Record a one-tap verdict through `vani audit answer --shown`. A failure other than
+    /// "already answered" goes to the same alert as a failed mark.
+    func answerWouldApply(_ key: String, _ verdict: AuditVerdict) async {
+        guard wouldApply[key] == nil, wouldApplyInFlight.insert(key).inserted else { return }
+        defer { wouldApplyInFlight.remove(key) }
+        let c = AuditClient(jobs: client())
+        let result = await BlockingWork.run { try c.answerShown(key: key, verdict) }
+        switch result {
+        case .success:
+            wouldApply[key] = .answered(verdict)
+        case let .failure(err):
+            if AuditClient.isAlreadyAnswered(err) {
+                wouldApply[key] = .alreadyAnswered
+            } else {
+                actionError = String(describing: err)
+            }
+        }
+    }
+
     /// Set the stage of an applied job, or with nil set it back to plain applied. The job stays Applied, so
     /// it stays in its view and selection does not move.
     func setStage(_ key: String, _ stage: JobStage?) async {

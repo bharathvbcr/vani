@@ -87,7 +87,16 @@ and work while a run holds the ledger.
   for agents: run `vani --json jobs list|stats|gaps|show` instead, which reply identically.
 - `vani labels` prints the label vocabularies (fit, status, category, triage).
 - `vani watchlist list` lists the boards. `vani prefilter`, `vani eval` and `vani relevance`
-  report on the filter and the label set.
+  report on the filter and the label set. `vani relevance --what-if-summary FILE` measures a
+  draft target summary locally and writes nothing. Its yes-yield table is raw counts per audit
+  stratum and disagreement cell, never a population estimate.
+- `vani audit --list --disagree N` shows a draw with N picks from the "teacher wants" disagreement
+  cell (the teacher's stored role_fit against the engine); `--disagree-rejects N` adds the
+  "teacher rejects" cell, off by default. It needs `teacher_readings.jsonl`, and those labels stay
+  out of every estimate. `--yes-neighbours N` draws from the 50 unlabelled postings nearest the
+  owner's yes answers (refused unless `vani relevance`'s taste column passes); `--engineering N`
+  draws at random from engineering-titled postings. Both default to 0 and leave the random draw
+  as it was. The quotas are the owner's call; do not answer for the owner.
 - `vani version` prints the build and `vani config check` validates the config.
 - `vani track list|show`, `vani lca lookup`, `vani employer lookup`, `vani kbmatch status`
   and `vani semantic status` print smaller reports.
@@ -147,6 +156,14 @@ and calls no decision backend.
 - `vani digest` writes the digest. `vani daemon` and `vani launchd plist` run and install the
   scheduler.
 - Maintenance commands: `vani retriage`, `vani rescore`, `vani migrate`.
+- `vani retriage --policy-drops --dry-run [--json]` is a no-spend report of the dropped postings
+  today's rules would let back, with `classes` counting them by drop class. Running it without
+  `--dry-run` marks them; that is the owner's call.
+- `vani retriage --silver-drops [--json]` is the read-only report of model drops the would_apply
+  auditor keeps picking, with the rule's precision on gold. `--rescue` takes them within a daily
+  cap, and only while `vani teacher report` says go: a watched board's drop waits for the board's
+  next listing, then goes to `unsure`. It is the owner's call; do not run `--rescue` without the
+  owner's go-ahead.
 
 **Spend from the daily LLM budget.** Each of these sends posting text to a provider; ask
 before running one.
@@ -155,7 +172,16 @@ before running one.
 - `vani jobs resume build KEY`
 - `vani reasons draft`
 - `vani kbmatch run`
-- `vani teacher`
+- `vani teacher`. `vani teacher --task would_apply_pair` is the pairwise would-apply auditor: it
+  asks which of two postings of one audit stratum the owner would rather apply to, given the
+  owner's frozen labelled titles, and keeps the answers as silver labels in
+  `<state>/silver_pairs.jsonl`, never in the owner's labels. A real run needs `--budget-usd N`
+  and the auditor's own daily cap (`vani teacher cap --usd N`), which is unset, and so spends
+  nothing, until the owner sets it; it also needs the frozen exemplar set (`vani teacher
+  freeze`). Never set a cap or freeze for the owner. `--pairs N` bounds the run (default 50, at
+  most 500), `--both-orders` asks each pair twice, and `--of`, `--sample`, `--max`, `--keys`,
+  `--draw-out` and `--with-readings-of` are refused for it. `--dry-run` prints the pair count,
+  the worst-case cost and one question with the postings' text elided, and writes nothing.
 - `vani auditor calibrate` (it also needs `--budget-usd`, and stops at the auditor's own
   $15 daily cap). It refuses while the text it would send holds identifying terms, or the
   owner's identifying-words list is missing; its output gives counts, never the terms. Do not
@@ -167,7 +193,9 @@ before running one.
 - `vani doctor` asks Opus whether boards that read nothing are failing silently and whether a
   random sample of dropped postings were dropped for the right reason (no drop about
   sponsorship is sampled). It only reports, never changes a posting, and writes
-  `<state>/doctor/<UTC>.md` and `.json`. Its key comes from the environment only. A run needs
+  `<state>/doctor/<UTC>.md` and `.json`, and appends each drop verdict (no free text) to
+  `<state>/silver_doctor.jsonl`, a silver log that only `vani relevance` reads, against the
+  owner's answers; no verdict is a label. Its key comes from the environment only. A run needs
   `--budget-usd N` covering its worst case (`--dry-run --show` prints both requests and that
   cost); it exits 1 when a part failed or judged fewer boards or postings than it was sent.
   `vani --json doctor --last` reads the newest report and spends nothing.
@@ -175,12 +203,25 @@ before running one.
 `jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher`, `doctor` and `auditor calibrate`
 take `--dry-run`, which prices the work and asks nothing.
 
+`vani teacher report` reads, and spends nothing: the auditor's AUC on the owner's gold labels made
+after the freeze, beside the title part's on the same postings. Under 10 yes and 30 no scored
+postings it says "insufficient" and shows no AUC, which is not a verdict. `vani teacher cap` shows
+or sets the auditor's daily cap and `vani teacher freeze` writes the exemplar set; both are the
+owner's calls.
+
 **Owner tools.** Not for unattended use:
 
 - `vani label` and `vani audit` collect the owner's labels.
 - `vani rankfit` and `vani export heldout` fit and export from those labels.
+  `vani rankfit --spare-seniority` writes the owner's seniority relaxation to the rank weights file.
+  `vani rankfit --part weights --silver-prior` pretrains the weight fit on the auditor's answers;
+  the gold gate still decides.
 - `vani kb sync` copies the knowledge base into DevPrism.
 - `vani bench local` benchmarks local models.
+- `vani export pooled-vectors` and `vani strata compare` are an offline clustering experiment
+  (docs/CLUSTER_STUDY.md): they read state and write only under the `--out` directory, which must
+  not be the state dir. `strata compare` opens the ledger as `vani audit` does, which can save the
+  read-model checkpoint, so point `VANI_STATE_DIR` at a copy for a read-only run.
 - `vani semantic warm` embeds postings.
 - `vani answers similar` compares form-question wordings.
 - `vani jobs export`, `vani jobs ingest` and `vani jobs resume ...` (`render`, `show`, `use`,

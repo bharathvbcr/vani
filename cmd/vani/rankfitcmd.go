@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,12 +42,24 @@ func (e *env) cmdRankfit(args []string) error {
 	holdout := fs.Int("holdout", rankfit.DefaultHoldoutPct, "percent of audit judgments held out to evaluate the fit (1-90)")
 	maxPairs := fs.Int("max-pairs", rankfit.DefaultMaxPairs, "training pairs above which they are sampled")
 	dry := fs.Bool("dry-run", false, "print the label counts and what would run; fit and write nothing")
+	silverPrior := fs.Bool("silver-prior", false, "with the weight fit: pull it toward shares fitted to the would_apply auditor's answers instead of the hand weights; held out are only owner judgments made after the exemplar freeze, and the gold gate decides as before")
+	spare := fs.String("spare-seniority", "", "set the seniority readings (comma list, e.g. mid,senior) at which a mismatch_seniority role_fit is not a mismatch, in the weights file, and fit nothing; \"none\" clears it")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the counts, what ran or would, and the fit")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
+	if *spare != "" {
+		path := *out
+		if path == "" {
+			path = filepath.Join(e.stateDir, "rank", "weights.json")
+		}
+		return e.rankfitSpareSeniority(path, *spare, *dry, *asJSON)
+	}
 	if !slices.Contains(rankfitParts, *part) {
 		return usagef("rankfit: --part must be one of %s", strings.Join(rankfitParts, ", "))
+	}
+	if *silverPrior && *part == "platt" {
+		return usagef("rankfit: --silver-prior is for the weight fit")
 	}
 	if !(*lambda > 0) || *lambda > 1e6 {
 		return usagef("rankfit: --lambda must be more than 0 and at most 1e6")
@@ -110,6 +124,12 @@ func (e *env) cmdRankfit(args []string) error {
 		tc.Yes, tc.Maybe, tc.No, tc.Skipped, tc.Saved, tc.Hidden, tc.Passed)
 	if tc.Closed > 0 {
 		fmt.Fprintf(w, "audit judgments of closed postings (dead or duplicate) left out of the fit: %d\n", tc.Closed)
+	}
+	if tc.Selected > 0 {
+		fmt.Fprintf(w, "audit judgments from the disagreement or yes-neighbour cells left out of the fit: %d\n", tc.Selected)
+	}
+	if tc.Engineering > 0 {
+		fmt.Fprintf(w, "audit judgments from the engineering group left out of the fit (until its weights are post-stratified): %d\n", tc.Engineering)
 	}
 
 	doPlatt, doWeights := *part != "weights", *part != "platt"
@@ -176,7 +196,26 @@ func (e *env) cmdRankfit(args []string) error {
 		base = f.Apply(base)
 	}
 	if doWeights {
-		res, err := e.rankfitWeights(snap, me, targets, base, rankfit.Options{Lambda: *lambda, Seed: *seed, HoldoutPct: *holdout, MaxPairs: *maxPairs}, w)
+		opt := rankfit.Options{Lambda: *lambda, Seed: *seed, HoldoutPct: *holdout, MaxPairs: *maxPairs}
+		if *silverPrior {
+			sp, err := e.rankfitSilverPrior(snap, me, lab, base, *lambda, w)
+			if sp != nil {
+				jr.SilverPrior = sp
+			}
+			if err != nil {
+				return e.reply(*asJSON, jr, err, nil)
+			}
+			opt.TrainOnly = sp.TrainOnly
+			fmt.Fprintln(w, "gold-only fit on the same split, for comparison:")
+			gold, err := e.rankfitWeights(snap, me, targets, base, opt, w)
+			if err != nil {
+				return err
+			}
+			sp.GoldOnly = &gold
+			opt.Prior = &sp.Prior.Shares
+			fmt.Fprintln(w, "fit pulled toward the silver prior (this one is gated and written):")
+		}
+		res, err := e.rankfitWeights(snap, me, targets, base, opt, w)
 		if err != nil {
 			return err
 		}
@@ -195,6 +234,59 @@ func (e *env) cmdRankfit(args []string) error {
 	return e.reply(*asJSON, jr, nil, func() {})
 }
 
+// rankfitSpareSeniority sets the weights file's spared seniority levels
+// (`vani rankfit --spare-seniority`): read the file at path if there is one
+// (a file that cannot be read is an error, never overwritten), set the list,
+// keep everything else, write it back validated. "none" clears the list; a
+// file left with nothing in it is refused rather than written empty.
+func (e *env) rankfitSpareSeniority(path, list string, dry, asJSON bool) error {
+	var levels []string
+	if strings.TrimSpace(list) != "none" {
+		for _, v := range strings.Split(list, ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				levels = append(levels, v)
+			}
+		}
+		if len(levels) == 0 {
+			return usagef("rankfit: --spare-seniority wants a comma list of seniority readings, or none")
+		}
+	}
+	f := rankfit.File{V: rankfit.FileVersion, FittedAt: now().UTC()}
+	if _, err := os.Stat(path); err == nil {
+		if f, err = rankfit.Load(path); err != nil {
+			return fmt.Errorf("rankfit: %s exists and cannot be read, so it is left as it is: %w", path, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("rankfit: %w", err)
+	}
+	f.SpareSeniorityMismatch = levels
+	if err := f.Validate(); err != nil {
+		return usagef("%v", err)
+	}
+	reply := struct {
+		Path    string   `json:"path"`
+		Spared  []string `json:"spared"`
+		DryRun  bool     `json:"dry_run"`
+		Written bool     `json:"written"`
+	}{Path: path, Spared: nonNil(levels), DryRun: dry}
+	if !dry {
+		if err := rankfit.Write(path, f); err != nil {
+			return err
+		}
+		reply.Written = true
+	}
+	return e.reply(asJSON, reply, nil, func() {
+		switch {
+		case dry:
+			fmt.Fprintf(e.stdout, "dry run: would set spared seniority to %v in %s\n", nonNil(levels), path)
+		case len(levels) == 0:
+			fmt.Fprintf(e.stdout, "cleared spared seniority in %s\n", path)
+		default:
+			fmt.Fprintf(e.stdout, "spared seniority %v written to %s\nto rank by it, set rank_weights_file to that path in the config\n", levels, path)
+		}
+	})
+}
+
 // rankfitReply is `vani rankfit --json`: the label counts, each part that would
 // run or was refused, and the fit as the weights file records it. A refusal
 // or a fit that does not beat the hand weights carries the failure, and
@@ -211,6 +303,8 @@ type rankfitReply struct {
 	NotRun       []string        `json:"not_run"`
 	Report       *rankfit.Report `json:"report"`
 	Written      bool            `json:"written"`
+	// SilverPrior is the prior and the gold-only comparison, with --silver-prior.
+	SilverPrior *silverPriorFit `json:"silver_prior,omitempty"`
 	failure
 }
 

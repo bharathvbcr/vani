@@ -211,7 +211,7 @@ func triageLabels(labels map[posting.Key]Entry) map[posting.Key]Entry {
 	out := make(map[posting.Key]Entry, len(labels))
 	for k, e := range labels {
 		for slot := range e.Labels {
-			if slot != WouldApply {
+			if !auditSlot(slot) {
 				out[k] = e
 				break
 			}

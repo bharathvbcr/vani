@@ -254,6 +254,7 @@ func TestCommandsThatPromptAModelRefuseAnIdentifyingConfigSummary(t *testing.T) 
 	for _, args := range [][]string{
 		{"reasons", "draft"},
 		{"teacher", "--dry-run"},
+		{"teacher", "--task", "would_apply_pair", "--dry-run"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			summaryConfig(t, "Roles for zzöwnername", kbTestOwnWord)

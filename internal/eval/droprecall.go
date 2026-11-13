@@ -134,7 +134,11 @@ const (
 
 // DropRecall is the estimate. Missed and MissedYes (the share of wanted, and
 // of yes, postings that were dropped) and the ByClass lists are set only when
-// Status is RecallEstimated; Reason says why not otherwise.
+// Status is RecallEstimated; Reason says why not otherwise. Selected counts
+// the judged labels drawn from the disagreement cells (SelectedOnReading):
+// they are no sample of any cell, so they count as the owner's marks do, a
+// known outcome taken out of the pool (a wanted one in a drop class is a
+// known miss), never as a drawn label.
 type DropRecall struct {
 	Status      string        `json:"status"`
 	Reason      string        `json:"reason,omitempty"`
@@ -150,7 +154,9 @@ type DropRecall struct {
 	Prefilter   int           `json:"prefilter,omitempty"` // drawn from the capped sample of pre-ledger drops: no cell, no known population
 	Manual      int           `json:"manual"`              // no sampling stratum
 	MarkedOut   int           `json:"marked"`              // counted by the mark instead
-	Draws       int           `json:"draws"`
+	Selected    int           `json:"selected_on_reading"`
+	Engineering int           `json:"engineering"`
+	Draws      int           `json:"draws"`
 	MinJudged   int           `json:"min_judged_per_cell"`
 	BoundTarget float64       `json:"bound_target"`
 }
@@ -180,6 +186,10 @@ func drawnFrom(source, cell string) bool {
 type recallAcc struct {
 	RecallCell
 	nWanted, nYes int
+	// markedYes is the marked postings that count under "yes only": the
+	// saved or applied ones, and the disagreement-cell labels that said yes
+	// (MarkedWanted also counts their maybes).
+	markedYes int
 }
 
 // InsufficientDropRecall is an estimate that could not be made, for reason,
@@ -195,6 +205,16 @@ func InsufficientDropRecall(reason string) DropRecall {
 // ones are ignored); a key listed twice counts once.
 func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropRecall {
 	out := InsufficientDropRecall("")
+	// onReading is each judged disagreement-cell label's outcome (wanted or
+	// not): a known outcome, counted as a mark is.
+	onReading := map[posting.Key]string{}
+	for k, e := range labels {
+		if v, ok := e.Labels[WouldApply]; ok && SelectedOnReading(e.Source) {
+			if _, judged := wanted(v); judged {
+				onReading[k] = v
+			}
+		}
+	}
 	cells := map[string]*recallAcc{}
 	where := map[posting.Key]RecallMember{}
 	for _, m := range members {
@@ -203,6 +223,13 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 		}
 		if _, dup := where[m.Key]; dup {
 			continue
+		}
+		// A saved or applied mark counts under both readings ("wanted" and
+		// "yes only"); a cell label's maybe is wanted but not a yes.
+		markedYes := m.MarkedWanted
+		if v, ok := onReading[m.Key]; ok && !m.Marked {
+			hit, _ := wanted(v)
+			m.Marked, m.MarkedWanted, markedYes = true, hit, v == "yes"
 		}
 		where[m.Key] = m
 		c := cells[m.Cell]
@@ -219,6 +246,9 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 		default:
 			c.Marked++
 		}
+		if m.Marked && markedYes {
+			c.markedYes++
+		}
 	}
 	for k, e := range labels {
 		v, ok := e.Labels[WouldApply]
@@ -233,6 +263,12 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 		switch {
 		case e.Source == SourceManual || e.Source == "":
 			out.Manual++
+			continue
+		case SelectedOnReading(e.Source):
+			out.Selected++ // counted with the marks above, when still in the pool
+			continue
+		case EngineeringStratum(e.Source):
+			out.Engineering++ // a sample of the engineering postings, no cell's
 			continue
 		case !auditStratum(e.Source):
 			out.NotAudit++ // Explore or another surface: not a uniform draw of any cell
@@ -299,8 +335,10 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 		}
 	}
 
-	wantedSims := simulateRecall(cells, names, func(c *recallAcc) int { return c.nWanted })
-	yesSims := simulateRecall(cells, names, func(c *recallAcc) int { return c.nYes })
+	wantedRd := reading{k: func(c *recallAcc) int { return c.nWanted }, marked: func(c *recallAcc) int { return c.MarkedWanted }}
+	yesRd := reading{k: func(c *recallAcc) int { return c.nYes }, marked: func(c *recallAcc) int { return c.markedYes }}
+	wantedSims := simulateRecall(cells, names, wantedRd)
+	yesSims := simulateRecall(cells, names, yesRd)
 	for _, n := range names {
 		c := cells[n]
 		if c.Known {
@@ -326,9 +364,9 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 		return out
 	}
 	out.Status = RecallEstimated
-	out.Missed, out.ByClass = shares(cells, names, wantedSims, func(c *recallAcc) float64 { return float64(c.nWanted) })
+	out.Missed, out.ByClass = shares(cells, names, wantedSims, wantedRd)
 	if len(yesSims.missed) > 0 {
-		out.MissedYes, out.ByClassYes = shares(cells, names, yesSims, func(c *recallAcc) float64 { return float64(c.nYes) })
+		out.MissedYes, out.ByClassYes = shares(cells, names, yesSims, yesRd)
 	}
 	return out
 }
@@ -348,16 +386,22 @@ func rateOf(c *recallAcc, k int, sims recallSims, cell string) RecallRate {
 	return r
 }
 
-// shares is the dropped share of all postings counted by k, overall and per
+// reading is one reading of "would apply" for the recall shares: k is a
+// cell's judged labels that count under it, marked its marked postings that do.
+type reading struct {
+	k, marked func(*recallAcc) int
+}
+
+// shares is the dropped share of all postings counted under rd, overall and per
 // drop class: posterior medians and intervals, with the raw points.
-func shares(cells map[string]*recallAcc, names []string, sims recallSims, k func(*recallAcc) float64) (*RecallShare, []RecallShare) {
+func shares(cells map[string]*recallAcc, names []string, sims recallSims, rd reading) (*RecallShare, []RecallShare) {
 	point := func(class string) float64 {
 		var all, part float64
 		for _, n := range names {
 			c := cells[n]
-			w := float64(c.MarkedWanted)
+			w := float64(rd.marked(c))
 			if c.Judged > 0 {
-				w += float64(c.Pool) * k(c) / float64(c.Judged)
+				w += float64(c.Pool) * float64(rd.k(c)) / float64(c.Judged)
 			}
 			all += w
 			if strings.HasPrefix(n, DroppedPrefix) && (class == "" || n == class) {
@@ -388,12 +432,13 @@ type recallSims struct {
 }
 
 // simulateRecall draws each known cell's rate from its Jeffreys posterior,
-// with k(c) of its Judged labels counting, and records the cell's rate and
+// with rd.k(c) of its Judged labels and rd.marked(c) of its marked postings
+// counting, and records the cell's rate and
 // count, the dropped share of all counted postings, and each class's share. A
 // cell that is not known takes no draws: its postings are unknown, never 0,
 // and the caller combines nothing while one exists. A draw in which nothing
 // counts anywhere is left out of the ratios.
-func simulateRecall(cells map[string]*recallAcc, names []string, k func(*recallAcc) int) recallSims {
+func simulateRecall(cells map[string]*recallAcc, names []string, rd reading) recallSims {
 	out := recallSims{rate: map[string][]float64{}, est: map[string][]float64{}, byClass: map[string][]float64{}}
 	r := rand.New(rand.NewPCG(recallSeed1, recallSeed2))
 	w := make([]float64, len(names))
@@ -401,9 +446,9 @@ func simulateRecall(cells map[string]*recallAcc, names []string, k func(*recallA
 		var all, drop float64
 		for i, n := range names {
 			c := cells[n]
-			w[i] = float64(c.MarkedWanted)
+			w[i] = float64(rd.marked(c))
 			if c.Judged > 0 {
-				kk := float64(k(c))
+				kk := float64(rd.k(c))
 				rate := betaSample(r, kk+0.5, float64(c.Judged)-kk+0.5)
 				out.rate[n] = append(out.rate[n], rate)
 				w[i] += float64(c.Pool) * rate
@@ -577,6 +622,12 @@ func (d DropRecall) Markdown() string {
 	}
 	if d.Renamed > 0 {
 		fmt.Fprintf(&b, "\n%d label(s) were drawn from their cell under an older drop-class name and are counted in it.\n", d.Renamed)
+	}
+	if d.Selected > 0 {
+		fmt.Fprintf(&b, "\n%d label(s) were drawn from the disagreement or yes-neighbour cells (chosen on a model's reading or for nearness to a yes): each counts as a mark does, a known outcome out of the pool, not as a sample.\n", d.Selected)
+	}
+	if d.Engineering > 0 {
+		fmt.Fprintf(&b, "\n%d label(s) were drawn by the engineering group, a sample of the engineering postings rather than of any cell, and are left out.\n", d.Engineering)
 	}
 	return b.String()
 }

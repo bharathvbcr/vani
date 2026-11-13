@@ -70,6 +70,11 @@ const (
 	// the sighting it is judged against the exclusions on the listed text and
 	// comes back to Live, or stays dropped.
 	reopenClassExclusion = "exclusion"
+	// reopenClassSilver is a model drop the would_apply auditor keeps picking
+	// (RescueSilverDrops): at the sighting it goes to Unsure, its readings
+	// kept, unless the exclusions or title rules drop the listed text. Reason
+	// holds the rescue's AnnSilverRescue stamp.
+	reopenClassSilver = "silver"
 )
 
 func reopenClassOf(c dropClass) string {
@@ -88,7 +93,7 @@ func reopenClassOf(c dropClass) string {
 
 func validReopenClass(s string) bool {
 	switch s {
-	case reopenClassTitle, reopenClassModel, reopenClassFresh, reopenClassRefresh, reopenClassExclusion:
+	case reopenClassTitle, reopenClassModel, reopenClassFresh, reopenClassRefresh, reopenClassExclusion, reopenClassSilver:
 		return true
 	}
 	return false
@@ -324,6 +329,17 @@ func (s *SightingReopen) event(l ledger.Ledger, rec ledger.Record, listed postin
 	}
 	r := rec
 	r.Posting, r.BodyEvicted = listed, false
+	if e.Class == reopenClassSilver {
+		ev, ok := s.silverSightingEvent(r, listed, e.Reason, now)
+		if !ok {
+			s.Cleared++
+			return ledger.Event{}, false
+		}
+		ev.Posting = &listed
+		ev.Annotations[DescHashKey] = hash
+		s.Applied++
+		return ev, true
+	}
 	sc := s.Scope
 	sc.Defer, sc.Pending = nil, nil
 	sc.Watched = func(posting.Key) bool { return true } // its board just listed it

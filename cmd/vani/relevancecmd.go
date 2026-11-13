@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/doctor"
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -26,6 +29,7 @@ func (e *env) cmdRelevance(args []string) error {
 	fs := e.newFlags("relevance")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	ks := fs.String("k", "", "comma list of k for precision@k (default 5,10,20)")
+	whatIf := fs.String("what-if-summary", "", "a file holding a draft target_summary: report what it would do to the judged postings' order (keyword and semantic parts, computed locally, nothing written)")
 	asJSON := e.jsonFlag(fs, `{"relevance","drop_recall","teacher_proxy","drop_agreement","readers","part_auc"} on stdout: the raw counts the tables are built from`)
 	if err := parse(fs, args); err != nil {
 		return err
@@ -51,19 +55,31 @@ func (e *env) cmdRelevance(args []string) error {
 	if err != nil {
 		return fmt.Errorf("labels unreadable, refusing to report: %w", err)
 	}
+	// sampled is done less the disagreement-cell labels, for the reports below
+	// that read the labels as a sample and have no exclusion of their own (the
+	// seniority shadow, the summary what-if, the score parts). The relevance
+	// counts, drop recall and the reader table exclude them themselves and say
+	// how many; drop agreement excludes them without a count (it counts only
+	// labelled disagreements); the yes yield is where they are counted.
+	sampled, _ := eval.WithoutSelectedOnReading(done)
+	yield := eval.BuildYesYield(done)
 	// With nothing judged there is nothing to order or score: no ledger read.
 	if rep := eval.BuildRelevance(done, nil, nil, nil, eval.Names{}); rep.Judged == 0 {
+		if *whatIf != "" {
+			return errors.New("relevance --what-if-summary: no judged would_apply labels yet (run `vani audit`); there is no order to compare")
+		}
 		rep.Malformed = bad
 		// The drop-candidate agreement needs no labels, only the ledger. If it
 		// cannot be read the reply says so: that is not "no data".
 		agree, err := e.dropAgreement(done)
 		recall := eval.InsufficientDropRecall("no judged would_apply labels yet (run `vani audit`)")
-		out := relevanceReply{Relevance: rep, DropAgreement: agree, DropRecall: &recall}
+		out := relevanceReply{Relevance: rep, DropAgreement: agree, DropRecall: &recall, YesYield: &yield}
 		if err != nil {
 			out.DropAgreement, out.DropAgreementError = nil, err.Error()
 		}
 		return e.reply(*asJSON, out, nil, func() {
 			fmt.Fprint(e.stdout, rep.Markdown())
+			fmt.Fprint(e.stdout, yield.Markdown())
 			fmt.Fprint(e.stdout, recall.Markdown())
 			if err != nil {
 				fmt.Fprintf(e.stdout, "\n## Drop candidates\n\nnot computed: %v\n", err)
@@ -111,18 +127,47 @@ func (e *env) cmdRelevance(args []string) error {
 	store, status, detail := e.openTeacherLog()
 	readers := eval.BuildReaderAgreement(done, b.snap.Records, store, status, names)
 	readers.TeacherDetail = detail
-	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers}
-	if parts, err := e.partAUC(done, b.snap); err != nil {
-		out.PartAUCError = err.Error()
+	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers, YesYield: &yield}
+	// The doctor's drop verdicts against the owner's answers: a log that cannot
+	// be read is said, never an empty comparison.
+	silverSkipped := 0
+	if ds, err := doctor.OpenSilverStore(filepath.Join(e.stateDir, doctor.SilverFile)); err != nil {
+		out.DoctorSilverError = err.Error()
 	} else {
-		out.PartAUC = parts
+		out.DoctorSilver, silverSkipped = doctor.BuildSilverAgreement(ds.Rows(), done), ds.Skipped
+	}
+	base := jobinsight.DefaultWeights()
+	items, itemsErr := e.judgedItems(sampled, b.snap, base, nil)
+	if itemsErr != nil {
+		out.PartAUCError = itemsErr.Error()
+	} else {
+		out.PartAUC = partAUCOf(items, base)
+		taste := e.tasteOf(items, b.snap)
+		out.Taste = &taste
+	}
+	eng := engineeringOf(b.snap)
+	sens := buildSensitivity(sampled, b.snap.Records, store, status, names, items, itemsErr, base, eng)
+	out.Sensitivity = &sens
+	shadow := e.buildSeniorityShadow(sampled, b.snap)
+	out.SeniorityShadow = &shadow
+	if *whatIf != "" {
+		ctx, stop := signalContext()
+		w := e.buildSummaryWhatIf(ctx, sampled, b.snap, *whatIf)
+		stop()
+		out.SummaryWhatIf = &w
 	}
 	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())
+		fmt.Fprint(e.stdout, yield.Markdown())
 		fmt.Fprint(e.stdout, recall.Markdown())
 		fmt.Fprint(e.stdout, proxy.Markdown())
 		fmt.Fprint(e.stdout, agree.Markdown())
 		fmt.Fprint(e.stdout, readers.Markdown())
+		if out.DoctorSilverError != "" {
+			fmt.Fprintf(e.stdout, "\n## Doctor drop verdicts against the owner\n\nnot computed: %s\n", out.DoctorSilverError)
+		} else {
+			fmt.Fprint(e.stdout, doctor.SilverMarkdown(out.DoctorSilver, silverSkipped))
+		}
 		fmt.Fprint(e.stdout, "\n## Score parts against the owner\n")
 		if out.PartAUCError != "" {
 			fmt.Fprintf(e.stdout, "\nnot computed: %s\n", out.PartAUCError)
@@ -130,7 +175,39 @@ func (e *env) cmdRelevance(args []string) error {
 		for _, p := range out.PartAUC {
 			fmt.Fprint(e.stdout, p.Markdown())
 		}
+		if out.Taste != nil {
+			fmt.Fprint(e.stdout, out.Taste.Markdown())
+		}
+		fmt.Fprint(e.stdout, sens.Markdown())
+		fmt.Fprint(e.stdout, shadow.Markdown())
+		if out.SummaryWhatIf != nil {
+			fmt.Fprint(e.stdout, out.SummaryWhatIf.Markdown())
+		}
 	})
+}
+
+// engineeringOf reports eval.TitleIsEngineering of each posting in snap, by
+// key, from its title as the ledger holds it; an unknown key is false.
+func engineeringOf(snap ledger.Snapshot) func(posting.Key) bool {
+	titles := make(map[posting.Key]string, len(snap.Records))
+	for _, r := range snap.Records {
+		if _, ok := titles[r.Key]; !ok {
+			titles[r.Key] = r.Posting.Title
+		}
+	}
+	return func(k posting.Key) bool {
+		t, ok := titles[k]
+		return ok && eval.TitleIsEngineering(t)
+	}
+}
+
+// partAUCOf is BuildPartAUC over each scope of judged items.
+func partAUCOf(items []rankfit.Item, base jobinsight.Weights) []rankfit.PartAUC {
+	out := make([]rankfit.PartAUC, 0, len(partAUCScopes))
+	for _, s := range partAUCScopes {
+		out = append(out, rankfit.BuildPartAUC(items, base, s.name, s.keep, rankfit.DefaultPartAUCResamples, 1))
+	}
+	return out
 }
 
 // partAUCScopes are the judged postings the part AUC is computed over: all of
@@ -143,12 +220,13 @@ var partAUCScopes = []struct {
 	{"scored stratum (score deciles)", func(it *rankfit.Item) bool { return rankfit.StratumOf(it.Source) == rankfit.StratumScored }},
 }
 
-// partAUC sets each Score part against the owner's audit judgments, building
-// the parts exactly as `vani rankfit` does (rankfitItems) under the hand
-// weights. Marks and impressions are read for the scores the owner saw and
-// the company factor; neither becomes a label here. A source that cannot be
-// read is an error, never an empty table.
-func (e *env) partAUC(done map[posting.Key]eval.Entry, snap ledger.Snapshot) ([]rankfit.PartAUC, error) {
+// judgedItems builds each audit-judged posting's Score parts exactly as `vani
+// rankfit` does (rankfitItems) under base. Marks and impressions are read for
+// the scores the owner saw and the company factor; neither becomes a label
+// here. keep, when not nil, admits only the postings it is true for (`vani
+// teacher report` keeps the gold labels made after the exemplar freeze). A
+// source that cannot be read is an error, never an empty table.
+func (e *env) judgedItems(done map[posting.Key]eval.Entry, snap ledger.Snapshot, base jobinsight.Weights, keep func(posting.Key) bool) ([]rankfit.Item, error) {
 	me, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
 		return nil, fmt.Errorf("read marks: %w", err)
@@ -162,20 +240,12 @@ func (e *env) partAUC(done map[posting.Key]eval.Entry, snap ledger.Snapshot) ([]
 		return nil, err
 	}
 	for k, t := range targets {
-		if !t.Judged {
+		if !t.Judged || (keep != nil && !keep(k)) {
 			delete(targets, k) // passed-over impressions: not the owner's answer
 		}
 	}
-	base := jobinsight.DefaultWeights()
 	items, _, _, err := e.rankfitItems(snap, me, targets, base)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]rankfit.PartAUC, 0, len(partAUCScopes))
-	for _, s := range partAUCScopes {
-		out = append(out, rankfit.BuildPartAUC(items, base, s.name, s.keep, rankfit.DefaultPartAUCResamples, 1))
-	}
-	return out, nil
+	return items, err
 }
 
 // relevanceReply is `vani relevance --json`. DropAgreementError replaces
@@ -185,7 +255,15 @@ func (e *env) partAUC(done map[posting.Key]eval.Entry, snap ledger.Snapshot) ([]
 // TeacherProxy the model-against-model count of candidate misses; with no
 // judged labels the ledger is not read and TeacherProxy is absent.
 type relevanceReply struct {
-	Relevance          eval.Relevance         `json:"relevance"`
+	Relevance eval.Relevance `json:"relevance"`
+	// YesYield is the raw yes yield per stratum and disagreement cell, with the
+	// yes-rich stratum named when one is clearly above the random strata.
+	YesYield *eval.YesYield `json:"yes_yield,omitempty"`
+	// DoctorSilver is the doctor's drop verdicts (silver_doctor.jsonl) against
+	// the owner's answers, per prompt; DoctorSilverError says why it is absent.
+	DoctorSilver      []doctor.SilverAgreement `json:"doctor_silver,omitempty"`
+	DoctorSilverError string                   `json:"doctor_silver_error,omitempty"`
+
 	DropRecall         *eval.DropRecall       `json:"drop_recall,omitempty"`
 	TeacherProxy       *eval.TeacherDropProxy `json:"teacher_proxy,omitempty"`
 	DropAgreement      *eval.DropAgreement    `json:"drop_agreement,omitempty"`
@@ -197,6 +275,18 @@ type relevanceReply struct {
 	Readers      *eval.ReaderAgreement `json:"readers,omitempty"`
 	PartAUC      []rankfit.PartAUC     `json:"part_auc,omitempty"`
 	PartAUCError string                `json:"part_auc_error,omitempty"`
+	// Taste is the nearness-to-yes column against the title part (report
+	// only; it gates the yes-neighbour audit cell). Absent when the judged
+	// items could not be built (PartAUCError says why).
+	Taste *rankfit.Taste `json:"taste,omitempty"`
+	// Sensitivity repeats Readers and the all-postings PartAUC under each
+	// eval.LabelMode, so a verdict that holds in one reading only shows as such.
+	Sensitivity *sensitivityReply `json:"sensitivity,omitempty"`
+	// SeniorityShadow is what sparing mismatch_seniority at some levels would
+	// do to the judged postings' order (measurement only).
+	SeniorityShadow *seniorityShadow `json:"seniority_shadow,omitempty"`
+	// SummaryWhatIf is present with --what-if-summary only.
+	SummaryWhatIf *summaryWhatIf `json:"summary_what_if,omitempty"`
 }
 
 // dropAgreement is the drop-candidate agreement for a run that has not read

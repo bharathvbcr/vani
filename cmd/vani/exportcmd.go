@@ -18,16 +18,19 @@ func (e *env) heldoutExportPath() string {
 
 // cmdExport is `vani export heldout` or `vani export posting-fingerprints`.
 func (e *env) cmdExport(args []string) error {
+	const want = "export: want `export heldout`, `export posting-fingerprints` or `export pooled-vectors`"
 	if len(args) == 0 {
-		return usagef("export: want `export heldout` or `export posting-fingerprints`")
+		return usagef(want)
 	}
 	switch args[0] {
 	case "heldout":
 		return e.cmdExportHeldout(args)
 	case "posting-fingerprints":
 		return e.cmdExportPostingFingerprints(args)
+	case "pooled-vectors":
+		return e.cmdExportPooledVectors(args[1:])
 	default:
-		return usagef("export: want `export heldout` or `export posting-fingerprints`")
+		return usagef(want)
 	}
 }
 

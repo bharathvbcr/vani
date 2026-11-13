@@ -1780,6 +1780,7 @@ private struct JobDetailContent: View {
             }
             Divider()
             actions
+            wouldApplyRow
             if job.mark == .applied { JobStageRow(job: job) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1903,6 +1904,34 @@ private struct JobDetailContent: View {
             .help("More: Hide (⌘⌫), Copy Details (⇧⌘C), Copy Title, Description or Link, Share")
         }
         .controlSize(.large)
+    }
+
+    /// "Would you apply?" with Yes / Maybe / No. One answer per posting: after it the buttons are
+    /// disabled and the reply (or the "already answered" notice) shows in their place.
+    private var wouldApplyRow: some View {
+        let state = jobs.wouldApply[job.key]
+        let busy = jobs.wouldApplyInFlight.contains(job.key)
+        return HStack(spacing: 8) {
+            Text("Would you apply?").font(.callout).foregroundStyle(.secondary)
+            ForEach([AuditVerdict.yes, .maybe, .no], id: \.self) { v in
+                Button(v.title) { Task { await jobs.answerWouldApply(job.key, v) } }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(state != nil || busy)
+            }
+            switch state {
+            case let .answered(v):
+                Label("Answered: \(v.rawValue)", systemImage: "checkmark.circle.fill")
+                    .font(.callout).foregroundStyle(.green)
+            case .alreadyAnswered:
+                Label("Already answered", systemImage: "info.circle")
+                    .font(.callout).foregroundStyle(.secondary)
+            case nil:
+                EmptyView()
+            }
+            Spacer(minLength: 0)
+        }
+        .help("Record whether you would apply to this posting, for the weekly audit")
     }
 
     private func applyButton(_ apply: URL) -> some View {

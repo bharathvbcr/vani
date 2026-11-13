@@ -17,11 +17,13 @@ import (
 )
 
 // inputsForOracle is InputsFor as it was before it was split into a blend half
-// and ClosingFor (b9036fd), verbatim but for its name.
+// and ClosingFor (b9036fd), verbatim but for its name and the Seniority slot
+// (added with Weights.SpareSeniorityMismatch, read the same way as RoleFit).
 func inputsForOracle(r ledger.Record, c RankContext) Inputs {
 	ann := r.Annotations
 	in := Inputs{
 		RoleFit:      c.SlotFor(r, "role_fit"),
+		Seniority:    c.SlotFor(r, "seniority"),
 		Unsure:       IsUnsure(r),
 		HalfLifeDays: c.HalfLifeDays,
 		AgeDays:      -1,

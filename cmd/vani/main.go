@@ -111,17 +111,40 @@ commands:
                              owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
   export posting-fingerprints [--json] [--out PATH] [--labels DIR] [--seed N]
                              near-duplicate fingerprints of those postings (qd-posting-heldout.v1)
+  export pooled-vectors [--json] --out DIR [--max N]
+                             one pooled, L2-normalised vector per posting that has vectors in the
+                             semantic chunk-vector log (mean of its chunk vectors) and a keys file,
+                             for an offline clustering experiment (docs/CLUSTER_STUDY.md); reads
+                             the ledger and the log without writing the state dir, and refuses an
+                             --out inside it
+  strata compare [--json] --keys FILE [--summary FILE] [--model M] [--resamples N] [--seed N]
+                             offline: does clustering those vectors give audit strata with less
+                             within-stratum variance of Sonnet's role_fit reading than the
+                             category folders and the audit's current strata? Without --summary
+                             it prints the baselines and the k to fit; with the fit binary's
+                             summary it measures each fit. Draws and labels nothing
   eval [--json] [--labels DIR] [--held-out SPLIT] [--window]
                              per-backend precision and coverage on the labelled set
   audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N] [--closed N]
                              weekly stratified would-I-apply sample (deciles + drop classes,
                              and --closed postings the engine closed: dead, or duplicate by fold method);
                              --json prints keys, strata and p_select only (no posting text),
-                             --blind hides the model's readings while you answer
+                             --blind hides the model's readings while you answer;
+                             [--disagree N] [--disagree-rejects N] [--teacher M] add picks from the
+                             disagreement cells (teacher M's role_fit against the engine: wants but
+                             dropped or low; rejects but top decile, off by default), over an
+                             unchanged random draw; those labels stay out of every estimate
+                             (together at most 2x --scored + --dropped);
+                             [--yes-neighbours N] adds picks from the 50 postings nearest the
+                             owner's yes answers (refused unless the taste column passes; counts
+                             in the cap); [--engineering N] adds random engineering-titled picks
+                             (kept out of the strata, drop recall and the weight fit; no cap)
                              (audit-sample is the old name)
-  audit answer --key K --verdict yes|maybe|no|skip [--source S --p-select P]
+  audit answer --key K --verdict yes|maybe|no|skip [--reason R] [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from
-                             the flags (an Explore row's, or an audit --json pick's) or the draw
+                             the flags (an Explore row's, or an audit --json pick's) or the draw;
+                             with a maybe or a no, --reason names what kept it from a yes
+                             (level, domain, location, employer_type, other)
   doctor [--json] [--dry-run [--show]] [--budget-usd N] [--model M] [--runs N] [--sample N] [--seed S]
                              the pipeline doctor: the llm model (llm.model, Opus) reads per-board
                              signals over the newest run records, the run logs' trouble lines and
@@ -176,7 +199,20 @@ commands:
                              with the same question, and keep its readings (teacher_readings.jsonl)
                              for Lappi's agreement filter; --dry-run prices it and asks nothing;
                              a real run needs --budget-usd and stops at the lesser of it and the
-                             daily llm cap's headroom
+                             daily llm cap's headroom. --task would_apply_pair [--pairs N]
+                             [--both-orders] [--seed N] asks which of two postings of one audit
+                             stratum you would rather apply to, given your frozen labelled titles
+                             (silver labels in silver_pairs.jsonl, never in labels.jsonl; it also
+                             needs the auditor's own cap, below, and refuses until one is set)
+  teacher freeze [--json] [--replace]
+                             freeze your yes and no labelled titles as the auditor's exemplar set
+                             (silver_exemplars.json); labels made after it are the evaluation set
+  teacher cap [--json] [--usd N]
+                             show or set the would_apply auditor's own daily cap (state/budget/
+                             wouldapply-cap.json); unset it spends nothing
+  teacher report [--json] [--seed N]
+                             the auditor's AUC on your gold labels made after the freeze, beside the
+                             title part's on the same postings ("insufficient" below 10 yes and 30 no)
   auditor calibrate [--json] [--dry-run] [--budget-usd N] [--model M] [--concurrency N]
                     [--no-identifying-words-file] [--show-terms]
                              ask the llm (default llm.triage_model) "would the job seeker apply?"
@@ -300,7 +336,8 @@ commands:
                              or no calibration from the configured model or Lappi); a drop on
                              a board no longer on the watchlist (stale: no listing would age
                              it); one whose stored description cannot be read back (a dry run
-                             cannot tell, and says so)
+                             cannot tell, and says so). What is let back is also counted by drop
+                             class. No model is asked
   rescore [--json] [--dry-run] [--limit N]
                              score scored and explained postings that have no score (they went
                              through while devprism.binary was empty); status and explanation
@@ -378,6 +415,10 @@ type env struct {
 	paths  config.Resolved
 	stdout io.Writer
 	stderr io.Writer
+
+	// noCheckpoint makes the jobs reads (jobsReaderOptions) keep no ledger
+	// checkpoint, for a dry run that promises to write nothing.
+	noCheckpoint bool
 
 	// jsonAsked is the running command's --json flag (jsonFlag); nil when it
 	// has none. runEnv reads it to reply {"error","code"} for a failure the
@@ -613,6 +654,8 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdAudit(args[1:])
 	case "relevance":
 		cmdErr = e.cmdRelevance(args[1:])
+	case "strata":
+		cmdErr = e.cmdStrata(args[1:])
 	case "doctor":
 		cmdErr = e.cmdDoctor(args[1:])
 	default:

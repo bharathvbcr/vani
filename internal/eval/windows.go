@@ -96,7 +96,7 @@ type windowMember struct {
 func labelIdentity(key posting.Key, at time.Time, labels map[string]string) string {
 	slots := make([]string, 0, len(labels))
 	for slot := range labels {
-		if slot != WouldApply {
+		if !auditSlot(slot) {
 			slots = append(slots, slot)
 		}
 	}
@@ -112,7 +112,7 @@ func labelIdentity(key posting.Key, at time.Time, labels map[string]string) stri
 func newMember(window string, e Entry) windowMember {
 	labels := make(map[string]string, len(e.Labels))
 	for slot, v := range e.Labels {
-		if slot != WouldApply {
+		if !auditSlot(slot) {
 			labels[slot] = v
 		}
 	}
@@ -356,7 +356,7 @@ func (s *Store) SyncWindows(recs []ledger.Record) (int, error) {
 
 func hasNonSkip(e Entry) bool {
 	for slot, v := range e.Labels {
-		if slot != WouldApply && v != "" && v != Skip {
+		if !auditSlot(slot) && v != "" && v != Skip {
 			return true
 		}
 	}

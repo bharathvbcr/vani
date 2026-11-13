@@ -25,6 +25,17 @@ type Options struct {
 	// MaxPairs bounds the training pairs; above it they are sampled. 0 means
 	// DefaultMaxPairs.
 	MaxPairs int
+	// Prior, when set, is where the L2 pull draws each log-share instead of the
+	// hand weights (a silver pretrain: FitSilverPrior). It must give a share to
+	// exactly the parts the hand weights do. The held-out evaluation is
+	// unchanged: the fit is still measured against the hand weights on owner
+	// judgments only, so a prior that does not help cannot pass Beats.
+	Prior *Shares
+	// TrainOnly, when set, names judged items that are never held out: they
+	// train but are not evaluated on. With a silver prior these are the
+	// judgments the auditor may have learned from (made before its exemplar
+	// freeze, or shown to it), which must not grade it.
+	TrainOnly func(key string) bool
 }
 
 const (
@@ -166,7 +177,7 @@ func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) 
 
 	var trainBy, testBy grades
 	for i, it := range items {
-		if it.Judged && heldOut(it.Key, opt.Seed, opt.HoldoutPct) {
+		if it.Judged && (opt.TrainOnly == nil || !opt.TrainOnly(it.Key)) && heldOut(it.Key, opt.Seed, opt.HoldoutPct) {
 			testBy[it.Grade] = append(testBy[it.Grade], i)
 			res.HeldOutItems++
 		} else {
@@ -195,14 +206,18 @@ func Fit(items []Item, base jobinsight.Weights, opt Options) (FitResult, error) 
 
 	b := blendOf(base)
 	hand := res.Hand.Array()
-	m := newModel(items, train, b, hand, opt.Lambda, float64(res.TrainItems), false)
+	center, err := priorCenter(hand, opt.Prior)
+	if err != nil {
+		return res, err
+	}
+	m := newModel(items, train, b, center, opt.Lambda, float64(res.TrainItems), false)
 	x, iters, conv := minimize(m.objective, m.start())
 	res.Iterations, res.Converged = iters, conv
 	fitted := m.shares(x)
 	res.Shares = sharesFrom(fitted)
 	res.Temperature = math.Exp(x[NumParts])
 
-	diag := newModel(items, train, b, hand, opt.Lambda, float64(res.TrainItems), true)
+	diag := newModel(items, train, b, center, opt.Lambda, float64(res.TrainItems), true)
 	dx, _, dconv := minimize(diag.objective, diag.start())
 	res.GateExp, res.FreshExp, res.DiagConverged = dx[NumParts+1], dx[NumParts+2], dconv
 

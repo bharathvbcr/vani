@@ -58,6 +58,11 @@ const (
 	// of a posting. Its options are WouldApplyOptions and Skip. It is not a
 	// triage slot: no backend answers it, so the triage report ignores it.
 	WouldApply = "would_apply"
+	// WouldApplyReason is the one factor that kept a would_apply answer from a
+	// yes, given with a maybe or a no and never on its own. Its options are the
+	// pointwise auditor's (wouldapply.Reasons), so the owner's reasons and the
+	// auditor's can be set side by side. Like WouldApply it is not a triage slot.
+	WouldApplyReason = "would_apply_reason"
 	// SourceManual marks a would_apply label the owner gave outside any sample.
 	// It has no inclusion probability, so the relevance report keeps it out of
 	// every stratum.
@@ -77,6 +82,21 @@ const (
 
 // WouldApplyOptions are the would_apply values besides Skip.
 var WouldApplyOptions = []string{"yes", "maybe", "no"}
+
+// WouldApplyReasons are the WouldApplyReason values. They are the pointwise
+// auditor's wouldapply.Reasons, kept here as a copy because that package's
+// tests import this one; its TestAnswersMatchTheOwnersAuditVocabulary fails if
+// the two lists drift.
+var WouldApplyReasons = []string{"level", "domain", "location", "employer_type", "other"}
+
+// auditSlot reports whether slot is one of the owner's audit slots
+// (WouldApply and the WouldApplyReason that travels with it) rather than a
+// triage slot a backend answers.
+func auditSlot(slot string) bool { return slot == WouldApply || slot == WouldApplyReason }
+
+// ReasonAllowed reports whether a would_apply answer may carry a reason: a
+// maybe or a no (what kept it from a yes).
+func ReasonAllowed(verdict string) bool { return verdict == "maybe" || verdict == "no" }
 
 // Store keeps labels in LabelDir/labels.jsonl and description text in TextDir.
 type Store struct {
@@ -129,6 +149,11 @@ func slotOptions() map[string]map[string]bool {
 		wa[o] = true
 	}
 	out[WouldApply] = wa
+	why := make(map[string]bool, len(WouldApplyReasons))
+	for _, o := range WouldApplyReasons {
+		why[o] = true
+	}
+	out[WouldApplyReason] = why
 	return out
 }
 
@@ -191,6 +216,14 @@ func (l Entry) Validate() error {
 			return fmt.Errorf("eval: %q is not an option of slot %q", v, slot)
 		}
 	}
+	if why, ok := l.Labels[WouldApplyReason]; ok {
+		if why == Skip {
+			return errors.New("eval: a would_apply reason is one of its options, never skip")
+		}
+		if v, wa := l.Labels[WouldApply]; !wa || !ReasonAllowed(v) {
+			return errors.New("eval: a would_apply reason goes with a maybe or a no answer")
+		}
+	}
 	if l.TextSHA256 != "" && !validHash(l.TextSHA256) {
 		return fmt.Errorf("eval: malformed text_sha256 %q", l.TextSHA256)
 	}
@@ -223,17 +256,23 @@ func (s *Store) Put(l Entry) error {
 // latest line per key whole. The entry holds two kinds of label and next
 // replaces only the kinds it carries: triage slots (a next with any slot
 // replaces the whole set, so a re-label does not leave stale slots) and
-// would_apply, whose Source and PSelect travel with it. A next with no triage
-// slot keeps prev's; a next with no would_apply keeps prev's, with its
+// would_apply, whose reason, Source and PSelect travel with it (a new answer
+// without a reason drops the old one's). A next with no triage slot keeps
+// prev's; a next with no would_apply keeps prev's, with its reason and
 // sampling fields. TextSHA256 is next's when it has one. next's V and
 // LabeledAt are kept as given, so Update stamps them.
 func Merge(prev, next Entry) Entry {
 	out := next
 	out.Labels = make(map[string]string, len(prev.Labels)+len(next.Labels))
 	_, nextWA := next.Labels[WouldApply]
-	nextSlots := len(next.Labels) > 1 || (len(next.Labels) == 1 && !nextWA)
+	nextSlots := false
+	for slot := range next.Labels {
+		if !auditSlot(slot) {
+			nextSlots = true
+		}
+	}
 	for slot, v := range prev.Labels {
-		if (slot == WouldApply && !nextWA) || (slot != WouldApply && !nextSlots) {
+		if (auditSlot(slot) && !nextWA) || (!auditSlot(slot) && !nextSlots) {
 			out.Labels[slot] = v
 		}
 	}
@@ -406,6 +445,12 @@ func (s *Store) Labels() (map[posting.Key]Entry, int, error) {
 			return nil, bad, fmt.Errorf("eval: read labels: %w", err)
 		}
 	}
+}
+
+// LabelsAt reads the labels in labelDir as Labels does, for a caller that must
+// not create anything (a dry run): it opens no store, so no directory is made.
+func LabelsAt(labelDir string) (map[posting.Key]Entry, int, error) {
+	return (&Store{labelDir: labelDir}).Labels()
 }
 
 // readLine returns one line without its newline, discarding bytes beyond max

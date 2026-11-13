@@ -117,6 +117,10 @@ type CompanyMarks struct {
 // posting nothing is known about; every field is optional.
 type Inputs struct {
 	RoleFit Slot
+	// Seniority is the seniority slot's reading. Only
+	// Weights.SpareSeniorityMismatch reads it: a mismatch_seniority role_fit at
+	// a spared level is not a mismatch.
+	Seniority Slot
 
 	// Coverage is DevPrism's must-have coverage, 0-100 (the ledger's
 	// coverage annotation, not the employer-boosted rank).
@@ -264,6 +268,14 @@ type Weights struct {
 	// mismatch_seniority reading removes: gate x (1 - Mismatch*conf). As a
 	// gate, no amount of coverage or similarity rescues a confident mismatch.
 	Mismatch float64
+	// SpareSeniorityMismatch lists seniority readings (Inputs.Seniority, when
+	// answered) at which a mismatch_seniority role_fit is not a mismatch: the
+	// gate does not apply and the fit part is unknown. The triage rubric
+	// defines mismatch_seniority against an early-career engineer whatever the
+	// target summary says, so at a level the owner applies to the reading says
+	// nothing. Empty (the default) spares nothing. It only loosens: a spared
+	// posting can rank higher, never lower, and nothing is dropped by it.
+	SpareSeniorityMismatch []string
 	// ExcludedTitle and UnsureGate are the gates for an excluded title and
 	// an unsure triage.
 	ExcludedTitle, UnsureGate float64

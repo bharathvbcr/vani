@@ -9,6 +9,50 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Taste column, yes-neighbour cell, engineering group, doctor silver log** (Fable's third pass
+  on the second enhancement review). `vani relevance` gains a taste column: each judged posting's
+  nearness to the owner's other yes answers, from stored vectors, against the title part. `vani
+  audit --yes-neighbours N` draws from the 50 unlabelled postings nearest those answers, and is
+  refused unless the taste column beats the title part. `vani audit --engineering N` draws at
+  random from engineering-titled postings. Both are overlays: the random draw is unchanged. Labels
+  from the neighbour cell count as cell labels; engineering labels count in the auditor's
+  evaluation and the yes yield but stay out of the relevance strata, drop recall, the reader table
+  and the weight fit (`vani rankfit` prints how many). `vani doctor` appends its drop verdicts,
+  without free text, to `silver_doctor.jsonl`, which `vani relevance` compares with the owner's
+  answers once there are 10 yes and 30 no. No verdict is a label. All off by default. The Mac
+  app's Audit tab has steppers for the neighbour and engineering picks, and after a Maybe or a No
+  it asks what kept the posting from a yes (level, domain, location, employer type, other; one
+  key each, Return for none), sent as `audit answer --reason`.
+- **Disagreement cells and the yes yield** (`vani audit --disagree N [--teacher M]`,
+  `internal/eval/yesyield.go`, `vani relevance`). The weekly draw can add N postings where the
+  teacher's stored role_fit reading (default Sonnet) disagrees with the engine: wanted but dropped
+  or in the lowest three score deciles, or rejected in the top decile. That is where a missed yes
+  is likeliest. The cells sit over the random strata without changing them: the random picks
+  and their p_select are the same with or without `--disagree`, and at least a third of the draw
+  stays random. Labels drawn there are kept out of every estimate (relevance counts, readers, drop
+  agreement, auditor gates, the weight fit); drop recall counts each as a known outcome, as it
+  counts a mark. Postings in strata the auditor leaves out (work authorization, work mode, owner
+  exclusions) are never read for a cell. `vani relevance` now shows the raw yes yield per stratum
+  and cell, and names a yes-rich stratum only when its 95% lower bound clears the random strata's
+  95% upper bound. A teacher log with no reading by `--teacher` of any candidate is refused (a
+  misspelt model would otherwise look like no disagreement). Off by default; the quota is the
+  owner's call.
+  After Fable's second review: each cell has its own quota (`--disagree` for the "teacher wants"
+  cell, `--disagree-rejects` for the "teacher rejects" cell, which stays at 0 unless asked: the
+  teachers reject most of what they read, so it is a large slice of the top decile). The 2x cap no
+  longer counts closed places. The yes yield gains group rows (all deciles, top three deciles, all
+  drop classes) and a kill rule per cell (at 20 judged: 0-1 yes turns it off, 4+ keeps it, 2-3 runs
+  to 40). `vani teacher freeze` says how many exemplars came from the cells. The Mac app's Audit
+  tab gains a "Disagreement picks" stepper, 0 by default.
+- **Drops the rules no longer make, by class** (`vani retriage --policy-drops`, its `classes`).
+  A drop made under a rule that has since changed was never re-examined: two Databricks Staff
+  roles the owner marked "maybe" were dropped on `seniority = staff_plus` (p 0.912 and 0.917, a
+  rule the live config no longer has). `--policy-drops` lets such drops back through the pending
+  reopen, and its reply now counts what it lets back (or, with `--dry-run`, would) by the audit's
+  drop class. A separate `--stale-drops` report and `--rescue` were built on the rank branch and
+  retired when main's `--policy-drops` landed: the rescue wrote `unsure` at once, so a role gone
+  from its board would have reached scoring and the paid notes call, and it judged drops with a
+  second copy of the policy check.
 - **Readers and score parts against the owner** (`internal/eval/readeragree.go`,
   `internal/rankfit/partauc.go`, `vani relevance`). The report now sets every triage reader against
   the owner's would_apply labels: each engine backend from the ledger and each teacher model in
@@ -19,6 +63,67 @@ were ported with notice. Source files do not carry an upstream copyright header.
   spend; a source that cannot be read is named, never shown as an empty table. This is stage 0 of
   the adaptive-ranking plan: it decides whether any model's reading may stand in for the owner's
   label.
+- **Sensitivity of the relevance verdicts** (`internal/eval/labelmode.go`, `vani relevance`). The
+  reader table and the part AUC are repeated under four readings of the labels: yes or maybe
+  wanted, yes only, maybes left out, and engineering titles only (a word-list title check; a
+  non-engineering word wins). A verdict that holds in one reading only shows as such. The reader
+  table also gives the seniority each reader read on its mismatch_seniority readings.
+- **The reason for a maybe or a no** (`vani audit answer --reason R`, label slot
+  `would_apply_reason`). An answer that is not a yes may name the one factor that kept it from
+  one, in the pointwise auditor's vocabulary (level, domain, location, employer_type, other), so
+  the owner's reasons and the auditor's can be compared. The reason travels with the answer: a
+  triage re-label keeps it, a new answer replaces it, and it is never a triage slot. A reason on a
+  yes or a skip, on its own, or outside the vocabulary is refused. The Mac app does not ask for it
+  yet.
+- **One-tap would you apply** (`vani audit answer --shown`, the Mac app's job detail). A posting
+  answered from a surface takes the stratum and inclusion probability of its newest impression
+  that carries them, else is recorded as a manual label; an impression log that cannot be read is
+  an error. The job detail has a Would you apply? row that writes through it.
+- **Seniority-gate relaxation, off by default** (`Weights.SpareSeniorityMismatch`,
+  `vani rankfit --spare-seniority`). The triage rubric reads mismatch_seniority against an
+  early-career engineer whatever the target summary says. A rank weights file may list seniority
+  readings (`mid`, `senior`, `staff_plus`; never `manager`) at which such a reading is not a
+  mismatch: no gate, fit part unknown. It only loosens. `vani relevance` shows a shadow of two
+  variants: the AUC of the age-free relevance per label reading before and after, and each judged
+  posting it moves with its percentile among open postings. On the live ledger (2026-11-12)
+  neither variant changed any AUC; sparing staff_plus too moved one judged posting (84th
+  percentile before and after) and 373 of 29,311 open postings.
+- **Summary what-if** (`vani relevance --what-if-summary FILE`). This reports what a draft
+  `target_summary` would do to the order of the judged postings. It swaps only the two Score parts
+  that read the summary: keyword (the target terms) and semantic (the knowledge-base profile and its
+  calibration anchors). The semantic part is rescored from the stored chunk vectors for both the
+  live summary and the draft, in a temporary copy of the vector log that is removed afterwards.
+  A posting not known in both arms is compared as unknown in both. The live arm is a null test
+  against the scores the ranking reads. No model is asked and nothing is written. The triage
+  readings, which the summary also steers, stay as they are, and the report says so. It lists every
+  posting answered yes with its percentile among open postings before and after. A build without
+  `-tags tessl` says the semantic part was not computed and compares the keyword part only.
+- **Silver rescue rule (D6)** (`vani retriage --silver-drops [--rescue]`). This reports the model
+  drops that the pairwise would_apply auditor keeps picking over their stratum. The bar is a score
+  of at least `--min-score` over at least `--min-games` comparisons, with no answer of "neither". It
+  also reports the rule's precision on gold labels made after the exemplar freeze. `--rescue`
+  takes them, best first and at most `--max-per-day` per day, but only while the auditor's verdict
+  on gold under today's question is go. A drop on a watched board waits as a pending reopen (class
+  `silver`) for its board's next full listing, then goes to unsure if the exclusions and title
+  rules still let the listed text through; any other goes to unsure at once. Pending marks count
+  against the day's cap. It never rescues title drops, owner exclusions, or work authorization and
+  work_mode drops. A rescued posting is scored like any uncertain one and the runner does not
+  triage it again. Nothing runs unless the owner asks.
+- **Silver-pretrained weight fit** (`vani rankfit --part weights --silver-prior`). The auditor's
+  decisive answers fit Score's shares first, and the owner-labelled fit is pulled toward those
+  shares instead of the hand weights (`rankfit.Options.Prior`). Answers about any posting the owner
+  judged are left out. Only judgments made after the exemplar freeze are held out
+  (`Options.TrainOnly`). The gold-only fit on the same split is reported beside it, and the gold
+  gate (`Beats`) still decides whether anything is written.
+- **Cluster strata study** (`vani export pooled-vectors`, `vani strata compare`,
+  `docs/CLUSTER_STUDY.md`). An offline study of whether embedding clusters (Ojas e-means, fitted
+  outside Vani by `scripts/cluster-study/vani_cluster.rs`) would be a better audit stratum than the
+  job category. It reads the chunk-vector log read-only (`semantic.OpenVectorReader`) and measures
+  the drop in within-stratum variance of Sonnet's role_fit reading against the categories and the
+  audit's own strata (`eval.AuditStratumOf`). On a copy of live state, clusters were fitted on 8,420
+  pooled postings and the variance measured on the 2,805 of them with both a Sonnet reading and a
+  category. E-means at 8 cells cut it by 18.6% (median of 5 seeds, range 12.2–19.2%; highest
+  bootstrap upper bound 24.9%), under the 25% bar, so clusters are not adopted. Lloyd's k-means did as well at 13 cells and above.
 - **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
   (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
   `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings

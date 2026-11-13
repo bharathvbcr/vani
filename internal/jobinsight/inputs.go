@@ -303,9 +303,10 @@ func InputsFor(r ledger.Record, c RankContext) Inputs {
 func blendInputsFor(r ledger.Record, c RankContext) Inputs {
 	ann := r.Annotations
 	in := Inputs{
-		RoleFit: c.SlotFor(r, "role_fit"),
-		Unsure:  IsUnsure(r),
-		AgeDays: -1,
+		RoleFit:   c.SlotFor(r, "role_fit"),
+		Seniority: c.SlotFor(r, seniorityName),
+		Unsure:    IsUnsure(r),
+		AgeDays:   -1,
 	}
 
 	rank, hasRank := parseFloat(ann[ledger.AnnRank])
