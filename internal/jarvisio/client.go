@@ -205,6 +205,13 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 	errCh := make(chan error, 1)
 	go func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(stderr, maxStderrBytes))
+		// Wait closes the stdout pipe when the process has exited, and replies
+		// the process wrote just before exiting (it exits on stdin EOF) are
+		// still in that pipe: closing it under the reader below loses them, and
+		// the call reads as "did not answer". So Wait runs only once the
+		// replies are read (every path below calls cancel first) or the
+		// deadline killed the process, whose pipe then holds nothing to lose.
+		<-ctx.Done()
 		errCh <- cmd.Wait()
 	}()
 

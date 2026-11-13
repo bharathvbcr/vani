@@ -117,6 +117,20 @@ func TestListAndGetRoundTrip(t *testing.T) {
 	}
 }
 
+// A serve exits as soon as its stdin closes, right after writing its replies.
+// Those replies must survive the exit: reaping the process closed the stdout
+// pipe under the reader, and one call in a few dozen read as "did not answer".
+func TestRepliesWrittenJustBeforeExitAreNotLost(t *testing.T) {
+	c := client(t, "ok")
+	c.Timeout = 20 * time.Second
+	for i := range 200 {
+		keys, err := c.List(context.Background())
+		if err != nil || len(keys) != 1 || keys[0] != "email" {
+			t.Fatalf("call %d: list = %v, %v", i, keys, err)
+		}
+	}
+}
+
 func TestTimeoutDoesNotLookLikeAnEmptyList(t *testing.T) {
 	c := client(t, "sleep")
 	c.Timeout = 200 * time.Millisecond
