@@ -307,6 +307,26 @@ func TestDoctorRefusesWhatItCannotScreenOrJudge(t *testing.T) {
 			t.Fatalf("stderr %q, built %v", e, *built)
 		}
 	})
+	// doctor has no override flag: with no personal terms to screen against, the
+	// summary, log lines and drops cannot be checked, so nothing is sent.
+	for name, write := range map[string]func(p string) error{
+		"words file missing": os.Remove,
+		"words file empty":   func(p string) error { return os.WriteFile(p, []byte("\n"), 0o600) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			state, _ := doctorSetup(t)
+			built := doctorSeams(t, &doctorFake{boards: "echo", drops: "echo"}, 0)
+			if err := write(filepath.Join(state, "tracks", track.WordsFile)); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"doctor", "--budget-usd", "5"}, {"doctor", "--dry-run"}} {
+				_, e := mustCode(t, 1, args...)
+				if !strings.Contains(e, track.WordsFile) || !strings.Contains(e, "nothing is sent") || *built {
+					t.Fatalf("%v: stderr %q, built %v", args, e, *built)
+				}
+			}
+		})
+	}
 	t.Run("target names the owner", func(t *testing.T) {
 		state, _ := doctorSetup(t)
 		built := doctorSeams(t, &doctorFake{boards: "echo", drops: "echo"}, 0)
