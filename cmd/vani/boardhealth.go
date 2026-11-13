@@ -97,6 +97,12 @@ type boardHealthRec struct {
 	// failed attempt leaves them as they are.
 	DeferredSince time.Time `json:"deferred_since,omitzero"`
 	ShortSince    time.Time `json:"short_since,omitzero"`
+	// ZeroSince and ZeroReads are the streak of good reads that each listed 0
+	// postings (boardszero.go): when its first read was and how many there
+	// are. Both zero while the last good read listed some (or did not say).
+	// A failed attempt leaves them as they are.
+	ZeroSince time.Time `json:"zero_since,omitzero"`
+	ZeroReads int       `json:"zero_reads,omitempty"`
 }
 
 type boardHealthDoc struct {
@@ -128,6 +134,9 @@ func (r boardHealthRec) sane(at time.Time) boardHealthRec {
 	}
 	if ahead(r.ShortSince) {
 		r.ShortSince = at
+	}
+	if ahead(r.ZeroSince) {
+		r.ZeroSince, r.ZeroReads = time.Time{}, 0
 	}
 	return r
 }
@@ -172,7 +181,8 @@ func goodRead(e boardReport) bool { return e.Outcome == boardRead }
 func applyAttempt(r boardHealthRec, e boardReport, at time.Time, seeded bool) boardHealthRec {
 	r = r.sane(at)
 	if goodRead(e) {
-		return boardHealthRec{LastOK: at, LastTried: at, Outcome: boardRead, DeferredSince: r.DeferredSince, ShortSince: r.ShortSince}
+		return boardHealthRec{LastOK: at, LastTried: at, Outcome: boardRead, DeferredSince: r.DeferredSince, ShortSince: r.ShortSince,
+			ZeroSince: r.ZeroSince, ZeroReads: r.ZeroReads}
 	}
 	r.LastTried = at
 	r.Outcome = e.Outcome
@@ -317,7 +327,7 @@ func (h *boardHealth) record(watched []sources.Board, tried []boardReport, compl
 		if _, known := h.doc.Boards[k]; !known && len(h.doc.Boards) >= maxBoardHealthEntries {
 			continue
 		}
-		h.doc.Boards[k] = trackBacklog(applyAttempt(h.doc.Boards[k], e, at, false), e, h.fetches[boardKey{e.ATS, e.Token}], at)
+		h.doc.Boards[k] = trackListing(trackBacklog(applyAttempt(h.doc.Boards[k], e, at, false), e, h.fetches[boardKey{e.ATS, e.Token}], at), e, at)
 	}
 	if complete && len(watched) > 0 {
 		keys := watchedHealthKeys(watched)
@@ -441,6 +451,9 @@ type boardHealthView struct {
 	Updated    time.Time
 	Tracked    bool
 	Warn       string
+	// ZeroCandidates are the watched boards whose good reads keep listing
+	// nothing; the ledger has not been asked (boardszero.go).
+	ZeroCandidates []zeroBoard
 }
 
 // readBoardHealthView reads the file as it stands, judged at at. It writes
@@ -453,6 +466,7 @@ func readBoardHealthView(stateDir string, watchlist []sources.Board, at time.Tim
 	v := boardHealthView{Tracked: true, Updated: doc.Updated}
 	v.Stale, v.StaleCount = staleOf(doc, watchlist, at)
 	v.Untracked, v.UntrackedN = untrackedOf(doc, watchlist)
+	v.ZeroCandidates = zeroCandidatesOf(doc, watchlist, at)
 	return v
 }
 
