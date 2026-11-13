@@ -101,6 +101,38 @@ final class AuditTests: XCTestCase {
         XCTAssertEqual(try AuditClient.answerArguments(dash, .no)[3], "--key=--verdict=yes")
     }
 
+    func testShownAnswerArgumentsAreExactAndCarryNoSampleFlags() throws {
+        XCTAssertEqual(try AuditClient.shownAnswerArguments(key: "gh:acme:1", verdict: .maybe),
+                       ["audit", "answer", "--json", "--shown", "--key=gh:acme:1", "--verdict=maybe"])
+        // A key that looks like a flag stays one `=` argument.
+        let dash = try AuditClient.shownAnswerArguments(key: "--verdict=yes", verdict: .no)
+        XCTAssertEqual(dash[3...], ["--shown", "--key=--verdict=yes", "--verdict=no"])
+        for a in dash { XCTAssertFalse(a.hasPrefix("--source") || a.hasPrefix("--p-select") || a.hasPrefix("--seed"), a) }
+    }
+
+    func testShownAnswerRefusesUnusableKeys() {
+        for key in ["", "k\0x", String(repeating: "k", count: 513)] {
+            XCTAssertThrowsError(try AuditClient.shownAnswerArguments(key: key, verdict: .yes), "\(key.count)")
+        }
+        XCTAssertNoThrow(try AuditClient.shownAnswerArguments(key: String(repeating: "k", count: 512), verdict: .yes))
+    }
+
+    func testAnswerShownCallsVaniAndDecodesTheReply() throws {
+        let reply = #"{"key":"gh:acme:1","verdict":"yes","stratum":"manual","p_select":1}"#
+        let f = try fakeAuditVani(self, draw: drawReply, answer: reply)
+        let a = try client(f).answerShown(key: "gh:acme:1", .yes)
+        XCTAssertEqual(f.calls, ["audit answer --json --shown --key=gh:acme:1 --verdict=yes"])
+        XCTAssertEqual(a, AuditAnswered(key: "gh:acme:1", verdict: "yes", stratum: "manual", pSelect: 1))
+    }
+
+    func testShownSecondAnswerIsRecognisedAsAlreadyAnswered() throws {
+        let f = try fakeAuditVani(self, draw: drawReply, answer: #"{"error":"audit answer: gh:acme:1 is already answered"}"#, answerStatus: 1)
+        XCTAssertThrowsError(try client(f).answerShown(key: "gh:acme:1", .no)) {
+            XCTAssertTrue(AuditClient.isAlreadyAnswered($0), "\($0)")
+        }
+        XCTAssertFalse(AuditClient.isAlreadyAnswered(BankError("vani exited 1 without a reply")))
+    }
+
     func testADrawWithABadPickOrTooManyPicksIsRefusedWhole() throws {
         let badPick = #"{"seed":"s","blind":true,"picks":[{"key":"gh:a:1","stratum":"decile:1","p_select":2}]}"#
         XCTAssertThrowsError(try client(try fakeAuditVani(self, draw: badPick)).draw())

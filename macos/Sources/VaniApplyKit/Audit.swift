@@ -177,6 +177,26 @@ public struct AuditClient: Sendable {
         try call(try Self.answerArguments(pick, verdict))
     }
 
+    /// One-tap "Would you apply?" on a posting the owner is looking at: vani takes the stratum
+    /// and p_select from the posting's newest sampled impression, else records the label as manual.
+    @discardableResult
+    public func answerShown(key: String, _ verdict: AuditVerdict) throws -> AuditAnswered {
+        try call(try Self.shownAnswerArguments(key: key, verdict: verdict))
+    }
+
+    /// vani refuses a second answer for a key with this phrase in its error.
+    public static func isAlreadyAnswered(_ error: Error) -> Bool {
+        String(describing: error).contains("already answered")
+    }
+
+    /// `--shown` takes the stratum and p_select itself, so --source, --p-select and --seed are never sent.
+    static func shownAnswerArguments(key: String, verdict: AuditVerdict) throws -> [String] {
+        guard !key.isEmpty, key.utf8.count <= maxKeyBytes, !key.contains("\0") else {
+            throw BankError("this posting has no usable key")
+        }
+        return ["audit", "answer", "--json", "--shown", "--key=\(key)", "--verdict=\(verdict.rawValue)"]
+    }
+
     static let drawArguments = ["audit", "--json", "--blind"]
 
     /// `=` forms, so a key that begins with a dash can never be read as a flag.
