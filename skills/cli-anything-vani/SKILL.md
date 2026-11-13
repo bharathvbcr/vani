@@ -164,9 +164,16 @@ before running one.
   owner's, and its gate says whether they may be trusted.
 - `vani draft`, `vani suggest` and `vani resume` take a JSON request on stdin and write a
   JSON reply.
+- `vani doctor` asks Opus whether boards that read nothing are failing silently and whether a
+  random sample of dropped postings were dropped for the right reason (no drop about
+  sponsorship is sampled). It only reports, never changes a posting, and writes
+  `<state>/doctor/<UTC>.md` and `.json`. Its key comes from the environment only. A run needs
+  `--budget-usd N` covering its worst case (`--dry-run --show` prints both requests and that
+  cost); it exits 1 when a part failed or judged fewer boards or postings than it was sent.
+  `vani --json doctor --last` reads the newest report and spends nothing.
 
-`jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher` and `auditor calibrate` take
-`--dry-run`, which prices the work and asks nothing.
+`jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher`, `doctor` and `auditor calibrate`
+take `--dry-run`, which prices the work and asks nothing.
 
 **Owner tools.** Not for unattended use:
 
