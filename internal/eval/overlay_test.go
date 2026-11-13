@@ -20,7 +20,7 @@ func overlayPool() []AuditCandidate {
 			var n int
 			fmt.Sscanf(k, "gh:s:%03d", &n)
 			cands[i].Engineering = n%4 == 0
-			cands[i].NearYes = n >= 50 && n < 60
+			cands[i].NearYes = (n >= 50 && n < 60) || n == 3 // 3 is in the wants cell too
 		}
 		if strings.HasPrefix(k, "gh:d:b:") && k < "gh:d:b:005" {
 			cands[i].Engineering = true
@@ -86,7 +86,8 @@ func TestOverlaysDrawInOrderAndNoKeyTwice(t *testing.T) {
 		"gh:s:056":   EngineeringKept,    // engineering and a yes neighbour
 		"gh:d:b:000": EngineeringDropped, // dropped engineering
 		"gh:s:001":   CellTeacherWants,
-		"gh:s:096":   EngineeringKept, // engineering and in the rejects cell
+		"gh:s:003":   CellTeacherWants, // a wants member and a yes neighbour: the cells draw first
+		"gh:s:096":   EngineeringKept,  // engineering and in the rejects cell
 		"gh:s:097":   CellTeacherRejects,
 		"gh:s:051":   CellYesNeighbour,
 		"gh:s:030":   "", // in no overlay

@@ -300,8 +300,10 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 	// A part that could not run, or that judged only some of what it was
 	// sent, is a failed command, not a clean report.
 	var failed []string
-	if rq.Drops != nil && rep.Drops.Error == "" && len(rep.DropFinds) > 0 {
-		// The drop verdicts go to the silver log, once per (run, posting). The
+	if rq.Drops != nil && rep.Drops.Error == "" && rep.Drops.Answered == rep.Drops.Asked && len(rep.DropFinds) > 0 {
+		// A successful drops part (it ran and judged every posting it was sent)
+		// adds its verdicts to the silver log, once per (run, posting); a
+		// partial one adds none, and its verdicts stay in the report. The
 		// report is written and paid for already, so a failed append is said
 		// and fails the command without hiding the report.
 		runID := filepath.Base(strings.TrimSuffix(path, ".md"))

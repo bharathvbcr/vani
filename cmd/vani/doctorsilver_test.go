@@ -60,6 +60,21 @@ func TestDoctorRunAppendsVerdictsToTheSilverLog(t *testing.T) {
 	}
 }
 
+// A drops part that judged only some of what it was sent is not a successful
+// part: the command fails, the report keeps the verdicts, and the silver log
+// gets none.
+func TestDoctorPartialDropsPartAddsNoSilver(t *testing.T) {
+	state, _ := doctorSetup(t)
+	doctorSeams(t, &doctorFake{boards: "echo", drops: `{"drops":[{"key":"gh:acme:1","verdict":"wrong_drop","cause":"other","why":"w"}],"patterns":[]}`}, 0)
+	_, e := mustCode(t, 1, "doctor", "--budget-usd", "5")
+	if !strings.Contains(e, "drops: judged 1 of the 2") {
+		t.Fatalf("stderr %q", e)
+	}
+	if _, err := os.Stat(filepath.Join(state, doctor.SilverFile)); !os.IsNotExist(err) {
+		t.Fatalf("a partial drops part wrote the silver log: %v", err)
+	}
+}
+
 // Verdicts from strata the auditor leaves out (work mode here) are withheld.
 func TestDoctorSilverWithholdsLeftOutStrata(t *testing.T) {
 	state := t.TempDir()

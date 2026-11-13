@@ -683,8 +683,8 @@ func (e *env) cmdTeacherReport(args []string) error {
 	return e.reply(*asJSON, rep, err, func() {
 		fmt.Fprintf(e.stdout, "## Pairwise auditor (silver labels)\n\nexemplar set frozen %s, sha256 %.12s. Labels made after that time are the evaluation set.\n", rep.FrozenAt, rep.ExemplarSHA256)
 		if st := rep.Evaluation; st != nil {
-			fmt.Fprintf(e.stdout, "evaluation labels: %d yes or no kept; left out: %d made before the freeze, %d relabels of an exemplar, %d repeats of an exemplar job, %d with no ledger record, %d maybe, %d skip, %d closed\n",
-				st.Kept, st.BeforeFreeze, st.Exemplar, st.Repost, st.NotInLedger, st.Maybe, st.Skipped, st.Closed)
+			fmt.Fprintf(e.stdout, "evaluation labels: %d yes or no kept (%d from the engineering group, %d from the random strata and other routes); left out: %d made before the freeze, %d relabels of an exemplar, %d repeats of an exemplar job, %d with no ledger record, %d maybe, %d skip, %d closed, %d from the disagreement or yes-neighbour cells\n",
+				st.Kept, st.Engineering, st.Kept-st.Engineering, st.BeforeFreeze, st.Exemplar, st.Repost, st.NotInLedger, st.Maybe, st.Skipped, st.Closed, st.Selected)
 		}
 		if rep.OtherExemplars > 0 {
 			fmt.Fprintf(e.stdout, "%d pair rows were asked under another exemplar set and are not counted\n", rep.OtherExemplars)

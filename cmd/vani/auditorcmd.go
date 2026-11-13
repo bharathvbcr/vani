@@ -254,6 +254,9 @@ type auditorJudged struct {
 	// (eval.SelectedOnReading): chosen because a teacher's reading disagreed
 	// with the engine, they would tilt the auditor's agreement and are left out.
 	selected int
+	// engineering is how many of labelled came from the audit's engineering
+	// group: drawn on no reading, so they count, and the report says so.
+	engineering int
 }
 
 func (e *env) auditorJudgedSet() (auditorJudged, error) {
@@ -281,6 +284,9 @@ func (e *env) auditorJudgedSet() (auditorJudged, error) {
 		}
 		j.labels[k] = en
 		j.labelled++
+		if eval.EngineeringStratum(en.Source) {
+			j.engineering++
+		}
 		set[k] = true
 	}
 	for k, en := range m {
@@ -627,6 +633,9 @@ type auditorReportReply struct {
 	// SelectedOnReading counts the answers drawn from the audit's
 	// disagreement cells, left out of the comparison.
 	SelectedOnReading int `json:"selected_on_reading"`
+	// Engineering counts the answers (of Labelled) drawn by the audit's
+	// engineering group, which the comparison keeps.
+	Engineering int `json:"engineering"`
 	failure
 }
 
@@ -664,7 +673,7 @@ func (e *env) auditorReport(args []string) error {
 		}
 		fmt.Fprintf(e.stdout, "- baseline teacher %s (triage role_fit, %s): %d of the %d scored teacher readings were asked under the current prompt; and the relevance score\n",
 			cmp.Or(out.TeacherModel, "(none)"), which, b.ScoredCurrent, b.Scored)
-		fmt.Fprintf(e.stdout, "- %d would_apply answers, %d marks; %d not in the ledger; %d from the disagreement cells left out\n\n", out.Labelled, out.Marked, out.NotInLedger, out.SelectedOnReading)
+		fmt.Fprintf(e.stdout, "- %d would_apply answers (%d from the engineering group), %d marks; %d not in the ledger; %d from the disagreement or yes-neighbour cells left out\n\n", out.Labelled, out.Engineering, out.Marked, out.NotInLedger, out.SelectedOnReading)
 		if out.Agreement != nil {
 			fmt.Fprint(e.stdout, out.Agreement.Markdown())
 		}
@@ -723,7 +732,7 @@ func (e *env) auditorReportBody(out *auditorReportReply, modelFlag, teacherFlag 
 	if err != nil {
 		return err
 	}
-	out.Labelled, out.Marked, out.SelectedOnReading = judged.labelled, judged.marked, judged.selected
+	out.Labelled, out.Marked, out.SelectedOnReading, out.Engineering = judged.labelled, judged.marked, judged.selected, judged.engineering
 	aud, err := eval.OpenTeacherStore(e.auditorPath())
 	if err != nil {
 		return err

@@ -265,6 +265,10 @@ type EvalLabelStats struct {
 	// (SelectedOnReading): chosen on a model's reading, they would tilt the
 	// auditor's verdict, so they are left out.
 	Selected int
+	// Engineering is how many of Kept came from the audit's engineering group
+	// (EngineeringStratum): random within the engineering postings and chosen
+	// on no reading, so they count, and the report says how many.
+	Engineering int
 }
 
 // EvaluationLabels is the set the auditor is scored on: the owner's yes and no
@@ -304,6 +308,9 @@ func EvaluationLabels(labels map[posting.Key]Entry, set ExemplarSet, byKey map[p
 			default:
 				out[k] = v
 				st.Kept++
+				if EngineeringStratum(l.Source) {
+					st.Engineering++
+				}
 			}
 		}
 	}

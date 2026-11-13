@@ -475,7 +475,7 @@ func TestEvaluationLabelsLeaveCellLabelsOut(t *testing.T) {
 	}
 	byKey := map[posting.Key]posting.Posting{}
 	after := pairT0.Add(2 * time.Hour)
-	for i, src := range []string{"decile:4", CellTeacherWants, CellTeacherRejects} {
+	for i, src := range []string{"decile:4", CellTeacherWants, CellTeacherRejects, EngineeringKept, CellYesNeighbour} {
 		k := posting.Key(fmt.Sprintf("new%d", i))
 		labels[k] = Entry{V: SchemaVersion, Key: k, Labels: map[string]string{WouldApply: "yes"}, Source: src, PSelect: 0.2, LabeledAt: after}
 		byKey[k] = posting.Posting{Key: k, Title: fmt.Sprintf("Brand New %d", i), Company: "NewCo"}
@@ -483,11 +483,13 @@ func TestEvaluationLabelsLeaveCellLabelsOut(t *testing.T) {
 	k := posting.Key("newskip")
 	labels[k] = Entry{V: SchemaVersion, Key: k, Labels: map[string]string{WouldApply: Skip}, Source: CellTeacherWants, PSelect: 0.2, LabeledAt: after}
 	got, st := EvaluationLabels(labels, set, byKey)
-	if len(got) != 1 || got["new0"] != "yes" {
-		t.Errorf("evaluation set %v, want the decile label only", got)
+	// The engineering label counts (drawn on no reading); the neighbour one,
+	// chosen for its nearness to a yes, does not.
+	if len(got) != 2 || got["new0"] != "yes" || got["new3"] != "yes" {
+		t.Errorf("evaluation set %v, want the decile and engineering labels only", got)
 	}
-	if st.Selected != 2 || st.Skipped != 1 {
-		t.Errorf("stats %+v, want 2 selected and the cell skip as skipped", st)
+	if st.Selected != 3 || st.Skipped != 1 || st.Kept != 2 || st.Engineering != 1 {
+		t.Errorf("stats %+v, want 3 selected, the cell skip as skipped, 2 kept of which 1 engineering", st)
 	}
 }
 

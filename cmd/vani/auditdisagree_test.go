@@ -209,15 +209,20 @@ func TestAuditorJudgedSetLeavesCellLabelsOut(t *testing.T) {
 	answer("gh:k:002", "yes", eval.CellTeacherWants)
 	answer("gh:k:003", "no", eval.CellTeacherRejects)
 	answer("gh:k:004", eval.Skip, eval.CellTeacherWants)
+	answer("gh:k:000", "no", eval.EngineeringKept) // drawn on no reading: counted
+	answer("gh:t:000", "yes", eval.CellYesNeighbour)
 	j, err := (&env{stateDir: state}).auditorJudgedSet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if j.labelled != 1 || j.selected != 2 || len(j.labels) != 1 {
-		t.Fatalf("labelled %d selected %d labels %v; want the decile answer only, 2 selected", j.labelled, j.selected, j.labels)
+	if j.labelled != 2 || j.selected != 3 || j.engineering != 1 || len(j.labels) != 2 {
+		t.Fatalf("labelled %d selected %d engineering %d labels %v; want the decile and engineering answers, 3 selected", j.labelled, j.selected, j.engineering, j.labels)
 	}
-	if _, ok := j.labels["gh:k:001"]; !ok || slices.Contains(j.keys, "gh:k:002") {
+	if _, ok := j.labels["gh:k:001"]; !ok || slices.Contains(j.keys, "gh:k:002") || slices.Contains(j.keys, "gh:t:000") {
 		t.Errorf("keys %v", j.keys)
+	}
+	if _, ok := j.labels["gh:k:000"]; !ok {
+		t.Errorf("the engineering answer is not in the judged set: %v", j.keys)
 	}
 }
 
