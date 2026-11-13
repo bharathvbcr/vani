@@ -26,7 +26,8 @@ func TestAPendingFileFromThePreviousBuildLoadsWithEveryEntryKept(t *testing.T) {
   "gh:acme:2": {"class": "model", "at": "2026-10-01T19:00:00Z"},
   "wd:t/Ext:R-3": {"class": "exclusion", "at": "2026-09-01T19:00:00Z", "reason": "exclude edited"},
   "gh:acme:4": {"class": "fresh", "at": "2026-11-01T00:00:00Z"},
-  "gh:acme:5": {"class": "refresh", "at": "2026-11-02T00:00:00Z"}
+  "gh:acme:5": {"class": "refresh", "at": "2026-11-02T00:00:00Z"},
+  "gh:acme:6": {"class": "silver", "at": "2026-11-11T00:00:00Z", "reason": "2026-11-11 score=0.900 games=6"}
  }
 }`
 	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
@@ -37,12 +38,12 @@ func TestAPendingFileFromThePreviousBuildLoadsWithEveryEntryKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a file the installed build wrote is refused: %v", err)
 	}
-	if s.Len() != 5 || s.Expired != 0 || s.GoneLen() != 0 {
-		t.Fatalf("loaded %d entries (expired %d, gone %d), want 5, 0, 0", s.Len(), s.Expired, s.GoneLen())
+	if s.Len() != 6 || s.Expired != 0 || s.GoneLen() != 0 {
+		t.Fatalf("loaded %d entries (expired %d, gone %d), want 6, 0, 0", s.Len(), s.Expired, s.GoneLen())
 	}
 	for key, class := range map[posting.Key]string{
 		"gh:acme:1": reopenClassTitle, "gh:acme:2": reopenClassModel, "wd:t/Ext:R-3": reopenClassExclusion,
-		"gh:acme:4": reopenClassFresh, "gh:acme:5": reopenClassRefresh,
+		"gh:acme:4": reopenClassFresh, "gh:acme:5": reopenClassRefresh, "gh:acme:6": reopenClassSilver,
 	} {
 		e, ok := s.Items[key]
 		if !ok || e.Class != class || e.Out != 0 || !e.Last.IsZero() {
@@ -53,7 +54,7 @@ func TestAPendingFileFromThePreviousBuildLoadsWithEveryEntryKept(t *testing.T) {
 	if err := s.Save(path, now); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := LoadPendingReopens(path, now); err != nil || again.Len() != 5 {
+	if again, err := LoadPendingReopens(path, now); err != nil || again.Len() != 6 {
 		t.Fatalf("after a save: %v, %d entries", err, again.Len())
 	}
 }

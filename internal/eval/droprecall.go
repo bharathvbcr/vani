@@ -156,7 +156,7 @@ type DropRecall struct {
 	MarkedOut   int           `json:"marked"`              // counted by the mark instead
 	Selected    int           `json:"selected_on_reading"`
 	Engineering int           `json:"engineering"`
-	Draws      int           `json:"draws"`
+	Draws       int           `json:"draws"`
 	MinJudged   int           `json:"min_judged_per_cell"`
 	BoundTarget float64       `json:"bound_target"`
 }
