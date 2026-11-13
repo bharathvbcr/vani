@@ -42,18 +42,35 @@ func TestThrottledHostIsNotAskedAgainByLaterBoards(t *testing.T) {
 	if robots, api := split(*seen); robots != 1 || api != 1 {
 		t.Fatalf("first board: %d robots.txt and %d API requests, want 1 and 1 (its budget is empty)", robots, api)
 	}
-	_, err = s.List(ctx, board("agents"))
-	wantRateLimited(t, err)
-	// The host is in its probe state: robots.txt goes out, then the one probe.
-	if robots, api := split(*seen); !strings.Contains(err.Error(), "host rate limited earlier this run; probed once") || robots != 2 || api != 2 {
-		t.Errorf("second board: %d robots.txt and %d API requests in all, err %v; want one probe", robots, api, err)
+	// The host is cooling. Each later board reads robots.txt first, which waits
+	// the cooldown out (charged to the board's budget; the stub does not sleep),
+	// and then sends the one probe: three of them, each after a longer wait.
+	// Before the cooldown the robots.txt read was refused here, so no probe ever
+	// went out and the host stayed closed to every board after the first.
+	var waits []time.Duration
+	t.Cleanup(srcutil.SetWaitForTest(func(c context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return c.Err()
+	}))
+	later := func() context.Context {
+		return srcutil.WithHostThrottle(srcutil.WithRetryBudget(context.Background(), srcutil.BoardRetryBudget), th)
 	}
-	// The probe was answered 429: the host is blocked, and the robots.txt read
-	// that would come first is refused too.
-	_, err = s.List(ctx, board("infra"))
+	for i, name := range []string{"agents", "infra", "tooling"} {
+		_, err = s.List(later(), board(name))
+		wantRateLimited(t, err)
+		if robots, api := split(*seen); !strings.Contains(err.Error(), "host rate limited earlier this run; probed once") || robots != 2+i || api != 2+i {
+			t.Errorf("board %d: %d robots.txt and %d API requests in all, err %v; want one probe", i+2, robots, api, err)
+		}
+	}
+	if len(waits) != 3 || waits[0] > 30*time.Second || waits[0] < 29*time.Second || waits[2] > 2*time.Minute || waits[2] < 119*time.Second {
+		t.Errorf("waits %v, want the 30s, 60s and 2m cooldowns before the probes", waits)
+	}
+	// The third probe was answered 429: the host is blocked for the run, and the
+	// robots.txt read that would come first is refused too.
+	_, err = s.List(later(), board("more"))
 	wantRateLimited(t, err)
-	if robots, api := split(*seen); robots != 2 || api != 2 {
-		t.Errorf("third board: %d robots.txt and %d API requests in all, want none sent", robots, api)
+	if robots, api := split(*seen); robots != 4 || api != 4 || len(waits) != 3 {
+		t.Errorf("fifth board: %d robots.txt and %d API requests in all, %d waits; want none sent", robots, api, len(waits))
 	}
 	if c := th.Cooldowns()[host]; c.Runs != 1 {
 		t.Errorf("cooldowns %+v, want one run for %s", th.Cooldowns(), host)

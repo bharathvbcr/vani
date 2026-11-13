@@ -260,23 +260,58 @@ func TestInRunCooldownConcurrentRequestsShareOneProbe(t *testing.T) {
 	}
 }
 
-// A robots.txt read (outside the retry loop) is refused while the host cools
-// rather than waiting, and says so.
-func TestHostBlockedWhileCooling(t *testing.T) {
+// A robots.txt read (outside the retry loop) waits out the cooldown as a
+// request does, so the board that reads it first still reaches the probe: it
+// is let through after the wait, the wait is charged to the budgets, and the
+// next request through is the probe.
+func TestHostBlockedWaitsForACoolingHost(t *testing.T) {
 	clk := &fakeClock{t: t0}
-	clockedWait(t, clk)
+	waits := clockedWait(t, clk)
 	noJitter(t)
-	f := newFakeHosts(always429)
-	run, _ := coolRun(clk)
+	f := newFakeHosts(func(_ string, n int) srctest.Reply {
+		if n <= 6 {
+			return srctest.Reply{Status: 429}
+		}
+		return ok200
+	})
+	run, th := coolRun(clk)
 	wantWhy(t, getFrom(boardCtx(run), f, "gh.test"), "")
-	err := HostBlocked(run, "gh.test", "GET", "https://gh.test/robots.txt")
-	var rl *RateLimitedError
-	if !errors.As(err, &rl) || !strings.Contains(rl.Why, "cooling until") || !rl.noRequest {
-		t.Fatalf("HostBlocked while cooling: %v", err)
+	before := len(*waits)
+	board := boardCtx(run)
+	if err := HostBlocked(board, "gh.test", "GET", "https://gh.test/robots.txt"); err != nil {
+		t.Fatalf("HostBlocked while cooling: %v, want it to wait and let the read through", err)
 	}
-	clk.advance(inRunDefaultCool + time.Second)
-	if err := HostBlocked(run, "gh.test", "GET", "https://gh.test/robots.txt"); err != nil {
-		t.Errorf("after the cooldown the probe is due: %v", err)
+	if got := *waits; len(got) != before+1 || got[before] != inRunDefaultCool {
+		t.Fatalf("waits %v, want one of %v", got, inRunDefaultCool)
+	}
+	if left, _ := RetryBudgetLeft(board); left != BoardRetryBudget-inRunDefaultCool {
+		t.Errorf("board budget left %v; the wait was not charged", left)
+	}
+	// Nothing was reserved: the host is due its probe, and the request that
+	// follows the robots.txt read is it, sent once with no retries.
+	if e := th.hosts["gh.test"]; e == nil || e.probing != nil || e.phase != hostProbe {
+		t.Fatalf("host state after the wait: %+v", e)
+	}
+	if err := getFrom(board, f, "gh.test"); err != nil || f.count("gh.test") != 7 || len(*waits) != before+1 {
+		t.Errorf("the probe after the robots.txt read: err %v, %d requests, waits %v", err, f.count("gh.test"), *waits)
+	}
+	// A board that cannot pay for the wait is refused without waiting, and the
+	// host stays cooling for one that can.
+	wantWhy(t, getFrom(boardCtx(run), newFakeHosts(always429), "other.test"), "") // another host cooling
+	err := HostBlocked(WithRetryBudget(run, time.Second), "other.test", "GET", "https://other.test/robots.txt")
+	var rl *RateLimitedError
+	if !errors.As(err, &rl) || !strings.Contains(rl.Why, "retry budget is spent") || !rl.noRequest {
+		t.Errorf("a board that cannot pay: %v", err)
+	}
+	if err := HostBlocked(WithRetryBudget(run, time.Minute), "other.test", "GET", "https://other.test/robots.txt"); err != nil {
+		t.Errorf("a board that can pay: %v", err)
+	}
+	// Cancelled while waiting: the context's error, not a rate limit.
+	wantWhy(t, getFrom(boardCtx(run), newFakeHosts(always429), "third.test"), "")
+	ctx, cancel := context.WithCancel(boardCtx(run))
+	cancel()
+	if err := HostBlocked(ctx, "third.test", "GET", "https://third.test/robots.txt"); !errors.Is(err, context.Canceled) || errors.Is(err, ErrRateLimited) {
+		t.Errorf("cancelled while waiting: %v", err)
 	}
 }
 

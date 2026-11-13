@@ -229,9 +229,10 @@ func refusal(host, method, path, why string) *RateLimitedError {
 
 // HostBlocked returns the *RateLimitedError that a request to host would be
 // refused with by ctx's HostThrottle, and nil when it would be sent: the host is
-// open, a probe is due or out, or ctx carries no throttle. It sends and
-// reserves nothing, so a request made outside DoJSON (a robots.txt read) can
-// keep the rule that a blocked host is asked for nothing more this run.
+// open, a probe is due or out, or ctx carries no throttle. A host cooling in
+// this run is waited for first (coolWait), so the caller then sends. It sends
+// and reserves nothing, so a request made outside DoJSON (a robots.txt read)
+// can keep the rule that a blocked host is asked for nothing more this run.
 func HostBlocked(ctx context.Context, host, method, rawURL string) error {
 	t, _ := ctx.Value(throttleKey{}).(*HostThrottle)
 	if t == nil {
@@ -242,27 +243,56 @@ func HostBlocked(ctx context.Context, host, method, rawURL string) error {
 	if u, err := url.Parse(rawURL); err == nil {
 		path = u.Path
 	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	e := t.hosts[host]
-	switch {
-	case e == nil || e.phase == hostOpen:
-		return nil
-	case e.phase == hostBlocked:
-		return refusal(host, method, path, e.why)
-	case e.probing == nil && t.clock().Before(e.until):
-		if e.cooling {
-			return refusal(host, method, path, e.inRunCoolingWhy())
+	for {
+		t.mu.Lock()
+		e := t.hosts[host]
+		switch {
+		case e == nil || e.phase == hostOpen:
+			t.mu.Unlock()
+			return nil
+		case e.phase == hostBlocked:
+			why := e.why
+			t.mu.Unlock()
+			return refusal(host, method, path, why)
+		case e.probing == nil && e.cooling && t.clock().Before(e.until):
+			// A host cooling in this run is waited for, as a request through
+			// admit waits: a board that reads robots.txt first would otherwise
+			// be refused here, never send the probe, and leave the host cooling
+			// for every board after it. The next request through is the probe.
+			wait, deadline := e.until.Sub(t.clock()), e.until
+			t.mu.Unlock()
+			if err := t.coolWait(ctx, host, method, path, e, wait, deadline); err != nil {
+				return err
+			}
+			continue
+		case e.probing == nil && t.clock().Before(e.until):
+			why := e.coolingWhy()
+			t.mu.Unlock()
+			return refusal(host, method, path, why)
 		}
-		return refusal(host, method, path, e.coolingWhy())
+		t.mu.Unlock()
+		return nil
 	}
-	return nil
 }
 
-// inRunCoolingWhy is what a request that cannot wait out an in-run cooldown
-// says.
-func (e *hostEntry) inRunCoolingWhy() string {
-	return fmt.Sprintf("host rate limited earlier this run; cooling until %s", e.until.UTC().Format("15:04:05 UTC"))
+// coolWait waits out the in-run cooldown e had (until deadline, wait from now
+// when the caller looked, with t.mu released), charged to ctx's retry budgets,
+// and then opens the host to a probe: the next request through admit is it. A
+// wait the budgets cannot cover is refused as rate limited, and the host stays
+// cooling; ctx ending ends the wait with its error.
+func (t *HostThrottle) coolWait(ctx context.Context, host, method, path string, e *hostEntry, wait time.Duration, deadline time.Time) error {
+	if ok, spent := spend(ctx, wait); !ok {
+		return refusal(host, method, path, fmt.Sprintf("host rate limited earlier this run; cooling for %s more, and the %s's retry budget is spent", wait.Round(time.Second), spent))
+	}
+	if err := sleep(ctx, wait); err != nil {
+		return fmt.Errorf("sources: %s %s: waiting for %s to cool: %w", method, path, host, err)
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if cur := t.hosts[host]; cur == e && e.until.Equal(deadline) {
+		e.until = time.Time{} // waited: the next request through is the probe
+	}
+	return nil
 }
 
 // admit decides whether a request to host may go out. A non-empty probeWhy
@@ -301,17 +331,9 @@ func (t *HostThrottle) admit(ctx context.Context, host, method, rawURL string) (
 			// budgets cannot cover is refused and the host stays cooling.
 			wait, deadline := e.until.Sub(t.clock()), e.until
 			t.mu.Unlock()
-			if ok, spent := spend(ctx, wait); !ok {
-				return "", refuse(fmt.Sprintf("host rate limited earlier this run; cooling for %s more, and the %s's retry budget is spent", wait.Round(time.Second), spent))
+			if err := t.coolWait(ctx, host, method, path, e, wait, deadline); err != nil {
+				return "", err
 			}
-			if err := sleep(ctx, wait); err != nil {
-				return "", fmt.Errorf("sources: %s %s: waiting for %s to cool: %w", method, path, host, err)
-			}
-			t.mu.Lock()
-			if cur := t.hosts[host]; cur == e && e.until.Equal(deadline) {
-				e.until = time.Time{} // waited: the next request through is the probe
-			}
-			t.mu.Unlock()
 			continue
 		case t.clock().Before(e.until):
 			e.phase = hostBlocked
