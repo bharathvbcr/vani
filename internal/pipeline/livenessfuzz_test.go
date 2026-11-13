@@ -79,6 +79,10 @@ var fuzzSkews = []time.Duration{
 	-2 * time.Hour, -20 * time.Hour, -2 * 24 * time.Hour, -4 * 24 * time.Hour, -30 * 24 * time.Hour, -365 * 24 * time.Hour,
 }
 
+// fuzzPatterns are the stretches of listing kinds a board goes through (0 clean
+// full, 1 short, 2 unreadable rows), each kind repeated one to three times.
+var fuzzPatterns = [][]int{{2, 1, 0}, {1, 2, 0}, {2, 0, 1}, {0, 2, 1, 0}, {2}, {1, 2, 1, 0}, {2, 2, 0}}
+
 type fuzzRead struct {
 	board   int
 	at      time.Time     // true time
@@ -86,6 +90,8 @@ type fuzzRead struct {
 	listed  []int
 	partial bool
 	short   bool // the board counted more rows than it listed (ReconcileShort)
+	// unreadable: and some rows it skipped could not be read (ReconcileUnreadable); short is also set.
+	unreadable bool
 }
 
 // fuzzRule is a sequence's settings: Liveness for the reconciler, and the same
@@ -131,6 +137,7 @@ func fuzzSequence(rng *rand.Rand, nb int) []fuzzRead {
 	}
 	skewedLast := make([]bool, nb)
 	firstRead := make([]bool, nb)
+	queue := make([][]int, nb)
 	at := t0
 	out := make([]fuzzRead, 0, fuzzReads)
 	for range fuzzReads {
@@ -198,7 +205,25 @@ func fuzzSequence(rng *rand.Rand, nb int) []fuzzRead {
 		// board's whole word, so every posting it leaves out is held as a mass
 		// absence, with a cause of its own (the owner's text: a short listing).
 		short := !partial && rng.IntN(8) == 0
-		out = append(out, fuzzRead{board: bi, at: at, off: off, listed: ids, partial: partial, short: short})
+		// Stretches of mixed kinds on one board (0 a clean full read, 1 short, 2
+		// skipped unreadable rows): unreadable then short then clean, short then
+		// unreadable then clean, and the like, so a cause is tested against every
+		// listing that follows it.
+		unreadable := false
+		if len(queue[bi]) == 0 && !partial && rng.IntN(7) == 0 {
+			p := fuzzPatterns[rng.IntN(len(fuzzPatterns))]
+			for _, k := range p {
+				for range 1 + rng.IntN(3) {
+					queue[bi] = append(queue[bi], k)
+				}
+			}
+		}
+		if len(queue[bi]) > 0 && !partial {
+			k := queue[bi][0]
+			queue[bi] = queue[bi][1:]
+			short, unreadable = k != 0, k == 2
+		}
+		out = append(out, fuzzRead{board: bi, at: at, off: off, listed: ids, partial: partial, short: short, unreadable: unreadable})
 	}
 	return out
 }
@@ -216,6 +241,10 @@ type fuzzPost struct {
 	firstOff        time.Duration
 	massed          bool
 	shortOnly       bool // massed, and only short listings marked it in this episode
+	// unread: massed, and a listing that skipped unreadable rows marked it with no
+	// true mass absence since; unreadSeenOther that a short or clean listing has
+	// missed it since.
+	unread, unreadSeenOther bool
 	// firstSeenOff is the clock error of the read that first saw it; seenPast
 	// that a read under a right clock has seen that sighting as past;
 	// cleanStart is (d)'s start (true time), zero when none.
@@ -232,6 +261,10 @@ type fuzzTally struct {
 	// by the wider (days ahead) quorum (maybe with other evidence), upgrades short marks a true mass
 	// absence made mass.
 	shortReads, shortDeaths, setBackFrozen, upgrades atomic.Int64
+	// unreadHeld are due postings an unreadable-row listing held, unreadDeaths
+	// deaths with that cause, unreadSurvived those after a short or clean
+	// listing, unreadUpgrades short marks unreadable rows took over.
+	unreadReads, unreadHeld, unreadDeaths, unreadSurvived, unreadUpgrades atomic.Int64
 }
 
 func TestDeathRuleBoundsFuzz(t *testing.T) {
@@ -263,6 +296,7 @@ func TestDeathRuleBoundsFuzz(t *testing.T) {
 		"deferred deaths": tally.deferred.Load(), "frozen reads": tally.frozen.Load(), "skewed reads": tally.skewed.Load(),
 		"non-default settings": tally.settings.Load(), "multi-board sequences": tally.multi.Load(),
 		"short listings that left something out": tally.shortReads.Load(), "short deaths": tally.shortDeaths.Load(),
+		"unreadable-row listings that left something out": tally.unreadReads.Load(), "postings held past their hold by unreadable rows": tally.unreadHeld.Load(), "unreadable-cause deaths": tally.unreadDeaths.Load(), "unreadable causes that outlived a short or clean listing": tally.unreadSurvived.Load(), "short marks taken over by unreadable rows": tally.unreadUpgrades.Load(),
 		"reads under the days-ahead quorum": tally.setBackFrozen.Load(), "short marks upgraded by a true mass absence": tally.upgrades.Load()} {
 		if v == 0 {
 			t.Errorf("the sequences reached no %s", name)
@@ -340,6 +374,8 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 		var s Summary
 		if r.partial {
 			s, err = rc.ReconcilePartial(ctx, b, listed, clock)
+		} else if r.unreadable {
+			s, err = rc.ReconcileUnreadable(ctx, b, listed, clock)
 		} else if r.short {
 			s, err = rc.ReconcileShort(ctx, b, listed, clock)
 		} else {
@@ -398,6 +434,9 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 		if mass && nAbsent > 0 {
 			tally.massReads.Add(1)
 		}
+		if r.unreadable && nAbsent > 0 {
+			tally.unreadReads.Add(1)
+		}
 		if r.short && nAbsent > 0 {
 			tally.shortReads.Add(1)
 		}
@@ -405,7 +444,7 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 		for _, k := range absent {
 			p := known[k]
 			if p.misses == 0 {
-				p.massed, p.shortOnly = false, false
+				p.massed, p.shortOnly, p.unread, p.unreadSeenOther = false, false, false, false
 				p.cleanStart = time.Time{}
 			}
 			// (d)'s start: the first read under a right clock that missed it since
@@ -426,26 +465,43 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			}
 			if mass && !p.massed {
 				want.MassMarked++
-				p.shortOnly = !trueMass
-			} else if trueMass {
+				p.shortOnly = !trueMass && !r.unreadable
+			} else if trueMass || r.unreadable {
 				if p.shortOnly && !r.short {
 					tally.upgrades.Add(1)
+				}
+				if p.shortOnly && r.unreadable {
+					tally.unreadUpgrades.Add(1) // a short mark taken over by unreadable rows
 				}
 				p.shortOnly = false
 			}
 			p.massed = p.massed || mass
+			// The owner's text: unreadable rows mark the episode until a true
+			// mass absence takes it over; a short or clean listing later does not
+			// clear it (a death after it is never a quiet short one).
+			p.unread = (p.unread || (r.unreadable && p.massed)) && !trueMass
+			if p.unread && !r.unreadable {
+				p.unreadSeenOther = true
+			}
 			hold := specOrdinaryHold
 			if p.massed {
 				hold = rule.hold
 			}
 			due := p.misses >= 2 && !clock.Before(p.first.Add(hold))
+			// A listing that skipped unreadable rows kills nothing: the posting
+			// may be one of them.
+			unreadHeld := due && r.unreadable
+			if unreadHeld {
+				due = false
+				tally.unreadHeld.Add(1)
+			}
 			gap := clock.Sub(p.last)
 			waits := due && gap > specWindow
 			lastOff := p.lastOff
 			p.last, p.lastOff = clock, r.off
 			rec, _ := l.Get(k)
 			switch {
-			case !due && !waits && r.off == 0 && !p.cleanStart.IsZero() && r.at.Sub(p.cleanStart) >= hold+time.Hour:
+			case !due && !waits && !unreadHeld && r.off == 0 && !p.cleanStart.IsZero() && r.at.Sub(p.cleanStart) >= hold+time.Hour:
 				failf(i, "(d) %s alive %s (true) after its first miss under a right clock, hold %s: a restart or freeze the rule does not allow", k, r.at.Sub(p.cleanStart), hold)
 			case due && !waits:
 				if rec.Status != posting.Dead {
@@ -468,6 +524,13 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 					tally.shortDeaths.Add(1)
 				} else if p.massed {
 					want.MassDead++
+					if p.unread {
+						want.UnreadableDead++
+						tally.unreadDeaths.Add(1)
+						if p.unreadSeenOther {
+							tally.unreadSurvived.Add(1) // the cause outlived a short or clean listing
+						}
+					}
 				}
 				p.misses = -1 // dead: the next listing of it is a reappearance
 				tally.deaths.Add(1)
@@ -493,7 +556,7 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			}
 		}
 		if s.Missed != want.Missed || s.Held != want.Held || s.Deferred != want.Deferred || s.Dead != want.Dead ||
-			s.MassDead != want.MassDead || s.ShortDead != want.ShortDead || s.MassMarked != want.MassMarked || s.Mass != (mass && nAbsent > 0) {
+			s.MassDead != want.MassDead || s.ShortDead != want.ShortDead || s.UnreadableDead != want.UnreadableDead || s.MassMarked != want.MassMarked || s.Mass != (mass && nAbsent > 0) {
 			failf(i, "summary %+v, oracle missed %d held %d deferred %d dead %d mass dead %d short dead %d marked %d mass %v",
 				s, want.Missed, want.Held, want.Deferred, want.Dead, want.MassDead, want.ShortDead, want.MassMarked, mass)
 		}

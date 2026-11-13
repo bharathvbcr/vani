@@ -16,9 +16,9 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
-// oracleReconcile folds one board's full listing (short: a listing that counted
+// oracleReconcile folds one board's full listing (kind 1, short: a listing that counted
 // more rows than it listed) into the ledger.
-func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []posting.Posting, now time.Time, short bool) (Summary, error) {
+func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []posting.Posting, now time.Time, kind int) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
 	existing := l.All()
@@ -226,7 +226,7 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 		}
 	}
 
-	return oracleAbsence(ctx, l, existing, prefix, seen, now, s, short)
+	return oracleAbsence(ctx, l, existing, prefix, seen, now, s, kind)
 }
 
 // oracleForgetMisses adds the forgetting of every miss mark to ann (a listing
@@ -261,13 +261,17 @@ func oracleForgetMisses(ann map[string]string) map[string]string {
 //	short listings marked the posting in its episode; a full listing that is a
 //	mass absence by the rules above clears it. A mass-marked posting's death counts as ShortDead when
 //	its cause is "short" and as MassDead otherwise (a mark with no cause is
-//	not short).
+//	not short). A listing that also skipped rows it could not read (kind 2) is
+//	a short listing that kills nothing: a posting it leaves out is held however
+//	long it has been absent. It marks (or upgrades) the cause "unreadable", which
+//	only a true mass absence takes over, never a later short or complete listing,
+//	and a death with that cause is a MassDead that is also an UnreadableDead.
 //	The clock: a listing ages nothing when the ledger holds events between 1
 //	hour and 3 days ahead of now on one of the board's own records, or on at
 //	least 3 records anywhere, or between 3 and 30 days ahead on at least 3 of
 //	the board's own records. A death due more than 3 days after the posting's
 //	last event waits one more read.
-func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Record, prefix string, seen map[posting.Key]bool, now time.Time, s Summary, short bool) (Summary, error) {
+func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Record, prefix string, seen map[posting.Key]bool, now time.Time, s Summary, kind int) (Summary, error) {
 	isClosed := func(st posting.Status) bool { return st == "dead" || st == "duplicate" || st == "dropped" }
 	var open, absent []posting.Key
 	for _, r := range existing {
@@ -328,6 +332,7 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 		return s, nil
 	}
 	n, a := len(open), len(absent)
+	short, unreadable := kind != 0, kind == 2 // kind: 0 a full listing, 1 short, 2 short with unreadable rows skipped
 	trueMass := (n >= 2 && a == n) || (!short && ((n >= 10 && 4*a >= n) || (n < 10 && a >= 2 && 2*a > n)))
 	mass := short || trueMass
 	for _, k := range absent {
@@ -345,24 +350,29 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 				first = t
 			}
 		}
-		massed, shortOnly := "", false
+		massed, shortOnly, unread := "", false, false
 		if cur.MissedRuns > 0 && cur.Annotations["mass_missed_since"] != "" {
 			massed = cur.Annotations["mass_missed_since"]
 			shortOnly = cur.Annotations["mass_short"] == "short"
+			unread = cur.Annotations["mass_short"] == "unreadable"
 			if t, err := time.Parse(time.RFC3339Nano, massed); err != nil || t.After(now.Add(time.Hour)) || (!cur.FirstSeen.After(now.Add(time.Hour)) && t.Before(cur.FirstSeen.Add(-time.Hour))) {
 				massed = now.UTC().Format(time.RFC3339Nano)
 			}
 		}
 		if mass && massed == "" {
 			massed = now.UTC().Format(time.RFC3339Nano)
-			shortOnly = !trueMass
+			shortOnly = !trueMass && !unreadable
 			s.MassMarked++
-		} else if trueMass {
+		} else if trueMass || unreadable {
 			shortOnly = false
 		}
+		// Unreadable rows mark the episode until a true mass absence takes it over.
+		unread = (unread || (unreadable && massed != "")) && !trueMass
 		cause := ""
 		if massed != "" && shortOnly {
 			cause = "short"
+		} else if massed != "" && unread {
+			cause = "unreadable"
 		}
 		hold := 20 * time.Hour
 		if massed != "" {
@@ -372,6 +382,9 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 			Annotations: map[string]string{ledger.MissedRunsKey: strconv.Itoa(misses),
 				"missed_since": first.UTC().Format(time.RFC3339Nano), "mass_missed_since": massed, "mass_short": cause}}
 		due := misses >= 2 && !now.Before(first.Add(hold))
+		if due && unreadable {
+			due = false // a listing that skipped unreadable rows kills nothing
+		}
 		waits := false
 		if due && !cur.LastEvent.IsZero() && now.Sub(cur.LastEvent) > window {
 			due, waits = false, true
@@ -385,6 +398,9 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 				s.ShortDead++
 			} else if massed != "" {
 				s.MassDead++
+				if cause == "unreadable" {
+					s.UnreadableDead++
+				}
 			}
 		case misses >= 2:
 			s.Held++
