@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
-	"path/filepath"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
@@ -39,30 +37,40 @@ func (s snapshotLedger) Get(k posting.Key) (ledger.Record, bool) {
 // could read them (budget spent, provider down, a broken build) to live, so
 // the next run triages them. With --title-drops it instead returns postings
 // dropped on their title that the configured title readings no longer drop.
-// It spends nothing and calls no backend. --dry-run reads the ledger without
+// With --stale-drops it reports every dropped posting today's rules would not
+// drop (read-only), and with --rescue returns the model drops among them to
+// unsure (retriagestale.go). It spends nothing and calls no backend. --dry-run reads the ledger without
 // its lock (as rescore --dry-run does) and changes nothing.
 func (e *env) cmdRetriage(args []string) error {
 	flags := e.newFlags("retriage")
 	dry := flags.Bool("dry-run", false, "list what would be returned to live; read the ledger only, change nothing")
 	titles := flags.Bool("title-drops", false, "return postings dropped on their title that title_signals.read and the drop rules no longer drop")
-	asJSON := e.jsonFlag(flags, `{"dry_run","title_drops","returned","keys"} on stdout`)
+	stale := flags.Bool("stale-drops", false, "report every dropped posting today's rules (exclude, title_signals.read, drop_rules on the stored readings) would not drop, by drop class; read-only, no model")
+	rescue := flags.Bool("rescue", false, "with --stale-drops: return the model drops among them to unsure, readings kept; with --dry-run only count")
+	asJSON := e.jsonFlag(flags, `{"dry_run","title_drops","returned","keys"} on stdout; with --stale-drops {"stale_drops","dry_run","rescue","dropped","still_dropped","stale","not_judged","not_judged_why","classes","items","items_shown","truncated","rescued","rescued_keys","left_to_other"}`)
 	if err := parse(flags, args); err != nil {
 		return err
+	}
+	switch {
+	case *stale && *titles:
+		return usagef("retriage: --stale-drops and --title-drops are separate; --stale-drops lists title drops too")
+	case *rescue && !*stale:
+		return usagef("retriage: --rescue needs --stale-drops")
 	}
 	cfg, err := e.loadConfig()
 	if err != nil {
 		return err
 	}
+	if *stale {
+		return e.retriageStale(cfg, *dry, *rescue, *asJSON)
+	}
 	var l ledger.Ledger
 	if *dry {
-		snap, err := ledger.ReadSnapshot(filepath.Join(e.stateDir, "ledger"))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) { // no ledger yet: nothing to return
-			return fmt.Errorf("retriage: read the ledger: %w", err)
+		snap, err := e.readLedgerSnapshot("retriage") // no ledger yet: nothing to return
+		if err != nil {
+			return err
 		}
-		if snap.Torn {
-			fmt.Fprintln(e.stderr, "vani: retriage: the ledger ends in a torn line; it was left out")
-		}
-		l = snapshotLedger{recs: snap.Records}
+		l = snap
 	} else {
 		app, err := buildApp(cfg, e.stateDir, e.stderr)
 		if err != nil {

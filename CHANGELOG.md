@@ -9,6 +9,15 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Stale-drop report and rescue** (`internal/pipeline/staledrops.go`,
+  `vani retriage --stale-drops [--rescue]`). A drop made under a rule that has since changed was
+  never re-examined: two Databricks Staff roles the owner marked "maybe" were dropped on
+  `seniority = staff_plus` (p 0.912 and 0.917, a rule the live config no longer has). The report
+  re-judges every dropped posting under today's rules and lists those that would not be dropped,
+  by drop class, with the readings the drop was made on and today's verdict. It is read-only, holds
+  no posting text, and counts a drop it cannot re-judge apart instead of calling it stale.
+  `--rescue` returns the stale model drops to `unsure`, readings kept and nothing asked again; it
+  never touches a drop the rules still make, and a second run changes nothing.
 - **Readers and score parts against the owner** (`internal/eval/readeragree.go`,
   `internal/rankfit/partauc.go`, `vani relevance`). The report now sets every triage reader against
   the owner's would_apply labels: each engine backend from the ledger and each teacher model in

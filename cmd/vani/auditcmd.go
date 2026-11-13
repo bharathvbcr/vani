@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
@@ -32,6 +33,11 @@ func (e *env) dropRules() []eval.DropRule {
 		fmt.Fprintf(e.stderr, "vani: drop classes unavailable (%v); dropped postings are classed <who>:other\n", err)
 		return nil
 	}
+	return evalDropRules(cfg)
+}
+
+// evalDropRules is cfg's drop rules as the drop-class names need them.
+func evalDropRules(cfg config.Config) []eval.DropRule {
 	out := make([]eval.DropRule, 0, len(cfg.DropRules))
 	for _, r := range cfg.DropRules {
 		out = append(out, eval.DropRule{Slot: r.Slot, Values: r.Values})

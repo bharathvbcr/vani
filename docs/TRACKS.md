@@ -176,3 +176,18 @@ the `read` entries, run `vani retriage --title-drops` (add `--dry-run` to see th
 returns to live every posting dropped on a title that the current rules no longer drop, and
 forgets its title reading. The next run triages those postings with the models. A posting the
 current rules still drop stays dropped, and a posting a model dropped is never touched.
+
+A model drop can go stale the same way: the rule that dropped it was removed or narrowed, or its
+threshold raised. Nothing re-examines drops when the rules change, so
+`vani retriage --stale-drops` does. It is read-only: it re-judges every dropped posting under
+today's rules (the exclusions and `title_signals.read` as triage applies them first, then
+`drop_rules` on the readings and probabilities the model recorded) and lists the ones that would
+not be dropped, by drop class, with the readings the drop was made on and today's verdict. It
+holds keys and classes, no posting text. A drop it cannot re-judge (no recorded probability, a
+backend today's policy does not calibrate, a description that cannot be read back) is counted
+apart as "not judged", never as stale. `--stale-drops --rescue` returns the stale model drops to
+`unsure` with their readings kept (nothing is asked again, nothing is spent), so they are scored
+and shown like any uncertain posting (Rule 7); `--dry-run` only counts. A drop the rules still make
+is never touched, and a second run finds nothing. The stale title and exclusion drops it lists are
+left to `retriage --title-drops` and the run's exclusion stage, which return them to live so a
+backend reads them.
