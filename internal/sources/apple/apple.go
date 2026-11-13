@@ -36,8 +36,19 @@ import (
 const (
 	site      = "https://jobs.apple.com"
 	searchURL = site + "/en-us/search"
-	// MaxPostings bounds one board: each posting costs a details request.
+	// MaxPostings bounds one board that has no stored postings to reuse
+	// (Options.Stored nil): each posting costs a details request every run.
 	MaxPostings = 200
+	// MaxListed bounds one board's positions when Options.Stored is set: the
+	// search is paged to its exact count (a count shown as "600+" is refused),
+	// stored positions are reused, and the details requests are bounded by
+	// MaxDetails.
+	MaxListed = 500
+	// MaxDetails bounds the details requests of one board in a run: new
+	// positions first, then stored ones whose re-read is due. New positions
+	// past it are deferred to a later run (Stats.Deferred); they are not
+	// returned or stored, so their absence ages nothing.
+	MaxDetails = 100
 	// pageSize is the rows per search page (observed 2026-10-19). It only
 	// bounds the page loop; the count decides when a listing is complete.
 	pageSize = 20
@@ -67,17 +78,46 @@ var errDetailGone = errors.New("detail is gone (HTTP 404)")
 // board fails: a tenth, at least one (workday's bound).
 func maxGone(n int) int { return max(1, n/10) }
 
-// Stats counts what one List did: the postings listed and the ones whose
-// details page answered 404 (closed since listing).
+// Stats counts what one List did. Every listed position is counted once, in
+// Reused, Fetched, Refreshed, Deferred or Gone (Options.Stored set; without
+// it every position is fetched).
 type Stats struct {
 	Listed int `json:"listed"`
-	Gone   int `json:"gone,omitempty"`
+	// Gone positions' details page answered 404: closed since listing.
+	Gone int `json:"gone,omitempty"`
+	// Reused positions were returned as stored, with no details request.
+	Reused int `json:"reused,omitempty"`
+	// Fetched positions were new and got a details request; Refreshed ones
+	// were stored and re-read on their turn (srcutil.RefreshTurn).
+	Fetched   int `json:"fetched,omitempty"`
+	Refreshed int `json:"refreshed,omitempty"`
+	// Deferred positions were new and past MaxDetails: not returned, not
+	// stored, and fetched on a later run.
+	Deferred int `json:"deferred,omitempty"`
 }
 
 // Options configures NewWith.
 type Options struct {
 	// Report, when set, receives each listed board's counts.
 	Report func(sources.Board, Stats)
+	// Stored returns the postings an earlier run stored for b (every record
+	// under b.KeyPrefix()). With it, the bounded detail step
+	// (srcutil.PlanDetails) reuses a listed position's stored posting rather
+	// than asking for its page again, re-reading each on its turn once every
+	// srcutil.RefreshDays days, defers new positions past MaxDetails, and the
+	// board may list up to MaxListed positions. A position's key is built from
+	// its search row (the details page must name the same position). Nil asks
+	// for every details page, within MaxPostings.
+	Stored func(b sources.Board) []posting.Posting
+}
+
+// limit is the most positions a board's searches may list: MaxListed when the
+// stored postings are known, else MaxPostings.
+func (s *source) limit() int {
+	if s.opt != nil && s.opt.Stored != nil {
+		return MaxListed
+	}
+	return MaxPostings
 }
 
 type source struct {
@@ -112,10 +152,11 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err := sources.CheckFilters(posting.Apple, b.Filters); err != nil {
 		return nil, fmt.Errorf("apple %q: %w", b.Token, err)
 	}
+	limit := s.limit()
 	var rows []row
 	positions := map[string]bool{}
 	for _, term := range terms {
-		got, err := s.search(ctx, term, b.Filters)
+		got, err := s.search(ctx, term, b.Filters, limit)
 		if err != nil {
 			return nil, fmt.Errorf("apple %q: search %q: %w", b.Token, term, err)
 		}
@@ -125,30 +166,41 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 				rows = append(rows, r)
 			}
 		}
-		if len(rows) > MaxPostings {
+		if len(rows) > limit {
 			return nil, fmt.Errorf("apple %q: %w: the board's searches together list more than %d postings; narrow them",
-				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
+				b.Token, srcutil.ErrTooManyPostings, limit)
 		}
 	}
 	seen := s.now()
-	out := make([]posting.Posting, 0, len(rows))
-	st := Stats{Listed: len(rows)}
+	pl, keys, stored, err := s.planDetails(b, rows, seen)
+	if err != nil {
+		return nil, err
+	}
+	st := Stats{Listed: len(rows), Deferred: pl.Deferred}
 	if s.opt != nil && s.opt.Report != nil {
 		defer func() { s.opt.Report(b, st) }()
 	}
-	allowed := maxGone(len(rows))
-	for _, r := range rows {
+	slot := make([]*posting.Posting, len(rows))
+	for _, i := range pl.Reuse {
+		p := stored[keys[i]]
+		p.SeenAt = seen
+		slot[i] = &p
+		st.Reused++
+	}
+	allowed := maxGone(len(pl.Fetch))
+	for n, i := range pl.Fetch {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		r := rows[i]
 		p, err := s.detail(ctx, b, r, seen)
 		if errors.Is(err, errDetailGone) {
 			// The posting closed between the search and its page; leaving it out
 			// is the truth. Many at once is the details endpoint failing. The
 			// error is deliberately not ErrBoardNotFound: the search answered.
-			if st.Gone++; st.Gone > allowed || st.Gone == len(rows) {
+			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
 				return nil, fmt.Errorf("apple %q: %d of %d posting details are gone (HTTP 404); the details endpoint is not answering",
-					b.Token, st.Gone, len(rows))
+					b.Token, st.Gone, len(pl.Fetch))
 			}
 			continue
 		}
@@ -156,9 +208,58 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			// A partial listing would age healthy postings as absent.
 			return nil, fmt.Errorf("apple %q: posting %s: %w", b.Token, r.jobNumber, err)
 		}
-		out = append(out, p)
+		if n < pl.New {
+			st.Fetched++
+		} else {
+			st.Refreshed++
+		}
+		slot[i] = &p
+	}
+	out := make([]posting.Posting, 0, len(rows))
+	for _, p := range slot {
+		if p != nil {
+			out = append(out, *p)
+		}
 	}
 	return out, nil
+}
+
+// planDetails is the bounded detail step for the listed rows: which get a
+// details request, which are reused from the postings an earlier run stored
+// (looked up by the key the row's position builds; the details page is checked
+// to name that position), and which new ones are past MaxDetails and wait for a
+// later run (deferred: not returned, not stored, so their absence ages
+// nothing). Without Options.Stored every row is fetched, and the board is
+// bounded by MaxPostings instead.
+func (s *source) planDetails(b sources.Board, rows []row, seen time.Time) (srcutil.DetailPlan, []posting.Key, map[posting.Key]posting.Posting, error) {
+	stored := map[posting.Key]posting.Posting{}
+	if s.opt != nil && s.opt.Stored != nil {
+		for _, p := range s.opt.Stored(b) {
+			stored[p.Key] = p
+		}
+	}
+	keys := make([]posting.Key, len(rows))
+	dr := make([]srcutil.DetailRow, len(rows))
+	for i, r := range rows {
+		key, err := posting.AppleKey(b.Token, r.position)
+		if err != nil {
+			return srcutil.DetailPlan{}, nil, nil, fmt.Errorf("apple %q: position %s: %w", b.Token, r.position, err)
+		}
+		keys[i] = key
+		_, ok := stored[key]
+		dr[i] = srcutil.DetailRow{ID: r.position, Stored: ok}
+	}
+	limit := MaxPostings
+	if s.opt != nil && s.opt.Stored != nil {
+		limit = MaxDetails
+	}
+	pl := srcutil.PlanDetails(dr, srcutil.Day(seen), limit)
+	if pl.Deferred > 0 && (s.opt == nil || s.opt.Stored == nil) {
+		// Unreachable while the limit is MaxPostings; without the stored
+		// postings a deferred position could not be told from a stored one.
+		return srcutil.DetailPlan{}, nil, nil, fmt.Errorf("apple %q: %w: %d positions deferred", b.Token, srcutil.ErrTooManyPostings, pl.Deferred)
+	}
+	return pl, keys, stored, nil
 }
 
 // quotePhrase wraps a multi-word term in one pair of double quotes. A term
@@ -198,7 +299,7 @@ func pageURL(term string, filters map[string][]string, page int) string {
 // row slots then cover the count while the distinct job numbers stay short by
 // those repeats. A page that adds nothing, or a shortfall larger than one
 // duplicate per page already read, is still a layout change.
-func (s *source) search(ctx context.Context, term string, filters map[string][]string) ([]row, error) {
+func (s *source) search(ctx context.Context, term string, filters map[string][]string, limit int) ([]row, error) {
 	var rows []row
 	jobNumbers := map[string]bool{}
 	count := -1
@@ -212,7 +313,7 @@ func (s *source) search(ctx context.Context, term string, filters map[string][]s
 			return nil, err
 		}
 		if count < 0 {
-			if count, err = resultCount(body); err != nil {
+			if count, err = resultCount(body, limit); err != nil {
 				return nil, err
 			}
 		}
@@ -244,7 +345,7 @@ func (s *source) search(ctx context.Context, term string, filters map[string][]s
 
 // resultCount reads "N Result(s)". "600+" and anything over the cap fail:
 // the board cannot list them all.
-func resultCount(body []byte) (int, error) {
+func resultCount(body []byte, limit int) (int, error) {
 	m := countRE.FindSubmatch(body)
 	if m == nil {
 		return 0, fmt.Errorf("%w: no result count on the search page", ErrShape)
@@ -253,9 +354,9 @@ func resultCount(body []byte) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%w: result count %q", ErrShape, m[1])
 	}
-	if len(m[2]) > 0 || n > MaxPostings {
+	if len(m[2]) > 0 || n > limit {
 		return 0, fmt.Errorf("%w: search matches %s%s postings, over the %d limit; quote a phrase or add the location filter",
-			srcutil.ErrTooManyPostings, m[1], m[2], MaxPostings)
+			srcutil.ErrTooManyPostings, m[1], m[2], limit)
 	}
 	return n, nil
 }

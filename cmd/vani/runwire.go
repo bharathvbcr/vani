@@ -339,9 +339,10 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		},
 	})
 	srcs[posting.Apple] = apple.NewWith(d, apple.Options{
+		Stored: storedFor,
 		Report: func(b sources.Board, st apple.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
 		},
 	})
 	var pageErr error
