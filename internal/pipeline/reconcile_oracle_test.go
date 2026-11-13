@@ -317,6 +317,9 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 		}
 	}
 	if far >= 3 {
+		if !s.ClockBehind {
+			s.ClockSetBack = true // behind only by events days ahead: a freeze that is attention, not a failure
+		}
 		if !s.ClockBehind || farNewest.After(s.ClockAhead) {
 			s.ClockBehind, s.ClockAhead = true, farNewest
 		}
