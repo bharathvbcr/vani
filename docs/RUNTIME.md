@@ -677,6 +677,16 @@ sent, is written into the report as such and the command exits 1; so does a run 
 run record. The report is `<state dir>/doctor/<UTC time>.md` and `.json`. Nothing in the ledger, the
 rules or the watchlist is changed.
 
+When the drops part ran, each of its verdicts is appended to `<state dir>/silver_doctor.jsonl`: key,
+stratum, p_select, verdict, cause, model, run id (the report's stamp), the sha256 of the drops
+system prompt and of the posting text the doctor saw, never the model's free-text why. It is
+idempotent on (run id, key), never written by a dry run, and holds no verdict from a work
+authorization, work mode or owner-exclusion stratum. It is silver: no row is a label, a mark or a
+known outcome, and neither the rescue rule nor the silver prior reads it. `vani relevance` compares
+it with the owner's would_apply answers per prompt, and says "insufficient" below 10 yes and 30 no
+owner answers on postings the doctor judged. A log that cannot be appended to fails the command
+after the report is written.
+
 With `--json` the reply is the plan (runs read, boards signalled, the drop sample's `seed`, each
 request's size, `worst_case_usd`), `sent` (false when a refusal came before any request, so nothing
 was spent), and for a real run the report itself as `result` and the `.md` path as `report`. A

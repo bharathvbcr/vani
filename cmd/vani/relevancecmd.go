@@ -3,9 +3,11 @@ package main
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/doctor"
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/feedback"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -126,6 +128,14 @@ func (e *env) cmdRelevance(args []string) error {
 	readers := eval.BuildReaderAgreement(done, b.snap.Records, store, status, names)
 	readers.TeacherDetail = detail
 	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers, YesYield: &yield}
+	// The doctor's drop verdicts against the owner's answers: a log that cannot
+	// be read is said, never an empty comparison.
+	silverSkipped := 0
+	if ds, err := doctor.OpenSilverStore(filepath.Join(e.stateDir, doctor.SilverFile)); err != nil {
+		out.DoctorSilverError = err.Error()
+	} else {
+		out.DoctorSilver, silverSkipped = doctor.BuildSilverAgreement(ds.Rows(), done), ds.Skipped
+	}
 	base := jobinsight.DefaultWeights()
 	items, itemsErr := e.judgedItems(sampled, b.snap, base, nil)
 	if itemsErr != nil {
@@ -153,6 +163,11 @@ func (e *env) cmdRelevance(args []string) error {
 		fmt.Fprint(e.stdout, proxy.Markdown())
 		fmt.Fprint(e.stdout, agree.Markdown())
 		fmt.Fprint(e.stdout, readers.Markdown())
+		if out.DoctorSilverError != "" {
+			fmt.Fprintf(e.stdout, "\n## Doctor drop verdicts against the owner\n\nnot computed: %s\n", out.DoctorSilverError)
+		} else {
+			fmt.Fprint(e.stdout, doctor.SilverMarkdown(out.DoctorSilver, silverSkipped))
+		}
 		fmt.Fprint(e.stdout, "\n## Score parts against the owner\n")
 		if out.PartAUCError != "" {
 			fmt.Fprintf(e.stdout, "\nnot computed: %s\n", out.PartAUCError)
@@ -244,6 +259,10 @@ type relevanceReply struct {
 	// YesYield is the raw yes yield per stratum and disagreement cell, with the
 	// yes-rich stratum named when one is clearly above the random strata.
 	YesYield *eval.YesYield `json:"yes_yield,omitempty"`
+	// DoctorSilver is the doctor's drop verdicts (silver_doctor.jsonl) against
+	// the owner's answers, per prompt; DoctorSilverError says why it is absent.
+	DoctorSilver      []doctor.SilverAgreement `json:"doctor_silver,omitempty"`
+	DoctorSilverError string                   `json:"doctor_silver_error,omitempty"`
 
 	DropRecall         *eval.DropRecall       `json:"drop_recall,omitempty"`
 	TeacherProxy       *eval.TeacherDropProxy `json:"teacher_proxy,omitempty"`
