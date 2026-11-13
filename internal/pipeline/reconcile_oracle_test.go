@@ -250,7 +250,8 @@ func oracleForgetMisses(ann map[string]string) map[string]string {
 //	of the board's open postings (distinct keys, before the listing) absent,
 //	with at least 10 open, marks every absent posting mass; so does a listing
 //	showing none of at least 2 open ones; the mark holds until the posting
-//	reappears; a mass-marked posting dies after at least 2 misses and 14 days
+//	reappears; on a board with fewer than 10 open, a listing that leaves more
+//	than half of them absent, and at least 2, does the same; a mass-marked posting dies after at least 2 misses and 14 days
 //	since its own first miss.
 //	The clock: a listing ages nothing when the ledger holds events between 1
 //	hour and 3 days ahead of now on one of the board's own records, or on at
@@ -299,7 +300,7 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 		return s, nil
 	}
 	n, a := len(open), len(absent)
-	mass := (n >= 2 && a == n) || (n >= 10 && 4*a >= n)
+	mass := (n >= 2 && a == n) || (n >= 10 && 4*a >= n) || (n < 10 && a >= 2 && 2*a > n)
 	for _, k := range absent {
 		if err := ctx.Err(); err != nil {
 			return s, err

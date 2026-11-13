@@ -25,7 +25,9 @@ import (
 //   - A full listing is a mass absence when it leaves at least MassShare of the
 //     board's open postings absent (distinct keys, counted before the listing)
 //     with at least MassMinOpen open. An empty answer is one too on a board of
-//     any size from EmptyListingMinOpen open (a named extension of the owner's
+//     any size from EmptyListingMinOpen open, and on a board under MassMinOpen
+//     open so is a non-empty listing that leaves out more than half of the open
+//     postings and at least SmallBoardMinAbsent of them (a named extension of the owner's
 //     rule: a small board that shows none of its postings is the classic wrong
 //     tenant or broken read, and keeping is the safe error). Every posting such
 //     a listing leaves absent is mass marked (MassMissedSinceKey). The mark only
@@ -101,6 +103,10 @@ const (
 	// EmptyListingMinOpen is the fewest open postings from which a listing that
 	// shows none of them is a mass absence whatever the floor.
 	EmptyListingMinOpen = 2
+	// SmallBoardMinAbsent is the fewest absent postings from which a listing of
+	// a board under the floor that leaves out more than half of its open
+	// postings is a mass absence (closes FOLLOWUPS A2-4).
+	SmallBoardMinAbsent = 2
 	// ClockWindow is how much time the rule takes on trust: events further
 	// ahead than this are not read as a clock behind (so a clock that once ran
 	// ahead freezes nothing for longer than this), and a death that needs more
@@ -206,6 +212,12 @@ func (r *Reconciler) Liveness() Liveness { return r.live.resolved() }
 func massAbsence(lv Liveness, open, absent int) bool {
 	if open >= EmptyListingMinOpen && absent == open {
 		return true
+	}
+	if open < lv.MassMinOpen {
+		// A board under the floor leans on the ordinary rule for a posting or
+		// two, but a listing that is missing more than half of its open
+		// postings (and at least 2) is a wrong tenant or a broken read.
+		return absent >= SmallBoardMinAbsent && 2*absent > open
 	}
 	return open >= lv.MassMinOpen && float64(absent) >= lv.MassShare*float64(open)-1e-9
 }

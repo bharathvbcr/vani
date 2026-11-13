@@ -35,7 +35,8 @@ package pipeline
 // ahead of the clock, or before the posting was first seen, restarts at the
 // clock. A full listing that leaves at least the share of the board's open
 // postings (distinct keys, before the listing) absent with at least the floor
-// open, or shows none of at least 2 open, is a mass absence and marks every
+// open, or shows none of at least 2 open, or (on a board under the floor)
+// leaves more than half of its open postings and at least 2 absent, is a mass absence and marks every
 // absent posting until it reappears. A listing ages nothing while the ledger
 // holds events between 1 hour and 3 days ahead of its clock on one of the
 // board's own records, or on at least 3 records anywhere.
@@ -352,7 +353,8 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			continue
 		}
 		nOpen, nAbsent := len(open), len(absent)
-		mass := (nOpen >= 2 && nAbsent == nOpen) || (nOpen >= rule.floor && nAbsent*rule.den >= rule.num*nOpen)
+		mass := (nOpen >= 2 && nAbsent == nOpen) || (nOpen >= rule.floor && nAbsent*rule.den >= rule.num*nOpen) ||
+			(nOpen < rule.floor && nAbsent >= 2 && 2*nAbsent > nOpen)
 		if mass && nAbsent > 0 {
 			tally.massReads.Add(1)
 		}

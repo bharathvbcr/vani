@@ -338,7 +338,11 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   (`main.swift:20-29`) and the flags (`main.swift:31-58`) grant nothing a same-user process does
   not already have. Security impact: no change. Revisit if the host gains a capability the same
   user cannot exercise directly, for example a Keychain ACL bound to the host's signature.
-- **A2-4 residual: a well-formed empty listing during an ATS outage ages the board; no floor
+- **A2-4 residual: CLOSED 2026-11-12.** A board under `liveness.mass_min_open` (10) whose
+  non-empty listing leaves more than half of its open postings absent (and at least 2) is a mass
+  absence and holds them 14 days (`massAbsence`, docs/RUNTIME.md "Mass absence"; oracle and
+  property test updated from the rule text). The record below is kept for history.
+- **A2-4 (history): a well-formed empty listing during an ATS outage ages the board; no floor
   (audit 2026-10-20; DECLINED 2026-10-21, Fable delegated).** The reasons and the contract are in
   "Known limits" under "Absence ages every open posting" (the Residual bullet). **Revisited
   2026-11-12, not closed:** a board with `liveness.mass_min_open` (10) or more open postings, or
