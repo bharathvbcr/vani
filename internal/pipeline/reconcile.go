@@ -123,7 +123,20 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 // ledger as it stands when the board starts, as a fresh scan would: the
 // boards before it included, this board's own writes not.
 func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, true)
+	return rc.reconcile(ctx, b, listed, now, true, false)
+}
+
+// ReconcileShort folds a board's listing that counted more rows than it listed
+// (a stub row, Workday's split allowance): the listing is real for the
+// postings it lists, so sightings, pending reopens and field updates apply to
+// them as in Reconcile, but it is not the board's whole word about what it
+// left out, so every open posting absent from it is treated as a mass absence
+// (liveness.go): kept and held for MassHold from its own first miss, and
+// never killed by the ordinary rule. Pending reopens the listing leaves out
+// expire as in a full listing, after the same PendingReopenExpiry that a
+// mass hold lasts.
+func (rc *Reconciler) ReconcileShort(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
+	return rc.reconcile(ctx, b, listed, now, true, true)
 }
 
 // ReconcilePartial folds postings that are part of a board's listing, not the
@@ -131,12 +144,12 @@ func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []p
 // listing loop but runs no absence pass, so a posting missing from the batch is
 // never missed or aged. A partial listing says nothing about what is absent.
 func (rc *Reconciler) ReconcilePartial(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, false)
+	return rc.reconcile(ctx, b, listed, now, false, false)
 }
 
 // reconcile is the listing loop both entry points share; full says the listing
 // is the board's whole, so records it lacks are aged.
-func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full bool) (Summary, error) {
+func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full, short bool) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
 	idx := rc.index()
@@ -342,7 +355,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			open = append(open, k)
 		}
 	}
-	a, err := ageAbsent(ctx, l, rc.live, open, seen, idx.clockEvidence(prefix, now), now)
+	a, err := ageAbsent(ctx, l, rc.live, open, seen, idx.clockEvidence(prefix, now), now, short)
 	s.addAbsence(a)
 	return s, err
 }

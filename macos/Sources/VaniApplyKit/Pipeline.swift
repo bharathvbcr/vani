@@ -1040,8 +1040,8 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 /// Details that answered 404 under a listing that succeeded.
                 public var gone: Int
                 /// Rows the board counted but did not list (a Workday listing that
-                /// ended short of its own total). Kept, not failed; stored postings
-                /// among them age as absent.
+                /// ended short of its own total). Kept, not failed; stored postings it
+                /// left out are held as a mass absence.
                 public var short: Int
                 /// `reconcile.new`: new ledger rows this board wrote. Nil when the
                 /// board was not read. A read board whose key was omitted wrote 0.
@@ -1296,7 +1296,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             /// named, as vani's `runs show` names them ("wd:acme/External (Acme): 63");
             /// the rest, and short rows on boards `items` left out, are counted.
             /// Nil when no board listed short. Not a failure: the listing is kept,
-            /// but stored postings among the unlisted rows age as absent.
+            /// but stored postings it left out are held as a mass absence.
             public var shortSummary: String? {
                 guard short > 0 else { return nil }
                 // Largest first, ties in watchlist order: routine one-row gaps on

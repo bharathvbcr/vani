@@ -149,7 +149,7 @@ func ibmFetch(st ibm.Stats) boardFetch { return boardFetch{Short: st.Short} }
 // it did not list (Short) is said in the run log too.
 func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	if f.Short > 0 {
-		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, f.Short)
+		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings it left out are held as a mass absence, not aged by the ordinary rule", b.ATS, b.Token, f.Short)
 	}
 	if f.PayError != "" {
 		f.PayError = oneLine(f.PayError, maxStageNote)

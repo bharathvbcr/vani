@@ -64,38 +64,6 @@ func ledgerStatusOf(t *testing.T, w *wired, k posting.Key) (posting.Status, int)
 	return r.Status, r.MissedRuns
 }
 
-// A listing short of its count (Stats.Short > 0) could not see every posting,
-// so the ones it left out are not absent: with a daily run they must not miss,
-// let alone die on the second day. The same listing with no shortfall is the
-// board's whole word, and ages the missing posting to Dead.
-func TestShortListingAgesNothing(t *testing.T) {
-	w, b, all, t0 := shortBoardSetup(t)
-	missing := all[9].Key
-	listed := all[:9]
-
-	s1 := runListing(t, w, b, listed, 2, t0.Add(24*time.Hour))
-	s2 := runListing(t, w, b, listed, 2, t0.Add(48*time.Hour))
-	s3 := runListing(t, w, b, listed, 1, t0.Add(72*time.Hour))
-	for i, s := range []pipeline.Summary{s1, s2, s3} {
-		if s.Missed != 0 || s.Dead != 0 || s.Absent != 0 || s.Open != 0 {
-			t.Errorf("short run %d aged postings: %+v", i+1, s)
-		}
-	}
-	if st, missed := ledgerStatusOf(t, w, missing); st != posting.Live || missed != 0 {
-		t.Fatalf("a posting a short listing failed to list is %s with %d missed runs, want live with 0", st, missed)
-	}
-
-	// The board then lists in full, still without the posting: now it ages.
-	runListing(t, w, b, listed, 0, t0.Add(96*time.Hour))
-	if st, missed := ledgerStatusOf(t, w, missing); st != posting.Live || missed != 1 {
-		t.Fatalf("first complete miss: %s, %d missed", st, missed)
-	}
-	runListing(t, w, b, listed, 0, t0.Add(120*time.Hour))
-	if st, _ := ledgerStatusOf(t, w, missing); st != posting.Dead {
-		t.Fatalf("a posting a complete listing leaves out twice is %s, want dead", st)
-	}
-}
-
 // A short listing still folds what it lists: new postings are stored, and a
 // posting that was absent and is listed again ends its absence episode.
 func TestShortListingStillFoldsWhatItLists(t *testing.T) {
@@ -117,20 +85,20 @@ func TestShortListingStillFoldsWhatItLists(t *testing.T) {
 }
 
 // An empty listing that is also short (a board that counted jobs and listed
-// none) ages nothing and does not mass-mark; a complete empty listing still
-// does, on a board with enough open postings.
-func TestShortEmptyListingMarksNothing(t *testing.T) {
+// none) holds every open posting as a mass absence and kills none; a later
+// complete empty listing finds them already marked and holds them too.
+func TestShortEmptyListingMassHoldsEveryPosting(t *testing.T) {
 	w, b, all, t0 := shortBoardSetup(t)
 	s := runListing(t, w, b, nil, 10, t0.Add(24*time.Hour))
-	if s.Mass || s.MassMarked != 0 || s.Missed != 0 {
-		t.Fatalf("short empty listing aged: %+v", s)
+	if !s.Mass || s.MassMarked != 10 || s.Dead != 0 {
+		t.Fatalf("short empty listing: %+v", s)
 	}
-	if _, missed := ledgerStatusOf(t, w, all[0].Key); missed != 0 {
-		t.Fatalf("%d missed runs after a short empty listing", missed)
+	if st, missed := ledgerStatusOf(t, w, all[0].Key); st != posting.Live || missed != 1 {
+		t.Fatalf("after a short empty listing: %s, %d missed runs", st, missed)
 	}
 	s = runListing(t, w, b, nil, 0, t0.Add(48*time.Hour))
-	if !s.Mass || s.MassMarked != 10 {
-		t.Fatalf("a complete empty listing is a mass absence: %+v", s)
+	if !s.Mass || s.MassMarked != 0 || s.Held != 10 || s.Dead != 0 {
+		t.Fatalf("a complete empty listing after it: %+v", s)
 	}
 }
 

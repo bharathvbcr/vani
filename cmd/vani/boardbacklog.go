@@ -15,7 +15,7 @@ import (
 // something began. The oldest deferred row is no older than that, so it is an
 // upper bound, and a backlog that never empties shows as an age that only
 // grows. ShortSince is the same for a listing that counted more rows than it
-// listed: such a board ages nothing (reconcileBoard), so one that is short on
+// listed: such a board holds what it left out as a mass absence (reconcileBoard), so one that is short on
 // every run is named rather than left to look healthy.
 //
 // None of it fails a run. A run counts as failed only when postings die or a

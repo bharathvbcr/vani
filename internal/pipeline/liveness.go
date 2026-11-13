@@ -294,7 +294,7 @@ type absence struct {
 // keys before the listing, seen the keys it listed, clock what the ledger says
 // about now. It writes the miss, hold and death events in one batched append;
 // its counts say what was written, so a pass that failed reports none of them.
-func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, clock clockEvidence, now time.Time) (absence, error) {
+func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, clock clockEvidence, now time.Time, short bool) (absence, error) {
 	lv = lv.resolved()
 	var a absence
 	a.open = len(open)
@@ -312,7 +312,7 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		a.clockBehind, a.clockAhead = true, clock.ahead
 		return a, nil
 	}
-	mass := massAbsence(lv, len(open), len(absent))
+	mass := short || massAbsence(lv, len(open), len(absent))
 
 	var w absence
 	evs := make([]ledger.Event, 0, len(absent))

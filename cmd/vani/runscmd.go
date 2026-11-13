@@ -946,7 +946,7 @@ func massDeadLine(it boardReport) string {
 // shortListingLines names each read board that listed fewer jobs than it
 // counts (boardReport.Short), at most maxShortLines of them. Not a failure:
 // the listing is kept by design, but the postings it did not list go unseen,
-// and the board ages nothing while it is short. Boards past the bound, and the short rows of
+// and its absent postings are held as a mass absence while it is short. Boards past the bound, and the short rows of
 // boards the record could not keep, are counted on their own lines.
 func shortListingLines(b *boardsReport) []string {
 	if b == nil || b.Short <= 0 {
@@ -970,7 +970,7 @@ func shortListingLines(b *boardsReport) []string {
 			moreRows += it.Short
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("Listed short: %s: %d counted job(s) not listed; nothing on the board ages while it is short", boardName(it), it.Short))
+		lines = append(lines, fmt.Sprintf("Listed short: %s: %d counted job(s) not listed; postings it left out are held as a mass absence, not aged by the ordinary rule", boardName(it), it.Short))
 	}
 	if more > 0 {
 		lines = append(lines, fmt.Sprintf("Listed short: %d more board(s), %d counted job(s) not listed", more, moreRows))

@@ -221,8 +221,12 @@ were ported with notice. Source files do not carry an upstream copyright header.
 - **Workday short listings are counted**: a query under the 2000-row window that ends before the
   board's own total is still kept, not failed, but the rows it counted and did not list are now
   recorded (`boards.short`, `items[].short` in the run record) and named per board by
-  `vani runs show` ("Listed short: …", largest first). Stored postings among them age as absent,
-  so the gap is now visible. It is not a failure. The same count now covers a Workday split whose
+  `vani runs show` ("Listed short: …", largest first). A short listing is reconciled as a full one
+  whose absent postings are all treated as a mass absence (`Reconciler.ReconcileShort`): the
+  postings it lists get their sightings, pending reopens and field updates, and the ones it leaves
+  out are held for the mass hold (14 days from their own first miss) and never killed by the
+  ordinary two-miss rule, so the gap is visible and a board that is short on every run still ages,
+  after the hold. It is not a failure. The same count now covers a Workday split whose
   allowance let a gap pass, and the hundredth that SmartRecruiters, Oracle HCM and IBM listings
   may lose before they fail; a board that then fails is not counted, as nothing ages. The app's
   run panel shows a **Listed short** row.

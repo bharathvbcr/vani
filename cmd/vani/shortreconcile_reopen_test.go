@@ -11,24 +11,31 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-// A short listing is reconciled as a partial one, and a partial listing
-// deliberately skips the pending-reopen sighting path (reconcile.go: the apply
-// is `full && ...`, and the expiry pass runs only after the `!full` return):
-// a short listing's silence about a posting is not an absence, so it neither
-// reopens a drop nor clears a reopen that waits. The reconciler is still the
-// run's (runReconciler), so a later complete listing that shows the posting
-// applies the reopen (here an exclusion-class one).
-func TestShortListingLeavesPendingReopensWaitingForAFullOne(t *testing.T) {
+// A short listing is a real read of the postings it lists: a pending reopen
+// whose posting it shows again is applied, as a complete listing applies it
+// (the earlier rule folded a short listing as a partial one, which applies
+// none, so a board short on every run never let a drop back). The rest of the
+// listing is treated as a mass absence, so a reopen it does not show is not
+// applied.
+func TestShortListingAppliesAPendingReopenOfWhatItLists(t *testing.T) {
 	w, b, all, t0 := shortBoardSetup(t)
-	target := all[9].Key
-	p := all[9]
-	if err := w.led.Append(context.Background(), ledger.Event{V: ledger.SchemaVersion, At: t0.Add(time.Hour), Key: target, Status: posting.Dropped, Reason: "excluded", Annotations: map[string]string{pipeline.AnnExcluded: "test"}}); err != nil {
-		t.Fatal(err)
+	dropAt := t0.Add(time.Hour)
+	drop := func(p posting.Posting) {
+		t.Helper()
+		if err := w.led.Append(context.Background(), ledger.Event{V: ledger.SchemaVersion, At: dropAt, Key: p.Key, Status: posting.Dropped,
+			Reason: "excluded", Annotations: map[string]string{pipeline.AnnExcluded: "test"}}); err != nil {
+			t.Fatal(err)
+		}
 	}
+	listedDrop, unlistedDrop := all[8], all[9]
+	drop(listedDrop)
+	drop(unlistedDrop)
 	path := filepath.Join(w.stateDir, pipeline.PendingReopenFile)
 	pending := pipeline.NewPendingReopens()
-	pending.Items[target] = pipeline.PendingReopen{Class: "exclusion", At: t0.Add(time.Hour), Reason: "test"}
-	if err := pending.Save(path, t0.Add(time.Hour)); err != nil {
+	for _, p := range []posting.Posting{listedDrop, unlistedDrop} {
+		pending.Items[p.Key] = pipeline.PendingReopen{Class: "exclusion", At: dropAt, Reason: "test"}
+	}
+	if err := pending.Save(path, dropAt); err != nil {
 		t.Fatal(err)
 	}
 	waiting := func(at time.Time) int {
@@ -40,23 +47,23 @@ func TestShortListingLeavesPendingReopensWaitingForAFullOne(t *testing.T) {
 		return s.Len()
 	}
 
-	// Short runs that do list the dropped posting, and one past the expiry
-	// that does not list it: nothing is applied, nothing is cleared.
-	runListing(t, w, b, all, 3, t0.Add(24*time.Hour))
-	if st, _ := ledgerStatusOf(t, w, target); st != posting.Dropped {
-		t.Fatalf("a short listing reopened a drop: %s", st)
+	at := t0.Add(24 * time.Hour)
+	s := runListing(t, w, b, all[:9], 3, at) // lists listedDrop, not unlistedDrop
+	if st, _ := ledgerStatusOf(t, w, listedDrop.Key); st == posting.Dropped || s.Reopened != 1 {
+		t.Fatalf("a short listing that shows the dropped posting did not apply its pending reopen: status %s, %+v", st, s)
 	}
-	runListing(t, w, b, all[:9], 3, t0.Add(pipeline.PendingReopenExpiry+48*time.Hour))
-	if n := waiting(t0.Add(48 * time.Hour)); n != 1 {
-		t.Fatalf("a short listing that left the posting out cleared its pending reopen: %d waiting", n)
+	if st, _ := ledgerStatusOf(t, w, unlistedDrop.Key); st != posting.Dropped {
+		t.Fatalf("a posting the short listing left out was reopened: %s", st)
+	}
+	if n := waiting(at); n != 1 {
+		t.Fatalf("%d pending reopens waiting, want only the one the listing did not show", n)
 	}
 
-	// A complete listing that shows the posting again applies the reopen.
-	s := runListing(t, w, b, all, 0, t0.Add(pipeline.PendingReopenExpiry+72*time.Hour))
-	if st, _ := ledgerStatusOf(t, w, target); st == posting.Dropped || s.Reopened != 1 {
-		t.Fatalf("a complete listing did not apply the pending reopen: status %s, %+v (posting %s)", st, s, p.Key)
-	}
-	if n := waiting(t0.Add(pipeline.PendingReopenExpiry + 72*time.Hour)); n != 0 {
-		t.Fatalf("an applied reopen is still waiting: %d", n)
+	// Past PendingReopenExpiry the unlisted one expires as in a complete
+	// listing: the same 14 days a mass hold lasts.
+	late := dropAt.Add(pipeline.PendingReopenExpiry + time.Hour)
+	runListing(t, w, b, all[:9], 3, late)
+	if n := waiting(late); n != 0 {
+		t.Fatalf("a pending reopen that stayed out of short listings for %s is still waiting: %d", pipeline.PendingReopenExpiry, n)
 	}
 }
