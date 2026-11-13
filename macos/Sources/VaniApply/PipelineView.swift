@@ -28,6 +28,7 @@ struct PipelineView: View {
                     StatusHeader(status: s)
                     ScheduleSection(daemon: s.daemon)
                     LastRunSection(status: s)
+                    DoctorSection()
                     SpendSection(backends: s.backends)
                     LedgerSection(ledger: s.ledger)
                     DecideSection(decide: s.decide, config: s.config)
@@ -527,7 +528,7 @@ private struct StatusHeader: View {
     }
 }
 
-private struct Panel<Content: View>: View {
+struct Panel<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 

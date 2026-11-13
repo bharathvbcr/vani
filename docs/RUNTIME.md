@@ -676,6 +676,24 @@ sent, is written into the report as such and the command exits 1; so does a run 
 run record. The report is `<state dir>/doctor/<UTC time>.md` and `.json`. Nothing in the ledger, the
 rules or the watchlist is changed.
 
+With `--json` the reply is the plan (runs read, boards signalled, the drop sample's `seed`, each
+request's size, `worst_case_usd`), `sent` (false when a refusal came before any request, so nothing
+was spent), and for a real run the report itself as `result` and the `.md` path as `report`. A
+partial review exits 1 and still carries `result` and `report`. The report names the postings the
+drop review was sent (`drops_sent`: key, stratum, company, title; never the description).
+`vani doctor --last [--json]` prints the newest report written and asks nothing; a newest report
+that cannot be read is an error, never an older one shown in its place.
+
+The Mac app's Pipeline tab has a **Pipeline doctor** panel built on these: Check the Pipeline
+prices a review (`--dry-run --json`, no key), the confirmation shows the worst case and offers a
+budget a quarter over it (the identifying-words warning first when the owner's list is missing),
+and Run Review passes that budget and the priced seed. The panel shows the newest report
+(`--last --json`) with its gaps in red, and the report sheet lists boards and drops worst first,
+the patterns and fixes, and what the logs held back. A refusal, a partial review, a failure after a
+request was sent, and a stop each read differently. The reply's shape is pinned by
+`macos/Tests/VaniApplyKitTests/Fixtures/doctor/reply.json`, which
+`go test ./cmd/vani -run TestDoctorReplyGolden -update` writes and the app's tests decode.
+
 ## Runtime state, cooldowns and locks
 
 State directory files and locks created during operations:

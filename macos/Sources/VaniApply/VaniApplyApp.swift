@@ -14,6 +14,7 @@ struct VaniApplyApp: App {
                 .environment(delegate.jobs)
                 .environment(delegate.audit)
                 .environment(delegate.pipeline)
+                .environment(delegate.doctor)
                 .environment(delegate.exclusions)
                 .frame(minWidth: 820, minHeight: 520)
                 .modifier(CaptureMainWindowOpener(delegate: delegate))

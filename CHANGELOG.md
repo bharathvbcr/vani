@@ -17,6 +17,11 @@ were ported with notice. Source files do not carry an upstream copyright header.
   cost, and a real run needs `--budget-usd` to cover that cost. Sponsorship rules, readings and
   drops never leave the machine. A failed part is written as failed and the command exits 1.
   [docs/RUNTIME.md](docs/RUNTIME.md) describes it.
+- **Pipeline doctor in the Mac app.** The Pipeline tab has a Pipeline doctor panel: price a review
+  (nothing sent), confirm a budget, run it, and read the report (boards failing silently and wrong
+  drops first, with the model's evidence, next steps and fixes). The newest report shows on launch.
+  `vani doctor --json` now carries the report (`result`), the drop sample's `seed` and `sent`, a
+  partial review's reply keeps its report, and `vani doctor --last` prints the newest report.
 - **Features, benchmarks, and credits.** The README leads with what Vani fetches
   and what it refuses to do. Board caps in that list match the adapter
   constants (Avature 400, IBM 500, D. E. Shaw 1,000, SmartRecruiters and
