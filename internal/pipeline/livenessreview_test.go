@@ -267,3 +267,22 @@ func TestMassHeldPerBoard(t *testing.T) {
 		t.Fatalf("an unreadable stamp: %+v", got)
 	}
 }
+
+// A posting first seen under a clock 20 hours ahead, first missed when real
+// time is just under an hour before that sighting: the stamp is within the
+// hour's jitter of the sighting, so it reads, and the posting dies 20 hours
+// later instead of restarting (found by the property test, seed 508).
+func TestMissJustBeforeAnAheadSightingReads(t *testing.T) {
+	l := openLedger(t)
+	b := probeBoard("jitter")
+	reviewRead(t, l, b, t0, idRange(0, 20))
+	reviewRead(t, l, b, t0.Add(time.Hour+20*time.Hour), append(idRange(0, 20), 100)) // 100 first seen at t0+21h by the clock
+	first := t0.Add(20*time.Hour + 30*time.Minute)
+	reviewRead(t, l, b, first, idRange(0, 20))
+	if r := rec(t, l, probeKey(t, b, 100)); r.MissedRuns != 1 || r.Annotations[MissedSinceKey] != stampOf(first) {
+		t.Fatalf("setup: %+v", r)
+	}
+	if s := reviewRead(t, l, b, first.Add(20*time.Hour), idRange(0, 20)); s.Dead != 1 {
+		t.Fatalf("the miss stamped half an hour before its ahead sighting restarted instead of dying: %+v", s)
+	}
+}

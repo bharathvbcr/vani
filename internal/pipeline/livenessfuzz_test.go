@@ -376,7 +376,7 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 				p.seenPast = p.seenPast || seenPast
 			}
 			p.misses++
-			if p.misses == 1 || p.first.After(clock.Add(time.Hour)) || (!p.firstSeen.After(clock.Add(time.Hour)) && p.first.Before(p.firstSeen)) {
+			if p.misses == 1 || p.first.After(clock.Add(time.Hour)) || (!p.firstSeen.After(clock.Add(time.Hour)) && p.first.Before(p.firstSeen.Add(-time.Hour))) {
 				p.first, p.firstTrue, p.firstOff = clock, r.at, r.off
 			}
 			if mass && !p.massed {

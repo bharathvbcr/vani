@@ -243,7 +243,7 @@ func oracleForgetMisses(ann map[string]string) map[string]string {
 //
 //	a posting absent from a full listing is missed, stamped on its first miss,
 //	and dies after at least 2 misses and 20 hours since that first miss; a
-//	stamp more than 1 hour ahead of now, or before the posting was first seen
+//	stamp more than 1 hour ahead of now, or more than 1 hour before the posting was first seen
 //	(a first sighting itself more than 1 hour ahead is not compared),
 //	is unreadable and restarts at now; a listing that leaves at least a quarter
 //	of the board's open postings (distinct keys, before the listing) absent,
@@ -310,14 +310,14 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 		misses := cur.MissedRuns + 1
 		first := now
 		if cur.MissedRuns > 0 {
-			if t, err := time.Parse(time.RFC3339Nano, cur.Annotations["missed_since"]); err == nil && !t.After(now.Add(time.Hour)) && (cur.FirstSeen.After(now.Add(time.Hour)) || !t.Before(cur.FirstSeen)) {
+			if t, err := time.Parse(time.RFC3339Nano, cur.Annotations["missed_since"]); err == nil && !t.After(now.Add(time.Hour)) && (cur.FirstSeen.After(now.Add(time.Hour)) || !t.Before(cur.FirstSeen.Add(-time.Hour))) {
 				first = t
 			}
 		}
 		massed := ""
 		if cur.MissedRuns > 0 && cur.Annotations["mass_missed_since"] != "" {
 			massed = cur.Annotations["mass_missed_since"]
-			if t, err := time.Parse(time.RFC3339Nano, massed); err != nil || t.After(now.Add(time.Hour)) || (!cur.FirstSeen.After(now.Add(time.Hour)) && t.Before(cur.FirstSeen)) {
+			if t, err := time.Parse(time.RFC3339Nano, massed); err != nil || t.After(now.Add(time.Hour)) || (!cur.FirstSeen.After(now.Add(time.Hour)) && t.Before(cur.FirstSeen.Add(-time.Hour))) {
 				massed = now.UTC().Format(time.RFC3339Nano)
 			}
 		}

@@ -52,7 +52,8 @@ import (
 //     that wrote them), and names the newest event it saw (Summary.ClockAhead).
 //     One or two stray records on another board do not freeze this one.
 //   - Unreadable stamps. A stamp more than MaxStampAhead past now, or before
-//     the posting was first seen (a clock set back past its history), is
+//     more than MaxStampAhead before the posting was first seen (a clock set
+//     back past its history), is
 //     unreadable and restarts the episode at now: later, never earlier. A
 //     first sighting more than MaxStampAhead past now is not compared (it was
 //     taken under a clock that ran ahead and would restart every read).
@@ -221,9 +222,11 @@ func clearMissMarks(ann map[string]string) map[string]string {
 }
 
 // readStamp parses a stamp annotation; ok is false when it is missing,
-// malformed, more than MaxStampAhead past now, or before the record was first
-// seen (no posting is missed before it exists: the stamp was taken under a
-// clock set back past the posting's history). The first sighting is itself a
+// malformed, more than MaxStampAhead past now, or more than MaxStampAhead
+// before the record was first seen (no posting is missed before it exists:
+// the stamp was taken under a clock set back past the posting's history; the
+// hour is the same jitter allowed everywhere, so a miss stamped just before an
+// ahead-stamped sighting does not restart). The first sighting is itself a
 // stamp: one more than MaxStampAhead past now was taken under a clock that ran
 // ahead and says nothing, so it is not compared (else every stamp would read
 // as before it, and the episode would restart until real time passed it).
@@ -234,7 +237,7 @@ func readStamp(r ledger.Record, key string, now time.Time) (time.Time, bool) {
 	}
 	cut := now.Add(MaxStampAhead)
 	t, err := time.Parse(time.RFC3339Nano, v)
-	if err != nil || t.After(cut) || (!r.FirstSeen.After(cut) && t.Before(r.FirstSeen)) {
+	if err != nil || t.After(cut) || (!r.FirstSeen.After(cut) && t.Before(r.FirstSeen.Add(-MaxStampAhead))) {
 		return time.Time{}, false
 	}
 	return t, true
