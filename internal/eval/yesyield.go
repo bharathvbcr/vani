@@ -32,8 +32,9 @@ type YieldRow struct {
 //
 // Random is every random stratum pooled (deciles, drop classes, closed). Richest
 // is the stratum with the highest Wilson lower bound among those with at least
-// MinYieldJudged labels, named only when that bound is above Random's yes
-// rate; Advice says so in words, or why none is named.
+// MinYieldJudged labels, named only when that bound is above Random's upper
+// bound (the intervals do not overlap, so a few random labels cannot make a
+// stratum look rich); Advice says so in words, or why none is named.
 type YesYield struct {
 	Rows    []YieldRow `json:"rows"`
 	Random  YieldRow   `json:"random"`
@@ -87,15 +88,15 @@ func BuildYesYield(labels map[posting.Key]Entry) YesYield {
 		out.Advice = "no data: no judged label drawn from a random stratum yet, so nothing to compare a stratum with"
 	case best == "":
 		out.Advice = fmt.Sprintf("none named: no stratum has %d judged labels yet", MinYieldJudged)
-	case bestLo <= float64(out.Random.Yes)/float64(out.Random.N):
-		out.Advice = fmt.Sprintf("none named: no stratum's yes rate is clearly above the random strata's (%d of %d)", out.Random.Yes, out.Random.N)
+	case bestLo <= out.Random.Hi:
+		out.Advice = fmt.Sprintf("none named: no stratum's yes rate is clearly above the random strata's (%d of %d, upper bound %.2f)", out.Random.Yes, out.Random.N, out.Random.Hi)
 	default:
 		out.Richest = best
 		how := "give its group more of the draw's places"
 		if SelectedOnReading(best) {
 			how = "raise --disagree (at most twice the random quotas)"
 		}
-		out.Advice = fmt.Sprintf("%s is yes-rich: its 95%% lower bound %.2f is above the random strata's %d of %d; %s. The quotas are the owner's call.", best, bestLo, out.Random.Yes, out.Random.N, how)
+		out.Advice = fmt.Sprintf("%s is yes-rich: its 95%% lower bound %.2f is above the random strata's upper bound %.2f (%d of %d); %s. The quotas are the owner's call.", best, bestLo, out.Random.Hi, out.Random.Yes, out.Random.N, how)
 	}
 	return out
 }

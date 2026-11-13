@@ -2,10 +2,13 @@ package eval
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/decide"
 )
@@ -246,6 +249,30 @@ func TestDropRecallCountsCellLabelsAsKnownOutcomes(t *testing.T) {
 	if c2.Marked != 3 || c2.MarkedWanted != 1 {
 		t.Fatalf("with an owner mark: %+v, want marked 3 of which 1 wanted", c2)
 	}
+	// A cell maybe is wanted but not a yes: the yes-only share must not count
+	// it. Two kept cells' worth of identical labels, one with a cell maybe in
+	// the drop class and one with nothing there, give the same yes-only share.
+	withMaybe := map[posting.Key]Entry{}
+	judge(withMaybe, "gh:k", "decile:5", 0, 20, 4, 0, 0.5)
+	judge(withMaybe, "gh:d", "dropped:a", 0, 10, 0, 0, 0.3)
+	plain := maps.Clone(withMaybe)
+	judge(withMaybe, "gh:d", CellTeacherWants, 10, 1, 0, 1, 0.4) // one maybe
+	dm, dp := BuildDropRecall(withMaybe, members), BuildDropRecall(plain, members)
+	if dm.Status != RecallEstimated || dp.Status != RecallEstimated {
+		t.Fatalf("not estimated: %s / %s", dm.Reason, dp.Reason)
+	}
+	if dm.MissedYes == nil || dp.MissedYes == nil {
+		t.Fatalf("no yes-only share: %+v / %+v", dm.MissedYes, dp.MissedYes)
+	}
+	if cm := cellOf(t, dm, "dropped:a"); cm.MarkedWanted != 1 || cm.KnownMisses != 1 {
+		t.Fatalf("the maybe is not a wanted known miss: %+v", cm)
+	}
+	if dm.MissedYes.Observed != dp.MissedYes.Observed {
+		t.Errorf("a cell maybe moved the yes-only share: %v, want %v", dm.MissedYes.Observed, dp.MissedYes.Observed)
+	}
+	if dm.Missed.Observed <= dp.Missed.Observed {
+		t.Errorf("a cell maybe did not raise the wanted share: %v vs %v", dm.Missed.Observed, dp.Missed.Observed)
+	}
 	if md := d.Markdown(); !strings.Contains(md, "disagreement cells") {
 		t.Errorf("the report does not say the cell labels were counted apart:\n%s", md)
 	}
@@ -289,5 +316,87 @@ func TestYesYieldNamesARichStratumOnlyWhenClearlyAbove(t *testing.T) {
 	}
 	if y := BuildYesYield(nil); len(y.Rows) != 0 || !strings.Contains(y.Markdown(), "no data") {
 		t.Fatalf("empty: %+v", y)
+	}
+}
+
+// One definition of "selected" everywhere: a cell label answered yes, maybe
+// or no. A skip is a skip whatever drew it.
+func TestSelectedCountsJudgedCellLabelsOnly(t *testing.T) {
+	labels := map[posting.Key]Entry{
+		"gh:x:1": {Labels: map[string]string{WouldApply: Skip}, Source: CellTeacherWants, PSelect: 0.5},
+		"gh:x:2": {Labels: map[string]string{WouldApply: "maybe"}, Source: CellTeacherWants, PSelect: 0.5},
+	}
+	if r := BuildRelevance(labels, nil, nil, nil, Names{}); r.Selected != 1 || r.Skipped != 1 {
+		t.Errorf("relevance selected %d skipped %d, want 1 and 1", r.Selected, r.Skipped)
+	}
+	if md := BuildRelevance(labels, nil, nil, nil, Names{}).Markdown(); !strings.Contains(md, "disagreement cells and left out of everything below: 1") {
+		t.Errorf("relevance text hides the selected count:\n%s", md)
+	}
+}
+
+// The reader table leaves cell labels out of every reader's figures and says
+// how many.
+func TestReaderAgreementLeavesCellLabelsOut(t *testing.T) {
+	ann := map[string]string{"triage.role_fit": "mismatch_domain", "triage.role_fit.reading": "answered", "triage.role_fit.backend": "d1-ultra"}
+	recs := []ledger.Record{{Key: "gh:a:1", Annotations: ann}, {Key: "gh:a:2", Annotations: ann}, {Key: "gh:a:3", Annotations: ann}}
+	labels := map[posting.Key]Entry{
+		"gh:a:1": {Labels: map[string]string{WouldApply: "yes"}, Source: "decile:2", PSelect: 0.1},
+		"gh:a:2": {Labels: map[string]string{WouldApply: "yes"}, Source: CellTeacherWants, PSelect: 0.5},
+		"gh:a:3": {Labels: map[string]string{WouldApply: "no"}, Source: CellTeacherRejects, PSelect: 0.5},
+	}
+	a := BuildReaderAgreement(labels, recs, nil, TeacherProxyMissing, Names{})
+	if a.Judged != 1 || a.Yes != 1 || a.Selected != 2 {
+		t.Fatalf("judged %d yes %d selected %d, want 1 1 2", a.Judged, a.Yes, a.Selected)
+	}
+	if len(a.Readers) != 1 || a.Readers[0].Sensitivity.N != 1 {
+		t.Fatalf("readers %+v: want one engine reader judged on the one random label", a.Readers)
+	}
+	if !strings.Contains(a.Markdown(), "left out: 2 judged from the disagreement cells") {
+		t.Errorf("reader text hides the selected count:\n%s", a.Markdown())
+	}
+}
+
+// The auditor is never scored on a cell label: it was chosen because a
+// teacher's reading disagreed, which would tilt the verdict.
+func TestEvaluationLabelsLeaveCellLabelsOut(t *testing.T) {
+	labels, recs := exLabels(4, 4, pairT0)
+	set, _, err := FreezeExemplars(labels, recs, pairT0.Add(time.Hour), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[posting.Key]posting.Posting{}
+	after := pairT0.Add(2 * time.Hour)
+	for i, src := range []string{"decile:4", CellTeacherWants, CellTeacherRejects} {
+		k := posting.Key(fmt.Sprintf("new%d", i))
+		labels[k] = Entry{V: SchemaVersion, Key: k, Labels: map[string]string{WouldApply: "yes"}, Source: src, PSelect: 0.2, LabeledAt: after}
+		byKey[k] = posting.Posting{Key: k, Title: fmt.Sprintf("Brand New %d", i), Company: "NewCo"}
+	}
+	k := posting.Key("newskip")
+	labels[k] = Entry{V: SchemaVersion, Key: k, Labels: map[string]string{WouldApply: Skip}, Source: CellTeacherWants, PSelect: 0.2, LabeledAt: after}
+	got, st := EvaluationLabels(labels, set, byKey)
+	if len(got) != 1 || got["new0"] != "yes" {
+		t.Errorf("evaluation set %v, want the decile label only", got)
+	}
+	if st.Selected != 2 || st.Skipped != 1 {
+		t.Errorf("stats %+v, want 2 selected and the cell skip as skipped", st)
+	}
+}
+
+// Drop agreement counts the owner's labels on candidates the shadow disagreed
+// with; a cell label there was drawn because a model disagreed, so it is not
+// counted.
+func TestDropAgreementLeavesCellLabelsOut(t *testing.T) {
+	const sh = "local-d3-mini-per_slot"
+	recs := []ledger.Record{
+		cand("b", "mismatch_domain", "0.99", sh, "answered", "strong_fit"),
+		cand("c", "mismatch_domain", "0.95", sh, "answered", "strong_fit"),
+	}
+	labels := map[posting.Key]Entry{
+		"b": {Labels: map[string]string{WouldApply: "yes"}, Source: "dropped:model:role_fit", PSelect: 0.1},
+		"c": {Labels: map[string]string{WouldApply: "yes"}, Source: CellTeacherWants, PSelect: 0.5},
+	}
+	rep := BuildDropAgreement(labels, recs, agreeRules, Names{OpenRouter: "d1-ultra"})
+	if len(rep.Rows) != 1 || rep.Rows[0].Disagree != 2 || rep.Rows[0].DisagreeJudged != 1 || rep.Rows[0].DisagreeWanted != 1 {
+		t.Fatalf("rows %+v: want 2 disagreements, 1 judged (the random one)", rep.Rows)
 	}
 }

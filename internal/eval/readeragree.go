@@ -346,6 +346,9 @@ func (a ReaderAgreement) Markdown() string {
 		return b.String()
 	}
 	fmt.Fprintf(&b, "- owner-judged postings: %d (yes %d, maybe %d, no %d)\n", a.Judged, a.Yes, a.Maybe, a.No)
+	if a.Selected > 0 {
+		fmt.Fprintf(&b, "- left out: %d judged from the disagreement cells (drawn on a model's reading)\n", a.Selected)
+	}
 	fmt.Fprintf(&b, "- teacher readings: %s", a.TeacherStatus)
 	if a.TeacherDetail != "" {
 		fmt.Fprintf(&b, " (%s)", oneLineDetail(a.TeacherDetail))

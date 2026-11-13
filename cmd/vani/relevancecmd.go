@@ -56,8 +56,9 @@ func (e *env) cmdRelevance(args []string) error {
 	// sampled is done less the disagreement-cell labels, for the reports below
 	// that read the labels as a sample and have no exclusion of their own (the
 	// seniority shadow, the summary what-if, the score parts). The relevance
-	// counts, drop recall, drop agreement and the reader table exclude them
-	// themselves and say how many; the yes yield is where they are counted.
+	// counts, drop recall and the reader table exclude them themselves and say
+	// how many; drop agreement excludes them without a count (it counts only
+	// labelled disagreements); the yes yield is where they are counted.
 	sampled, _ := eval.WithoutSelectedOnReading(done)
 	yield := eval.BuildYesYield(done)
 	// With nothing judged there is nothing to order or score: no ledger read.

@@ -30,12 +30,15 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 		t.Fatal("a draw without --disagree created the teacher log")
 	}
 
-	// The teacher wants every model-dropped posting: all in CellTeacherWants.
-	var model []string
+	// The teacher wants every model-dropped posting (CellTeacherWants) and
+	// rejects every kept one, so the top decile is CellTeacherRejects.
+	var model, kept []string
 	for i := 0; i < 30; i++ {
 		model = append(model, fmt.Sprintf("gh:m:%03d", i))
+		kept = append(kept, fmt.Sprintf("gh:k:%03d", i))
 	}
 	seedSonnet(t, state, model, func(int) string { return "strong_fit" })
+	seedSonnet(t, state, kept, func(int) string { return "no_fit" })
 
 	draw := func(args ...string) auditJSON {
 		o, _ := mustCode(t, 0, append([]string{"--json", "audit", "--seed", "w1"}, args...)...)
@@ -64,29 +67,73 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 	if len(cell) != 4 {
 		t.Fatalf("%d cell picks, want 4: %v", len(cell), with.Picks)
 	}
-	for _, p := range cell {
-		if p.Stratum != eval.CellTeacherWants || !strings.HasPrefix(string(p.Key), "gh:m:") {
-			t.Errorf("cell pick %+v: want a model-dropped posting in %s", p, eval.CellTeacherWants)
+	var wantsPick, rejectsPick *auditPickJSON
+	for i, p := range cell {
+		switch {
+		case p.Stratum == eval.CellTeacherWants && strings.HasPrefix(string(p.Key), "gh:m:"):
+			wantsPick = &cell[i]
+		case p.Stratum == eval.CellTeacherRejects && strings.HasPrefix(string(p.Key), "gh:k:"):
+			rejectsPick = &cell[i]
+		default:
+			t.Errorf("cell pick %+v: want a model drop the teacher wants or a kept posting it rejects", p)
 		}
+	}
+	if wantsPick == nil || rejectsPick == nil {
+		t.Fatalf("both cells should be drawn: %v", cell)
 	}
 
 	// Answered through the draw lookup, the label records the cell.
-	mustCode(t, 0, "audit", "answer", "--key", string(cell[0].Key), "--verdict", "yes", "--seed", "w1", "--disagree", "4")
-	if e := readLabels(t, state)[cell[0].Key]; e.Source != eval.CellTeacherWants || e.PSelect != cell[0].PSelect {
-		t.Fatalf("label %+v, want source %s p %v", e, eval.CellTeacherWants, cell[0].PSelect)
+	mustCode(t, 0, "audit", "answer", "--key", string(wantsPick.Key), "--verdict", "yes", "--seed", "w1", "--disagree", "4")
+	if e := readLabels(t, state)[wantsPick.Key]; e.Source != eval.CellTeacherWants || e.PSelect != wantsPick.PSelect {
+		t.Fatalf("label %+v, want source %s p %v", e, eval.CellTeacherWants, wantsPick.PSelect)
 	}
 	// The same lookup without --disagree does not find a cell pick.
-	if _, e := mustCode(t, 1, "audit", "answer", "--key", string(cell[1].Key), "--verdict", "no", "--seed", "w1"); !strings.Contains(e, "not in the draw") {
+	if _, e := mustCode(t, 1, "audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1"); !strings.Contains(e, "not in the draw") {
 		t.Errorf("stderr %q", e)
 	}
+	mustCode(t, 0, "audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1", "--disagree", "4")
+	// One random kept pick, answered yes.
+	var randomKept *auditPickJSON
+	for i, p := range random {
+		if strings.HasPrefix(p.Stratum, "decile:") {
+			randomKept = &random[i]
+			break
+		}
+	}
+	if randomKept == nil {
+		t.Fatalf("no random kept pick: %v", random)
+	}
+	mustCode(t, 0, "audit", "answer", "--key", string(randomKept.Key), "--verdict", "yes", "--seed", "w1")
 
 	o, _ := mustCode(t, 0, "--json", "relevance")
 	var rep relevanceReply
 	decodeOne(t, o, &rep)
-	if rep.Relevance.Selected != 1 || rep.Relevance.Judged != 0 {
-		t.Errorf("relevance selected %d judged %d, want 1 and 0", rep.Relevance.Selected, rep.Relevance.Judged)
+	if rep.Relevance.Selected != 2 || rep.Relevance.Judged != 1 {
+		t.Errorf("relevance selected %d judged %d, want 2 and 1", rep.Relevance.Selected, rep.Relevance.Judged)
 	}
-	if rep.YesYield == nil || len(rep.YesYield.Rows) != 1 || rep.YesYield.Rows[0].Source != eval.CellTeacherWants || rep.YesYield.Rows[0].Yes != 1 {
+	if rep.Readers == nil || rep.Readers.Selected != 2 || rep.Readers.Judged != 1 {
+		t.Errorf("readers %+v, want 2 selected and 1 judged", rep.Readers)
+	}
+	if rep.DropRecall == nil || rep.DropRecall.Selected != 2 {
+		t.Errorf("drop recall %+v, want 2 selected", rep.DropRecall)
+	}
+	// The seniority shadow reads the sampled labels only: the cell "no" on a
+	// kept posting is not one of its negatives.
+	if rep.SeniorityShadow == nil {
+		t.Fatal("no seniority shadow")
+	}
+	for _, v := range rep.SeniorityShadow.Variants {
+		for _, a := range v.AUC {
+			if a.Neg != 0 {
+				t.Errorf("shadow %s %s counts %d negatives; the only no is a cell label", v.Name, a.Mode, a.Neg)
+			}
+		}
+	}
+	rows := map[string]eval.YieldRow{}
+	for _, r := range rep.YesYield.Rows {
+		rows[r.Source] = r
+	}
+	if rows[eval.CellTeacherWants].Yes != 1 || rows[eval.CellTeacherRejects].N != 1 || rep.YesYield.Random.N != 1 {
 		t.Errorf("yes yield %+v", rep.YesYield)
 	}
 }
@@ -129,14 +176,41 @@ func TestTeacherViewsSkipLeftOutStrata(t *testing.T) {
 			t.Errorf("%s: view %v, want %v", c.Key, c.Teacher, want[i])
 		}
 	}
-	// Another model's readings define nothing.
-	if err := e.teacherViews(cands, "some-other-model"); err != nil {
-		t.Fatal(err)
+	// A model with no row for any candidate (a misspelt --teacher) is an
+	// error, not cells with no disagreement, and leaves every view unread.
+	if err := e.teacherViews(cands, "some-other-model"); err == nil || !strings.Contains(err.Error(), "no some-other-model reading") {
+		t.Fatalf("err %v", err)
 	}
 	for _, c := range cands {
 		if c.Teacher != eval.TeacherUnread {
 			t.Errorf("%s read under another model: %v", c.Key, c.Teacher)
 		}
+	}
+}
+
+// The auditor is compared with the owner on the judged set; a cell label was
+// drawn because a teacher's reading disagreed with the engine, so it is left
+// out and counted, and a cell skip is neither judged nor selected.
+func TestAuditorJudgedSetLeavesCellLabelsOut(t *testing.T) {
+	_, state := setup(t)
+	mustCode(t, 0, "init")
+	seedAudit(t, state, 5, 1, 1)
+	answer := func(key, verdict, source string) {
+		mustCode(t, 0, "audit", "answer", "--key", key, "--verdict", verdict, "--source", source, "--p-select", "0.5")
+	}
+	answer("gh:k:001", "yes", "decile:3")
+	answer("gh:k:002", "yes", eval.CellTeacherWants)
+	answer("gh:k:003", "no", eval.CellTeacherRejects)
+	answer("gh:k:004", eval.Skip, eval.CellTeacherWants)
+	j, err := (&env{stateDir: state}).auditorJudgedSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j.labelled != 1 || j.selected != 2 || len(j.labels) != 1 {
+		t.Fatalf("labelled %d selected %d labels %v; want the decile answer only, 2 selected", j.labelled, j.selected, j.labels)
+	}
+	if _, ok := j.labels["gh:k:001"]; !ok || slices.Contains(j.keys, "gh:k:002") {
+		t.Errorf("keys %v", j.keys)
 	}
 }
 

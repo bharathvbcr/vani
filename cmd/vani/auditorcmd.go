@@ -272,15 +272,16 @@ func (e *env) auditorJudgedSet() (auditorJudged, error) {
 	j := auditorJudged{labels: map[posting.Key]eval.Entry{}, marks: map[posting.Key]marks.Entry{}}
 	set := map[posting.Key]bool{}
 	for k, en := range done {
+		if !slices.Contains(eval.WouldApplyOptions, en.Labels[eval.WouldApply]) {
+			continue
+		}
 		if eval.SelectedOnReading(en.Source) {
 			j.selected++
 			continue
 		}
-		if slices.Contains(eval.WouldApplyOptions, en.Labels[eval.WouldApply]) {
-			j.labels[k] = en
-			j.labelled++
-			set[k] = true
-		}
+		j.labels[k] = en
+		j.labelled++
+		set[k] = true
 	}
 	for k, en := range m {
 		if en.Mark != marks.None {
@@ -663,7 +664,7 @@ func (e *env) auditorReport(args []string) error {
 		}
 		fmt.Fprintf(e.stdout, "- baseline teacher %s (triage role_fit, %s): %d of the %d scored teacher readings were asked under the current prompt; and the relevance score\n",
 			cmp.Or(out.TeacherModel, "(none)"), which, b.ScoredCurrent, b.Scored)
-		fmt.Fprintf(e.stdout, "- %d would_apply answers, %d marks; %d not in the ledger\n\n", out.Labelled, out.Marked, out.NotInLedger)
+		fmt.Fprintf(e.stdout, "- %d would_apply answers, %d marks; %d not in the ledger; %d from the disagreement cells left out\n\n", out.Labelled, out.Marked, out.NotInLedger, out.SelectedOnReading)
 		if out.Agreement != nil {
 			fmt.Fprint(e.stdout, out.Agreement.Markdown())
 		}

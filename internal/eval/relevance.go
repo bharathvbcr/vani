@@ -167,13 +167,13 @@ func BuildRelevance(labels map[posting.Key]Entry, recs []ledger.Record, ordering
 			continue
 		}
 		out.Labels++
-		if SelectedOnReading(e.Source) {
-			out.Selected++ // drawn because of a model's reading: not a sample of the score
-			continue
-		}
 		h, j := wanted(v)
 		if !j {
 			out.Skipped++
+			continue
+		}
+		if SelectedOnReading(e.Source) {
+			out.Selected++ // drawn because of a model's reading: not a sample of the score
 			continue
 		}
 		out.Judged++
@@ -287,6 +287,9 @@ func (r Relevance) Markdown() string {
 	var b strings.Builder
 	b.WriteString("# Vani relevance (owner would_apply labels)\n\n")
 	fmt.Fprintf(&b, "- would_apply labels: %d (judged yes/maybe/no: %d, skipped: %d, manual outside any sample: %d)\n", r.Labels, r.Judged, r.Skipped, r.Manual)
+	if r.Selected > 0 {
+		fmt.Fprintf(&b, "- judged from the disagreement cells and left out of everything below: %d (see the yes yield)\n", r.Selected)
+	}
 	if r.Malformed > 0 {
 		fmt.Fprintf(&b, "- label lines skipped as unreadable: %d\n", r.Malformed)
 	}

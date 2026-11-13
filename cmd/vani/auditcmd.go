@@ -173,13 +173,16 @@ func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*audi
 // stratum the auditor leaves out (stratumLeftOut: work authorization, work
 // mode, owner exclusions), so no such posting is ever drawn because of a
 // reading or shown as an exemplar from a cell. A log that is missing, empty or
-// unreadable is an error: cells drawn from nothing would look like cells
-// with no disagreement.
+// unreadable is an error, and so is one with no row by model for any
+// candidate (a misspelt --teacher): cells drawn from nothing would look like
+// cells with no disagreement. Rows that were read but disagree nowhere are a
+// clean empty draw.
 func (e *env) teacherViews(cands []eval.AuditCandidate, model string) error {
 	store, status, detail := e.openTeacherLog()
 	if store == nil {
 		return fmt.Errorf("audit --disagree: the teacher readings log is not usable (%s %s); the disagreement cells need %s's role_fit readings (vani teacher)", status, strings.TrimSpace(detail), model)
 	}
+	rows := 0
 	for i := range cands {
 		c := &cands[i]
 		c.Teacher = eval.TeacherUnread
@@ -190,8 +193,12 @@ func (e *env) teacherViews(cands []eval.AuditCandidate, model string) error {
 			continue
 		}
 		if row, ok := store.LatestByModel("", c.Key)[model]; ok {
+			rows++
 			c.Teacher = eval.TeacherViewOf(row)
 		}
+	}
+	if rows == 0 {
+		return fmt.Errorf("audit --disagree: the teacher readings log has no %s reading of any posting the audit may draw (is --teacher the model `vani teacher` ran?)", model)
 	}
 	return nil
 }

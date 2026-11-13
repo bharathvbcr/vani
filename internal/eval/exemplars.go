@@ -270,10 +270,10 @@ func EvaluationLabels(labels map[posting.Key]Entry, set ExemplarSet, byKey map[p
 			continue
 		case strings.HasPrefix(l.Source, ClosedPrefix):
 			st.Closed++
+		case v == Skip:
+			st.Skipped++ // a skip is a skip whatever drew it
 		case SelectedOnReading(l.Source):
 			st.Selected++
-		case v == Skip:
-			st.Skipped++
 		case v == "maybe":
 			st.Maybe++
 		case !l.LabeledAt.After(set.FrozenAt):

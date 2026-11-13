@@ -19,8 +19,10 @@ were ported with notice. Source files do not carry an upstream copyright header.
   agreement, auditor gates, the weight fit); drop recall counts each as a known outcome, as it
   counts a mark. Postings in strata the auditor leaves out (work authorization, work mode, owner
   exclusions) are never read for a cell. `vani relevance` now shows the raw yes yield per stratum
-  and cell, and names a yes-rich stratum only when its 95% lower bound beats the random strata's
-  yes rate. Off by default; the quota is the owner's call.
+  and cell, and names a yes-rich stratum only when its 95% lower bound clears the random strata's
+  95% upper bound. A teacher log with no reading by `--teacher` of any candidate is refused (a
+  misspelt model would otherwise look like no disagreement). Off by default; the quota is the
+  owner's call.
 - **Drops the rules no longer make, by class** (`vani retriage --policy-drops`, its `classes`).
   A drop made under a rule that has since changed was never re-examined: two Databricks Staff
   roles the owner marked "maybe" were dropped on `seniority = staff_plus` (p 0.912 and 0.917, a
