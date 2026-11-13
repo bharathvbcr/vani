@@ -527,6 +527,9 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 				line += "; " + extra
 			}
 			b.add(b.clean(line))
+			for _, l := range shortListingLines(r.Boards) {
+				b.add(b.clean(l))
+			}
 		}
 		if a := r.Advance; a != nil {
 			b.add(b.clean(fmt.Sprintf("Advance: %d of %d eligible attempted (cap %d), %d unread, %d failed, %d deferred; stopped: %s",
@@ -787,11 +790,16 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 // boardLine is one failed board as "ats:token (Company): error", the shape the
 // app's per-board "Copy error" also copies (a contract test holds them equal).
 func boardLine(it boardReport) string {
+	return boardName(it) + ": " + orNone(it.Error)
+}
+
+// boardName is one board as "ats:token (Company)".
+func boardName(it boardReport) string {
 	name := it.ATS + ":" + it.Token
 	if it.Company != "" {
 		name += " (" + it.Company + ")"
 	}
-	return name + ": " + orNone(it.Error)
+	return name
 }
 
 func orNone(s string) string {
@@ -827,6 +835,9 @@ func semanticLine(s *semanticReport, counts string) string {
 	}
 	return line
 }
+
+// maxShortLines bounds the per-board "Listed short" lines of runs show.
+const maxShortLines = 10
 
 func boardFetchSummary(b *boardsReport) string {
 	if b == nil {
@@ -865,6 +876,9 @@ func boardFetchSummary(b *boardsReport) string {
 	}
 	if b.MassHeldPostings > 0 {
 		parts = append(parts, fmt.Sprintf("%d posting(s) on %d board(s) in a mass hold", b.MassHeldPostings, b.MassHeldCount))
+	}
+	if b.Short > 0 {
+		parts = append(parts, fmt.Sprintf("%d counted but not listed", b.Short))
 	}
 	return strings.Join(parts, ", ")
 }
@@ -918,6 +932,38 @@ func massDeadLine(it boardReport) string {
 		dead = it.Reconcile.MassDead
 	}
 	return fmt.Sprintf("%s: listed %d; %d posting(s) held after a mass absence died at the end of the hold", name, listed, dead)
+}
+
+// shortListingLines names each read board that listed fewer jobs than it
+// counts (boardReport.Short), at most maxShortLines of them. Not a failure:
+// the listing is kept by design, but the postings it did not list go unseen,
+// and stored ones age toward dead. Boards past the bound, and the short rows of
+// boards the record could not keep, are counted on their own lines.
+func shortListingLines(b *boardsReport) []string {
+	if b == nil || b.Short <= 0 {
+		return nil
+	}
+	var lines []string
+	named, more, moreRows := 0, 0, 0
+	for _, it := range b.Items {
+		if it.Short <= 0 {
+			continue
+		}
+		named += it.Short
+		if len(lines) == maxShortLines {
+			more++
+			moreRows += it.Short
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("Listed short: %s: %d counted job(s) not listed; stored ones age as absent", boardName(it), it.Short))
+	}
+	if more > 0 {
+		lines = append(lines, fmt.Sprintf("Listed short: %d more board(s), %d counted job(s) not listed", more, moreRows))
+	}
+	if rest := b.Short - named; rest > 0 {
+		lines = append(lines, fmt.Sprintf("Listed short: %d counted job(s) not listed on boards the record does not keep", rest))
+	}
+	return lines
 }
 
 func failOpenSummary(c pipeline.FailOpenCounts) string {

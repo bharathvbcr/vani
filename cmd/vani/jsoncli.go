@@ -79,6 +79,7 @@ var jsonLeaves = []jsonLeaf{
 	{"audit", jsonFlag, ""},
 	{"audit answer", jsonFlag, ""},
 	{"relevance", jsonFlag, ""},
+	{"doctor", jsonFlag, ""},
 	{"rankfit", jsonFlag, ""},
 	{"lca import", jsonFlag, ""},
 	{"lca lookup", jsonFlag, ""},

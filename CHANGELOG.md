@@ -9,6 +9,14 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
+  (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
+  `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings
+  stratified by drop class. It reports which boards fail silently and which drops look wrong. It is
+  report only (`<state dir>/doctor/`). `--dry-run --show` prints both requests and their worst-case
+  cost, and a real run needs `--budget-usd` to cover that cost. Sponsorship rules, readings and
+  drops never leave the machine. A failed part is written as failed and the command exits 1.
+  [docs/RUNTIME.md](docs/RUNTIME.md) describes it.
 - **Features, benchmarks, and credits.** The README leads with what Vani fetches
   and what it refuses to do. Board caps in that list match the adapter
   constants (Avature 400, IBM 500, D. E. Shaw 1,000, SmartRecruiters and
@@ -146,6 +154,32 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **Extension scraper**: a page read link by link stopped at its first 100 job links and said
+  nothing, so Anthropic's careers page (669 jobs on one page) gave 100, and **Crawl all pages**
+  called that complete. It now reads up to 2000 distinct job links (`MAX_PAGE_JOB_LINKS`); a posting
+  linked twice counts once, and links past the bound are named in the drawer, the popup and the
+  crawl's last line, which then reports itself incomplete. The same holds for the rest of the scrape
+  path: JSON-LD stopped at 200 postings per block (now 2000 across the page, the rest counted); a page
+  whose JSON-LD marked up a few featured roles hid all its job cards (the link reader now runs when it
+  finds more jobs than the structured readers did); a paged Greenhouse board says how many jobs it
+  lists beyond the page, and a crawl that ends short of that count is incomplete; Workday answer rows
+  past 100 are named instead of dropped. A TalentBrew search (Citi: 15 shown of 3116) states its
+  count the same way.
+- **Extension scraper, navigation read as jobs**: on Citi's search 11 of 26 scraped "jobs" were site
+  links (Saved Jobs, programme pages, talent-network forms, the pager's Previous), and ServiceNow's
+  SmartRecruiters page gave its skip link and "Show more jobs"; each was sent to Vani as a posting.
+  Pager controls are never jobs; a board reader's link back to the listing that names no posting is
+  left out; and when most job links name a posting (a number, a UUID or a job parameter), the link
+  reader leaves out those that do not and says how many.
+- **Workday short listings are counted**: a query under the 2000-row window that ends before the
+  board's own total is still kept, not failed, but the rows it counted and did not list are now
+  recorded (`boards.short`, `items[].short` in the run record) and named per board by
+  `vani runs show` ("Listed short: …"). Stored postings among them age as absent, so the gap is
+  now visible. It is not a failure.
+- **Inbox fold line adds up**: "folded N batch(es), M job(s)" now splits M into new, already known,
+  duplicate of a stored job, invalid and repeated, prints any remainder as unaccounted, and says
+  the other records it marked as duplicates apart. `pipeline.Summary` gains `ListedDuplicate`;
+  `Duplicate` keeps its meaning.
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
 - **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and

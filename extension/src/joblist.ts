@@ -143,7 +143,7 @@ export function saveSendNote(actedOn: number, sendable: number, leftOut: string,
   return why ? `${lead} sends ${count} of these ${actedOn}. ${why}.` : `${lead} sends ${count} of these ${actedOn}.`;
 }
 
-/** The drawer's one-line summary. `shown` is the preview length. `total` is the jobs array Save is given, never the page's own totalFound. */
+/** The drawer's one-line summary. `shown` is the preview length. `total` is the jobs array Save is given; links the scraper did not read are ScrapeResult.unread, worded by the caller. */
 export function drawerSummary(total: number, shown: number, sendable = total, leftOut = ""): string {
   if (!Number.isFinite(total) || total <= 0) return "No jobs on this page.";
   const whole = Math.trunc(total);

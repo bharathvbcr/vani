@@ -101,6 +101,7 @@ func oracleReconcile(ctx context.Context, l ledger.Ledger, b sources.Board, list
 					e.Reason += " (" + why + ")"
 				}
 				s.Duplicate++
+				s.ListedDuplicate++
 			}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err

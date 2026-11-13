@@ -67,7 +67,8 @@ func TestPollInboxFoldsAndAdvancesOnlyTheNewLiveKeys(t *testing.T) {
 	if len(got) != 1 || len(got[0]) != 1 || got[0][0].Posting.Title != "Data Engineer" || got[0][0].Status != posting.Live {
 		t.Fatalf("advanced %+v; want only the Data Engineer (the other repeats the ATS record)", got)
 	}
-	if !strings.Contains(warn.String(), "folded 1 batch(es), 2 job(s): 1 new, 1 duplicate") {
+	// The Platform Engineer job is stored as a duplicate of the ATS record.
+	if !strings.Contains(warn.String(), "folded 1 batch(es), 2 job(s): 1 new, 0 already known, 1 duplicate of a stored job\n") {
 		t.Errorf("warnings: %s", warn.String())
 	}
 	if n, _ := inbox.Pending(filepath.Join(w.stateDir, inbox.Dir)); n != 0 {

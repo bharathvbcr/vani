@@ -378,6 +378,9 @@ type boardsReport struct {
 	MassHeld         []massHeldBoard `json:"mass_held,omitempty"`
 	MassHeldCount    int             `json:"mass_held_count,omitempty"`
 	MassHeldPostings int             `json:"mass_held_postings,omitempty"`
+	// Short is rows the boards counted but did not list, together (see
+	// boardReport.Short). Additive: readers that do not know the key ignore it.
+	Short int `json:"short,omitempty"`
 	// Items holds one entry per tried board, in watchlist order. When the
 	// bounds cut it, failed, skipped, mass and clock-behind boards are kept
 	// before read ones.
@@ -434,6 +437,11 @@ type boardReport struct {
 	// Prefiltered is new listed rows the drop policy rejected before any
 	// detail request: never stored.
 	Prefiltered int `json:"prefiltered,omitempty"`
+	// Short is rows a read board counted but did not list: a Workday query
+	// under its 2000-row window that ended before its own total
+	// (workday.Stats.Short). The listing is kept, not failed, so the postings
+	// behind those rows go unseen and stored ones age toward dead.
+	Short int `json:"short,omitempty"`
 
 	// endedRun marks the board whose failure ended the listing (the run was
 	// cancelled, or the ledger failed under it): its outcome says nothing

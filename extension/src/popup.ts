@@ -8,7 +8,7 @@ import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, c
 import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
 import { intentOf } from "./intents";
-import { exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult } from "./scraper";
+import { boardTotalText, exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult, skippedText, unreadText } from "./scraper";
 import { type IngestSource, buildIngestBatch, describeIngest, leftOutText, prepareIngest } from "./ingest";
 import { type RelevanceResult } from "./relevance";
 import { scoreWord } from "./jobrow";
@@ -905,6 +905,12 @@ let scrapedJobs: ScrapedJob[] = [];
 let scrapeGen = 0;
 /** The listing page the scrape came from (ScrapeResult.pageUrl is already scrubbed). */
 let scrapedPage = { pageUrl: "", pageTitle: "" };
+/** Job links on the scraped page past the scraper's bound (ScrapeResult.unread); 0 from a page that sent none. */
+let scrapedUnread = 0;
+/** The board's own count of its jobs when the scraped page gave one (ScrapeResult.boardTotal). */
+let scrapedBoardTotal: number | undefined;
+/** Navigation links the scraped page's link reader left out (ScrapeResult.skipped). */
+let scrapedSkipped = 0;
 
 /** Send jobs to Vani and say what Vani answered, or why nothing was sent; a failure is shown, never swallowed. */
 async function sendToVani(scrape: { pageUrl: string; pageTitle: string; jobs: readonly IngestSource[] }, saveSearch: boolean): Promise<{ ok: boolean; text: string }> {
@@ -1357,7 +1363,10 @@ function renderScraper(): void {
   const countEl = $("#scraper-count");
   if (countEl) countEl.textContent = countLabel(filtered.length, scrapedJobs.length, active);
   const scope = $("#scraper-scope");
-  if (scope) scope.textContent = [scopeNote(filtered.length, scrapedJobs.length, active), sendNote].filter(Boolean).join(" ");
+  const unread = unreadText(scrapedUnread);
+  const more = boardTotalText(scrapedBoardTotal, scrapedJobs.length);
+  const skipped = skippedText(scrapedSkipped);
+  if (scope) scope.textContent = [scopeNote(filtered.length, scrapedJobs.length, active), sendNote, unread && `${unread}.`, more && `${more}.`, skipped && `${skipped}.`].filter(Boolean).join(" ");
   setScraperActions(filtered.length, scrapedJobs.length, active, sendNote);
 
   // The empty states live outside the list. Clearing the list must not remove them.
@@ -1398,8 +1407,12 @@ function initScraper(): void {
         if (out) out.textContent = "";
         scrapedJobs = r.jobs;
         scrapedPage = { pageUrl: typeof r.pageUrl === "string" ? r.pageUrl : "", pageTitle: typeof r.pageTitle === "string" ? r.pageTitle : "" };
+        scrapedUnread = typeof r.unread === "number" && Number.isFinite(r.unread) && r.unread > 0 ? Math.trunc(r.unread) : 0;
+        scrapedBoardTotal = typeof r.boardTotal === "number" && Number.isInteger(r.boardTotal) && r.boardTotal > 0 ? r.boardTotal : undefined;
+        scrapedSkipped = typeof r.skipped === "number" && Number.isInteger(r.skipped) && r.skipped > 0 ? r.skipped : 0;
         renderScraper();
-        toast(r.jobs.length === 0 ? "No jobs found on this page." : `Scraped ${r.jobs.length} ${r.jobs.length === 1 ? "job" : "jobs"}.`);
+        const unread = unreadText(scrapedUnread);
+        toast(r.jobs.length === 0 ? "No jobs found on this page." : `Scraped ${r.jobs.length} ${r.jobs.length === 1 ? "job" : "jobs"}${unread ? `; ${unread}` : ""}.`);
       } catch (e) {
         toast(`Scrape failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {

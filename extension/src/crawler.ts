@@ -371,17 +371,22 @@ export function safeJobPath(p: string): boolean {
   return p.split("/").every(s => s !== "." && s !== "..");
 }
 
-function readRows(raw: unknown): { rows: Row[]; bad: number } {
+/** Rows read from one listing answer; it asks for WORKDAY_PAGE, so more is a board ignoring the limit. */
+const MAX_ANSWER_ROWS = 100;
+
+/** An answer's rows; `over` counts rows past MAX_ANSWER_ROWS, which are not read. */
+export function readRows(raw: unknown): { rows: Row[]; bad: number; over: number } {
   const rows: Row[] = [];
   let bad = 0;
-  if (!Array.isArray(raw)) return { rows, bad };
-  for (const r of raw.slice(0, 100)) {
+  if (!Array.isArray(raw)) return { rows, bad, over: 0 };
+  const over = Math.max(0, raw.length - MAX_ANSWER_ROWS);
+  for (const r of raw.slice(0, MAX_ANSWER_ROWS)) {
     const title = isRecord(r) ? clean(r.title) : "";
     const path = isRecord(r) && typeof r.externalPath === "string" ? r.externalPath : "";
     if (!title || !safeJobPath(path)) { bad++; continue; }
     rows.push({ title, path, location: clean(r.locationsText), posted: clean(r.postedOn) });
   }
-  return { rows, bad };
+  return { rows, bad, over };
 }
 
 interface Ctx {
@@ -487,10 +492,14 @@ async function listPage(ctx: Ctx, b: WorkdayBoard, facets: Record<string, string
   });
   // A body without the array is an error page or a new shape, never an empty board.
   if (!isRecord(raw) || !Array.isArray(raw.jobPostings)) throw new Error(`the listing at offset ${offset} has no jobPostings`);
-  const { rows, bad } = readRows(raw.jobPostings);
+  const { rows, bad, over } = readRows(raw.jobPostings);
   if (bad > 0) {
     ctx.complete = false;
     note(ctx, `${bad} listing row${bad === 1 ? "" : "s"} at offset ${offset} had no title or usable job link`);
+  }
+  if (over > 0) {
+    ctx.complete = false;
+    note(ctx, `the listing at offset ${offset} answered ${over} row${over === 1 ? "" : "s"} past the ${MAX_ANSWER_ROWS} read from one answer`);
   }
   const total = typeof raw.total === "number" && Number.isInteger(raw.total) && raw.total >= 0 ? raw.total : null;
   return { total, rows, facets: readFacets(raw.facets) };
@@ -719,9 +728,15 @@ export async function crawlWorkday(b: WorkdayBoard, options: CrawlOptions = {}, 
 
 export interface PageJob { title: string; company: string; location: string; url: string; snippet: string; posted?: string }
 
+/**
+ * One document's listing; `unread` counts job links on it the scraper did not read (scraper.ts
+ * MAX_PAGE_JOB_LINKS). `boardTotal` is the board's own count of its jobs when the page gives one.
+ */
+export interface PageScrape { jobs: readonly PageJob[]; unread: number; boardTotal?: number }
+
 export interface PageDeps {
-  /** The listing on one document (scraper.ts's scrapePageJobs, adapted). */
-  scrape(doc: Document, pageUrl: string): PageJob[];
+  /** The listing on one document (scraper.ts's scrapePageJobs, adapted). A bare array means nothing was left unread. */
+  scrape(doc: Document, pageUrl: string): readonly PageJob[] | PageScrape;
   /** Fetch a same-listing URL and parse it; absent where no parser exists. */
   load?(url: string, signal: AbortSignal): Promise<Document>;
   sleep(ms: number): Promise<void>;
@@ -733,6 +748,13 @@ const NEXT_WORDS = "(go to )?(the )?next( page| results| set of results)?|more r
 const NEXT_TEXT = new RegExp(`^(${NEXT_WORDS})(\\s*${ARROWS})?$`, "i");
 const ARROW_ONLY = new RegExp(`^${ARROWS}$`);
 const MORE_TEXT = /^(load|show|see|view) more( jobs| results| positions| openings| roles)?$/i;
+const PREV_TEXT = /^((go to )?(the )?(previous|prev)( page| results)?(\s*[‹«<←]{1,2})?|[‹«<←]{1,2}\s*(previous|prev)?)$/i;
+
+/** A pager control's text (Next, Previous, Show more jobs, an arrow): a way through the listing, never a posting. */
+export function isPagerText(text: string): boolean {
+  const t = text.replace(/\s+/g, " ").trim();
+  return NEXT_TEXT.test(t) || ARROW_ONLY.test(t) || MORE_TEXT.test(t) || PREV_TEXT.test(t);
+}
 /** Controls scanned for the pager; past this many, a missing pager is reported, never read as the end. */
 const MAX_CONTROLS = 5000;
 
@@ -847,6 +869,15 @@ function jobKey(url: string): string {
   }
 }
 
+function readScrape(s: readonly PageJob[] | PageScrape): PageScrape {
+  if (Array.isArray(s)) return { jobs: s, unread: 0 };
+  const p = s as PageScrape;
+  const unread = Number.isFinite(p.unread) && p.unread > 0 ? Math.trunc(p.unread) : 0;
+  const total = p.boardTotal;
+  const boardTotal = typeof total === "number" && Number.isInteger(total) && total > 0 ? total : undefined;
+  return { jobs: Array.isArray(p.jobs) ? p.jobs : [], unread, ...(boardTotal !== undefined ? { boardTotal } : {}) };
+}
+
 /** Every page of the listing on `doc`, walked through its own pagination. */
 export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps, options: CrawlOptions = {}): Promise<CrawlReport> {
   const maxPages = Math.max(1, options.maxPages ?? 50);
@@ -861,6 +892,9 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
   let requests = 0;
   let complete = false;
   let shortened = 0;
+  let unread = 0;
+  /** The largest count of its jobs the board gave on any page walked. */
+  let expected: number | undefined;
   const keep = (jobs: readonly PageJob[]): number => {
     let n = 0;
     for (const j of jobs) {
@@ -877,9 +911,15 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
   try {
     for (;;) {
       if (options.signal?.aborted) { notes.push("stopped"); break; }
-      const found = deps.scrape(cur, url);
+      const read = readScrape(deps.scrape(cur, url));
+      const found = read.jobs;
       const fresh = keep(found);
       pages++;
+      if (read.boardTotal !== undefined) expected = Math.max(expected ?? 0, read.boardTotal);
+      if (read.unread > 0) {
+        unread += read.unread;
+        notes.push(`page ${pages} had ${read.unread} job link${read.unread === 1 ? "" : "s"} past the per-page read limit, not read`);
+      }
       options.onProgress?.({ phase: "pages", done: pages, jobs: seen.size });
       if (pages > 1 && fresh === 0) { notes.push(`page ${pages} showed no jobs not already seen`); break; }
       if (seen.size >= maxJobs) { notes.push(`stopped at ${maxJobs} jobs`); break; }
@@ -921,7 +961,7 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
       for (let waited = 0; waited < waitMs; waited += 250) {
         await deps.sleep(250);
         if (options.signal?.aborted) break;
-        const now = deps.scrape(doc, url);
+        const now = readScrape(deps.scrape(doc, url)).jobs;
         const fp = fingerprint(now);
         if (now.length > 0 && fp !== before && fp === last) { changed = true; break; }
         last = now.length > 0 && fp !== before ? fp : "";
@@ -932,15 +972,21 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
   } catch (e) {
     notes.push(`the walk failed: ${e instanceof Error ? e.message : String(e)}`);
   }
+  // The pager running out is not the listing read whole when a page held links that were not read, or
+  // when the board counts more jobs than the walk found.
+  const short = expected !== undefined && seen.size < expected;
+  if (complete && short) notes.push(`the board lists ${expected} jobs and ${seen.size} were read`);
+  const whole = complete && unread === 0 && !short;
   return {
     mode: "pages",
     jobs: [...seen.values()],
     listed: seen.size,
+    ...(expected !== undefined ? { expected } : {}),
     requests,
     parts: pages,
     shortened,
-    complete,
-    notes: complete ? [] : notes,
+    complete: whole,
+    notes: whole ? [] : notes,
   };
 }
 
@@ -1046,7 +1092,7 @@ export function describeCrawl(r: CrawlReport): string {
   const of = r.expected !== undefined && r.expected > r.listed ? ` of ${r.expected}` : "";
   const head = r.mode === "workday"
     ? `Listed ${r.listed}${of} jobs in ${r.parts} quer${r.parts === 1 ? "y" : "ies"}; ${r.jobs.length} ready with descriptions`
-    : `Read ${r.jobs.length} jobs from ${r.parts} page${r.parts === 1 ? "" : "s"}`;
+    : `Read ${r.jobs.length}${of} jobs from ${r.parts} page${r.parts === 1 ? "" : "s"}`;
   const tail = r.complete ? "" : ` (incomplete: ${r.notes.join("; ") || "stopped early"})`;
   return `${head}${tail}.`;
 }

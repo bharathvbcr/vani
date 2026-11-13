@@ -122,6 +122,14 @@ commands:
   audit answer --key K --verdict yes|maybe|no|skip [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from
                              the flags (an Explore row's, or an audit --json pick's) or the draw
+  doctor [--json] [--dry-run [--show]] [--budget-usd N] [--model M] [--runs N] [--sample N] [--seed S]
+                             the pipeline doctor: the llm model (llm.model, Opus) reads per-board
+                             signals over the newest run records, the run logs' trouble lines and
+                             a seeded sample of dropped postings (stratified as audit draws), and
+                             says which boards fail silently and which drops look wrong. A report
+                             only (<state dir>/doctor/<time>.md and .json): nothing is changed.
+                             --dry-run prices both requests and sends nothing (--show prints
+                             them); a real run needs --budget-usd covering their worst case
   relevance [--json] [-k LIST]
                              precision@k, drop misses and backend reliability from would_apply labels;
                              the weighted drop recall estimate ("insufficient" until every cell has
@@ -582,6 +590,8 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdAudit(args[1:])
 	case "relevance":
 		cmdErr = e.cmdRelevance(args[1:])
+	case "doctor":
+		cmdErr = e.cmdDoctor(args[1:])
 	default:
 		cmdErr = usagef("unknown command %q", args[0])
 	}

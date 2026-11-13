@@ -40,7 +40,7 @@ import { templateTailoring, openAnswerFill, OPEN_ANSWER_HOLD } from "./tailor";
 import { heldReview, matchField, whyNoMatch } from "./match";
 import { isCoverField, parseCoverGet, type CoverFetch } from "./cover";
 import { decideSubmit, looksConfirmed } from "./submit";
-import { scrapePageJobs, type ScrapeResult } from "./scraper";
+import { boardTotalText, scrapePageJobs, type ScrapeResult, skippedText, unreadText } from "./scraper";
 import { DRAWER_PREVIEW, companyLine, drawerSummary, scorePillText, scoreTone, selectJobs } from "./joblist";
 import { isHttpUrl } from "./joblink";
 import { MAX_RESUME_BYTES, RESUME_JOB_TIMEOUT_MS, RESUME_KEYED_TIMEOUT_MS, type ResumeFetch, checkResumeFile, isResumeField, openHeldResume, parseResumeGet, toBase64 } from "./resume";
@@ -638,13 +638,16 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   drawer.style.display = "flex";
   const ranked = selectJobs(res.jobs, { query: "", minScore: 0, remoteOnly: false });
   const preview = ranked.slice(0, DRAWER_PREVIEW);
-  // Save hands over res.jobs. totalFound is the page's own claim and can be larger than that array.
+  // Save hands over res.jobs. Job links the scraper did not read (past its bound) are res.unread, said below.
   const batch = buildIngestBatch(res.jobs);
 
   const header = document.createElement("div");
   header.className = "shead";
   const titleSpan = document.createElement("span");
-  titleSpan.textContent = drawerSummary(res.jobs.length, preview.length, batch.jobs.length, leftOutText(batch));
+  const unread = unreadText(res.unread);
+  const more = boardTotalText(res.boardTotal, res.jobs.length);
+  const skipped = skippedText(res.skipped);
+  titleSpan.textContent = [drawerSummary(res.jobs.length, preview.length, batch.jobs.length, leftOutText(batch)), unread && `${unread}.`, more && `${more}.`, skipped && `${skipped}.`].filter(Boolean).join(" ");
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
   closeBtn.className = "ctrl";

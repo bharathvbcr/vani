@@ -2,7 +2,7 @@
 // Tests named "BUG:" fail against the code at the time of writing; the others pin invariants that hold.
 
 import { describe, expect, test } from "bun:test";
-import { type Http, type PageDeps, type PageJob, crawlListing, crawlPages, describeCrawl, findNext, sameListing, sendCrawl } from "../src/crawler";
+import { type Http, type PageDeps, type PageJob, type PageScrape, crawlListing, crawlPages, describeCrawl, findNext, sameListing, sendCrawl } from "../src/crawler";
 
 // ---------------------------------------------------------------- fakes (copied from crawler.test.ts, plus parentElement)
 
@@ -286,6 +286,62 @@ describe("crawlPages: stopping", () => {
     expect(r.jobs.length).toBe(2);
     // Stopping at the bound is reported as a stop; it never claims the listing ended.
     expect(r.complete).toBe(false);
+  });
+
+  test("a one-page listing whose scrape left links unread is not complete, and says so", async () => {
+    // Anthropic's careers page: every job on one page, no pager. The walk ends, but not at the listing's end.
+    const r = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: [job(1), job(2)], unread: 667 }), sleep: noSleep }, { delayMs: 0 });
+    expect(r.jobs.length).toBe(2);
+    expect(r.complete).toBe(false);
+    expect(r.notes).toEqual(["page 1 had 667 job links past the per-page read limit, not read"]);
+    expect(describeCrawl(r)).toBe("Read 2 jobs from 1 page (incomplete: page 1 had 667 job links past the per-page read limit, not read).");
+  });
+
+  test("unread links on a later page also clear complete; a page with none does not", async () => {
+    let p = 0;
+    const next = fel("button", {}, "Next", () => { p++; });
+    const controls = () => (p < 1 ? [next] : []);
+    const r = await crawlPages(fakeDoc(controls), page, { scrape: () => ({ jobs: [job(p * 2), job(p * 2 + 1)], unread: p === 1 ? 1 : 0 }), sleep: noSleep }, { delayMs: 0 });
+    expect(r.parts).toBe(2);
+    expect(r.complete).toBe(false);
+    expect(r.notes).toEqual(["page 2 had 1 job link past the per-page read limit, not read"]);
+  });
+
+  test("a scrape answer with unread 0, or an unread that is not a count, reads as nothing left out", async () => {
+    for (const unread of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const r = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: [job(1)], unread }), sleep: noSleep }, { delayMs: 0 });
+      expect(r.complete).toBe(true);
+      expect(r.notes).toEqual([]);
+    }
+  });
+
+  test("a walk whose pager ends before the board's own count is not complete, and says both numbers", async () => {
+    // A paged Greenhouse board (669 jobs, 50 a page) whose pager is lost after page 2.
+    let p = 0;
+    const next = fel("button", {}, "Next", () => { p++; });
+    const controls = () => (p < 1 ? [next] : []);
+    const r = await crawlPages(fakeDoc(controls), page, { scrape: () => ({ jobs: [job(p * 2), job(p * 2 + 1)], unread: 0, boardTotal: 669 }), sleep: noSleep }, { delayMs: 0 });
+    expect(r.listed).toBe(4);
+    expect(r.expected).toBe(669);
+    expect(r.complete).toBe(false);
+    expect(r.notes).toEqual(["the board lists 669 jobs and 4 were read"]);
+    expect(describeCrawl(r)).toBe("Read 4 of 669 jobs from 2 pages (incomplete: the board lists 669 jobs and 4 were read).");
+  });
+
+  test("a walk that reads every job the board counts is complete; a count it cannot believe is ignored", async () => {
+    const whole = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: [job(1), job(2)], unread: 0, boardTotal: 2 }), sleep: noSleep }, { delayMs: 0 });
+    expect(whole.complete).toBe(true);
+    expect(whole.expected).toBe(2);
+    for (const boardTotal of [0, -4, 2.5, Number.NaN]) {
+      const r = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: [job(1)], unread: 0, boardTotal }), sleep: noSleep }, { delayMs: 0 });
+      expect(r.complete).toBe(true);
+      expect(r.expected).toBeUndefined();
+    }
+  });
+
+  test("a scrape answer whose jobs is not an array reads as no jobs, never a throw", async () => {
+    const r = await crawlPages(fakeDoc(() => []), page, { scrape: () => ({ jobs: null, unread: 0 }) as unknown as PageScrape, sleep: noSleep }, { delayMs: 0 });
+    expect(r.jobs).toEqual([]);
   });
 
   test("a scrape that throws mid-walk keeps what was read and is never complete", async () => {

@@ -210,6 +210,30 @@ and what Vani answered.
   next link is fetched and parsed only when it stays on the same listing: the same origin and path,
   and the same query apart from paging parameters. Anything else is reported and not followed. The
   tab never navigates.
+- **Nothing is cut in silence.** One page is read up to 2000 jobs (`MAX_PAGE_JOB_LINKS`), whether it
+  lists them as links (Anthropic's careers page: 669 on one page) or as JSON-LD; jobs past that are
+  counted and named in the drawer, the popup and the crawl's last line, and such a walk is never
+  reported complete. A page whose structured data marks up a few featured roles still has its job
+  cards read. A paged Greenhouse board says how many jobs the board lists (`jobPosts.total`, e.g. 669
+  where a page shows 50), and a walk that ends short of that count is reported incomplete. A Workday
+  answer with more rows than one answer is read for is named, not cut. A TalentBrew search (Citi)
+  says how many results it has (`section#search-results`'s `data-total-job-results`, e.g. 3116 where a
+  page shows 15).
+- **Navigation is not a job.** A pager control (Next, Previous, Show more jobs) is never a job, and a
+  board reader's link back to the listing itself that names no posting is left out (ServiceNow's skip
+  link). When at least 3 of a page's job links, and more than half, name a posting (a number, a UUID,
+  or a job parameter such as `gh_jid`), the link reader leaves out the ones that do not, and the
+  drawer and popup say how many: on Citi's search, Saved Jobs, the early-career programme pages and
+  the talent-network forms. Without such a majority every link is kept, so a board whose postings carry
+  no number, or a narrow search with fewer postings than site links, is read as before.
+  - Checked on saved copies of four real boards in Chrome (2026-11-12): Anthropic's careers page
+    669 of 669, OpenAI on Ashby 828 of 828, Shield AI on Lever 660 of 660, and Anthropic's Greenhouse
+    board 50 shown with 669 reported; plus `bun test`. Navigation checked on six saved boards
+    (2026-11-12): those four, Citi's search (15 of 15 postings, 10 links left out, 3116 reported) and
+    ServiceNow on SmartRecruiters (20 of 20, its two controls left out); no posting was left out.
+    Not checked: the drawer and popup wording in the loaded extension, and boards that build their
+    list in the browser (Gem, Workable, Rippling's careers page, AMD on Jibe), which a saved page
+    cannot show.
 - **Bounds:** 600 requests, 3 in flight, a 250 ms pause before each, 15 s per request, a 4 MiB
   body, 15 minutes per Workday crawl, 50 pages or 2000 jobs per page walk. Eight descriptions
   failing in a row end the description phase. The crawl reports itself complete only when the
