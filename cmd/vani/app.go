@@ -367,6 +367,11 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 	}
 	fresh, old, err := config.LoadWithDeprecations(e.configPath)
 	e.warnDeprecated(old)
+	if err == nil {
+		// A summary edited into the config while the daemon runs is held to the
+		// check wireApp made at start: one that fails it is not applied.
+		err = checkPromptSummary(fresh, e.stateDir, false)
+	}
 	var stale error
 	if err != nil {
 		stale = fmt.Errorf("%w; this run uses the previous watchlist, allowed_hosts and policy: %w", errConfigStale, err)
@@ -816,6 +821,9 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 		fmt.Fprintln(e.stdout, l)
 	}
 	for _, l := range daemonLines(dfacet) {
+		fmt.Fprintln(e.stdout, l)
+	}
+	for _, l := range e.profileLines(cfg, at) {
 		fmt.Fprintln(e.stdout, l)
 	}
 	if cfg.SemanticOn() {

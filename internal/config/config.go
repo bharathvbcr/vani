@@ -270,10 +270,29 @@ type KB struct {
 	// `vani resume` passes to rkb's claims export: which figures count as
 	// verified, and so which bullets may print, depends on it. Absolute.
 	VMReport string `json:"vm_report,omitempty"`
+	// StaleAfterDays is how many days after the bank file was last written
+	// `vani status` calls the knowledge base stale. Zero means
+	// DefaultKBStaleAfterDays; at most MaxKBStaleAfterDays.
+	StaleAfterDays int `json:"stale_after_days,omitempty"`
 }
 
 // MaxKBSelections caps kb.selections.
 const MaxKBSelections = 32
+
+// KB staleness bounds (KB.StaleAfterDays).
+const (
+	DefaultKBStaleAfterDays = 30
+	MaxKBStaleAfterDays     = 3650
+)
+
+// KBStaleAfter is StaleAfterDays as a duration, zero read as the default.
+func (c Config) KBStaleAfter() time.Duration {
+	d := c.KB.StaleAfterDays
+	if d == 0 {
+		d = DefaultKBStaleAfterDays
+	}
+	return time.Duration(d) * 24 * time.Hour
+}
 
 // Schedule says when the daily run fires.
 type Schedule struct {
@@ -1342,6 +1361,9 @@ func (c Config) Validate() error {
 	}
 	if c.Semantic.Snapshot != "" && c.KB.Bank == "" {
 		add("semantic.snapshot needs kb.bank: the profile is built from the knowledge base")
+	}
+	if d := c.KB.StaleAfterDays; d < 0 || d > MaxKBStaleAfterDays {
+		add("kb.stale_after_days %d must be within 0..%d (0 means %d)", d, MaxKBStaleAfterDays, DefaultKBStaleAfterDays)
 	}
 	if n := len(c.KB.Selections); n > MaxKBSelections {
 		add("kb.selections lists %d files, at most %d", n, MaxKBSelections)

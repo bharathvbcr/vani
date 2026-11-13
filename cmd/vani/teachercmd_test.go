@@ -35,6 +35,7 @@ func tcSetup(t *testing.T) *tcEnv {
 	fixedNow(t)
 	cfg := config.Default()
 	cfg.TargetSummary = "early-career ML systems roles"
+	writeKBWords(t, state, kbTestOwnWord) // the summary is checked against the list before any prompt is built
 	cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-test", TriageModel: tcHaiku, InputNanoUSDPerToken: 3000, OutputNanoUSDPerToken: 15000}
 	cfg.Decide.DailyUSD.LLM = 5
 	if err := config.Save(cfgPath, cfg); err != nil {

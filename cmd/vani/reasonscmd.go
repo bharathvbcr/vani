@@ -54,7 +54,7 @@ func (e *env) reasonsDraft(args []string) error {
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	cfg, err := e.loadConfig()
+	cfg, err := e.loadPromptConfig(false)
 	if err != nil {
 		return err
 	}

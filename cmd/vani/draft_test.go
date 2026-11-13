@@ -146,6 +146,7 @@ func draftSetupKB(t *testing.T, input string, p *draftLLM, kb *draftKB) {
 		}
 	}
 	cfg.TargetSummary = "ML inference roles"
+	writeKBWords(t, os.Getenv("VANI_STATE_DIR"), kbTestOwnWord)
 	cfg.LLM = testLLM
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)

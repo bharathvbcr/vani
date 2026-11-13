@@ -480,7 +480,7 @@ type retriagePrompt struct {
 // retriageSetup reads the config a manual reading needs: an llm provider, the
 // triage model, the target summary and that model's prices.
 func (e *env) retriageSetup(ctx context.Context) (*retriageAsker, error) {
-	cfg, err := e.loadConfig()
+	cfg, err := e.loadPromptConfig(false)
 	if err != nil {
 		return nil, rtErr(rtConfig, "%v", err)
 	}

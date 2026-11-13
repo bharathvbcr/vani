@@ -27,6 +27,7 @@ func ltSetup(t *testing.T) string {
 	t.Setenv("VANI_NO_KEYCHAIN", "1")
 	cfg := config.Default()
 	cfg.TargetSummary = ltSummary
+	writeKBWords(t, state, kbTestOwnWord)
 	cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-test", TriageModel: tcHaiku, InputNanoUSDPerToken: 3000, OutputNanoUSDPerToken: 15000}
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)

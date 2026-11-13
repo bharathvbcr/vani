@@ -25,6 +25,11 @@ type Profile struct {
 	Target string
 	// Truncated is true when the bank held more than MaxProfileChunks chunks.
 	Truncated bool
+	// GenericTarget is true when no target summary was given and Target is
+	// DefaultTarget: the ranking compares postings with a generic persona, not
+	// the owner's roles. The fallback stays (semantic matching is not silently
+	// off); this flag is what lets a caller say so.
+	GenericTarget bool
 }
 
 // DefaultTarget is the target when the config states none: the roles the
@@ -42,10 +47,11 @@ const DefaultTarget = "early-career software, ML or systems engineering roles"
 // still exists and semantic matching is not silently off.
 func ProfileFromBank(b kbsync.Bank, targetSummary string) (Profile, error) {
 	target := truncBytes(tidy(kbsync.PlainText(targetSummary)), MaxProfileChunkBytes)
-	if target == "" {
+	generic := target == ""
+	if generic {
 		target = DefaultTarget
 	}
-	p := Profile{Target: target}
+	p := Profile{Target: target, GenericTarget: generic}
 	seen := map[string]bool{}
 	add := func(label, text string) {
 		text = truncBytes(text, MaxProfileChunkBytes)
