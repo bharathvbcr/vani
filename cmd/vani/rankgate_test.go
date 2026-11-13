@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -91,6 +92,68 @@ func TestRankWeightsRefusedSharesKeepTheCalibration(t *testing.T) {
 	if w, used, warn := rankWeights(cfg); w == nil || used != "fitted 2026-10-18" || warn != "" {
 		t.Errorf("calibration only: %v %q %q", w, used, warn)
 	}
+}
+
+// `vani status` says which weights rank and why, in its text and its JSON: a
+// refused file, one used unchecked and one checked are three different answers.
+func TestStatusSaysWhichRankWeightsRankAndWhetherTheyWereChecked(t *testing.T) {
+	cfgPath, _ := setup(t)
+	mustCode(t, 0, "init")
+	statusOf := func(cfg config.Config) (rankWeightsFacetJSON, string) {
+		t.Helper()
+		if err := config.Save(cfgPath, cfg); err != nil {
+			t.Fatal(err)
+		}
+		o, _ := mustCode(t, 0, "status", "--json")
+		var s struct {
+			RankWeights *rankWeightsFacetJSON `json:"rank_weights"`
+		}
+		if err := json.Unmarshal([]byte(o), &s); err != nil {
+			t.Fatal(err)
+		}
+		txt, _ := mustCode(t, 0, "status")
+		if s.RankWeights == nil {
+			return rankWeightsFacetJSON{}, txt
+		}
+		return *s.RankWeights, txt
+	}
+	base := config.Default()
+	if f, txt := statusOf(base); f.Used != "" || strings.Contains(txt, "rank weights") {
+		t.Errorf("no rank_weights_file: facet %+v\n%s", f, txt)
+	}
+	refused := gateFile(t, "refused.json", rankfit.File{Shares: &gateShares, Report: heldOut(0.4, 0.6, 500)})
+	f, txt := statusOf(withWeights(base, refused))
+	if f.OK || f.Used != "hand" || f.SharesChecked || !strings.Contains(f.Warning, "worse than the hand weights") ||
+		!strings.Contains(txt, "rank weights: hand") || !strings.Contains(txt, "worse than the hand weights") {
+		t.Errorf("refused: %+v\n%s", f, txt)
+	}
+	unchecked := gateFile(t, "unchecked.json", rankfit.File{Shares: &gateShares})
+	f, txt = statusOf(withWeights(base, unchecked))
+	if f.OK || f.SharesChecked || f.Used != "fitted 2026-10-18" || !strings.Contains(txt, "unchecked") {
+		t.Errorf("unchecked: %+v\n%s", f, txt)
+	}
+	checked := gateFile(t, "checked.json", rankfit.File{Shares: &gateShares, Report: heldOut(0.7, 0.6, 500)})
+	f, txt = statusOf(withWeights(base, checked))
+	if !f.OK || !f.SharesChecked || f.Used != "fitted 2026-10-18" || f.Warning != "" || !strings.Contains(txt, "rank weights: fitted 2026-10-18") {
+		t.Errorf("checked: %+v\n%s", f, txt)
+	}
+	broken := base
+	broken.RankWeightsFile = filepath.Join(t.TempDir(), "missing.json")
+	if f, txt := statusOf(broken); f.OK || f.Used != "hand" || !strings.Contains(txt, "could not be used") {
+		t.Errorf("missing: %+v\n%s", f, txt)
+	}
+}
+
+type rankWeightsFacetJSON struct {
+	OK            bool   `json:"ok"`
+	Used          string `json:"used"`
+	Warning       string `json:"warning"`
+	SharesChecked bool   `json:"shares_checked"`
+}
+
+func withWeights(base, from config.Config) config.Config {
+	base.RankWeightsFile = from.RankWeightsFile
+	return base
 }
 
 // The listing and the digest carry the refusal, so it is never silent.

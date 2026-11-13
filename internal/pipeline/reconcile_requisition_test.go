@@ -174,6 +174,22 @@ func TestTwinsFoldedByTheTupleOnlyStayFoldedAndReviveSafely(t *testing.T) {
 	})
 }
 
+// Pinned, not changed: a weakly keyed posting (an inbox or page job, x: or pg:)
+// still folds into an ATS record on the tuple alone (rule 3, markWeakTwins). It
+// has no requisition id to share; whether it should need one is the owner's call.
+func TestWeakKeyedPostingStillFoldsOnTheTupleAlone(t *testing.T) {
+	gh := ghBare(t, "1", "Staff Engineer", "Remote")
+	fk, err := posting.FallbackKey("Acme", "Staff Engineer", "Remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	weak := posting.Posting{Key: fk, ATS: posting.Other, Company: "Acme", Title: "Staff Engineer", Location: "Remote", Description: "d"}
+	l := openLedger(t)
+	reconcileOne(t, l, board, t0, gh)
+	reconcileOne(t, l, sources.Board{ATS: posting.Other, Token: "x"}, t0.Add(time.Hour), weak)
+	wantDuplicate(t, l, weak.Key, gh.Key)
+}
+
 func TestRequisitionIDsReadKeysAndLinksAndFoldThem(t *testing.T) {
 	wdKey, _ := posting.WorkdayKey("acme", "ext", "JR-1234")
 	ghKey, _ := posting.GreenhouseKey("acme", "4012345")

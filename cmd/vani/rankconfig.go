@@ -48,12 +48,20 @@ const rankWeightsHand = "hand"
 // ("hand", or "fitted <date>"), so it is never silent; warn is non-empty when
 // a file was configured but could not be used, and the hand weights stand in.
 func rankWeights(cfg config.Config) (w *jobinsight.Weights, used, warn string) {
+	w, used, warn, _ = rankWeightsChecked(cfg)
+	return w, used, warn
+}
+
+// rankWeightsChecked is rankWeights that also says whether fitted shares are in
+// use after being checked against the hand weights on the file's own held-out
+// result (sharesChecked), as opposed to used on the file's word alone.
+func rankWeightsChecked(cfg config.Config) (w *jobinsight.Weights, used, warn string, sharesChecked bool) {
 	if cfg.RankWeightsFile == "" {
-		return nil, rankWeightsHand, ""
+		return nil, rankWeightsHand, "", false
 	}
 	f, err := rankfit.Load(cfg.RankWeightsFile)
 	if err != nil {
-		return nil, rankWeightsHand, "rank_weights_file could not be used, so the hand weights rank: " + oneLine(err.Error(), 300)
+		return nil, rankWeightsHand, "rank_weights_file could not be used, so the hand weights rank: " + oneLine(err.Error(), 300), false
 	}
 	used = "fitted " + f.FittedAt.UTC().Format("2006-01-02")
 	if f.Shares != nil {
@@ -65,15 +73,57 @@ func rankWeights(cfg config.Config) (w *jobinsight.Weights, used, warn string) {
 			warn = "rank_weights_file's shares are refused, so the hand shares rank: " + refusal
 			f.Shares = nil
 			if len(f.Calibration) == 0 {
-				return nil, rankWeightsHand, warn
+				return nil, rankWeightsHand, warn, false
 			}
 			used += " (calibration only; shares refused)"
 		case unchecked != "":
 			warn = unchecked // used as the file says, but never silently unchecked
+		default:
+			sharesChecked = true
 		}
 	}
 	fitted := f.Apply(jobinsight.DefaultWeights())
-	return &fitted, used, warn
+	return &fitted, used, warn, sharesChecked
+}
+
+// rankWeightsFacet is status's answer to "which weights rank, and can I trust
+// them": Used as `vani jobs` reports it ("hand", "fitted <date>", or "fitted
+// <date> (calibration only; shares refused)"), Warning the refusal or the
+// failure (a file that could not be used, shares worse than the hand weights on
+// their own held-out pairs, or used with no recorded result), and SharesChecked
+// whether fitted shares in use were checked against the hand weights.
+type rankWeightsFacet struct {
+	facet
+	Used          string `json:"used"`
+	Warning       string `json:"warning,omitempty"`
+	SharesChecked bool   `json:"shares_checked"`
+}
+
+// rankWeightsFacetOf reads the config's rank_weights_file as the ranking does;
+// nil when none is configured. It is not ok while there is a warning.
+func rankWeightsFacetOf(cfg config.Config) *rankWeightsFacet {
+	if cfg.RankWeightsFile == "" {
+		return nil
+	}
+	_, used, warn, checked := rankWeightsChecked(cfg)
+	f := &rankWeightsFacet{facet: facet{OK: warn == ""}, Used: used, Warning: warn, SharesChecked: checked}
+	if warn != "" {
+		f.Reason = warn
+	}
+	return f
+}
+
+// rankWeightsLines are the status lines for f: the weights in use, and why not
+// the fitted ones when they were not.
+func rankWeightsLines(f *rankWeightsFacet) []string {
+	if f == nil {
+		return nil
+	}
+	out := []string{"rank weights: " + f.Used}
+	if f.Warning != "" {
+		out = append(out, "  "+f.Warning)
+	}
+	return out
 }
 
 // sharesVerdict judges a file's fitted shares by the held-out result the file

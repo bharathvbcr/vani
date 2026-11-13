@@ -239,3 +239,29 @@ func TestAuditWithAnUnreadablePrefilterSampleSaysSoAndLeavesIt(t *testing.T) {
 		})
 	}
 }
+
+// A label on a row that is no ledger record must not trip the readers of the
+// label store: relevance (text and JSON), the drop-recall estimate, rankfit's
+// dry run and the label queue all go on, and the row is in the pre-ledger
+// stratum of the relevance report.
+func TestLabelsOnPrefilterRowsDoNotBreakTheLabelReaders(t *testing.T) {
+	_, state := setup(t)
+	mustCode(t, 0, "init")
+	seedAudit(t, state, 6, 2, 2)
+	writePrefilterSample(t, state, pfSampleJSON)
+	mustCode(t, 0, "audit", "answer", "--key", pfTitleA, "--verdict", "yes", "--seed", "w1", "--dropped", "100")
+	mustCode(t, 0, "audit", "answer", "--key", pfLoc, "--verdict", "no", "--seed", "w1", "--dropped", "100")
+	txt, _ := mustCode(t, 0, "relevance")
+	if !strings.Contains(txt, "dropped:prefilter:exclude_title") {
+		t.Errorf("relevance text lacks the stratum:\n%s", txt)
+	}
+	o, _ := mustCode(t, 0, "relevance", "--json")
+	if !strings.Contains(o, "dropped:prefilter:exclude_location") || !strings.Contains(o, `"prefilter":2`) {
+		t.Errorf("relevance json:\n%s", o)
+	}
+	mustCode(t, 0, "rankfit", "--dry-run")
+	old := stdin
+	t.Cleanup(func() { stdin = old })
+	stdin = strings.NewReader("q\n")
+	mustCode(t, 0, "label", "-n", "1")
+}

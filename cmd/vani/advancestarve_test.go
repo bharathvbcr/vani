@@ -295,3 +295,23 @@ func TestUndatedFirstCrawlPostingsDrainAcrossRuns(t *testing.T) {
 		t.Errorf("%d waiters left after %d runs, want 40 drained in 20", len(pool), runs)
 	}
 }
+
+// Pinned: the guard applies under US-first too, so a starved non-US posting
+// takes one of the quarter's slots ahead of fresh US ones. That is the decision
+// as written (a posting must not wait for ever); this test says it.
+func TestStarvationGuardAppliesUnderUSFirst(t *testing.T) {
+	pinStarveClock(t)
+	var todo []ledger.Record
+	for i := 0; i < 10; i++ {
+		r := freshRec(i)
+		r.Posting.Location = "Austin, TX"
+		todo = append(todo, r)
+	}
+	old := starvedRec(0, 10*24*time.Hour)
+	old.Posting.Location = "Paris, France"
+	todo = append(todo, old)
+	orderAdvance(todo, slices.Clone(todo), nil, withUSFirst(true), withSlots(8))
+	if todo[0].Key != old.Key {
+		t.Errorf("order %v: the starved non-US posting should lead the run", starveKeys(todo)[:3])
+	}
+}

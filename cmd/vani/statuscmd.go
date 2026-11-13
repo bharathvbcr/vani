@@ -89,6 +89,11 @@ type statusJSON struct {
 	// extension ingest a posting of that no watched board covers (unwatched.go).
 	// Absent when the config or the ledger could not be read. Additive.
 	UnwatchedCompanies *unwatchedFacet `json:"unwatched_companies,omitempty"`
+	// RankWeights is which weights rank (rank_weights_file against the hand
+	// weights) and why: refused fitted shares, an unreadable file or shares used
+	// unchecked are said here, not only in a jobs listing. Absent when no
+	// rank_weights_file is configured. Additive.
+	RankWeights *rankWeightsFacet `json:"rank_weights,omitempty"`
 }
 
 // pathsJSON is config.Resolved for status --json.
@@ -322,6 +327,7 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	}
 	out.RunRequest = e.runRequestFacet(at)
 	if cfgErr == nil {
+		out.RankWeights = rankWeightsFacetOf(cfg)
 		if out.Ledger.recs != nil {
 			u := unwatchedCompaniesOf(out.Ledger.recs, cfg, e.stateDir)
 			out.UnwatchedCompanies = &u
