@@ -19,6 +19,7 @@ not re-read here; the repo carries no copy of it.
 | 4 Calibration | **fitter built, waits on labels** (needs ≥100 per backend): `vani rankfit --part platt` refuses below it | `internal/rankfit`, `rank_weights_file` |
 | 5 Weight fit | **fitter built, waits on labels** (needs ≥150 would_apply answers): `vani rankfit --part weights` refuses below it, and writes only past the held-out gain interval | `internal/rankfit`, `rank_weights_file` |
 | 6 Lappi v2 | nothing to build until Lappi is served | — |
+| Adaptive stage 0 (2026-11-12) | **done in code.** `vani relevance` sets every reader (engine backends, teacher models) against the owner's would_apply, and each Score part's AUC. On the live 32 labels (3 yes, 8 maybe, 21 no), no reader called any wanted posting strong_fit or partial_fit: d1-ultra 0/10, Haiku 0/10, Sonnet 0/9. So no model reading may stand in for a label yet. The plan and its later stages are `build/fable-plan-2026-11-12-ranking.md` (not tracked). | `internal/eval/readeragree.go`, `internal/rankfit/partauc.go` |
 
 Findings N1 to N10 and D1 to D11 of the later audit, and the advance-caller differences, are below.
 

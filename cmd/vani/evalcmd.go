@@ -166,6 +166,25 @@ func (e *env) teacherReadings() eval.TeacherReadings {
 // when there are none to use. It writes no warning: each caller words its own
 // (the label queue and `vani relevance` use it for different things). It reads
 // without the run lock, as teacherReadings says.
+// openTeacherLog opens the whole teacher readings log for the reader
+// agreement, every model and prompt in it. status is
+// eval.TeacherProxyAvailable when it holds valid rows; otherwise store is nil
+// and status (and detail) say why.
+func (e *env) openTeacherLog() (store *eval.TeacherStore, status, detail string) {
+	path := filepath.Join(e.stateDir, eval.TeacherFile)
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return nil, eval.TeacherProxyMissing, ""
+	}
+	s, err := eval.OpenTeacherStore(path)
+	if err != nil {
+		return nil, eval.TeacherProxyUnreadable, err.Error()
+	}
+	if s.Len() == 0 {
+		return nil, eval.TeacherProxyEmpty, ""
+	}
+	return s, eval.TeacherProxyAvailable, ""
+}
+
 func (e *env) openTeacherReadings() eval.TeacherSource {
 	path := filepath.Join(e.stateDir, eval.TeacherFile)
 	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
