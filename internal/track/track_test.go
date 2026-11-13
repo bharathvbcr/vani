@@ -245,9 +245,9 @@ func TestLoadBank(t *testing.T) {
 
 func TestApplyKeepsTrackIndependentRules(t *testing.T) {
 	cfg := config.Default()
-	sponsorship := config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship", "citizenship_or_clearance_required"}, MinOpenRouterProb: 0.95, MinLappiScore: 0.5}
-	workMode := config.DropRule{Slot: "work_mode", Values: []string{"onsite"}, MinOpenRouterProb: 0.8}
-	oldRoleFit := config.DropRule{Slot: "role_fit", Values: []string{"adjacent", "mismatch_domain"}, MinOpenRouterProb: 0.7}
+	sponsorship := config.DropRule{Slot: "sponsorship", Values: []string{"no_sponsorship", "citizenship_or_clearance_required"}, MinOpenRouterProb: 0.95, MinLappiScore: 0.8}
+	workMode := config.DropRule{Slot: "work_mode", Values: []string{"onsite"}, MinOpenRouterProb: 0.9}
+	oldRoleFit := config.DropRule{Slot: "role_fit", Values: []string{"adjacent", "mismatch_domain"}, MinOpenRouterProb: 0.9}
 	cfg.DropRules = []config.DropRule{sponsorship, oldRoleFit, workMode}
 	cfg.TargetSummary = "old summary"
 	before, _ := json.Marshal(cfg)
