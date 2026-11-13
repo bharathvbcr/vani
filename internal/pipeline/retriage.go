@@ -353,7 +353,18 @@ func planPolicyDrop(l ledger.Ledger, r ledger.Record, p DropPolicy, sc ReopenSco
 	var c dropClass
 	switch {
 	case backend == TitleBackend:
-		if _, _, still := p.EvaluateTitle(r.Posting.Title, r.Posting.Description); still {
+		// l.All() hands a dropped record back without its body, and a staff
+		// reading is set aside when the description states fewer than staff
+		// years: judged on an empty description it would stay dropped for
+		// ever. Read the body (one bounded read) only when the verdict can
+		// depend on it; one that cannot be read back is not judged.
+		tr := r
+		if r.BodyEvicted && p.titleReadsStaff(r.Posting.Title) {
+			if tr = ledger.Full(l, r); tr.BodyEvicted {
+				return dropStays
+			}
+		}
+		if _, _, still := p.EvaluateTitle(tr.Posting.Title, tr.Posting.Description); still {
 			return dropStays
 		}
 		c = dropTitle
