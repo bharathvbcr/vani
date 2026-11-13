@@ -9,6 +9,16 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Readers and score parts against the owner** (`internal/eval/readeragree.go`,
+  `internal/rankfit/partauc.go`, `vani relevance`). The report now sets every triage reader against
+  the owner's would_apply labels: each engine backend from the ledger and each teacher model in
+  `teacher_readings.jsonl`. It gives each reader's role_fit sensitivity and specificity (Wilson
+  intervals) and a value-by-answer table for role_fit and seniority. It also gives each Score part's
+  AUC on the judged postings, with a stratified bootstrap interval, over all judged postings and
+  over the scored stratum. The parts are built as `vani rankfit` builds them. Counts only, no
+  spend; a source that cannot be read is named, never shown as an empty table. This is stage 0 of
+  the adaptive-ranking plan: it decides whether any model's reading may stand in for the owner's
+  label.
 - **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
   (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
   `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings
@@ -159,6 +169,13 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **The weight fit reads the scores the owner saw, not an empty record** (`internal/rankfit`,
+  `Targets`). Audit cards and Mac app Jobs rows are logged without Score's parts. `Targets` took
+  each posting's newest impression as its scores, and for an audited posting that is the
+  scoreless audit card. `ItemFromScores` then refused it ("no recorded gate or fresh"), so
+  `vani rankfit --part weights` could not have run on any audit label once past its threshold.
+  It now takes the newest impression that recorded scores, else scores the posting now. A
+  scoreless Jobs row still counts as a pass.
 - **Ranking: a role's level is penalised once, and "Staff" must agree with the years asked**
   (`internal/jobinsight`, `internal/expyears`, `internal/pipeline`). A seniority rank penalty and a
   `mismatch_seniority` role-fit reading say the same thing, yet both multiplied the gate, so a
