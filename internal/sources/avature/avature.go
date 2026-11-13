@@ -197,6 +197,9 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone rows answered their detail with 404: closed since listing.
 	Gone int `json:"gone,omitempty"`
+	// Relocated reused rows were listed with a place other than the stored
+	// posting's, and were returned with the listed one.
+	Relocated int `json:"relocated,omitempty"`
 }
 
 // Options configures NewWith.
@@ -326,6 +329,12 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	for _, i := range pl.Reuse {
 		p := stored[keys[i]]
 		p.SeenAt = seen
+		// The card's place leads the posting's (firstNonEmpty in posting), so a
+		// place that moved shows without a request (srcutil.Relocate).
+		if loc, moved := srcutil.Relocate(p.Location, rows[i].location); moved {
+			p.Location = loc
+			stats.Relocated++
+		}
 		slot[i] = &p
 		stats.Reused++
 	}

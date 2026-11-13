@@ -150,6 +150,9 @@ type Stats struct {
 	// country queries and never below zero per query. Set only when List
 	// succeeds. Not in Listed: stored postings among them age as absent.
 	Short int `json:"short,omitempty"`
+	// Relocated reused rows were listed with a place other than the stored
+	// posting's, and were returned with the listed one.
+	Relocated int `json:"relocated,omitempty"`
 }
 
 // Options turn on the bounded detail step (NewWith).
@@ -536,6 +539,12 @@ func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Boa
 	for _, i := range pl.Reuse {
 		p := stored[keys[i]]
 		p.SeenAt = seen
+		// The row carries the same structured place as the detail, so a place
+		// that moved shows without a request (srcutil.Relocate).
+		if loc, moved := srcutil.Relocate(p.Location, placeOf(rows[i].Location)); moved {
+			p.Location = loc
+			st.Relocated++
+		}
 		slot[i] = &p
 		st.Reused++
 	}
