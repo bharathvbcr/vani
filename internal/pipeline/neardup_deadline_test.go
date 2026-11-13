@@ -248,4 +248,17 @@ func TestNearDupPrewarmDoesNotShingleUnrelatedTitlesOrStarveNewest(t *testing.T)
 	if rep.Shingled != 2 {
 		t.Fatalf("shingled %d descriptions, want the 2 of the one candidate pair and none of the %d unrelated titles: %+v", rep.Shingled, unrelated, rep)
 	}
+
+	// And under the tight deadline the code was written for, the newest pair
+	// is still decided whatever else the cut costs. Only the fields the cut
+	// cannot change are asserted: how many of the unrelated postings were
+	// reached (Examined, Partial) is the machine's speed, not the code's.
+	l2 := &slowLedger{recs: append([]ledger.Record(nil), l.recs...)}
+	tight, err := AnnotateNearDuplicates(ctx, l2, t1, NearDupOptions{Deadline: 60 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tight.Duplicates != 1 || tight.Written != 1 || tight.Compared != 1 || tight.Shingled != 2 || tight.Examined < 2 {
+		t.Fatalf("the newest duplicate was starved under a tight deadline: %+v", tight)
+	}
 }

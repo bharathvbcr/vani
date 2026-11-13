@@ -129,11 +129,34 @@ func TestLiveDaemonNamesTheOtherBinary(t *testing.T) {
 	t.Cleanup(func() { daemonIdentity = oldID })
 	daemonIdentity = func(int) procIdentity { return procIdentity{OK: true, Exe: other, Started: at} }
 	_, err := liveDaemon(dir)
-	if !errors.Is(err, errNoDaemon) {
+	if !errors.Is(err, errNoDaemon) || !errors.Is(err, errOtherBinaryDaemon) {
 		t.Fatalf("%v", err)
 	}
 	if strings.Contains(err.Error(), "is gone") || !strings.Contains(err.Error(), other) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// `vani run-request` from another binary names that binary and does not tell
+// the person to run-once: the daemon runs, and a run made here would contend
+// with it for the ledger.
+func TestRunRequestFromAnotherBinaryDoesNotAdviseRunOnce(t *testing.T) {
+	_, stateDir := setup(t)
+	mustCode(t, 0, "init")
+	const other = "/opt/vani-other/bin/vani"
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	if err := writeDaemonAnnouncement(stateDir, daemonRecord{V: runRequestVersion, PID: 4242, StartedAt: at, Exe: other}); err != nil {
+		t.Fatal(err)
+	}
+	oldID := daemonIdentity
+	t.Cleanup(func() { daemonIdentity = oldID })
+	daemonIdentity = func(int) procIdentity { return procIdentity{OK: true, Exe: other, Started: at} }
+	_, e := mustCode(t, exitRuntime, "run-request")
+	if !strings.Contains(e, other) || strings.Contains(e, "run-once") || strings.Contains(e, "is gone") {
+		t.Errorf("stderr %q", e)
+	}
+	if requestExists(stateDir, runRequestFile) {
+		t.Error("a refused request was written")
 	}
 }
 
