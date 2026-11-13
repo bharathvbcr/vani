@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bharathvbcr/Vani/internal/decide/wouldapply"
+	"github.com/bharathvbcr/Vani/internal/decide/wouldapplypair"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/decide"
 )
@@ -30,8 +30,8 @@ func pairPosting(key string) posting.Posting {
 
 func pairWork(a, b string) PairWork {
 	pa, pb := pairPosting(a), pairPosting(b)
-	q, _, err := wouldapply.Question(pa, pb, "summary", wouldapply.Exemplars{
-		Yes: []wouldapply.Exemplar{{Title: "yes one"}}, No: []wouldapply.Exemplar{{Title: "no one"}}})
+	q, _, err := wouldapplypair.Question(pa, pb, "summary", wouldapplypair.Exemplars{
+		Yes: []wouldapplypair.Exemplar{{Title: "yes one"}}, No: []wouldapplypair.Exemplar{{Title: "no one"}}})
 	if err != nil {
 		panic(err)
 	}
@@ -40,9 +40,9 @@ func pairWork(a, b string) PairWork {
 
 func pairRowOf(a, b, answer string, at time.Time) PairRow {
 	w := pairWork(a, b)
-	c := wouldapply.Choice{Reading: decide.Answered, Value: answer}
+	c := wouldapplypair.Choice{Reading: decide.Answered, Value: answer}
 	if answer == "" {
-		c = wouldapply.Choice{Reading: decide.Abstained}
+		c = wouldapplypair.Choice{Reading: decide.Abstained}
 	}
 	return pairRow(pairIdent(), w, c, at)
 }
@@ -175,7 +175,7 @@ func answerWith(v string) func(int, decide.Question) (decide.Answer, error) {
 		if v == "none" {
 			rd = decide.SlotReading{Reading: decide.Abstained}
 		}
-		return decide.Answer{Backend: "llm", Slots: map[string]decide.SlotReading{wouldapply.Slot: rd}}, nil
+		return decide.Answer{Backend: "llm", Slots: map[string]decide.SlotReading{wouldapplypair.Slot: rd}}, nil
 	}
 }
 

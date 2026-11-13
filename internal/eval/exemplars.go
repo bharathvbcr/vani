@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
-	"github.com/bharathvbcr/Vani/internal/decide/wouldapply"
+	"github.com/bharathvbcr/Vani/internal/decide/wouldapplypair"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -89,8 +89,8 @@ func (s ExemplarSet) Validate() error {
 		return errors.New("eval: exemplar set has no freeze time")
 	}
 	for name, l := range map[string][]ExemplarEntry{"yes": s.Yes, "no": s.No} {
-		if len(l) < MinExemplarsPerClass || len(l) > wouldapply.MaxExemplarsPerClass {
-			return fmt.Errorf("eval: %d %q exemplars, want %d..%d", len(l), name, MinExemplarsPerClass, wouldapply.MaxExemplarsPerClass)
+		if len(l) < MinExemplarsPerClass || len(l) > wouldapplypair.MaxExemplarsPerClass {
+			return fmt.Errorf("eval: %d %q exemplars, want %d..%d", len(l), name, MinExemplarsPerClass, wouldapplypair.MaxExemplarsPerClass)
 		}
 		for _, e := range l {
 			if e.Key == "" || strings.TrimSpace(e.Title) == "" {
@@ -105,15 +105,15 @@ func (s ExemplarSet) Validate() error {
 }
 
 // Exemplars is the set as the question shows it: titles and companies only.
-func (s ExemplarSet) Exemplars() wouldapply.Exemplars {
-	conv := func(l []ExemplarEntry) []wouldapply.Exemplar {
-		out := make([]wouldapply.Exemplar, 0, len(l))
+func (s ExemplarSet) Exemplars() wouldapplypair.Exemplars {
+	conv := func(l []ExemplarEntry) []wouldapplypair.Exemplar {
+		out := make([]wouldapplypair.Exemplar, 0, len(l))
 		for _, e := range l {
-			out = append(out, wouldapply.Exemplar{Title: e.Title, Company: e.Company})
+			out = append(out, wouldapplypair.Exemplar{Title: e.Title, Company: e.Company})
 		}
 		return out
 	}
-	return wouldapply.Exemplars{Yes: conv(s.Yes), No: conv(s.No)}
+	return wouldapplypair.Exemplars{Yes: conv(s.Yes), No: conv(s.No)}
 }
 
 // Keys are the frozen postings' keys.
@@ -218,7 +218,7 @@ func FreezeExemplars(labels map[posting.Key]Entry, recs []ledger.Record, at time
 				st.Repeats++
 				continue
 			}
-			if len(out) == wouldapply.MaxExemplarsPerClass {
+			if len(out) == wouldapplypair.MaxExemplarsPerClass {
 				continue
 			}
 			seen[rk] = true

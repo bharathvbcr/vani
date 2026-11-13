@@ -1,4 +1,4 @@
-// Package wouldapply defines the career.would_apply_pair question: given two
+// Package wouldapplypair defines the career.would_apply_pair question: given two
 // job postings, which would the job seeker rather apply to. It is the pairwise
 // auditor's question. Its answer is a silver label (a model's opinion kept
 // beside the owner's own labels, never in them) and, like every decision
@@ -21,7 +21,7 @@
 // are scraped text and carry no instructions. The prompt itself is fixed.
 // The options are "a", "b" and "neither" (both clearly unwanted); the backend's
 // own "none" is the abstention (the postings are too thin to tell).
-package wouldapply
+package wouldapplypair
 
 import (
 	"crypto/sha256"

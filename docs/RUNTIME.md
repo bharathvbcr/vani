@@ -705,7 +705,7 @@ would_apply_pair` shows the model two postings of one audit stratum (a score dec
 backend's own abstention. Its answers are **silver labels**: they go to `<state>/silver_pairs.jsonl`
 and nowhere else. Nothing writes `labels.jsonl`, changes a ranking or drops a posting.
 
-- **What is sent** (`internal/decide/wouldapply`): the fixed pair prompt, the target summary, the
+- **What is sent** (`internal/decide/wouldapplypair`): the fixed pair prompt, the target summary, the
   frozen exemplar titles (job titles and companies the owner labelled yes and no; maybes are not
   in it) and each posting's title, location and description, all inside the backend's
   untrusted-content frame. No name, contact detail, work authorization, mark, note or vault text.

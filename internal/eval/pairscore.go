@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bharathvbcr/Vani/internal/decide/wouldapply"
+	"github.com/bharathvbcr/Vani/internal/decide/wouldapplypair"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/decide"
 )
@@ -96,9 +96,9 @@ func DecisivePairs(rows []PairRow, id PairIdent) []DecisivePair {
 	out := make([]DecisivePair, 0, len(usable))
 	for _, r := range usable {
 		switch r.Answer {
-		case wouldapply.OptA:
+		case wouldapplypair.OptA:
 			out = append(out, DecisivePair{Win: r.KeyA, Lose: r.KeyB})
-		case wouldapply.OptB:
+		case wouldapplypair.OptB:
 			out = append(out, DecisivePair{Win: r.KeyB, Lose: r.KeyA})
 		}
 	}
@@ -182,13 +182,13 @@ func scoreUsable(usable []PairRow, st PairStats) (map[posting.Key]PostingScore, 
 		games += 2
 		var chosen posting.Key
 		switch r.Answer {
-		case wouldapply.OptA:
+		case wouldapplypair.OptA:
 			a.Picked++
 			picked++
 			aCount++
 			st.Decisive++
 			chosen = r.KeyA
-		case wouldapply.OptB:
+		case wouldapplypair.OptB:
 			b.Picked++
 			picked++
 			st.Decisive++

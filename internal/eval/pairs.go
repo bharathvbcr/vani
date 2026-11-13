@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
-	"github.com/bharathvbcr/Vani/internal/decide/wouldapply"
+	"github.com/bharathvbcr/Vani/internal/decide/wouldapplypair"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/decide"
 )
@@ -51,7 +51,7 @@ var ErrPairsBusy = errors.New("eval: another silver pair run is using the pair l
 // unusable reply, which are kept so a missing answer is never mistaken for a
 // pair nobody asked.
 //
-// Model, FixtureSHA (wouldapply.Fixture), PromptHash (wouldapply.PromptHash)
+// Model, FixtureSHA (wouldapplypair.Fixture), PromptHash (wouldapplypair.PromptHash)
 // and ExemplarSHA (ExemplarSet.SHA256) say exactly what was asked, of whom.
 // RenderSHA256 is the hash of the exact Context bytes sent; TextSHA256A and B
 // are HashText of the two descriptions, the hashes a label carries.
@@ -108,7 +108,7 @@ func (r PairRow) validate() error {
 	switch {
 	case r.V != PairsSchema:
 		return fmt.Errorf("version %d", r.V)
-	case r.Task != wouldapply.Task:
+	case r.Task != wouldapplypair.Task:
 		return fmt.Errorf("task %q", r.Task)
 	case r.KeyA == "" || r.KeyB == "" || r.KeyA == r.KeyB:
 		return errors.New("a pair needs two distinct keys")
@@ -120,7 +120,7 @@ func (r PairRow) validate() error {
 		return errors.New("no reading")
 	case (r.Reading == string(decide.Answered)) != (r.Answer != ""):
 		return errors.New("an answer belongs to an answered reading and no other")
-	case r.Answer != "" && !slices.Contains(wouldapply.Options[:], r.Answer):
+	case r.Answer != "" && !slices.Contains(wouldapplypair.Options[:], r.Answer):
 		return fmt.Errorf("answer %q is not an option", r.Answer)
 	}
 	return nil
@@ -320,7 +320,7 @@ func (r PairRun) Run(ctx context.Context, work []PairWork) (PairResult, error) {
 	var todo []PairWork
 	seen := map[string]bool{}
 	for _, w := range work {
-		render := wouldapply.RenderSHA256(w.Q)
+		render := wouldapplypair.RenderSHA256(w.Q)
 		k := r.Ident.key(w.A.Key, w.B.Key, render)
 		if w.A.Key == "" || w.A.Key == w.B.Key || seen[k] {
 			continue // a pair of one posting is not a pair; a repeat is asked once
@@ -401,7 +401,7 @@ func (r PairRun) Run(ctx context.Context, work []PairWork) (PairResult, error) {
 					}
 				default:
 					res.Asked++
-					row := pairRow(r.Ident, w, wouldapply.Read(ans), now())
+					row := pairRow(r.Ident, w, wouldapplypair.Read(ans), now())
 					if aerr := r.Store.Append(row); aerr != nil {
 						fatal = errors.Join(fatal, aerr)
 						stop("the pair log could not be written")
@@ -453,10 +453,10 @@ feed:
 }
 
 // pairRow records c, the model's reading of w.Q.
-func pairRow(id PairIdent, w PairWork, c wouldapply.Choice, at time.Time) PairRow {
+func pairRow(id PairIdent, w PairWork, c wouldapplypair.Choice, at time.Time) PairRow {
 	return PairRow{
-		V: PairsSchema, Task: wouldapply.Task, KeyA: w.A.Key, KeyB: w.B.Key, Swapped: w.A.Key > w.B.Key, Stratum: w.Stratum,
-		TextSHA256A: HashText(w.A.Description), TextSHA256B: HashText(w.B.Description), RenderSHA256: wouldapply.RenderSHA256(w.Q),
+		V: PairsSchema, Task: wouldapplypair.Task, KeyA: w.A.Key, KeyB: w.B.Key, Swapped: w.A.Key > w.B.Key, Stratum: w.Stratum,
+		TextSHA256A: HashText(w.A.Description), TextSHA256B: HashText(w.B.Description), RenderSHA256: wouldapplypair.RenderSHA256(w.Q),
 		Model: id.Model, FixtureSHA: id.Fixture, PromptHash: id.Prompt, ExemplarSHA: id.Exemplar,
 		Reading: string(c.Reading), Answer: c.Value, Detail: c.Detail, At: at.UTC(),
 	}

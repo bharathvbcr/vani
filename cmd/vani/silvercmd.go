@@ -18,7 +18,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
-	"github.com/bharathvbcr/Vani/internal/decide/wouldapply"
+	"github.com/bharathvbcr/Vani/internal/decide/wouldapplypair"
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -155,9 +155,9 @@ func elided(p posting.Posting) posting.Posting {
 // worst-case price of a run that has no exemplar set to render.
 func boundQuestion() decide.Question {
 	return decide.Question{
-		Task: wouldapply.Task, Prompt: wouldapply.Prompt,
+		Task: wouldapplypair.Task, Prompt: wouldapplypair.Prompt,
 		Context: bytes.Repeat([]byte("x"), jdtriage.MaxContextBytes),
-		Slots:   []decide.Slot{{Name: wouldapply.Slot, Options: append([]string(nil), wouldapply.Options[:]...)}},
+		Slots:   []decide.Slot{{Name: wouldapplypair.Slot, Options: append([]string(nil), wouldapplypair.Options[:]...)}},
 	}
 }
 
@@ -272,7 +272,7 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 	if err != nil {
 		return err
 	}
-	stats := &teacherPairsJSON{Frozen: frozen, Preview: preview, FixtureSHA: wouldapply.Fixture(), BothOrders: o.bothOrders,
+	stats := &teacherPairsJSON{Frozen: frozen, Preview: preview, FixtureSHA: wouldapplypair.Fixture(), BothOrders: o.bothOrders,
 		CapUSD: float64(capNano) / 1e9, SpentToday: float64(spentNano) / 1e9, CapIsNotSet: capErr == nil && capNano <= 0,
 		StrataMembers: map[string]int{}}
 	exempt := set.Keys()
@@ -329,7 +329,7 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 
 	var id eval.PairIdent
 	if haveSet {
-		ph, err := wouldapply.PromptHash(summary, ex)
+		ph, err := wouldapplypair.PromptHash(summary, ex)
 		if err != nil {
 			return fmt.Errorf("teacher: %w", err)
 		}
@@ -351,12 +351,12 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 				works = append(works, eval.PairWork{A: a.A, B: a.B, Stratum: a.Stratum, Q: boundQuestion()})
 				return true
 			}
-			q, _, err := wouldapply.Question(a.A, a.B, summary, ex)
+			q, _, err := wouldapplypair.Question(a.A, a.B, summary, ex)
 			if err != nil {
 				qerr = errors.Join(qerr, err)
 				return false
 			}
-			if store.Has(id, a.A.Key, a.B.Key, wouldapply.RenderSHA256(q)) {
+			if store.Has(id, a.A.Key, a.B.Key, wouldapplypair.RenderSHA256(q)) {
 				return false
 			}
 			works = append(works, eval.PairWork{A: a.A, B: a.B, Stratum: a.Stratum, Q: q})
@@ -506,7 +506,7 @@ func (e *env) pairsReport(plan *teacherPlanJSON, st *teacherPairsJSON, cfg confi
 
 // pairsShowQuestion prints the first planned question as the model would get it,
 // with each posting's text elided (the exemplar titles are shown as sent).
-func (e *env) pairsShowQuestion(works []eval.PairWork, summary string, ex wouldapply.Exemplars, haveSet bool) {
+func (e *env) pairsShowQuestion(works []eval.PairWork, summary string, ex wouldapplypair.Exemplars, haveSet bool) {
 	switch {
 	case len(works) == 0:
 		return
@@ -514,7 +514,7 @@ func (e *env) pairsShowQuestion(works []eval.PairWork, summary string, ex woulda
 		fmt.Fprintln(e.stdout, "teacher: no question is shown: there is no exemplar set to render it with")
 		return
 	}
-	q, _, err := wouldapply.Question(elided(works[0].A), elided(works[0].B), summary, ex)
+	q, _, err := wouldapplypair.Question(elided(works[0].A), elided(works[0].B), summary, ex)
 	if err != nil {
 		fmt.Fprintf(e.stdout, "teacher: the example question could not be rendered: %v\n", err)
 		return
@@ -752,7 +752,7 @@ func (e *env) silverReport(rep *teacherReportReply, seed uint64) error {
 	currentPrompt := ""
 	if cfgErr == nil {
 		if sum, err := jdtriage.NormalizeSummary(cfg.TargetSummary); err == nil {
-			currentPrompt, _ = wouldapply.PromptHash(sum, set.Exemplars())
+			currentPrompt, _ = wouldapplypair.PromptHash(sum, set.Exemplars())
 		}
 	}
 	for _, id := range idents {
@@ -764,7 +764,7 @@ func (e *env) silverReport(rep *teacherReportReply, seed uint64) error {
 			}
 		}
 		rep.Auditors = append(rep.Auditors, teacherAuditorReport{
-			Model: id.Model, Current: id.Fixture == wouldapply.Fixture() && id.Prompt == currentPrompt,
+			Model: id.Model, Current: id.Fixture == wouldapplypair.Fixture() && id.Prompt == currentPrompt,
 			FixtureSHA: id.Fixture, PromptHash: id.Prompt, Pairs: ps, Scored: len(keyed),
 			AUC: rankfit.BuildSilverAUC(items, keyed, base, rankfit.DefaultPartAUCResamples, seed),
 		})

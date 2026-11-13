@@ -53,7 +53,7 @@ nothing but the auditor's own run (to skip answered pairs) and `vani teacher rep
 | `stratum` | the audit stratum both were drawn from |
 | `text_sha256_a`, `text_sha256_b` | `eval.HashText` of each description |
 | `render_sha256` | sha256 of the exact context bytes sent |
-| `model`, `fixture_sha`, `prompt_hash` | the model; `wouldapply.Fixture()`; `wouldapply.PromptHash(summary, exemplars)` |
+| `model`, `fixture_sha`, `prompt_hash` | the model; `wouldapplypair.Fixture()`; `wouldapplypair.PromptHash(summary, exemplars)` |
 | `exemplar_sha` | the sha256 of the frozen exemplar set (`silver_exemplars.json`) the question carried |
 | `reading`, `answer`, `detail` | the slot's reading; `a`, `b` or `neither` when answered, else empty; a detail code, never model text |
 | `at` | when |

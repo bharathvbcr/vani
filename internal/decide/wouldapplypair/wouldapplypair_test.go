@@ -1,4 +1,4 @@
-package wouldapply
+package wouldapplypair
 
 import (
 	"fmt"
