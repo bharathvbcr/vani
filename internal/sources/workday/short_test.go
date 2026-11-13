@@ -57,6 +57,14 @@ func TestShortListingIsCountedNotFailed(t *testing.T) {
 			}
 			return fb
 		}, short: 40},
+		// Snap's case (2026-11): the first page serves no rows under a believable
+		// total (the board counts 42 and lists none). It is kept, not failed, and
+		// the whole total is the shortfall.
+		"an empty first page under a believable total": {fb: func() *fakeBoard {
+			fb := nvidiaBoard(42)
+			fb.page = func(int, []fakeJob) []fakeJob { return nil }
+			return fb
+		}, short: 42, lost: 42},
 		// A bucket that loses rows and whose own total drops with them lists
 		// all it counts, so it is not short by itself; the split's count still
 		// names the gap, which the split's allowance lets pass. It is counted.

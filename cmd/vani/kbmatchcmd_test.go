@@ -53,6 +53,7 @@ func kbmSetup(t *testing.T, seeds ...kbmSeed) *kbmEnv {
 	k.cfg.KB.Bank = k.bankPath
 	wireEligibleKB(t, &k.cfg, k.bankPath, kbmBank) // the digest carries eligible bullets only
 	k.save(t)
+	writeKBWords(t, state, kbTestOwnWord) // a kb_match send needs the list; this term is in no test bank
 
 	l, err := ledger.Open(filepath.Join(state, "ledger"))
 	if err != nil {

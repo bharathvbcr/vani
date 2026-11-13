@@ -226,15 +226,23 @@ func summarizeNearDup(nd pipeline.NearDupReport, err error) *nearDupSummary {
 // exclusionSummary is pipeline.ExclusionChange as counts. Unread and
 // BodyUnavailable are checks that could not run, which is not a pass.
 type exclusionSummary struct {
-	Dropped         int `json:"dropped,omitempty"`
+	Dropped int `json:"dropped,omitempty"`
+	// Reopened came back to Live at once; Deferred were marked as pending
+	// reopens, still dropped, for their board's next full listing; Stale are on
+	// a board no longer watched and stay dropped.
 	Reopened        int `json:"reopened,omitempty"`
+	Deferred        int `json:"deferred,omitempty"`
+	AlreadyPending  int `json:"already_pending,omitempty"`
+	Stale           int `json:"stale,omitempty"`
+	OverCap         int `json:"over_cap,omitempty"`
 	Unread          int `json:"unread,omitempty"`
 	BodyUnavailable int `json:"body_unavailable,omitempty"`
 }
 
 func summarizeExclusions(ch pipeline.ExclusionChange) *exclusionSummary {
 	return &exclusionSummary{
-		Dropped: len(ch.Drop), Reopened: len(ch.Reopen), Unread: len(ch.Unread),
+		Dropped: len(ch.Drop), Reopened: ch.Reopened, Deferred: ch.Deferred, AlreadyPending: ch.AlreadyPending,
+		Stale: ch.Stale, OverCap: ch.OverCap, Unread: len(ch.Unread),
 		BodyUnavailable: ch.BodyUnavailable,
 	}
 }
@@ -338,15 +346,75 @@ type boardsReport struct {
 	PaySkipped int    `json:"pay_skipped,omitempty"`
 	Gone       int    `json:"gone,omitempty"`
 	PayError   string `json:"pay_error,omitempty"`
+	// Prefiltered is new listed rows the drop policy (exclusions and title
+	// reads) rejected before any detail request, on the adapters that read a
+	// detail per posting. They were never stored, so no audit or retriage can
+	// see them; a later listing under a policy that no longer drops them
+	// stores them as new.
+	Prefiltered int `json:"prefiltered,omitempty"`
+	// Mass counts read boards whose full listing newly marked postings as a mass
+	// absence (a share of the board's open postings, or all of them, left it: an
+	// outage, a moved board, a renumbering; pipeline liveness.go). Their absent
+	// postings were kept, and die only after the mass hold. A later listing that
+	// only carries those marks is not counted. Counted in Read too.
+	// MassMarked is the postings those listings newly marked; Held is absent
+	// postings past the miss count that were kept alive inside a hold (an
+	// ordinary or a mass one). Additive.
+	Mass       int `json:"mass,omitempty"`
+	MassMarked int `json:"mass_marked,omitempty"`
+	Held       int `json:"held,omitempty"`
+	// ClockBehind counts read boards whose full listing aged nothing because
+	// the ledger holds events stamped ahead of the run's clock (pipeline
+	// liveness.go "The clock"): the clock is behind, or those events came from a
+	// clock that ran ahead. A failure: those boards age nothing until the clock
+	// passes the events. Additive.
+	ClockBehind int `json:"clock_behind,omitempty"`
+	// MassDead is postings a mass absence had marked that died this run, their
+	// mass hold over and their board still not listing them. A failure, so the
+	// owner sees them: a mass hold usually ends in its postings coming back.
+	// Counted in the items' dead too. Additive.
+	MassDead int `json:"mass_dead,omitempty"`
+	// DeathsDeferred is deaths that waited one more read because more than
+	// pipeline.ClockWindow had passed since the posting's last event (a gap a
+	// jumped clock would also make). Shown, not a failure. Additive.
+	DeathsDeferred int `json:"deaths_deferred,omitempty"`
+	// MassHeld names the boards whose postings wait out a mass hold after this
+	// run (from the ledger, not only this run's listings), with when the holds
+	// end, at most maxStaleListed; MassHeldCount is all such boards and
+	// MassHeldPostings all such postings. An attention line every run while any
+	// is held, not a failure. Additive.
+	MassHeld         []massHeldBoard `json:"mass_held,omitempty"`
+	MassHeldCount    int             `json:"mass_held_count,omitempty"`
+	MassHeldPostings int             `json:"mass_held_postings,omitempty"`
 	// Short is rows the boards counted but did not list, together (see
 	// boardReport.Short). Additive: readers that do not know the key ignore it.
 	Short int `json:"short,omitempty"`
 	// Items holds one entry per tried board, in watchlist order. When the
-	// bounds cut it, failed and skipped boards are kept before read ones.
+	// bounds cut it, failed, skipped, mass and clock-behind boards are kept
+	// before read ones.
 	Items []boardReport `json:"items"`
 	// Unrecorded counts tried boards left out of Items by its bounds
 	// (maxRecordedBoards, maxBoardsBytes).
 	Unrecorded int `json:"unrecorded,omitempty"`
+	// Stale names watched boards that have gone more than boardStaleAfter
+	// without a good read (board health, boardhealth.go), most overdue first, at
+	// most maxStaleListed; StaleCount is all of them. Additive.
+	Stale      []staleBoard `json:"stale,omitempty"`
+	StaleCount int          `json:"stale_count,omitempty"`
+	// HealthError is why board health could not be saved this run (one line);
+	// the stale list above is then this run's view only. Additive.
+	HealthError string `json:"health_error,omitempty"`
+	// Empty names watched boards that read fine this run and listed nothing
+	// though the ledger holds postings of theirs that died or are held after an
+	// absence (boardsnone.go): a board that used to list and now lists none. At
+	// most maxStaleListed; EmptyCount is all of them. Derived from the ledger,
+	// not from board health. Additive.
+	Empty      []emptyBoard `json:"empty,omitempty"`
+	EmptyCount int          `json:"empty_count,omitempty"`
+
+	// all is every tried board, uncut, for this process (board health and the
+	// empty list). Never written.
+	all []boardReport
 }
 
 // boardReport is one board in one run.
@@ -374,11 +442,27 @@ type boardReport struct {
 	// Gone is details that answered 404 under a listing that succeeded, under
 	// the threshold that fails the board.
 	Gone int `json:"gone,omitempty"`
+	// Prefiltered is new listed rows the drop policy rejected before any
+	// detail request: never stored.
+	Prefiltered int `json:"prefiltered,omitempty"`
 	// Short is rows a read board counted but did not list: a Workday query
 	// under its 2000-row window that ended before its own total
 	// (workday.Stats.Short). The listing is kept, not failed, so the postings
-	// behind those rows go unseen and stored ones age toward dead.
+	// behind those rows go unseen: the board is reconciled as a full listing whose absent postings are mass held (shortreconcile.go).
 	Short int `json:"short,omitempty"`
+
+	// DeferredSince and ShortSince, set when Deferred or Short is, are when the
+	// board's current streak of good reads with that count began (board
+	// health, boardbacklog.go). The oldest deferred row is no older than
+	// DeferredSince; a short board holds its absent postings as a mass absence while ShortSince is open.
+	// Additive.
+	DeferredSince *time.Time `json:"deferred_since,omitempty"`
+	ShortSince    *time.Time `json:"short_since,omitempty"`
+
+	// endedRun marks the board whose failure ended the listing (the run was
+	// cancelled, or the ledger failed under it): its outcome says nothing
+	// about the board, so board health leaves it out. Never written.
+	endedRun bool
 }
 
 // reconcileCounts is pipeline.Summary as the run record writes it.
@@ -398,7 +482,27 @@ type reconcileCounts struct {
 	// ListedDuplicate is the part of Duplicate that is listed postings stored
 	// as a duplicate; the rest is other records marked as their twins.
 	ListedDuplicate int `json:"listed_duplicate,omitempty"`
-	Invalid         int `json:"invalid,omitempty"`
+	// Reopened is dropped postings with a pending reopen (or an exclusion drop
+	// whose fields moved) that this board's listing showed again and let back.
+	Reopened int `json:"reopened,omitempty"`
+	Invalid  int `json:"invalid,omitempty"`
+	// Open is the board's open postings when the listing began and Absent how
+	// many of them it left out (pipeline.Summary); Held is the absent ones past
+	// the miss count that were kept alive inside their hold. Mass says the
+	// listing was a mass absence, MassMarked how many postings it newly marked,
+	// ClockBehind that it aged nothing because the ledger holds events stamped
+	// ahead of the clock, ClockAhead the newest such event. Deferred is deaths
+	// that waited a read for a gap of more than pipeline.ClockWindow; MassDead
+	// is deaths of mass-marked postings.
+	Open        int       `json:"open,omitempty"`
+	Absent      int       `json:"absent,omitempty"`
+	Held        int       `json:"held,omitempty"`
+	Mass        bool      `json:"mass,omitempty"`
+	MassMarked  int       `json:"mass_marked,omitempty"`
+	ClockBehind bool      `json:"clock_behind,omitempty"`
+	ClockAhead  time.Time `json:"clock_ahead,omitzero"`
+	Deferred    int       `json:"deaths_deferred,omitempty"`
+	MassDead    int       `json:"mass_dead,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {

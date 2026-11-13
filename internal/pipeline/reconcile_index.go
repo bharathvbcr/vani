@@ -21,6 +21,8 @@ type recInfo struct {
 	// are kept here, not recomputed from the record, so remove deletes exactly
 	// what add inserted.
 	urls []string
+	// last is the record's last event time (clockEvidence).
+	last time.Time
 }
 
 // ledgerIndex is the ledger as reconcile reads it at the start of a board:
@@ -37,10 +39,15 @@ type ledgerIndex struct {
 	byURL map[string][]posting.Key
 	// touched holds the keys written since the index was last refreshed.
 	touched map[posting.Key]bool
+	// events is every record's last event time (zero ones left out), sorted:
+	// the history a clock is judged against (clockEvidence). Kept current like
+	// the rest, so the index equals a fresh scan; this run's own writes are
+	// stamped now and never read as ahead of it.
+	events []time.Time
 }
 
 func infoOf(r ledger.Record) recInfo {
-	in := recInfo{status: r.Status, weak: weakKey(r.Key), firstSeen: r.FirstSeen, urls: urlKeys(r.Posting)}
+	in := recInfo{status: r.Status, weak: weakKey(r.Key), firstSeen: r.FirstSeen, urls: urlKeys(r.Posting), last: r.LastEvent}
 	if r.Posting.Company != "" && r.Posting.Title != "" {
 		if fk, err := posting.FallbackKey(r.Posting.Company, r.Posting.Title, r.Posting.Location); err == nil {
 			in.tuple = fk
@@ -58,7 +65,11 @@ func buildIndex(l ledger.Ledger) *ledgerIndex {
 	for _, r := range all { // sorted by key, so each tuple list is built sorted
 		x.keys = append(x.keys, r.Key)
 		x.add(r.Key, infoOf(r))
+		if !r.LastEvent.IsZero() {
+			x.events = append(x.events, r.LastEvent)
+		}
 	}
+	slices.SortFunc(x.events, time.Time.Compare)
 	return x
 }
 
@@ -114,14 +125,37 @@ func (x *ledgerIndex) refresh(l ledger.Ledger) {
 		if !ok {
 			continue // the write failed and the ledger never had it
 		}
-		if _, had := x.info[k]; had {
+		if old, had := x.info[k]; had {
 			x.remove(k)
+			x.events = dropTime(x.events, old.last)
 		} else {
 			x.keys = insertSorted(x.keys, k)
 		}
-		x.add(k, infoOf(r))
+		in := infoOf(r)
+		x.add(k, in)
+		x.events = insertTime(x.events, in.last)
 	}
 	clear(x.touched)
+}
+
+// insertTime adds t to the sorted ts (a zero time is not history).
+func insertTime(ts []time.Time, t time.Time) []time.Time {
+	if t.IsZero() {
+		return ts
+	}
+	i, _ := slices.BinarySearchFunc(ts, t, time.Time.Compare)
+	return slices.Insert(ts, i, t)
+}
+
+// dropTime removes one instant equal to t from the sorted ts.
+func dropTime(ts []time.Time, t time.Time) []time.Time {
+	if t.IsZero() {
+		return ts
+	}
+	if i, found := slices.BinarySearchFunc(ts, t, time.Time.Compare); found {
+		return slices.Delete(ts, i, i+1)
+	}
+	return ts
 }
 
 // atsFor is the ATS-keyed record a weak posting with this tuple repeats: the
@@ -187,7 +221,18 @@ type Reconciler struct {
 	// protected, when set, names records Reconcile must never demote to
 	// Duplicate after the fact (the ones the user marked).
 	protected func(posting.Key) bool
+	// live tunes the mass-absence rule (liveness.go); zero is the defaults.
+	live Liveness
+	// reopen, when set, applies pending reopens as full listings show their
+	// postings again.
+	reopen *SightingReopen
 }
+
+// ReopenOnSighting has Reconcile apply the pending reopens in s when a full
+// listing shows their postings again, and clear the ones a full listing left
+// out for PendingReopenExpiry. A partial listing applies and clears nothing.
+// The caller saves s.Pending when s.Changed().
+func (r *Reconciler) ReopenOnSighting(s *SightingReopen) { r.reopen = s }
 
 // Protect sets the records Reconcile never demotes to Duplicate once they
 // exist: markCrossTwins skips them. A new posting is never protected, having

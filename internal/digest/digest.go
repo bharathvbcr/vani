@@ -39,6 +39,7 @@ const (
 	maxExplainLen = 2000
 	maxSameDay    = 50
 	maxSaved      = 50
+	maxStaleLines = 10
 )
 
 // TriageSlots are the triage annotations shown for every role, in order.
@@ -58,6 +59,32 @@ type Counts struct {
 	// that could not run is not a check that passed). Causes with no postings
 	// are not printed; none at all prints nothing.
 	CouldNotCheck []Unchecked
+	// StaleBoards names watched boards that have gone long without a good
+	// read (their roles are not being refreshed), one line each, at most a few;
+	// StaleCount is all of them. The lines carry adapter error text, so they
+	// are escaped like any board field.
+	StaleBoards []string
+	StaleCount  int
+	// EmptyBoards names boards that read fine and list none though they listed
+	// postings before (the ledger holds their closed or held postings), one line
+	// each; EmptyCount is all of them.
+	EmptyBoards []string
+	EmptyCount  int
+	// ClockBehind is how many boards' full listings aged nothing because the
+	// ledger holds events stamped ahead of the run's clock
+	// (pipeline.Summary.ClockBehind): no absent
+	// posting was missed or marked dead for them this run.
+	ClockBehind int
+	// MassDead is postings that died at the end of a mass hold this run (their
+	// boards stopped listing them at once and never listed them again).
+	// MassHeld is the attention line for postings still in a mass hold (one
+	// line naming the boards and when the holds end; empty when none).
+	MassDead int
+	MassHeld string
+	// BoardAttention is the attention line for boards skipped this run or
+	// listing short for days (not the stale ones: StaleBoards lists those);
+	// not a failure, one line, empty when none.
+	BoardAttention string
 }
 
 // Unchecked is one cause a posting was kept unchecked and how many were.
@@ -559,6 +586,36 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	if c.AwaitingTriage > 0 {
 		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
 	}
+	if c.ClockBehind > 0 {
+		fmt.Fprintf(&b, "\nNot aged: the ledger holds events stamped ahead of this run's clock, so %d board(s) left the postings they no longer list as they were (none was missed or marked dead) until the clock passes them; the clock is behind, or those events came from a clock that ran ahead\n", c.ClockBehind)
+	}
+	if c.MassDead > 0 {
+		fmt.Fprintf(&b, "\nDied after a mass hold: %d posting(s) whose boards stopped listing them at once and never listed them again (`vani runs failures` names the boards)\n", c.MassDead)
+	}
+	if c.MassHeld != "" {
+		fmt.Fprintf(&b, "\n%s\n", Escape(c.MassHeld, 4*maxFieldRunes))
+	}
+	if c.BoardAttention != "" {
+		fmt.Fprintf(&b, "\n%s\n", Escape(c.BoardAttention, 4*maxFieldRunes))
+	}
+	boardSection := func(title string, lines []string, total int) {
+		n := max(total, len(lines))
+		if n == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "\n%s (%d)\n", title, n)
+		for i, l := range lines {
+			if i == maxStaleLines {
+				break
+			}
+			fmt.Fprintf(&b, "- %s\n", Escape(l, maxFieldRunes))
+		}
+		if shown := min(len(lines), maxStaleLines); n > shown {
+			fmt.Fprintf(&b, "- …and %d more (`vani status`)\n", n-shown)
+		}
+	}
+	boardSection("Boards not being read: their roles here are not refreshed and new ones are not found", c.StaleBoards, c.StaleCount)
+	boardSection("Boards that list nothing now though they listed before", c.EmptyBoards, c.EmptyCount)
 	return b.String(), keys, shown
 }
 

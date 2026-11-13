@@ -1,0 +1,70 @@
+# City-table set (2026-11-12): tests the US city table (usCityNames) itself.
+# 40 names drawn by a seeded sample (seed 1112) from the 214 the table gained
+# since f254c4d, each written bare as a board would; and 20 distractors that
+# put a table name beside a foreign country or region (it must not read as
+# US), beside a US state (it must), or inside a longer foreign name (a
+# street, a district). Hand-labelled from what the name is, not from any
+# verdict. Columns, tab-separated: label, remote, location, stratum,
+# postings (0: constructed, not from the ledger).
+#   label  U: every option is in the United States; M: some are, some are not;
+#          N: none is; A: as likely US as not; ?: names no readable place
+U	false	Sleepy Hollow	bare	0
+U	false	Abilene	bare	0
+U	false	Ashburn	bare	0
+U	false	Wilmington	bare	0
+U	false	Pensacola	bare	0
+U	false	Fremont	bare	0
+U	false	Albuquerque	bare	0
+U	false	Westerville	bare	0
+U	false	Hawthorne	bare	0
+U	false	Brownsville	bare	0
+U	false	Midwest	bare	0
+U	false	Palm Beach Gardens	bare	0
+U	false	Andover	bare	0
+U	false	East Palo Alto	bare	0
+U	false	Boxborough	bare	0
+U	false	Southfield	bare	0
+U	false	Tacoma	bare	0
+U	false	Irving	bare	0
+U	false	Pleasanton	bare	0
+U	false	Rockville	bare	0
+U	false	SoCal	bare	0
+U	false	Gaithersburg	bare	0
+U	false	Baton Rouge	bare	0
+U	false	Quincy	bare	0
+U	false	Research Triangle	bare	0
+U	false	Providence	bare	0
+U	false	Las Vegas	bare	0
+U	false	Tri-State Area	bare	0
+U	false	Hillsboro	bare	0
+U	false	Millbrae	bare	0
+U	false	Los Gatos	bare	0
+U	false	Tallahassee	bare	0
+U	false	St. Louis	bare	0
+U	false	DFW	bare	0
+U	false	Milwaukee	bare	0
+U	false	Puget Sound	bare	0
+U	false	Southaven	bare	0
+U	false	Norwood	bare	0
+U	false	Southern California	bare	0
+U	false	Stamford	bare	0
+N	false	Stamford, Lincolnshire	foreign-qualified	0
+N	false	Andover, Hampshire	foreign-qualified	0
+N	false	Hawthorne, Victoria	foreign-qualified	0
+N	false	Norwood, South Australia	foreign-qualified	0
+N	false	Wilmington, United Kingdom	foreign-qualified	0
+N	false	Quincy, France	foreign-qualified	0
+N	false	Southfield, United Kingdom	foreign-qualified	0
+N	false	Brownsville, Mexico	foreign-qualified	0
+N	false	St Louis, Senegal	foreign-qualified	0
+N	false	Pleasanton, Hong Kong	foreign-qualified	0
+N	false	Millbrae, Canada	foreign-qualified	0
+U	false	Las Vegas, New Mexico	us-qualified	0
+U	false	Quincy, Florida	us-qualified	0
+U	false	Wilmington, Delaware	us-qualified	0
+U	false	Tacoma, Washington	us-qualified	0
+U	false	Albuquerque, NM	us-qualified	0
+N	false	Providence Road, Bangalore	inside-a-name	0
+N	false	Irving Place, Dublin	inside-a-name	0
+N	false	Stamford Bridge, London	inside-a-name	0
+N	false	Hawthorne East, Melbourne	inside-a-name	0

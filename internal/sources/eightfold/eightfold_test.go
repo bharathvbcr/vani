@@ -168,8 +168,8 @@ func TestPacing(t *testing.T) {
 			t.Fatalf("wait %s, want %s", w, paceEvery)
 		}
 	}
-	if paceBudget < time.Duration(MaxPostings+maxPages)*paceEvery {
-		t.Errorf("a full board (%d requests at %s) does not fit the %s budget", MaxPostings+maxPages, paceEvery, paceBudget)
+	if paceBudget < time.Duration(MaxDetails+maxPages)*paceEvery {
+		t.Errorf("a full board (%d requests at %s) does not fit the %s budget", MaxDetails+maxPages, paceEvery, paceBudget)
 	}
 	// Cancelled while waiting: the board ends with the context, not a pass.
 	ctx, cancel := context.WithCancel(context.Background())

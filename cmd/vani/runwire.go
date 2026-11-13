@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -299,7 +300,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st rippling.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Prefiltered: st.Prefiltered})
 		},
 	})
 	if err != nil {
@@ -314,7 +315,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st talentbrew.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	if err != nil {
@@ -329,7 +330,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	// Avature: a detail page per posting, bounded like Workday's (stored
@@ -340,13 +341,14 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	srcs[posting.Apple] = apple.NewWith(d, apple.Options{
+		Stored: storedFor,
 		Report: func(b sources.Board, st apple.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
 		},
 	})
 	var pageErr error
@@ -364,13 +366,16 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 
 	// One index of the ledger for the whole loop: only Reconcile writes to the
 	// ledger here (the adapters read it), as Reconciler requires.
-	rec := pipeline.NewReconciler(w.led)
-	rec.Protect(protect)
+	rec, finish, err := w.runReconciler(protect, now())
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	defer finish()
 	reconcile := func(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
 		prefixMu.Lock()
 		dirtyPrefix[b.KeyPrefix()] = true
 		prefixMu.Unlock()
-		return rec.Reconcile(ctx, b, listed, now)
+		return w.reconcileBoard(ctx, rec, b, listed, now)
 	}
 	// Before the first board: added is 0, not an unreported count.
 	w.noteLive(runProgress{Stage: progressListing, Total: len(w.cfg.Watchlist), Added: progressCount(0)})
@@ -383,9 +388,37 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 			Outcome: tk.Outcome, InFlight: tk.InFlight,
 		})
 	})
+	health := openBoardHealth(w.stateDir, w.warnf) // reporting only: nothing below reads it back into reconcile
 	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
+	// Every board the listing finished feeds health, whether or not the run
+	// then ended on a cancel or a ledger error (those leave out only the board
+	// they ended on): a run that keeps ending early must not freeze health and
+	// read as "no stale board". Only a listing that reached every board prunes,
+	// and only against the config's whole watchlist, never this run's cut.
+	at := now()
+	if health != nil {
+		health.fetches = w.fetchSnapshot()
+	}
+	boards.Stale, boards.StaleCount, boards.HealthError = health.record(w.watchedBoards(), boards.all, err == nil, at, w.warnf)
+	for _, s := range boards.Stale {
+		w.warnf("stale board: %s", staleBoardLine(s, at))
+	}
+	// A board that listed nothing though the ledger holds postings of its that
+	// died or wait out a mass hold: named from the ledger, not from health.
+	recs := w.led.All()
+	boards.Empty, boards.EmptyCount = emptyBoardsOf(recs, boards.all)
+	for _, b := range boards.Empty {
+		w.warnf("empty board: %s", emptyBoardLine(b))
+	}
+	// Postings waiting out a mass hold, on any board, named every run while any
+	// is held (an attention line, not a failure).
+	boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings = massHeldOf(recs, w.watchedBoards(), rec.Liveness(), at)
+	if l := massHeldLine(boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings); l != "" {
+		w.warnf("%s", l)
+	}
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
+	applyBacklogLocked(&boards, health)
 	w.boards = &boards
 	w.mu.Unlock()
 	return pipeline.BoardCounts{Configured: boards.Configured, Read: boards.Read}, err
@@ -420,7 +453,26 @@ func (w *wired) annotateNearDups(ctx context.Context, protect func(posting.Key) 
 // run. Marked postings are never dropped. A Live posting a location rule could
 // not read is kept and counted on fo (pipeline.CauseLocationUnreadable).
 func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, protect func(posting.Key) bool, now time.Time, fo *pipeline.FailOpen) error {
-	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo)
+	// An excluded posting the exclusions no longer match waits, still dropped,
+	// for its board's next full listing (the pending reopens `vani retriage`
+	// keeps, applied by reopenOnSighting). The run holds the ledger lock, which
+	// serialises the set's writers. A set that cannot be read is never taken for
+	// an empty one nor overwritten: this run marks into a throwaway set, so a
+	// watched posting still lets nothing back at once.
+	path := filepath.Join(w.stateDir, pipeline.PendingReopenFile)
+	pending, perr := pipeline.LoadPendingReopens(path, now)
+	if perr != nil {
+		w.warnf("exclusions: pending reopens not kept this run: %v", perr)
+		pending = pipeline.NewPendingReopens()
+	}
+	sc := reopenScope(w.cfg)
+	sc.Defer, sc.Pending = sc.Watched, pending
+	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo, &sc)
+	if perr == nil && (ch.Deferred > 0 || ch.Unqueued > 0 || pending.Expired > 0) {
+		if serr := pending.Save(path, time.Now()); serr != nil {
+			err = errors.Join(err, fmt.Errorf("pending reopens: %w", serr))
+		}
+	}
 	w.mu.Lock()
 	w.exclusions = summarizeExclusions(ch)
 	w.mu.Unlock()
@@ -430,8 +482,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 	if ch.BodyUnavailable > 0 {
 		w.warnf("exclusions: %d posting(s) left as they are because their stored description could not be read back", ch.BodyUnavailable)
 	}
-	if len(ch.Drop) > 0 || len(ch.Reopen) > 0 {
-		w.warnf("exclusions: dropped %d posting(s), returned %d to live", len(ch.Drop), len(ch.Reopen))
+	if len(ch.Drop) > 0 || ch.Reopened > 0 || ch.Deferred > 0 || ch.OverCap > 0 {
+		w.warnf("exclusions: dropped %d posting(s), returned %d to live; %d waiting for their board to list them again (%d already), %d on a board no longer watched left dropped, %d left out over the bound of %d",
+			len(ch.Drop), ch.Reopened, ch.Deferred, ch.AlreadyPending, ch.Stale, ch.OverCap, pipeline.MaxPendingReopens)
 	}
 	return nil
 }

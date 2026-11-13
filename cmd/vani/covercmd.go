@@ -43,7 +43,7 @@ type coverWiring struct {
 }
 
 func (e *env) coverConfig(ctx context.Context) (coverWiring, string, error) {
-	cfg, err := e.loadConfig()
+	cfg, err := e.loadPromptConfig(false)
 	if err != nil {
 		return coverWiring{}, codeConfig, err
 	}

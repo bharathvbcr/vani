@@ -184,7 +184,10 @@ func (e *env) pairExemplars(dry bool, labels map[posting.Key]eval.Entry, recs []
 }
 
 func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
-	cfg, err := e.loadConfig()
+	// The pair question carries the target summary, so it is held to what every
+	// prompt-building command is: no summary holding an identifying term, and no
+	// send on the built-in list alone unless the owner allowed it.
+	cfg, err := e.loadPromptConfig(o.allowMissingWords)
 	if err != nil {
 		return err
 	}

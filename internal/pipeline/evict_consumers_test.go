@@ -73,21 +73,21 @@ func TestApplyExclusionsJudgesEvictedDroppedByItsText(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := DropPolicy{Exclude: descExclude("relocation")}
-	if ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), p, nil, nil); err != nil || len(ch.Drop) != 1 {
+	if ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), p, nil, nil, nil); err != nil || len(ch.Drop) != 1 {
 		t.Fatalf("first pass: %+v %v", ch, err)
 	}
 	l = reopenLedger(t, dir, l)
 	if r := l.All()[0]; !r.BodyEvicted || r.Status != posting.Dropped {
 		t.Fatalf("setup: %+v", r)
 	}
-	ch, err := ApplyExclusions(ctx, l, t0.Add(2*time.Hour), p, nil, nil)
+	ch, err := ApplyExclusions(ctx, l, t0.Add(2*time.Hour), p, nil, nil, nil)
 	if err != nil || len(ch.Reopen) != 0 || len(ch.Drop) != 0 {
 		t.Fatalf("second pass after restart: %+v %v (the exclusion still matches)", ch, err)
 	}
 	if rec(t, l, hit.Key).Status != posting.Dropped {
 		t.Fatal("an evicted excluded record was reopened")
 	}
-	ch, err = ApplyExclusions(ctx, l, t0.Add(3*time.Hour), DropPolicy{Exclude: descExclude("nothing")}, nil, nil)
+	ch, err = ApplyExclusions(ctx, l, t0.Add(3*time.Hour), DropPolicy{Exclude: descExclude("nothing")}, nil, nil, nil)
 	if err != nil || len(ch.Reopen) != 1 {
 		t.Fatalf("lifted exclusion: %+v %v", ch, err)
 	}

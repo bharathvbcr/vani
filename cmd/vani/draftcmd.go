@@ -112,7 +112,7 @@ func (e *env) draftOnce() (draft.Result, string, error) {
 		return draft.Result{}, code, err
 	}
 
-	cfg, err := e.loadConfig()
+	cfg, err := e.loadPromptConfig(false)
 	if err != nil {
 		return draft.Result{}, codeConfig, err
 	}

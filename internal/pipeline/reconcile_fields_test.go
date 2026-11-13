@@ -223,11 +223,11 @@ func TestSameContentPathsKeepStoredFields(t *testing.T) {
 		p := fieldsJob(t)
 		digestedWith(t, l, p)
 		reconcileFull(t, l, t0.Add(time.Hour))
-		reconcileFull(t, l, t0.Add(2*time.Hour))
+		reconcileFull(t, l, t0.Add(21*time.Hour))
 		if r := rec(t, l, p.Key); r.Status != posting.Dead {
 			t.Fatalf("not dead: %s", r.Status)
 		}
-		if s := reconcileFull(t, l, t0.Add(3*time.Hour), blanked(p)); s.Reappeared != 1 {
+		if s := reconcileFull(t, l, t0.Add(22*time.Hour), blanked(p)); s.Reappeared != 1 {
 			t.Fatalf("%+v", s)
 		}
 		check(t, l, p)

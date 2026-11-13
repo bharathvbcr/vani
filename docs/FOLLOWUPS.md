@@ -340,7 +340,12 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   user cannot exercise directly, for example a Keychain ACL bound to the host's signature.
 - **A2-4 residual: a well-formed empty listing during an ATS outage ages the board; no floor
   (audit 2026-10-20; DECLINED 2026-10-21, Fable delegated).** The reasons and the contract are in
-  "Known limits" under "Absence ages every open posting" (the Residual bullet).
+  "Known limits" under "Absence ages every open posting" (the Residual bullet). **Revisited
+  2026-11-12, not closed:** a board with `liveness.mass_min_open` (10) or more open postings, or
+  any board from 2 open that answers empty, now holds its postings 14 days (docs/RUNTIME.md "When a
+  posting dies"; `ReconcileShort` for a short listing). The residual is a board under that floor
+  (5 postings, say) that answers a well-formed non-empty list missing most of them: it still dies
+  after two such reads, and `died_from` restores the postings when the board lists them again.
 - **ft-3189102e criterion 2: `COUNTRY_SECOND_LEVELS` is 14 second levels, so `a.me.uk` and `b.me.uk`
   collide (2026-10-20).** `extension/src/normalize.ts:124-141` (`ac co com edu go gob gov ltd mil ne
   net or org plc`); `siteKey` keeps the last two labels for any other suffix, so `me.uk` is one key
@@ -521,6 +526,30 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
 - **Outage detection.** A title drop is no backend reading. It does not reset the unread
   breaker, and it does not stop a phase in which no backend read anything from failing
   (`pipeline.AdvancePlan.TitleDrop`).
+- **"VP" is a rank at banks, not a role (2026-11-12, config edited; schema change needs the
+  owner).** In the live config, `VP` and `Vice President` were manager match words. They dropped
+  344 postings on the title alone, nearly all individual-contributor roles at Goldman Sachs,
+  JPMorgan, AQR and Citi ("Software Engineer, Vice President"). These words now sit in their own
+  manager read, after the Manager/Director/Head of/Chief read. That read has an `unless` list of
+  nouns for a person's job (Engineer, Scientist, Researcher, Analyst, Associate, Architect,
+  Developer) and specific work phrases (Software Engineering, Quantitative, Machine Learning,
+  Applied AI, Engineering Lead, and others). A title it abstains on goes to the decision model. It
+  never gets another value, and "VP of Engineering" stays dropped. Measured by
+  `vani retriage --dry-run --title-drops` on the live ledger with the old and new configs:
+  - 154 of the 344 return, all bank individual-contributor roles except Mistral's
+    "VP, Global Developer Relations", which the model now reads.
+  - No other company's executive VP returns.
+  - The rest stay dropped: bank governance, data-management and risk roles, and executive VPs.
+  - "Chief of Staff" and the "Senior / Principal" spellings joined the staff_plus read's `unless`.
+    The 59 Chief of Staff roles now read as manager ("Chief") and stay dropped. `staff_plus` is
+    a rank penalty, not a drop.
+  - "Director" was measured the same way and left alone. Its 1,104 drops are real directors,
+    except a handful of bank "Executive Director" engineers far above the target level.
+  - The backup is `config.json.bak-2026-11-12-vp-unless` beside the config.
+  - The remaining gap is structural: what separates a bank's VP from an executive VP is the
+    company, and `TitleRead` has no company scope. Adding a company list to a read (`companies`
+    or `unless_companies`) changes the config schema, and older `vani` binaries would refuse
+    the field. Owner's call.
 
 ## Run speed (applied 2026-10-19, measured on fakes only)
 
@@ -1236,7 +1265,8 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     (`internal/pipeline/reconcile.go:31`, applied at `:258-264`); `died_from` restores the posting when
     its content is listed again (`reconcile.go:191-195`); and a floor would hide a board that was
     genuinely emptied. Revisit if an adapter is seen returning a well-formed empty list while the
-    service is down. Also recorded in "Audit 2026-10-19: criteria not built as written".
+    service is down. **Superseded 2026-11-12:** an empty or mass-short listing now holds its absent
+    postings 14 days from their own first miss (docs/RUNTIME.md "When a posting dies"). Also recorded in "Audit 2026-10-19: criteria not built as written".
 
 - **Jibe remote and pay rules are read from one tenant (2026-10-20).** The AMD payload has no
   remote field and no populated `salary_*_value`. `internal/sources/jibe` now marks a posting

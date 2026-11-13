@@ -177,7 +177,10 @@ discovered ─▶ canonicalized ─▶ live? ─▶ new? ─▶ triaged ─▶ s
   `sha256(norm(company)|norm(title)|norm(location))`. Cross-source duplicates collapse onto the ATS
   key. (JobSpy has no dedupe at all [V], so this is ours.)
 - **Liveness before any token:** ATS API 404/closed, JSON-LD `validThrough` in the past, or the
-  posting missing from its board's list two runs in a row → dead.
+  posting missing from its board's list two runs in a row, at least 20h apart → dead. A listing that
+  leaves a quarter or more of a board's open postings absent (at least 10 open) or none of them is a
+  mass absence: those postings are held 14 days before they can die (`docs/RUNTIME.md` "When a
+  posting dies", `internal/pipeline/liveness.go`).
 - **Change detection:** store a hash of the normalized JD; a changed hash re-triages, an unchanged
   one never costs anything again.
 - **Sponsorship:** the JD-text slot is the filter. A local DOL LCA table (FY disclosure files,

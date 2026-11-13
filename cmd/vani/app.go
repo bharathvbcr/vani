@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/notify"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 // App is everything the long-running commands need from the rest of Vani.
@@ -36,6 +38,10 @@ type App struct {
 	// Reload hands the app the config the file holds now, before each run. Nil
 	// means the app keeps its own.
 	Reload func(cfg config.Config)
+	// Watch hands the app the config's whole watchlist before a run that is
+	// limited to some boards gets its cut through Reload (board health judges
+	// and prunes against the whole list). Nil means the app needs none.
+	Watch func(watchlist []sources.Board)
 	// PollInbox folds the jobs the extension spooled (internal/inbox) and
 	// advances the new ones. The daemon calls it between daily runs, never
 	// while a run is going. Nil means no polling.
@@ -361,6 +367,11 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 	}
 	fresh, old, err := config.LoadWithDeprecations(e.configPath)
 	e.warnDeprecated(old)
+	if err == nil {
+		// A summary edited into the config while the daemon runs is held to the
+		// check wireApp made at start: one that fails it is not applied.
+		err = checkPromptSummary(fresh, e.stateDir, false)
+	}
 	var stale error
 	if err != nil {
 		stale = fmt.Errorf("%w; this run uses the previous watchlist, allowed_hosts and policy: %w", errConfigStale, err)
@@ -378,6 +389,9 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		}
 	}
 	e.setApplied(fresh)
+	if app.Watch != nil {
+		app.Watch(fresh.Watchlist) // before the cut below
+	}
 	if len(only) > 0 {
 		if fresh.Watchlist, err = selectBoards(fresh.Watchlist, only); err != nil {
 			if restart {
@@ -625,13 +639,27 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	recs := app.Ledger.All()
 	var adv *pipeline.AdvanceReport
 	var stats map[string]backendStat
+	var boards *boardsReport
 	if app.RunReport != nil {
 		rd := app.RunReport()
-		adv, stats = rd.Advance, rd.BackendStats
+		adv, stats, boards = rd.Advance, rd.BackendStats, rd.Boards
 	}
 	counts := countsFor(recs, date, loc)
 	if adv != nil {
 		counts.CouldNotCheck = uncheckedCauses(adv.FailOpen)
+	}
+	if boards != nil {
+		at := now()
+		counts.StaleCount = boards.StaleCount
+		for _, s := range boards.Stale {
+			counts.StaleBoards = append(counts.StaleBoards, staleBoardLine(s, at))
+		}
+		counts.ClockBehind = boards.ClockBehind
+		counts.MassDead = boards.MassDead
+		counts.MassHeld = massHeldLine(boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings)
+		counts.BoardAttention = boardAttentionLine(boards, at, false)
+		counts.EmptyCount = boards.EmptyCount
+		counts.EmptyBoards = emptyBoardLines(slices.Clone(boards.Empty))
 	}
 	// The quiet section needs the stages, which the marks above do not. A store
 	// that cannot be read holds nothing back: the section says it was not checked.
@@ -773,6 +801,9 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	for _, s := range statuses {
 		fmt.Fprintf(e.stdout, "  %-10s %d\n", s, by[s])
 	}
+	if line := pendingReopenLine(e.pendingReopens()); line != "" {
+		fmt.Fprintln(e.stdout, line)
+	}
 	fmt.Fprintf(e.stdout, "schedule: %s %s\n", cfg.Schedule.DailyAt, cfg.Schedule.Timezone)
 	// Whether anything fires that schedule: the same answer `status --json` gives.
 	at := now()
@@ -783,11 +814,17 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	if line := progressLine(last); line != "" {
 		fmt.Fprintln(e.stdout, line)
 	}
+	for _, l := range boardHealthLines(e.boardHealthFacet(cfg, at), at) {
+		fmt.Fprintln(e.stdout, l)
+	}
 	sched := withAwaitingUS(scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, last, &live, at), &us)
 	for _, l := range unkeptLines(sched, at) {
 		fmt.Fprintln(e.stdout, l)
 	}
 	for _, l := range daemonLines(dfacet) {
+		fmt.Fprintln(e.stdout, l)
+	}
+	for _, l := range e.profileLines(cfg, at) {
 		fmt.Fprintln(e.stdout, l)
 	}
 	if cfg.SemanticOn() {

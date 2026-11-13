@@ -100,6 +100,8 @@ var jsonLeaves = []jsonLeaf{
 	{"teacher freeze", jsonFlag, ""},
 	{"teacher cap", jsonFlag, ""},
 	{"teacher report", jsonFlag, ""},
+	{"auditor calibrate", jsonFlag, ""},
+	{"auditor report", jsonFlag, ""},
 	{"impressions log", jsonFlag, ""},
 	{"labels", jsonFlag, ""},
 	{"jobs list", jsonFlag, ""},

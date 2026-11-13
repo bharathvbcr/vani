@@ -43,19 +43,19 @@ func TestApplyExclusionsCountsUnreadableFailOpen(t *testing.T) {
 	r, _, l, _ := excludeRunner(t, "Engineer", "Engineer II")
 	p := DropPolicy{Exclude: excludeTitle("Intern"), ExcludeUnreadable: unreadableWhenBlank}
 	fo := &FailOpen{}
-	if _, err := ApplyExclusions(context.Background(), l, t0, p, nil, fo); err != nil {
+	if _, err := ApplyExclusions(context.Background(), l, t0, p, nil, fo, nil); err != nil {
 		t.Fatal(err)
 	}
 	// ghPost gives postings a location; blank it through a policy that calls
 	// every posting unreadable.
 	all := DropPolicy{Exclude: excludeTitle("Intern"), ExcludeUnreadable: func(posting.Posting) bool { return true }}
-	if _, err := ApplyExclusions(context.Background(), l, t0, all, nil, fo); err != nil {
+	if _, err := ApplyExclusions(context.Background(), l, t0, all, nil, fo, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := fo.Counts(); got.LocationUnreadable != 2 || got.Total() != 2 {
 		t.Fatalf("counts %+v, want 2 location_unreadable", got)
 	}
-	if _, err := ApplyExclusions(context.Background(), l, t0, all, nil, nil); err != nil {
+	if _, err := ApplyExclusions(context.Background(), l, t0, all, nil, nil, nil); err != nil {
 		t.Fatalf("a nil counter: %v", err)
 	}
 	_ = r

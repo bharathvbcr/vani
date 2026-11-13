@@ -55,6 +55,9 @@ func psSetup(t *testing.T, nWanted, nUnwanted int, mutate func(*config.Config)) 
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
+	// The pair question carries the target summary, so it is checked against an
+	// identifying-words list like every prompt; the term is synthetic.
+	writeKBWords(t, state, kbTestOwnWord)
 	l, err := ledger.Open(filepath.Join(state, "ledger"))
 	if err != nil {
 		t.Fatal(err)

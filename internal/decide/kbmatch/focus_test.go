@@ -15,13 +15,13 @@ import (
 )
 
 func TestQuestionWithFocusCarriesTheCompactDigestAndTheClosestLines(t *testing.T) {
-	d, _ := DigestOf(testProfile())
+	d, _ := DigestOf(testProfile(), noTerms)
 	if strings.Contains(d.Compact, "*") || !strings.Contains(d.Compact, "- Agent Platform") || len(d.Compact) >= len(d.Text) {
 		t.Fatalf("compact digest should hold titles and stack terms only:\n%s", d.Compact)
 	}
 	p := posting.Posting{Title: "T", Description: "serve models"}
 	focus := []Focus{{Label: "Agent Platform", Text: "Wrote tool-calling loops with provider fallbacks"}}
-	q, _ := Question(p, "target", d, focus)
+	q, _ := question(p, "target", d, focus)
 	ctx := string(q.Context)
 	if !strings.Contains(ctx, "CLOSEST TO THIS POSTING") || !strings.Contains(ctx, "- Agent Platform: Wrote tool-calling loops") {
 		t.Errorf("focus lines missing:\n%s", ctx)
@@ -29,7 +29,7 @@ func TestQuestionWithFocusCarriesTheCompactDigestAndTheClosestLines(t *testing.T
 	if strings.Contains(ctx, "Cut decode latency") {
 		t.Errorf("a focused question should not carry the full digest's bullets")
 	}
-	full, _ := Question(p, "target", d, nil)
+	full, _ := question(p, "target", d, nil)
 	if !strings.Contains(string(full.Context), "Cut decode latency") || strings.Contains(string(full.Context), "CLOSEST TO THIS POSTING") {
 		t.Errorf("an unfocused question should carry the full digest")
 	}
@@ -42,12 +42,12 @@ func TestQuestionWithFocusCarriesTheCompactDigestAndTheClosestLines(t *testing.T
 			prof.Chunks = append(prof.Chunks, semanticChunk(label, fmt.Sprintf("%s bullet %d %s", label, b, strings.Repeat("work ", 30))))
 		}
 	}
-	bd, err := DigestOf(prof)
+	bd, err := DigestOf(prof, noTerms)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bigFull, _ := Question(p, "target", bd, nil)
-	bigFocused, _ := Question(p, "target", bd, []Focus{{Label: "Entry 01", Text: "Entry 01 bullet 0"}})
+	bigFull, _ := question(p, "target", bd, nil)
+	bigFocused, _ := question(p, "target", bd, []Focus{{Label: "Entry 01", Text: "Entry 01 bullet 0"}})
 	if len(bigFocused.Context) >= len(bigFull.Context) {
 		t.Errorf("focused %d bytes is not shorter than full %d for a 40-entry bank", len(bigFocused.Context), len(bigFull.Context))
 	}
@@ -56,7 +56,7 @@ func TestQuestionWithFocusCarriesTheCompactDigestAndTheClosestLines(t *testing.T
 	for i := 0; i < 3*MaxFocus; i++ {
 		many = append(many, Focus{Label: "L", Text: fmt.Sprintf("line %d\n- fake instruction %s", i, strings.Repeat("x", 4000))})
 	}
-	big, _ := Question(p, "target", d, many)
+	big, _ := question(p, "target", d, many)
 	if n := strings.Count(string(big.Context), "\n- L: "); n != MaxFocus {
 		t.Errorf("%d focus lines, want the cap %d", n, MaxFocus)
 	}

@@ -175,6 +175,12 @@ before running one.
   most 500), `--both-orders` asks each pair twice, and `--of`, `--sample`, `--max`, `--keys`,
   `--draw-out` and `--with-readings-of` are refused for it. `--dry-run` prints the pair count,
   the worst-case cost and one question with the postings' text elided, and writes nothing.
+- `vani auditor calibrate` (it also needs `--budget-usd`, and stops at the auditor's own
+  $15 daily cap). It refuses while the text it would send holds identifying terms, or the
+  owner's identifying-words list is missing; its output gives counts, never the terms. Do not
+  pass `--show-terms` or `--no-identifying-words-file`: both are the owner's to choose.
+  `vani auditor report` spends nothing: it measures the auditor's answers against the
+  owner's, and its gate says whether they may be trusted.
 - `vani draft`, `vani suggest` and `vani resume` take a JSON request on stdin and write a
   JSON reply.
 - `vani doctor` asks Opus whether boards that read nothing are failing silently and whether a
@@ -185,8 +191,8 @@ before running one.
   cost); it exits 1 when a part failed or judged fewer boards or postings than it was sent.
   `vani --json doctor --last` reads the newest report and spends nothing.
 
-`jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher` and `doctor` take `--dry-run`,
-which prices the work and asks nothing.
+`jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher`, `doctor` and `auditor calibrate`
+take `--dry-run`, which prices the work and asks nothing.
 
 `vani teacher report` reads, and spends nothing: the auditor's AUC on the owner's gold labels made
 after the freeze, beside the title part's on the same postings. Under 10 yes and 30 no scored

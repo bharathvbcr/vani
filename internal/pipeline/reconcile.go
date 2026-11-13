@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +53,31 @@ type Summary struct {
 	Unchanged  int
 	Reappeared int // seen again after a miss (or after being marked dead)
 	Missed     int // absent, below the death threshold
-	Dead       int
+	// Held postings are absent with enough misses to die but inside their
+	// hold (liveness.go): OrdinaryHold, or the mass hold when mass marked.
+	// Deferred of them were due only by counting more than ClockWindow of the
+	// gap since their last event, and wait one more read (liveness.go "The
+	// clock").
+	Held     int
+	Deferred int
+	Dead     int
+	// MassDead of Dead were mass marked: they waited out the mass hold.
+	MassDead int
+	// Open counts the board's open postings before a full listing; Absent how
+	// many of them it left out. Zero for a partial listing.
+	Open, Absent int
+	// Mass says this listing was a mass absence (liveness.go); MassMarked counts
+	// the postings it newly mass-marked (ones marked by an earlier listing and
+	// still absent are Held, not counted again).
+	MassMarked int
+	Mass       bool
+	// ClockBehind: the ledger holds events stamped ahead of this read's clock
+	// (liveness.go "The clock"), so this full listing that left postings absent
+	// aged nothing. ClockAhead is the event that says so: aging resumes once the
+	// clock passes it. Either the clock is behind or those events were written
+	// under a clock that ran ahead; the ledger cannot tell which.
+	ClockBehind bool
+	ClockAhead  time.Time
 	// Duplicate counts every record this fold stored or marked as a
 	// duplicate: listed postings stored as one (ListedDuplicate) and other
 	// records this listing marked as their twins.
@@ -66,7 +89,10 @@ type Summary struct {
 	// Revived duplicates were listed again while their survivor was gone
 	// (reviveDuplicate): live again, or a duplicate of another live record.
 	Revived int
-	Invalid int // listed postings skipped for a missing or malformed key
+	// Reopened dropped postings had a pending reopen (SightingReopen) that
+	// this full listing, showing them again, applied.
+	Reopened int
+	Invalid  int // listed postings skipped for a missing or malformed key
 }
 
 // staleAnnotations lists the derived results a changed description invalidates.
@@ -81,6 +107,12 @@ func staleAnnotations(a map[string]string) map[string]string {
 	return out
 }
 
+// hasPendingReopen reports whether k waits for a sighting.
+func (rc *Reconciler) hasPendingReopen(k posting.Key) bool {
+	_, ok := rc.reopen.pending(k)
+	return ok
+}
+
 // Reconcile folds one board's full listing into the ledger. A run with many
 // boards uses a Reconciler, which reads the ledger once for all of them.
 func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
@@ -91,7 +123,20 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 // ledger as it stands when the board starts, as a fresh scan would: the
 // boards before it included, this board's own writes not.
 func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, true)
+	return rc.reconcile(ctx, b, listed, now, true, false)
+}
+
+// ReconcileShort folds a board's listing that counted more rows than it listed
+// (a stub row, Workday's split allowance): the listing is real for the
+// postings it lists, so sightings, pending reopens and field updates apply to
+// them as in Reconcile, but it is not the board's whole word about what it
+// left out, so every open posting absent from it is treated as a mass absence
+// (liveness.go): kept and held for MassHold from its own first miss, and
+// never killed by the ordinary rule. Pending reopens the listing leaves out
+// expire as in a full listing, after the same PendingReopenExpiry that a
+// mass hold lasts.
+func (rc *Reconciler) ReconcileShort(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
+	return rc.reconcile(ctx, b, listed, now, true, true)
 }
 
 // ReconcilePartial folds postings that are part of a board's listing, not the
@@ -99,12 +144,12 @@ func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []p
 // listing loop but runs no absence pass, so a posting missing from the batch is
 // never missed or aged. A partial listing says nothing about what is absent.
 func (rc *Reconciler) ReconcilePartial(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, false)
+	return rc.reconcile(ctx, b, listed, now, false, false)
 }
 
 // reconcile is the listing loop both entry points share; full says the listing
 // is the board's whole, so records it lacks are aged.
-func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full bool) (Summary, error) {
+func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full, short bool) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
 	idx := rc.index()
@@ -193,7 +238,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				s.Kept++
 				break
 			}
-			ann := staleAnnotations(rec.Annotations)
+			ann := clearMissMarks(staleAnnotations(rec.Annotations))
 			ann[DescHashKey] = hash
 			ann[DiedFromKey] = ""
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: posting.Live, Posting: &p,
@@ -202,6 +247,39 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				return s, err
 			}
 			s.Changed++
+		case full && rec.Status == posting.Dropped && (rc.hasPendingReopen(p.Key) || rc.reopen.movedExclusion(rec, relist)):
+			// The board lists a drop that waits to be let back, or an exclusion
+			// drop whose title, company, location or remote flag moved since it
+			// was judged (the board added Austin to a London role): judged again
+			// on this text, it comes back now or stays dropped, and either way
+			// a pending reopen is spent. An exclusion drop that stays takes the
+			// moved fields too (a later pass judges the board's text, not stale
+			// fields); that event dates the drop the digest footer counts, once
+			// per move.
+			// Either way the listing shows it, so an absence episode it was in when
+			// dropped ends here (liveness.go), as it would on any listing: a later
+			// reopen must not carry the old misses into its next absence.
+			e, ok := rc.reopen.event(l, rec, relist, hash, now)
+			if !ok {
+				if rec.MissedRuns == 0 {
+					s.Unchanged++
+					break
+				}
+				if err := l.Append(ctx, reappearedEvent(rec, relist, hash, rendered, now)); err != nil {
+					return s, err
+				}
+				s.Reappeared++
+				break
+			}
+			e.Annotations = clearMissMarks(e.Annotations)
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			if e.Status == posting.Dropped {
+				s.Refreshed++ // an exclusion drop that stays, taking the listed fields
+				break
+			}
+			s.Reopened++
 		case rec.Status == posting.Dead:
 			// Same content, listed again: its annotations still hold, so it goes
 			// back to the status it died in (a digested posting is not triaged or
@@ -211,18 +289,13 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				st = from
 			}
 			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: st, Posting: &relist,
-				Annotations: map[string]string{DescHashKey: hash, DiedFromKey: ""}, Reason: "reappeared"}
+				Annotations: clearMissMarks(map[string]string{DescHashKey: hash, DiedFromKey: ""}), Reason: "reappeared"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
 			}
 			s.Reappeared++
 		case rec.MissedRuns > 0:
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
-				Reason: "reappeared"}
-			if rendered {
-				e.Annotations = map[string]string{DescHashKey: hash}
-			}
-			if err := l.Append(ctx, e); err != nil {
+			if err := l.Append(ctx, reappearedEvent(rec, relist, hash, rendered, now)); err != nil {
 				return s, err
 			}
 			s.Reappeared++
@@ -269,44 +342,51 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	if !full {
 		return s, nil
 	}
-	var absent []posting.Key
+	// Pending reopens of this board that the listing left out for
+	// PendingReopenExpiry, or whose record is no longer dropped, are cleared
+	// (pendingreopen.go). Dropped records are closed: the absence pass below
+	// never ages them, so the two never touch the same record.
+	rc.reopen.expire(l, prefix, seen, now)
+	// The absence pass (liveness.go). open is the board's open keys as the
+	// index held them when the board started, before this listing.
+	var open []posting.Key
 	for _, k := range idx.board(prefix) { // in key order
-		if !closed(idx.info[k].status) && !seen[k] {
-			absent = append(absent, k)
+		if !closed(idx.info[k].status) {
+			open = append(open, k)
 		}
 	}
-	// Every read precedes the write: each absent key is distinct and an event
-	// touches only its own record, so the events go in one batch (one fsync).
-	var evs []ledger.Event
-	var missed, dead int
-	for _, k := range absent {
-		if err := ctx.Err(); err != nil {
-			return s, err
-		}
-		cur, ok := l.Get(k)
-		if !ok || closed(cur.Status) {
-			continue
-		}
-		misses := cur.MissedRuns + 1
-		e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: k, Status: cur.Status,
-			Annotations: map[string]string{ledger.MissedRunsKey: strconv.Itoa(misses)},
-			Reason:      fmt.Sprintf("absent from board (%d)", misses)}
-		if misses >= MissesToDead {
-			e.Status = posting.Dead
-			e.Annotations[DiedFromKey] = string(cur.Status)
-			e.Reason = "absent from board twice"
-			dead++
-		} else {
-			missed++
-		}
-		evs = append(evs, e)
+	a, err := ageAbsent(ctx, l, rc.live, open, seen, idx.clockEvidence(prefix, now), now, short)
+	s.addAbsence(a)
+	return s, err
+}
+
+// reappearedEvent is what a listing writes for rec, which had missed runs:
+// the listed posting, the same status, and every miss mark forgotten (its
+// absence episode is over).
+func reappearedEvent(rec ledger.Record, relist posting.Posting, hash string, rendered bool, now time.Time) ledger.Event {
+	e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: rec.Key, Status: rec.Status, Posting: &relist,
+		Annotations: clearMissMarks(nil), Reason: "reappeared"}
+	if rendered {
+		e.Annotations[DescHashKey] = hash
 	}
-	if _, err := appendBatched(ctx, l, evs); err != nil {
-		return s, err
+	return e
+}
+
+// addAbsence folds one absence pass into the summary.
+func (s *Summary) addAbsence(a absence) {
+	s.Open += a.open
+	s.Absent += a.absent
+	s.Missed += a.missed
+	s.Held += a.held
+	s.Deferred += a.deferred
+	s.Dead += a.dead
+	s.MassDead += a.massDead
+	s.MassMarked += a.massMarked
+	s.Mass = s.Mass || a.mass
+	s.ClockBehind = s.ClockBehind || a.clockBehind
+	if a.clockAhead.After(s.ClockAhead) {
+		s.ClockAhead = a.clockAhead
 	}
-	s.Dead += dead
-	s.Missed += missed
-	return s, nil
 }
 
 // batchByteBudget is how much encoded event data appendBatched puts in one

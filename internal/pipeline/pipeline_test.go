@@ -102,7 +102,7 @@ func TestAbsentOnceThenTwiceIsDead(t *testing.T) {
 	if rb.MissedRuns != 1 || rb.Status != posting.Live {
 		t.Fatalf("after one miss: %+v", rb)
 	}
-	s, _ = Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(2*time.Hour))
+	s, _ = Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(21*time.Hour))
 	rb = rec(t, l, b.Key)
 	if s.Dead != 1 || rb.Status != posting.Dead || rb.MissedRuns != 2 {
 		t.Fatalf("second miss: %+v %+v", s, rb)
@@ -111,7 +111,7 @@ func TestAbsentOnceThenTwiceIsDead(t *testing.T) {
 		t.Fatalf("present posting disturbed: %+v", ra)
 	}
 	// A third listing without it does nothing more to a dead record.
-	s, _ = Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(3*time.Hour))
+	s, _ = Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(22*time.Hour))
 	if s.Dead != 0 || s.Missed != 0 {
 		t.Fatalf("dead record touched: %+v", s)
 	}
@@ -135,7 +135,7 @@ func TestAbsentDigestedPostingsBecomeDead(t *testing.T) {
 		t.Fatalf("after one miss: status=%v missed=%d", rb.Status, rb.MissedRuns)
 	}
 	// Second run without b: transitions to Dead and sets DiedFrom
-	s, err = Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(2*time.Hour))
+	s, err = Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(21*time.Hour))
 	if err != nil || s.Dead != 1 {
 		t.Fatalf("second miss: %+v %v", s, err)
 	}
@@ -184,11 +184,11 @@ func TestDeadPostingListedAgainIsLive(t *testing.T) {
 	a := ghPost(t, "1", "a")
 	Reconcile(ctx, l, board, []posting.Posting{a}, t0)
 	Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
-	Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
+	Reconcile(ctx, l, board, nil, t0.Add(21*time.Hour))
 	if rec(t, l, a.Key).Status != posting.Dead {
 		t.Fatal("setup")
 	}
-	Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(3*time.Hour))
+	Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(22*time.Hour))
 	if r := rec(t, l, a.Key); r.Status != posting.Live || r.MissedRuns != 0 {
 		t.Fatalf("not revived: %+v", r)
 	}
@@ -219,7 +219,7 @@ func TestDigestedAbsentTwiceIsDead(t *testing.T) {
 	if r := rec(t, l, a.Key); r.Status != posting.Digested || r.MissedRuns != 1 {
 		t.Fatalf("after one miss: %+v", r)
 	}
-	s, err = Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
+	s, err = Reconcile(ctx, l, board, nil, t0.Add(21*time.Hour))
 	if err != nil || s.Dead != 1 {
 		t.Fatalf("second miss: %+v %v", s, err)
 	}
@@ -260,11 +260,11 @@ func TestDeadListedAgainRestoresItsStatus(t *testing.T) {
 				t.Fatal(err)
 			}
 			Reconcile(ctx, l, board, nil, t0.Add(time.Hour))
-			Reconcile(ctx, l, board, nil, t0.Add(2*time.Hour))
+			Reconcile(ctx, l, board, nil, t0.Add(21*time.Hour))
 			if r := rec(t, l, a.Key); r.Status != posting.Dead || r.Annotations[DiedFromKey] != string(st) {
 				t.Fatalf("setup: %+v", r)
 			}
-			s, err := Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(3*time.Hour))
+			s, err := Reconcile(ctx, l, board, []posting.Posting{a}, t0.Add(22*time.Hour))
 			if err != nil || s.Reappeared != 1 {
 				t.Fatalf("relist: %+v %v", s, err)
 			}

@@ -159,6 +159,7 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 			continue
 		case fetchFailedBeforeList:
 			e.Outcome, e.Error = boardFailed, oneLine(res.err.Error(), maxBoardErrorRunes)
+			e.endedRun = true
 			emitListing(ctx, progressPhaseDone, index, total, b, appendTried(e), gate.active())
 			err := ctx.Err()
 			if err == nil {
@@ -179,6 +180,7 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 			// run's ctx is still live. Only this board's own run cancellation ends
 			// the run here.
 			if res.canceled {
+				e.endedRun = true
 				emitListing(ctx, progressPhaseDone, index, total, b, appendTried(e), gate.active())
 				abandon(res, i+1)
 				return report(), res.err
@@ -196,6 +198,7 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		sum, err := reconcile(ctx, b, res.listed, time.Now())
 		if err != nil {
 			e.Outcome, e.Error = boardFailed, oneLine("reconcile: "+err.Error(), maxBoardErrorRunes)
+			e.endedRun = true
 			emitListing(ctx, progressPhaseDone, index, total, b, appendTried(e), gate.active())
 			abandon(res, i+1)
 			return report(), fmt.Errorf("reconcile %s/%s: %w", b.ATS, b.Token, err)
@@ -206,6 +209,20 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		}
 		emitListing(ctx, progressPhaseDone, index, total, b, appendTried(e), gate.active())
 		warnf("board %s/%s: %+v", b.ATS, b.Token, sum)
+		if sum.Mass && sum.MassMarked > 0 {
+			warnf("board %s/%s: mass absence: %d listed, %d of %d open postings absent; %d newly held for the mass hold before they can die",
+				b.ATS, b.Token, n, sum.Absent, sum.Open, sum.MassMarked)
+		}
+		if sum.ClockBehind {
+			warnf("board %s/%s: %d open postings absent from this listing were not aged: the ledger holds events stamped ahead of this clock, up to %s",
+				b.ATS, b.Token, sum.Absent, sum.ClockAhead.UTC().Format(time.RFC3339))
+		}
+		if sum.MassDead > 0 {
+			warnf("board %s/%s: %d postings held by a mass absence died: the mass hold ended and the board still does not list them", b.ATS, b.Token, sum.MassDead)
+		}
+		if sum.Deferred > 0 {
+			warnf("board %s/%s: %d deaths wait one more read: more than %s passed since those postings' last event", b.ATS, b.Token, sum.Deferred, pipeline.ClockWindow)
+		}
 	}
 	return report(), nil
 }
@@ -567,8 +584,18 @@ func openHostThrottle(path string, warnf func(string, ...any)) (*srcutil.HostThr
 func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Kept: s.Kept, Redated: s.Redated,
 		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
-		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate,
-		Invalid: s.Invalid}
+		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate, Reopened: s.Reopened, Invalid: s.Invalid,
+		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind,
+		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead}
+}
+
+// recordFirst is whether a board's entry is kept before plain read ones when
+// the report's bounds cut Items: it is why the report exists.
+func recordFirst(e boardReport) bool {
+	if e.Outcome != boardRead {
+		return true
+	}
+	return e.Reconcile != nil && (e.Reconcile.MassMarked > 0 || e.Reconcile.ClockBehind || e.Reconcile.MassDead > 0)
 }
 
 // boardsReportOf totals the tried boards out of configured and keeps as many
@@ -576,11 +603,21 @@ func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 // the report exists), then read ones, each group in watchlist order. Items
 // keeps watchlist order.
 func boardsReportOf(configured int, tried []boardReport) boardsReport {
-	r := boardsReport{Configured: configured, NotReached: max(configured-len(tried), 0), Items: []boardReport{}}
+	r := boardsReport{Configured: configured, NotReached: max(configured-len(tried), 0), Items: []boardReport{}, all: tried}
 	added := 0
 	for _, e := range tried {
 		if e.Reconcile != nil {
 			added += e.Reconcile.New
+			r.Held += e.Reconcile.Held
+			r.MassMarked += e.Reconcile.MassMarked
+			if e.Reconcile.MassMarked > 0 { // a listing that only carries earlier marks is not news
+				r.Mass++
+			}
+			if e.Reconcile.ClockBehind {
+				r.ClockBehind++
+			}
+			r.MassDead += e.Reconcile.MassDead
+			r.DeathsDeferred += e.Reconcile.Deferred
 		}
 		switch e.Outcome {
 		case boardRead:
@@ -606,7 +643,7 @@ func boardsReportOf(configured int, tried []boardReport) boardsReport {
 fill:
 	for _, readPass := range []bool{false, true} {
 		for i, e := range tried {
-			if (e.Outcome == boardRead) != readPass {
+			if recordFirst(e) == readPass {
 				continue
 			}
 			raw, err := json.Marshal(e)

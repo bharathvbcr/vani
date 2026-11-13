@@ -116,11 +116,12 @@ func (x Exclude) Match(p posting.Posting) (why string, ok bool) {
 
 // LocationUnreadable reports whether x has a location rule it cannot apply to
 // p: the location names no place and no remote work, or, with only_locations
-// set, is remote with no place and no scope. Match keeps such a posting, but
-// it has not judged it, so the caller counts it as kept unchecked. A rule on
-// another field never makes a posting unreadable here: a blank title or
-// description is already counted by the stage that reads it (title_unread,
-// empty_description).
+// set, is remote with no place and no scope, or names only options that are
+// ambiguous (location.VerdictAmbiguous: "Cambridge", "San Jose") besides ones
+// outside the list. Match keeps such a posting, but it has not judged it, so
+// the caller counts it as kept unchecked. A rule on another field never makes
+// a posting unreadable here: a blank title or description is already counted
+// by the stage that reads it (title_unread, empty_description).
 func (x Exclude) LocationUnreadable(p posting.Posting) bool {
 	if len(x.Locations) == 0 && len(x.OnlyLocations) == 0 {
 		return false
@@ -129,16 +130,20 @@ func (x Exclude) LocationUnreadable(p posting.Posting) bool {
 	if !o.read {
 		return true
 	}
-	return len(x.OnlyLocations) > 0 && o.remote && o.scope == "" && len(o.places) == 0
+	if len(x.OnlyLocations) > 0 && o.remote && o.scope == "" && len(o.opts) == 0 {
+		return true
+	}
+	return x.onlyUnjudged(o)
 }
 
-// locationOptions are the options a posting's location gives: its places,
-// and remote work as an option of its own when it says where ("Remote (US)")
-// or the location names no place. "Remote - India" and "Germany · Remote" are
-// remote within the place, which the place entries judge. read is false when
-// the location names nothing Vani can read.
+// locationOptions are the options a posting's location gives: each option of
+// each place (location.PlaceOptions: "Toronto, Austin" is two), and remote
+// work as an option of its own when it says where ("Remote (US)") or the
+// location names no place. "Remote - India" and "Germany · Remote" are remote
+// within the place, which the place entries judge. read is false when the
+// location names nothing Vani can read.
 type locationOptions struct {
-	places []location.Place
+	opts   []location.Option
 	remote bool   // remote work is an option of its own
 	scope  string // its scope, "" when unstated
 	read   bool
@@ -146,7 +151,10 @@ type locationOptions struct {
 
 func optionsOf(p posting.Posting) locationOptions {
 	loc := location.Parse(p.Location, p.Remote)
-	o := locationOptions{places: loc.Places, read: len(loc.Places) > 0 || loc.Remote}
+	o := locationOptions{read: len(loc.Places) > 0 || loc.Remote}
+	for _, pl := range loc.Places {
+		o.opts = append(o.opts, location.PlaceOptions(pl)...)
+	}
 	if loc.Remote && (loc.RemoteScope != "" || len(loc.Places) == 0) {
 		o.remote, o.scope = true, loc.RemoteScope
 	}
@@ -164,8 +172,8 @@ func (x Exclude) locationMatch(p posting.Posting) string {
 		return ""
 	}
 	first := ""
-	for _, pl := range o.places {
-		m := placeMatch(x.Locations, pl)
+	for _, opt := range o.opts {
+		m := optionMatch(x.Locations, opt)
 		if m == "" {
 			return ""
 		}
@@ -193,41 +201,73 @@ func (x Exclude) outsideOnly(p posting.Posting) bool {
 		return false
 	}
 	o := optionsOf(p)
-	if !o.read || (o.remote && o.scope == "" && len(o.places) == 0) {
+	if !o.read || (o.remote && o.scope == "" && len(o.opts) == 0) {
 		return false
 	}
-	for _, pl := range o.places {
-		if placeMatch(x.OnlyLocations, pl) != "" {
+	for _, opt := range o.opts {
+		// An option as likely a US place as a foreign one ("Cambridge", "San
+		// Jose") is not judged: the posting is kept.
+		if optionMatch(x.OnlyLocations, opt) != "" || opt.Verdict == location.VerdictAmbiguous {
 			return false
 		}
 	}
 	return !o.remote || remoteMatch(x.OnlyLocations, o.scope, false) == ""
 }
 
-// usPlace is matched by an entry naming the country of a place with a US
-// state, which the board need not have written.
+// onlyUnjudged reports whether only_locations keeps a location only because
+// an option it names is ambiguous (location.VerdictAmbiguous) and no option
+// matched an entry: kept, but not checked.
+func (x Exclude) onlyUnjudged(o locationOptions) bool {
+	if len(x.OnlyLocations) == 0 {
+		return false
+	}
+	ambiguous := false
+	for _, opt := range o.opts {
+		if optionMatch(x.OnlyLocations, opt) != "" {
+			return false
+		}
+		ambiguous = ambiguous || opt.Verdict == location.VerdictAmbiguous
+	}
+	if !ambiguous {
+		return false
+	}
+	return !o.remote || remoteMatch(x.OnlyLocations, o.scope, false) == ""
+}
+
+// usPlace is matched by an entry naming the country of a place in the US,
+// which the board need not have written.
 const usPlace = "united states usa us"
 
-// placeMatch returns the first entry that matches pl, or "". A state entry
-// ("TX", "Washington") compares with a US place's state code only, so
-// "Washington" is not Washington, DC; on a place with no state (a foreign
-// one) it is read as words like any other entry. "remote" never matches a
-// place.
-func placeMatch(entries []string, pl location.Place) string {
-	parts := []string{pl.Area, pl.Region}
-	if pl.State != "" {
-		parts = append(parts, usPlace)
+// optionMatch returns the first entry that matches one option of a place, or
+// "". A state entry ("TX", "Washington") compares with a US option's state
+// code only, so "Washington" is not Washington, DC; on an option with no
+// state (a foreign one) it is read as words like any other entry. "remote"
+// never matches a place. An entry naming a country matches an option of that
+// country whether or not the board wrote it: "United States" matches every
+// option location.PlaceOptions reads as the US ("San Francisco", "US, CA,
+// Santa Clara"), "Canada" matches "Toronto, Ontario". An option that is not
+// the US never matches the US, whatever words it holds ("Remote - outside
+// US" is not the US).
+func optionMatch(entries []string, o location.Option) string {
+	text := location.NormArea(o.Text)
+	switch {
+	case o.Verdict == location.VerdictUS:
+		text += " " + usPlace
+	case o.Country != "":
+		text += " " + location.NormArea(o.Country)
 	}
-	text := location.NormArea(strings.Join(parts, " "))
 	for _, e := range entries {
 		n := location.NormArea(e)
 		if n == remoteEntry {
 			continue
 		}
-		if code, ok := location.StateCode(e); ok && pl.State != "" {
-			if code == pl.State {
+		if code, ok := location.StateCode(e); ok && o.State != "" {
+			if code == o.State {
 				return e
 			}
+			continue
+		}
+		if namesUS(n) && o.Verdict != location.VerdictUS {
 			continue
 		}
 		if containsWord(text, n) {
@@ -235,6 +275,15 @@ func placeMatch(entries []string, pl location.Place) string {
 		}
 	}
 	return ""
+}
+
+// namesUS reports whether a folded entry names the United States.
+func namesUS(n string) bool {
+	switch n {
+	case "united states", "usa", "us", "u s", "u s a", "united states of america", "america":
+		return true
+	}
+	return false
 }
 
 // remoteMatch returns the first entry that matches a remote option with this
@@ -253,8 +302,15 @@ func remoteMatch(entries []string, scope string, all bool) string {
 	first := ""
 	for _, part := range strings.Split(scope, ",") {
 		s := location.NormArea(part)
-		if s == "us" { // location.Parse's name for every US scope
+		switch {
+		case s == "us": // location.Parse's name for every US scope
 			s = usPlace
+		case !all && (s == "anywhere" || s == "north america" || s == "americas"):
+			// A remote role open anywhere, or across the Americas, can be
+			// done from the US: only_locations naming the US keeps it, as
+			// location.InUS reads it. exclude.locations (all) does not widen
+			// this way, so excluding the US never drops a worldwide role.
+			s += " " + usPlace
 		}
 		m := ""
 		for _, e := range entries {

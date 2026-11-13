@@ -127,7 +127,7 @@ commands:
                              per-backend precision and coverage on the labelled set
   audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N] [--closed N]
                              weekly stratified would-I-apply sample (deciles + drop classes,
-                             and --closed postings the engine closed: dead or duplicate);
+                             and --closed postings the engine closed: dead, or duplicate by fold method);
                              --json prints keys, strata and p_select only (no posting text),
                              --blind hides the model's readings while you answer
                              (audit-sample is the old name)
@@ -202,6 +202,25 @@ commands:
   teacher report [--json] [--seed N]
                              the auditor's AUC on your gold labels made after the freeze, beside the
                              title part's on the same postings ("insufficient" below 10 yes and 30 no)
+  auditor calibrate [--json] [--dry-run] [--budget-usd N] [--model M] [--concurrency N]
+                    [--no-identifying-words-file] [--show-terms]
+                             ask the llm (default llm.triage_model) "would the job seeker apply?"
+                             about every posting you judged in the audit or marked, and keep the
+                             answers in auditor_readings.jsonl (never your labels; nothing in the
+                             pipeline reads them). --dry-run prices it and asks nothing; a real run
+                             needs --budget-usd and stops at the least of it, the auditor's own
+                             $15 daily cap (budget/auditor.json, charged as questions settle) and
+                             the daily llm cap's headroom. It refuses while the text it would send
+                             holds an identifying term (counts only; --show-terms names them on a
+                             terminal's stderr) or your identifying-words list is missing or empty
+                             (--no-identifying-words-file sends anyway)
+  auditor report [--json] [--model M] [--teacher-model M] [--teacher-current-only] [--seed N]
+                             the auditor's agreement with your answers (AUC with bootstrap
+                             intervals) within the kept and within the dropped postings, against
+                             the teacher's triage reading and the relevance score, and the gate:
+                             "passes" only when it clearly beats both in both groups, with how
+                             many labels the gate needs before it can decide. --teacher-current-only
+                             takes the teacher's readings under the current question only
   impressions log --surface jobs|audit --slate ID [--section S] [--json]
                              record the rows a screen shows ({"rows":[{"key","position"}]} on
                              stdin), once per slate; keys and positions only, never a title
@@ -284,17 +303,36 @@ commands:
                              skills to build: what the selected roles ask for that DevPrism found
                              missing (ranked first) or your target summary does not name, by the
                              priority of the roles each blocks; display-only
-  retriage [--json] [--dry-run] [--title-drops | --stale-drops [--rescue]]
+  retriage [--json] [--dry-run] [--title-drops | --policy-drops [--refresh-unjudged] |
+           --stale-drops [--rescue]]
                              return postings triaged with no backend reading to live; with
-                             --title-drops, postings dropped on a title the current
-                             title_signals.read and drop rules no longer drop. --stale-drops
-                             is a read-only report of every dropped posting today's rules
-                             (exclude, title_signals.read, drop_rules on the stored readings)
-                             would not drop, by drop class, with what the drop was made on
-                             and today's verdict (keys, no posting text); adding --rescue
-                             returns the model drops among them to unsure with their readings
-                             kept (a drop the rules still make is never touched; --dry-run
-                             only counts). No model is asked
+                             --title-drops, let back postings dropped on a title the current
+                             title_signals.read and drop rules no longer drop; with
+                             --policy-drops, those and postings a decision model dropped on a
+                             reading the current drop rules no longer drop (a value or slot
+                             taken out, a threshold raised). A drop on a watched board waits,
+                             still dropped, for the board's next listing to show it, and comes
+                             back then, judged again on the listed text (a pending reopen, in
+                             state dir reopen/pending.json; one its board leaves out for 14
+                             days is cleared); an inbox or page posting comes back at once.
+                             A title drop goes back to live; a model drop goes back on its
+                             stored reading, so no model is asked again, unless its title,
+                             location or description moved since the reading (then to live).
+                             It never drops anything. --refresh-unjudged also sends model drops
+                             whose reading cannot be judged, and whose values no drop rule
+                             names, to live for a fresh read (at most 500). Counted and left
+                             dropped: a reading the rules cannot judge (made under another
+                             model or question, a slot or value the question no longer has,
+                             or no calibration from the configured model or Lappi); a drop on
+                             a board no longer on the watchlist (stale: no listing would age
+                             it); one whose stored description cannot be read back (a dry run
+                             cannot tell, and says so). --stale-drops is a read-only report of
+                             every dropped posting today's rules (exclude, title_signals.read,
+                             drop_rules on the stored readings) would not drop, by drop class,
+                             with what the drop was made on and today's verdict (keys, no
+                             posting text); adding --rescue returns the model drops among them
+                             to unsure with their readings kept (--dry-run only counts). No
+                             model is asked
   rescore [--json] [--dry-run] [--limit N]
                              score scored and explained postings that have no score (they went
                              through while devprism.binary was empty); status and explanation
@@ -303,7 +341,7 @@ commands:
   prefilter [--json] [--list]
                              dry run of the prefilter (exclude, and title_signals.read with the
                              drop rules): how many live postings it would drop before triage,
-                             which kept ones the next run's exclusions drop or return to live,
+                             which kept ones the next run's exclusions drop or let back (when their board lists them),
                              and how the decision model read the ones it already read (never
                              writes)
   bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]
@@ -581,6 +619,8 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdReasons(args[1:])
 	case "teacher":
 		cmdErr = e.cmdTeacher(args[1:])
+	case "auditor":
+		cmdErr = e.cmdAuditor(args[1:])
 	case "kbmatch":
 		cmdErr = e.cmdKBMatch(args[1:])
 	case "jobs":

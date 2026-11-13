@@ -111,6 +111,9 @@ type boardFetch struct {
 	PaySkipped int
 	Gone       int
 	PayError   string
+	// Prefiltered is new listed rows the drop policy rejected before any
+	// detail request (the adapter's Stats.Prefiltered): never stored.
+	Prefiltered int
 	// Short is rows the board counted but did not list (workday.Stats.Short).
 	Short int
 }
@@ -128,11 +131,11 @@ func fetchKey(ats posting.ATS, token string) boardKey {
 // count an adapter reports and the record drops fails a test
 // (TestAdapterStatsReachTheBoardFetch) rather than an inline closure.
 func workdayFetch(st workday.Stats) boardFetch {
-	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short}
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short}
 }
 
 func smartRecruitersFetch(st smartrecruiters.Stats) boardFetch {
-	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short}
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short}
 }
 
 func oracleFetch(st oraclehcm.Stats) boardFetch {
@@ -146,7 +149,7 @@ func ibmFetch(st ibm.Stats) boardFetch { return boardFetch{Short: st.Short} }
 // it did not list (Short) is said in the run log too.
 func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	if f.Short > 0 {
-		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, f.Short)
+		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings it left out are held as a mass absence, not aged by the ordinary rule", b.ATS, b.Token, f.Short)
 	}
 	if f.PayError != "" {
 		f.PayError = oneLine(f.PayError, maxStageNote)
@@ -162,6 +165,7 @@ func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	prev.PayFailed += f.PayFailed
 	prev.PaySkipped += f.PaySkipped
 	prev.Gone += f.Gone
+	prev.Prefiltered += f.Prefiltered
 	prev.Short += f.Short
 	if prev.PayError == "" {
 		prev.PayError = f.PayError
@@ -193,6 +197,7 @@ func (w *wired) applyFetchesLocked(rep *boardsReport) {
 		it.PayFailed = f.PayFailed
 		it.PaySkipped = f.PaySkipped
 		it.Gone = f.Gone
+		it.Prefiltered = f.Prefiltered
 		it.Short = f.Short
 		it.PayError = f.PayError
 		addFetch(rep, f)
@@ -213,6 +218,7 @@ func addFetch(rep *boardsReport, f boardFetch) {
 	rep.PayFailed += f.PayFailed
 	rep.PaySkipped += f.PaySkipped
 	rep.Gone += f.Gone
+	rep.Prefiltered += f.Prefiltered
 	rep.Short += f.Short
 	if rep.PayError == "" {
 		rep.PayError = f.PayError

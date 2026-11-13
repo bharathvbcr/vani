@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/jobview"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -136,6 +137,7 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 	if err != nil {
 		return nil, err
 	}
+	cands = b.withoutInherited(cands)
 	if seed == "" {
 		seed = eval.WeekSeed(now())
 	}
@@ -170,6 +172,30 @@ func (b *browsing) auditCandidates(rules []eval.DropRule, skipMarked bool) ([]ev
 	return cands, nil
 }
 
+// withoutInherited is cands less the kept and dropped postings whose triage
+// reading was copied from another posting (eval.Inherited, the one owner, as
+// the label queue uses it). A label on a copy is no evidence about the model
+// that would have read it, so the weekly draw leaves copies out. A closed
+// posting stays: the engine closed it, not a reading. Only the draw applies
+// this; the pair planner's strata and the cluster study still stand over the
+// whole pool, copies included.
+func (b *browsing) withoutInherited(cands []eval.AuditCandidate) []eval.AuditCandidate {
+	inherited := map[posting.Key]bool{}
+	for _, r := range b.snap.Records {
+		if eval.Inherited(r) {
+			inherited[r.Key] = true
+		}
+	}
+	out := cands[:0:0]
+	for _, c := range cands {
+		if inherited[c.Key] && !c.Closed {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 // closedOrDropped is r as an audit candidate when the engine dropped it (with
 // its DropClass) or closed it (dead, or folded into another as a duplicate);
 // ok is false for any other status.
@@ -177,8 +203,16 @@ func closedOrDropped(r ledger.Record, rules []eval.DropRule) (eval.AuditCandidat
 	switch r.Status {
 	case posting.Dropped:
 		return eval.AuditCandidate{Key: r.Key, Dropped: true, Class: eval.DropClass(r, rules)}, true
-	case posting.Dead, posting.Duplicate:
+	case posting.Dead:
 		return eval.AuditCandidate{Key: r.Key, Closed: true, Class: string(r.Status)}, true
+	case posting.Duplicate:
+		// A duplicate is its own stratum per fold method (dup.method); one folded
+		// by identity rather than overlap carries none.
+		method := r.Annotations[pipeline.AnnDupMethod]
+		if method == "" {
+			method = "other"
+		}
+		return eval.AuditCandidate{Key: r.Key, Closed: true, Class: string(r.Status) + ":" + method}, true
 	}
 	return eval.AuditCandidate{}, false
 }

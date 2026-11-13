@@ -65,7 +65,7 @@ func seedStale(t *testing.T) (cfgPath, stateDir string) {
 	return cfgPath, stateDir
 }
 
-func ledgerStatusOf(t *testing.T, stateDir string, key posting.Key) posting.Status {
+func snapshotStatusOf(t *testing.T, stateDir string, key posting.Key) posting.Status {
 	t.Helper()
 	snap, err := ledger.ReadSnapshot(filepath.Join(stateDir, "ledger"))
 	if err != nil {
@@ -146,7 +146,7 @@ func TestRetriageStaleDropsRescue(t *testing.T) {
 	for key, want := range map[posting.Key]posting.Status{
 		"gh:databricks:6716344002": posting.Unsure, "gh:databricks:1": posting.Dropped, "gh:databricks:2": posting.Dropped,
 	} {
-		if got := ledgerStatusOf(t, stateDir, key); got != want {
+		if got := snapshotStatusOf(t, stateDir, key); got != want {
 			t.Errorf("%s is %s, want %s", key, got, want)
 		}
 	}
@@ -208,7 +208,7 @@ func TestRetriageStaleDropsRefusals(t *testing.T) {
 	if !strings.Contains(rep.Error, "names no OpenRouter backend") || rep.Dropped != 0 || rep.Stale != 0 || rep.StillDropped != 0 {
 		t.Errorf("json of a refused report: %+v", rep)
 	}
-	if got := ledgerStatusOf(t, stateDir, "gh:databricks:6716344002"); got != posting.Dropped {
+	if got := snapshotStatusOf(t, stateDir, "gh:databricks:6716344002"); got != posting.Dropped {
 		t.Errorf("a refused rescue wrote: %s", got)
 	}
 }

@@ -26,7 +26,9 @@ type prefilterReport struct {
 	Rows     []prefilterRow `json:"rows,omitempty"` // the live postings it would drop, in ledger order
 	// Kept are the triaged, scored, explained or digested postings the
 	// exclusions would drop at the next run (marked ones never are); Reopen
-	// are the excluded postings they no longer match, which return to live.
+	// are the excluded postings they no longer match, which come back to live:
+	// at the next run for a posting with no full listing to wait for, and for
+	// the rest when their board next lists them (a pending reopen).
 	Kept   []prefilterRow `json:"kept,omitempty"`
 	Reopen []prefilterRow `json:"reopen,omitempty"`
 	// Read counts the postings it would drop whose role_fit a decision
@@ -139,7 +141,7 @@ type prefilterReply struct {
 func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {
 	fmt.Fprintf(w, "prefilter (dry run, nothing written): %d of %d live posting(s) would be dropped before triage (%d in the ledger)\n",
 		rep.Dropped, rep.Live, total)
-	fmt.Fprintf(w, "exclusions at the next run: %d kept posting(s) would be dropped (marked ones are kept), %d excluded posting(s) would return to live\n",
+	fmt.Fprintf(w, "exclusions at the next run: %d kept posting(s) would be dropped (marked ones are kept), %d excluded posting(s) would be let back (each waits for its board to list it again; inbox and page postings come back at once)\n",
 		len(rep.Kept), len(rep.Reopen))
 	reasons := make([]string, 0, len(rep.ByReason))
 	for r := range rep.ByReason {
@@ -175,7 +177,7 @@ func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {
 			fmt.Fprintf(w, "%s\t%s\t%s (now %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason, r.Stage)
 		}
 		for _, r := range rep.Reopen {
-			fmt.Fprintf(w, "%s\t%s\treturns to live (was %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason)
+			fmt.Fprintf(w, "%s\t%s\tlet back when its board lists it (was %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason)
 		}
 	}
 }

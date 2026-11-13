@@ -96,6 +96,18 @@ Ported from the drafting validator (`build/check-deciders.js`):
     comments. It holds names, employers, schools and project names, so it is personal and lives
     only beside the track files. **Without it, the command prints that personal names were not
     checked**; it never reports that as a pass.
+  - One matcher serves this check and the redactor that removes the same terms from knowledge-base
+    text bound for a model (`internal/track/match.go`). Both fold text first: case, accents (a
+    bounded Latin table, no dependency), zero-width and other invisible characters, every kind of
+    space and dash, fullwidth and math letters, and Cyrillic/Greek look-alikes of Latin letters.
+    The built-in terms are then whole words. The owner's terms are looser: a plural or suffix
+    (`kernel` finds `kernels`, `kernelized`; a term of four letters or fewer takes only a plural or possessive, so `mark` finds `Marks` and `Mark's` but not `Marketing`), a
+    camelCase join (`ZephyrnetApp`, `myZephyrnet`), and optional spaces, hyphens, underscores,
+    dots or slashes at a term's word joins (`decode-latency` finds `decode latency`,
+    `DecodeLatency`) and, for terms of five or more letters, between any two letters (not by a space)
+    (`Zephyr-net`). A term that starts in the middle of a lowercase word (`rezephyrnet`) is not
+    found. A knowledge-base send refuses when the list is missing or has no terms, unless
+    `--allow-missing-identifying-words`.
 - Drop rules name a triage slot and legal values from `internal/decide/jdtriage/fixture.json`;
   no sponsorship rule (it stays in the main config); one rule per slot; `min_openrouter_prob` in (0, 1] (the old name `min_jev_prob` still loads).
 - `seniority` want/stretch/drop partition the seniority levels, and `drop` equals the seniority
@@ -173,9 +185,11 @@ Any strong_fit or partial_fit there is a false drop. It never writes the ledger.
 
 A title drop is reversible. After narrowing a list, removing a value from a drop rule, or removing
 the `read` entries, run `vani retriage --title-drops` (add `--dry-run` to see the count first). It
-returns to live every posting dropped on a title that the current rules no longer drop, and
-forgets its title reading. The next run triages those postings with the models. A posting the
-current rules still drop stays dropped, and a posting a model dropped is never touched.
+lets back every posting dropped on a title that the current rules no longer drop. One on a
+watched board waits, still dropped, until the board's next listing shows it (a closed role costs
+nothing), and then returns to live with its title reading forgotten; the next run triages it with
+the models. An inbox or page posting returns at once. A posting the current rules still drop
+stays dropped. `vani retriage --policy-drops` does the same for title and model drops together.
 
 A model drop can go stale the same way: the rule that dropped it was removed or narrowed, or its
 threshold raised. Nothing re-examines drops when the rules change, so

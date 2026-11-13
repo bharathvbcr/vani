@@ -39,6 +39,7 @@ func advSetup(t *testing.T, mut func(*config.Config), posts []advPost) string {
 	fixedNow(t)
 	cfg := config.Default()
 	cfg.TargetSummary = "early-career ML systems roles"
+	writeKBWords(t, state, kbTestOwnWord)
 	cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-test", TriageModel: tcHaiku, InputNanoUSDPerToken: 3000, OutputNanoUSDPerToken: 15000}
 	cfg.Decide.DailyUSD.LLM = 5
 	if mut != nil {
@@ -129,12 +130,15 @@ func TestAdvUnreadableSpendLedgerRefusesBeforeSending(t *testing.T) {
 func TestAdvSpendReadFailingMidRunStopsQuestions(t *testing.T) {
 	advSetup(t, nil, advN(8, advProse))
 	f := &tcFake{}
-	oldD, oldS := teacherDecider, teacherSpent
-	t.Cleanup(func() { teacherDecider, teacherSpent = oldD, oldS })
+	oldD, oldS, oldR := teacherDecider, teacherSpent, teacherResolved
+	t.Cleanup(func() { teacherDecider, teacherSpent, teacherResolved = oldD, oldS, oldR })
 	teacherDecider = func(context.Context, *wired, string) (decide.Decider, error) { return f, nil }
+	// The cap's headroom reads the committed total once; the run's own meter
+	// (Run's base read, then every admit) reads the resolved total.
+	teacherSpent = func(context.Context, string) (int64, error) { return 0, nil }
 	var calls atomic.Int64
-	teacherSpent = func(context.Context, string) (int64, error) {
-		if calls.Add(1) > 2 { // cmd's headroom read, Run's base read, then every admit fails
+	teacherResolved = func(context.Context, string) (int64, error) {
+		if calls.Add(1) > 1 { // Run's base read, then every admit fails
 			return 0, fmt.Errorf("ledger vanished")
 		}
 		return 0, nil

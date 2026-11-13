@@ -35,6 +35,7 @@ func tcSetup(t *testing.T) *tcEnv {
 	fixedNow(t)
 	cfg := config.Default()
 	cfg.TargetSummary = "early-career ML systems roles"
+	writeKBWords(t, state, kbTestOwnWord) // the summary is checked against the list before any prompt is built
 	cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-test", TriageModel: tcHaiku, InputNanoUSDPerToken: 3000, OutputNanoUSDPerToken: 15000}
 	cfg.Decide.DailyUSD.LLM = 5
 	if err := config.Save(cfgPath, cfg); err != nil {
@@ -99,21 +100,23 @@ func (f *tcFake) Decide(_ context.Context, q decide.Question) (decide.Answer, er
 
 func tcUse(t *testing.T, f *tcFake) {
 	t.Helper()
-	oldD, oldS := teacherDecider, teacherSpent
-	t.Cleanup(func() { teacherDecider, teacherSpent = oldD, oldS })
+	oldD, oldS, oldR := teacherDecider, teacherSpent, teacherResolved
+	t.Cleanup(func() { teacherDecider, teacherSpent, teacherResolved = oldD, oldS, oldR })
 	teacherDecider = func(context.Context, *wired, string) (decide.Decider, error) { return f, nil }
 	teacherSpent = func(context.Context, string) (int64, error) { return f.meter.Load(), nil }
+	teacherResolved = func(context.Context, string) (int64, error) { return f.meter.Load(), nil }
 }
 
 func tcNoModel(t *testing.T) {
 	t.Helper()
-	oldD, oldS := teacherDecider, teacherSpent
-	t.Cleanup(func() { teacherDecider, teacherSpent = oldD, oldS })
+	oldD, oldS, oldR := teacherDecider, teacherSpent, teacherResolved
+	t.Cleanup(func() { teacherDecider, teacherSpent, teacherResolved = oldD, oldS, oldR })
 	teacherDecider = func(context.Context, *wired, string) (decide.Decider, error) {
 		t.Fatal("the model's decider was built")
 		return nil, nil
 	}
 	teacherSpent = func(context.Context, string) (int64, error) { return 0, nil }
+	teacherResolved = func(context.Context, string) (int64, error) { return 0, nil }
 }
 
 func TestTeacherDryRunAsksNothingAndPricesFromTheTable(t *testing.T) {

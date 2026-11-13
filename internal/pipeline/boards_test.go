@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
@@ -51,8 +52,8 @@ func TestPagePostingIsNotADuplicateOfADeadATSPosting(t *testing.T) {
 	if _, err := Reconcile(ctx, l, board, []posting.Posting{gh, other}, t0); err != nil {
 		t.Fatal(err)
 	}
-	for range MissesToDead {
-		if _, err := Reconcile(ctx, l, board, []posting.Posting{other}, t0); err != nil {
+	for i := range MissesToDead { // misses OrdinaryHold apart, so the second kills
+		if _, err := Reconcile(ctx, l, board, []posting.Posting{other}, t0.Add(time.Duration(i)*OrdinaryHold)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -134,8 +135,8 @@ func TestPageBoardAgesItsOwnPostings(t *testing.T) {
 	if _, err := Reconcile(ctx, l, pageBoard, []posting.Posting{pg}, t0); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < MissesToDead; i++ {
-		if _, err := Reconcile(ctx, l, pageBoard, nil, t0); err != nil {
+	for i := 0; i < MissesToDead; i++ { // misses OrdinaryHold apart, so the second kills
+		if _, err := Reconcile(ctx, l, pageBoard, nil, t0.Add(time.Duration(i)*OrdinaryHold)); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -52,7 +52,7 @@ func TestRetriageDryRunWhileTheLedgerIsHeld(t *testing.T) {
 	if o != free || strings.Contains(e, "locked") {
 		t.Errorf("dry run while held:\nstdout %q (want %q)\nstderr %s", o, free, e)
 	}
-	if o, e := mustCode(t, 0, "retriage", "--dry-run", "--title-drops"); strings.Contains(e, "locked") || !strings.Contains(o, "posting(s) would return to live") {
+	if o, e := mustCode(t, 0, "retriage", "--dry-run", "--title-drops"); strings.Contains(e, "locked") || !strings.Contains(o, "posting(s) would be let back") {
 		t.Errorf("--title-drops dry run while held:\nstdout %q\nstderr %s", o, e)
 	}
 	// Only the dry run is lock-free: the real thing still needs the ledger.

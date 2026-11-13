@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -31,7 +32,20 @@ func Excluded(r ledger.Record) bool {
 type ExclusionChange struct {
 	Drop    []ledger.Record
 	Reasons []string // Reasons[i] is why Drop[i] is dropped
-	Reopen  []ledger.Record
+	// Reopen are the excluded records the exclusions no longer match: the ones
+	// that would come back, whether ApplyExclusions lets them back at once or
+	// waits for a sighting (Deferred).
+	Reopen []ledger.Record
+	// What ApplyExclusions did with Reopen under a ReopenScope. Reopened came
+	// back to Live at once (no full listing to wait for: a weakly keyed posting,
+	// or no scope); Deferred were marked as pending reopens, still dropped, for
+	// their board's next full listing to show them (SightingReopen);
+	// AlreadyPending were marked by an earlier pass; OverCap were left out
+	// because the set is full (MaxPendingReopens); Stale are on a board no
+	// longer watched and stay dropped, as in RetriagePolicyDrops; Unqueued
+	// counts the pending reopens it cleared because the exclusions match their
+	// record again.
+	Reopened, Deferred, AlreadyPending, OverCap, Stale, Unqueued int
 	// Unread are the Live, unprotected postings kept because a location rule
 	// could not read their location (DropPolicy.ExcludeUnreadable): the check
 	// could not run, which is not the same as passing it.
@@ -67,11 +81,27 @@ func ExclusionChanges(recs []ledger.Record, p DropPolicy, protect func(posting.K
 // ApplyExclusions makes the ledger agree with p's exclusions: it drops every
 // unprotected Live or kept record they match, recording the reason under
 // AnnExcluded and keeping the record's other annotations (a model's reading
-// stays as evidence for `vani prefilter`), and returns to Live every record an
+// stays as evidence for `vani prefilter`), and lets back every record an
 // exclusion dropped that they no longer match, forgetting what triage built
 // on it. It asks no backend. It writes in batches of at most exclusionBatch;
 // an error leaves the batches before it written, and the next run finishes.
-func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, protect func(posting.Key) bool, fo *FailOpen) (ExclusionChange, error) {
+//
+// A drop is closed, so no listing ages it and the ledger cannot say whether its
+// board still lists the role: letting back every record a loosened exclusion
+// frees at once would flood scoring, the paid notes call and the digest with
+// roles that may be long gone. So under sc (the one pending-reopen gate
+// RetriagePolicyDrops uses, pendingreopen.go) a record on a watched board is
+// only marked as a pending reopen, still dropped; the run's listing lets it
+// back when its board lists it again, judged on the listed text, and clears it
+// after PendingReopenExpiry of absence. A record with no full listing to wait
+// for (weakly keyed) comes back at once; one on a board no longer watched
+// stays dropped. The caller saves sc.Pending afterwards, whatever the error. A
+// nil sc has no listing to wait for and lets every record back at once; a sc
+// with no Pending is refused.
+func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p DropPolicy, protect func(posting.Key) bool, fo *FailOpen, sc *ReopenScope) (ExclusionChange, error) {
+	if sc != nil && sc.Pending == nil {
+		return ExclusionChange{}, errors.New("pipeline: letting back excluded postings needs somewhere to keep their pending reopens")
+	}
 	all := l.All()
 	recs := all[:0:0]
 	unavailable := 0
@@ -101,9 +131,10 @@ func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p Drop
 		evs = append(evs, ledger.Event{V: ledger.SchemaVersion, At: now, Key: r.Key, Status: posting.Dropped,
 			Annotations: map[string]string{AnnExcluded: ch.Reasons[i]}, Reason: ch.Reasons[i]})
 	}
-	for _, r := range ch.Reopen {
-		evs = append(evs, reopenEvent(r, now, "the exclusions no longer match it"))
+	for _, r := range letBack(&ch, recs, p, now, sc) {
+		evs = append(evs, reopenEvent(r, now, reasonExclusionDrop))
 	}
+	ch.Reopened = len(evs) - len(ch.Drop)
 	for len(evs) > 0 {
 		if err := ctx.Err(); err != nil {
 			return ch, err
@@ -115,4 +146,43 @@ func ApplyExclusions(ctx context.Context, l ledger.Ledger, now time.Time, p Drop
 		evs = evs[n:]
 	}
 	return ch, nil
+}
+
+// letBack sorts ch.Reopen under sc and returns the records to reopen now,
+// marking the others pending (counting each outcome on ch). It also clears the
+// pending reopens of excluded records the exclusions match again (the owner put
+// the rule back before the board listed them), judged on recs.
+func letBack(ch *ExclusionChange, recs []ledger.Record, p DropPolicy, now time.Time, sc *ReopenScope) []ledger.Record {
+	if sc == nil {
+		return ch.Reopen
+	}
+	for _, r := range recs {
+		if e, ok := sc.Pending.Items[r.Key]; ok && e.Class == reopenClassExclusion && Excluded(r) {
+			if _, matched := p.excluded(r.Posting); matched {
+				delete(sc.Pending.Items, r.Key)
+				ch.Unqueued++
+			}
+		}
+	}
+	var atOnce []ledger.Record
+	for _, r := range ch.Reopen {
+		switch {
+		case !sc.reachable(r.Key):
+			ch.Stale++
+		case sc.deferred(r.Key):
+			prev, queued := sc.Pending.Items[r.Key]
+			switch {
+			case queued && prev.Class == reopenClassExclusion:
+				ch.AlreadyPending++
+			case !queued && sc.Pending.Len() >= MaxPendingReopens:
+				ch.OverCap++
+			default:
+				sc.Pending.Items[r.Key] = PendingReopen{Class: reopenClassExclusion, At: now.UTC(), Reason: reasonExclusionDrop}
+				ch.Deferred++
+			}
+		default:
+			atOnce = append(atOnce, r)
+		}
+	}
+	return atOnce
 }
