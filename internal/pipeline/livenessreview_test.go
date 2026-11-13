@@ -197,14 +197,22 @@ func TestClockJumpAheadDoesNotEndAMassHold(t *testing.T) {
 	if len(cl.evs) != 20 || !strings.Contains(cl.evs[0].Reason, "held one more read: 361h0m0s since its last event") {
 		t.Fatalf("the held postings do not say why they waited: %d events, %+v", len(cl.evs), cl.evs)
 	}
-	// The clock is right again: the hold runs from hour 1.
+	// The clock is right again: nothing dies inside the hold. Changed
+	// 2026-11-12 (set-back guard): the 20 events the jump wrote are 15 days
+	// ahead of the right clock, a quorum on this board within SetBackCap, so the
+	// board is frozen (and says so) until real time passes them, about a day
+	// after the hold ends; the hold itself still runs from hour 1.
 	for h := 26; h < 24*14; h += 24 {
-		if s := reviewRead(t, l, b, t0.Add(time.Duration(h)*time.Hour), nil); s.Dead != 0 {
-			t.Fatalf("hour %d: died inside the mass hold: %+v", h, s)
+		if s := reviewRead(t, l, b, t0.Add(time.Duration(h)*time.Hour), nil); s.Dead != 0 || !s.ClockBehind {
+			t.Fatalf("hour %d: died inside the mass hold, or was not frozen by the events ahead: %+v", h, s)
 		}
 	}
-	if s := reviewRead(t, l, b, first.Add(14*24*time.Hour), nil); s.Dead != 20 || s.MassDead != 20 {
-		t.Fatalf("not dead at the end of the mass hold: %+v", s)
+	jump := t0.Add(2*time.Hour + 15*24*time.Hour)
+	if s := reviewRead(t, l, b, first.Add(14*24*time.Hour), nil); s.Dead != 0 || !s.ClockBehind || !s.ClockAhead.Equal(jump) {
+		t.Fatalf("the hold's end, with the jump's events still ahead: %+v", s)
+	}
+	if s := reviewRead(t, l, b, jump.Add(time.Hour), nil); s.Dead != 20 || s.MassDead != 20 {
+		t.Fatalf("not dead once real time passed the jump's events: %+v", s)
 	}
 }
 

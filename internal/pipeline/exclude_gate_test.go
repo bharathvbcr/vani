@@ -58,8 +58,8 @@ func TestApplyExclusionsMarksALoosenedExclusionPendingAndSightingLetsItBack(t *t
 
 // Absent from every listing for the whole window, it never comes back: the
 // pending reopen is cleared and counted, the record stays dropped. The pass
-// then marks it again (the exclusions still do not match it), so a posting its
-// board lists later still reopens at that sighting, never before.
+// does not mark it again, but a posting its board lists later still reopens
+// at that sighting, never before.
 func TestApplyExclusionsPendingReopenExpiresAfterFifteenDaysOfAbsence(t *testing.T) {
 	l := openLedger(t)
 	k := excludedDrop(t, l, "1", "London", excludeLocation("London"))
@@ -70,21 +70,24 @@ func TestApplyExclusionsPendingReopenExpiresAfterFifteenDaysOfAbsence(t *testing
 	if _, err := ApplyExclusions(ctx, l, at, loosened, nil, nil, &sc); err != nil || s.Len() != 1 {
 		t.Fatalf("mark: %d pending (%v)", s.Len(), err)
 	}
-	// Listings that leave it out, up to the last minute of the window.
-	if _, so := sighting(t, l, s, loosened, at.Add(PendingReopenExpiry-time.Minute), true, other); so.Expired != 0 || s.Len() != 1 {
-		t.Fatalf("inside the window: %+v, %d pending", so, s.Len())
+	// Daily listings that leave it out, up to the last day of the window.
+	for d := 1; d <= 14; d++ {
+		if _, so := sighting(t, l, s, loosened, at.Add(time.Duration(d)*24*time.Hour), true, other); so.Expired != 0 || s.Len() != 1 {
+			t.Fatalf("day %d, inside the window: %+v, %d pending", d, so, s.Len())
+		}
 	}
 	_, so := sighting(t, l, s, loosened, at.Add(15*24*time.Hour), true, other)
 	if so.Expired != 1 || s.Len() != 0 || so.Applied != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("after 15 days: %+v, %d pending, %s", so, s.Len(), rec(t, l, k).Status)
 	}
-	// Marked again by the next pass; reopens only if its board lists it.
+	// Not marked again by the next pass (TestExpiredExclusionIsNotMarkedAgainUntilListed);
+	// a posting its board lists later reopens at that sighting, never before.
 	at = at.Add(16 * 24 * time.Hour)
-	if ch, err := ApplyExclusions(ctx, l, at, loosened, nil, nil, &sc); err != nil || ch.Deferred != 1 || rec(t, l, k).Status != posting.Dropped {
-		t.Fatalf("re-mark: %+v (%v)", ch, err)
+	if ch, err := ApplyExclusions(ctx, l, at, loosened, nil, nil, &sc); err != nil || ch.Deferred != 0 || ch.Gone != 1 || rec(t, l, k).Status != posting.Dropped {
+		t.Fatalf("pass after the expiry: %+v (%v)", ch, err)
 	}
 	if sum, _ := sighting(t, l, s, loosened, at.Add(time.Hour), true, listedAgain(t, l, k)); sum.Reopened != 1 {
-		t.Fatalf("sighting after the re-mark: %+v", sum)
+		t.Fatalf("sighting after the expiry: %+v", sum)
 	}
 }
 

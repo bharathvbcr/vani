@@ -106,7 +106,11 @@ func indexEqual(t *testing.T, got, want *ledgerIndex) {
 func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 	var total Summary
 	var viaURL, viaRole int // duplicates the link rule and the cross-ATS tuple rule made
+	var shortReads int
 	defer func() {
+		if shortReads == 0 || total.ShortDead == 0 {
+			t.Errorf("the seeds did not read short listings, or none ended in a short death: %d short reads, %+v", shortReads, total)
+		}
 		if viaURL == 0 || viaRole == 0 {
 			t.Errorf("the seeds did not reach both identity rules: %d by link, %d by role", viaURL, viaRole)
 		}
@@ -155,8 +159,21 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 						now = now.Add(skews[rng.IntN(len(skews))])
 					}
 					var listed []posting.Posting
+					quiet := bi == empty && run >= 3 && run < 20
+					// On even seeds the quiet stretch is not empty but short: the
+					// board lists all of its postings but its first, every run.
+					shortQuiet := quiet && seed%2 == 0
+					omitted := false
 					for _, pp := range pool {
-						if pp.board != bi || rng.IntN(4) == 0 || (bi == empty && run >= 3 && run < 20) { // a quarter missing this run
+						if pp.board != bi {
+							continue
+						}
+						if shortQuiet {
+							if !omitted {
+								omitted = true
+								continue
+							}
+						} else if rng.IntN(4) == 0 || quiet { // a quarter missing this run
 							continue
 						}
 						p := pp.p
@@ -180,8 +197,20 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 						listed = append(listed, p)
 					}
 					rng.Shuffle(len(listed), func(i, j int) { listed[i], listed[j] = listed[j], listed[i] })
-					want, werr := oracleReconcile(ctx, oracle, b, listed, now)
-					got, gerr := rc.Reconcile(ctx, b, listed, now)
+					// A short listing (the board counted more rows than it listed):
+					// on even seeds the board's quiet stretch is short, so the posting
+					// it leaves out is held and dies as a short death; on odd seeds it
+					// is empty, a true mass absence. Any board-run may also be short.
+					short := shortQuiet || rng.IntN(12) == 0
+					want, werr := oracleReconcile(ctx, oracle, b, listed, now, short)
+					var got Summary
+					var gerr error
+					if short {
+						shortReads++
+						got, gerr = rc.ReconcileShort(ctx, b, listed, now)
+					} else {
+						got, gerr = rc.Reconcile(ctx, b, listed, now)
+					}
 					if (werr == nil) != (gerr == nil) || got != want {
 						t.Fatalf("run %d board %s: summary %+v %v, oracle %+v %v", run, b.Token, got, gerr, want, werr)
 					}
@@ -205,6 +234,7 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 					total.Deferred += got.Deferred
 					total.MassMarked += got.MassMarked
 					total.MassDead += got.MassDead
+					total.ShortDead += got.ShortDead
 					total.ClockBehind = total.ClockBehind || got.ClockBehind
 				}
 			}

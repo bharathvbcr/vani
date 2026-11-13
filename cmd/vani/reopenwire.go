@@ -12,7 +12,13 @@ import (
 // show their postings again, judged under the run's drop policy, and returns
 // what saves the spent set once the listing is done. The listing is the run's
 // first stage and the exclusion pass a later one, so a reopen marked by a pass
-// is applied by the next run's listing. The caller holds the ledger lock, as the retriage that writes the set
+// is applied by the next run's listing. The pass stays after the listing on
+// purpose (checked 2026-11-12, leftover 5): it drops the postings this run's
+// listing just added that an exclusion matches before anything is advanced
+// (pipeline.Run), and it reads the body of every excluded or excludable record,
+// which a second pass before the listing would repeat for the whole ledger. A
+// reopen-only pre-pass would need a stage of its own and the same body reads.
+// The caller holds the ledger lock, as the retriage that writes the set
 // does. A set that cannot be read is applied to nothing and left as it is
 // (never taken for an empty one, never overwritten), and the run says so.
 func (w *wired) reopenOnSighting(rec *pipeline.Reconciler, at time.Time) (finish func()) {
@@ -21,6 +27,11 @@ func (w *wired) reopenOnSighting(rec *pipeline.Reconciler, at time.Time) (finish
 	if err != nil {
 		w.warnf("pending reopens not applied this run: %v", err)
 		return func() {}
+	}
+	// Entries of a board no longer on the watchlist will never be shown (an empty
+	// watchlist clears nothing: that is a config the run reports elsewhere).
+	if len(w.cfg.Watchlist) > 0 {
+		pending.ClearUnwatched(pipeline.WatchedBy(w.cfg.Watchlist))
 	}
 	// Always attached, even with nothing pending: a full listing that shows an
 	// exclusion drop moved is judged by it too (SightingReopen.movedExclusion).
@@ -32,9 +43,9 @@ func (w *wired) reopenOnSighting(rec *pipeline.Reconciler, at time.Time) (finish
 				w.warnf("pending reopens: %v (the ones applied are applied; the set may name them again, and the next run clears them)", err)
 			}
 		}
-		if so.Applied+so.Cleared+so.Expired+pending.Expired+pending.Len() > 0 {
-			w.warnf("pending reopens: %d applied, %d judged again and left dropped, %d cleared unseen, %d still waiting",
-				so.Applied, so.Cleared, so.Expired+pending.Expired, pending.Len())
+		if so.Applied+so.Cleared+so.Expired+pending.Expired+pending.Len()+pending.GoneLen() > 0 {
+			w.warnf("pending reopens: %d applied, %d judged again and left dropped, %d cleared unseen, %d still waiting, %d expired unseen and not marked again until listed",
+				so.Applied, so.Cleared, so.Expired+pending.Expired, pending.Len(), pending.GoneLen())
 		}
 	}
 }

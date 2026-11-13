@@ -270,11 +270,14 @@ func TestRunReportNamesMassAbsenceClockBehindAndRunningRuns(t *testing.T) {
 	rc := &reconcileCounts{Open: 42, Absent: 42, Mass: true, MassMarked: 42}
 	rec.Boards = &boardsReport{Configured: 1, Read: 1, Mass: 1, MassMarked: 42, Items: []boardReport{
 		{ATS: "gh", Token: b.Token, Company: "Snap", Outcome: boardRead, Listed: &listed, Reconcile: rc}}}
-	if !runHasFailures(rec, histT0) {
-		t.Fatal("a mass absence was not reported as needing a look")
+	// Changed 2026-11-12: a new mass absence is attention, not a failure (a board
+	// that lists short every day would otherwise fail a run each day); its
+	// deaths after a true mass hold still are.
+	if runHasFailures(rec, histT0) {
+		t.Fatal("a new mass absence failed the run")
 	}
 	text := (&env{stateDir: t.TempDir(), stderr: &bytes.Buffer{}}).runReportOf(runRef{ID: runID(rec), Rec: rec}, histT0, true)
-	if !text.HasFailures || !strings.Contains(text.Text, "Mass absences (1)") || !strings.Contains(text.Text, "42 of 42 open postings absent") {
+	if text.HasFailures || !strings.Contains(text.Text, "Mass absences (1)") || !strings.Contains(text.Text, "42 of 42 open postings absent") {
 		t.Fatalf("report:\n%s", text.Text)
 	}
 	if !strings.Contains(text.Text, "mass absence(s), 42 posting(s) newly held") {

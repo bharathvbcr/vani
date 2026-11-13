@@ -35,10 +35,12 @@ package pipeline
 // ahead of the clock, or before the posting was first seen, restarts at the
 // clock. A full listing that leaves at least the share of the board's open
 // postings (distinct keys, before the listing) absent with at least the floor
-// open, or shows none of at least 2 open, is a mass absence and marks every
+// open, or shows none of at least 2 open, or (on a board under the floor)
+// leaves more than half of its open postings and at least 2 absent, is a mass absence and marks every
 // absent posting until it reappears. A listing ages nothing while the ledger
 // holds events between 1 hour and 3 days ahead of its clock on one of the
-// board's own records, or on at least 3 records anywhere.
+// board's own records, or on at least 3 records anywhere, or events between 3
+// days and 30 days ahead on at least 3 of the board's own records.
 
 import (
 	"fmt"
@@ -59,6 +61,9 @@ const (
 	fuzzSequences = 250 // VANI_FUZZ_SEQUENCES=2000 is the full run
 	fuzzReads     = 40
 	specWindow    = 72 * time.Hour // the 3 days the owner's text takes on trust
+	// specSetBackCap is how far ahead a quorum of the board's own events
+	// still reads as a clock set back by days (a month).
+	specSetBackCap = 30 * 24 * time.Hour
 )
 
 // fuzzGaps are the spacings between reads: hourly retries, daily runs, a
@@ -80,6 +85,7 @@ type fuzzRead struct {
 	off     time.Duration // the clock reads at+off
 	listed  []int
 	partial bool
+	short   bool // the board counted more rows than it listed (ReconcileShort)
 }
 
 // fuzzRule is a sequence's settings: Liveness for the reconciler, and the same
@@ -124,6 +130,7 @@ func fuzzSequence(rng *rand.Rand, nb int) []fuzzRead {
 		}
 	}
 	skewedLast := make([]bool, nb)
+	firstRead := make([]bool, nb)
 	at := t0
 	out := make([]fuzzRead, 0, fuzzReads)
 	for range fuzzReads {
@@ -177,8 +184,21 @@ func fuzzSequence(rng *rand.Rand, nb int) []fuzzRead {
 		if !skewedLast[bi] && rng.IntN(8) == 0 {
 			off = fuzzSkews[rng.IntN(len(fuzzSkews))]
 		}
+		// A board's first read writes an event per posting, so one under a clock
+		// days ahead leaves a burst of the board's own records days ahead (what
+		// a clock set back later looks like): the days-ahead quorum's case.
+		if !firstRead[bi] {
+			firstRead[bi] = true
+			if rng.IntN(4) == 0 {
+				off = []time.Duration{4 * 24 * time.Hour, 10 * 24 * time.Hour, 30 * 24 * time.Hour}[rng.IntN(3)]
+			}
+		}
 		skewedLast[bi] = off != 0
-		out = append(out, fuzzRead{board: bi, at: at, off: off, listed: ids, partial: partial})
+		// One full read in eight is short: it lists what it lists but is not the
+		// board's whole word, so every posting it leaves out is held as a mass
+		// absence, with a cause of its own (the owner's text: a short listing).
+		short := !partial && rng.IntN(8) == 0
+		out = append(out, fuzzRead{board: bi, at: at, off: off, listed: ids, partial: partial, short: short})
 	}
 	return out
 }
@@ -195,6 +215,7 @@ type fuzzPost struct {
 	firstTrue       time.Time // true time of the read that set first
 	firstOff        time.Duration
 	massed          bool
+	shortOnly       bool // massed, and only short listings marked it in this episode
 	// firstSeenOff is the clock error of the read that first saw it; seenPast
 	// that a read under a right clock has seen that sighting as past;
 	// cleanStart is (d)'s start (true time), zero when none.
@@ -206,6 +227,11 @@ type fuzzPost struct {
 // fuzzTally is what the sequences reached.
 type fuzzTally struct {
 	deaths, held, massReads, deferred, frozen, skewed, settings, multi atomic.Int64
+	// shortReads are short full listings with something absent, shortDeaths
+	// deaths of postings only short listings held, setBackFrozen reads frozen
+	// by the wider (days ahead) quorum (maybe with other evidence), upgrades short marks a true mass
+	// absence made mass.
+	shortReads, shortDeaths, setBackFrozen, upgrades atomic.Int64
 }
 
 func TestDeathRuleBoundsFuzz(t *testing.T) {
@@ -235,7 +261,9 @@ func TestDeathRuleBoundsFuzz(t *testing.T) {
 	// The sequences reached what they are for.
 	for name, v := range map[string]int64{"deaths": tally.deaths.Load(), "held reads": tally.held.Load(), "mass reads": tally.massReads.Load(),
 		"deferred deaths": tally.deferred.Load(), "frozen reads": tally.frozen.Load(), "skewed reads": tally.skewed.Load(),
-		"non-default settings": tally.settings.Load(), "multi-board sequences": tally.multi.Load()} {
+		"non-default settings": tally.settings.Load(), "multi-board sequences": tally.multi.Load(),
+		"short listings that left something out": tally.shortReads.Load(), "short deaths": tally.shortDeaths.Load(),
+		"reads under the days-ahead quorum": tally.setBackFrozen.Load(), "short marks upgraded by a true mass absence": tally.upgrades.Load()} {
 		if v == 0 {
 			t.Errorf("the sequences reached no %s", name)
 		}
@@ -292,11 +320,16 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			}
 		}
 		lo, hi := clock.Add(time.Hour), clock.Add(specWindow)
-		inWindow, own := 0, false
+		inWindow, own, setBack := 0, false, 0
 		for _, p := range known {
 			if p.last.After(lo) && !p.last.After(hi) {
 				inWindow++
 				own = own || p.board == r.board
+			}
+			// The owner's text: at least 3 of the board's own records with an
+			// event more than 3 days and at most 30 days ahead.
+			if p.board == r.board && p.last.After(hi) && !p.last.After(clock.Add(specSetBackCap)) {
+				setBack++
 			}
 		}
 
@@ -307,6 +340,8 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 		var s Summary
 		if r.partial {
 			s, err = rc.ReconcilePartial(ctx, b, listed, clock)
+		} else if r.short {
+			s, err = rc.ReconcileShort(ctx, b, listed, clock)
 		} else {
 			s, err = rc.Reconcile(ctx, b, listed, clock)
 		}
@@ -338,12 +373,15 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 		if s.Open != len(open) || s.Absent != len(absent) {
 			failf(i, "open %d absent %d, oracle %d %d", s.Open, s.Absent, len(open), len(absent))
 		}
-		frozen := len(absent) > 0 && (own || inWindow >= 3)
+		frozen := len(absent) > 0 && (own || inWindow >= 3 || setBack >= 3)
 		if s.ClockBehind != frozen {
 			failf(i, "ClockBehind %v, oracle %v (own %v, %d records in the window, clock %+v)", s.ClockBehind, frozen, own, inWindow, r.off)
 		}
 		if frozen {
 			tally.frozen.Add(1)
+			if setBack >= 3 {
+				tally.setBackFrozen.Add(1)
+			}
 			for _, k := range absent {
 				if rec, _ := l.Get(k); rec.MissedRuns != known[k].misses || rec.Status == posting.Dead {
 					failf(i, "%s was aged by a frozen read: %+v", k, rec)
@@ -352,15 +390,22 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			continue
 		}
 		nOpen, nAbsent := len(open), len(absent)
-		mass := (nOpen >= 2 && nAbsent == nOpen) || (nOpen >= rule.floor && nAbsent*rule.den >= rule.num*nOpen)
+		// A short listing is a true mass absence only when it shows none of at
+		// least 2 open postings, never by share (its cause is short).
+		trueMass := (nOpen >= 2 && nAbsent == nOpen) || (!r.short && ((nOpen >= rule.floor && nAbsent*rule.den >= rule.num*nOpen) ||
+			(nOpen < rule.floor && nAbsent >= 2 && 2*nAbsent > nOpen)))
+		mass := r.short || trueMass // a short listing marks every absent posting mass
 		if mass && nAbsent > 0 {
 			tally.massReads.Add(1)
+		}
+		if r.short && nAbsent > 0 {
+			tally.shortReads.Add(1)
 		}
 		var want Summary
 		for _, k := range absent {
 			p := known[k]
 			if p.misses == 0 {
-				p.massed = false
+				p.massed, p.shortOnly = false, false
 				p.cleanStart = time.Time{}
 			}
 			// (d)'s start: the first read under a right clock that missed it since
@@ -381,6 +426,12 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			}
 			if mass && !p.massed {
 				want.MassMarked++
+				p.shortOnly = !trueMass
+			} else if trueMass {
+				if p.shortOnly && !r.short {
+					tally.upgrades.Add(1)
+				}
+				p.shortOnly = false
 			}
 			p.massed = p.massed || mass
 			hold := specOrdinaryHold
@@ -412,7 +463,10 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 					failf(i, "(c) %s died under a clock %s ahead", k, r.off)
 				}
 				want.Dead++
-				if p.massed {
+				if p.massed && p.shortOnly {
+					want.ShortDead++
+					tally.shortDeaths.Add(1)
+				} else if p.massed {
 					want.MassDead++
 				}
 				p.misses = -1 // dead: the next listing of it is a reappearance
@@ -439,9 +493,9 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			}
 		}
 		if s.Missed != want.Missed || s.Held != want.Held || s.Deferred != want.Deferred || s.Dead != want.Dead ||
-			s.MassDead != want.MassDead || s.MassMarked != want.MassMarked || s.Mass != (mass && nAbsent > 0) {
-			failf(i, "summary %+v, oracle missed %d held %d deferred %d dead %d mass dead %d marked %d mass %v",
-				s, want.Missed, want.Held, want.Deferred, want.Dead, want.MassDead, want.MassMarked, mass)
+			s.MassDead != want.MassDead || s.ShortDead != want.ShortDead || s.MassMarked != want.MassMarked || s.Mass != (mass && nAbsent > 0) {
+			failf(i, "summary %+v, oracle missed %d held %d deferred %d dead %d mass dead %d short dead %d marked %d mass %v",
+				s, want.Missed, want.Held, want.Deferred, want.Dead, want.MassDead, want.ShortDead, want.MassMarked, mass)
 		}
 		for k := range distinct { // everything the listing showed is open or revived
 			if rec, _ := l.Get(k); rec.Status == posting.Dead {

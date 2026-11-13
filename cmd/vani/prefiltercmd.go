@@ -31,6 +31,13 @@ type prefilterReport struct {
 	// the rest when their board next lists them (a pending reopen).
 	Kept   []prefilterRow `json:"kept,omitempty"`
 	Reopen []prefilterRow `json:"reopen,omitempty"`
+	// ReopenStays, ReopenWaits and ReopenNow split Reopen by what the next run
+	// does with each: stays dropped (its board is no longer watched), waits for
+	// its board's next full listing (a pending reopen), or comes back to live
+	// at once (no full listing to wait for). They always sum to len(Reopen).
+	ReopenStays int `json:"reopen_stays"`
+	ReopenWaits int `json:"reopen_waits"`
+	ReopenNow   int `json:"reopen_now"`
 	// Read counts the postings it would drop whose role_fit a decision
 	// backend (not the title) answered; RoleFit is how, and Fits lists the
 	// ones read strong_fit or partial_fit: the prefilter's false drops.
@@ -45,11 +52,19 @@ type prefilterRow struct {
 	Reason  string      `json:"reason"`
 	RoleFit string      `json:"role_fit,omitempty"`
 	Stage   string      `json:"stage"`
+	// Fate is set on the postings in Reopen: fateStays, fateWaits or fateNow.
+	Fate string `json:"fate,omitempty"`
 }
+
+const (
+	fateStays = "stays_dropped"
+	fateWaits = "waits_for_listing"
+	fateNow   = "reopens_at_once"
+)
 
 // prefilterOf applies p's exclusions and title reading to every record;
 // protect says which postings are marked. It reads only.
-func prefilterOf(recs []ledger.Record, p pipeline.DropPolicy, protect func(posting.Key) bool) prefilterReport {
+func prefilterOf(recs []ledger.Record, p pipeline.DropPolicy, protect func(posting.Key) bool, sc pipeline.ReopenScope) prefilterReport {
 	rep := prefilterReport{ByReason: map[string]int{}, RoleFit: map[string]int{}}
 	ch := pipeline.ExclusionChanges(recs, p, protect)
 	for i, r := range ch.Drop {
@@ -58,7 +73,19 @@ func prefilterOf(recs []ledger.Record, p pipeline.DropPolicy, protect func(posti
 		}
 	}
 	for _, r := range ch.Reopen {
-		rep.Reopen = append(rep.Reopen, prefilterRow{Key: r.Key, Title: r.Posting.Title, Reason: r.Annotations[pipeline.AnnExcluded], Stage: string(r.Status)})
+		row := prefilterRow{Key: r.Key, Title: r.Posting.Title, Reason: r.Annotations[pipeline.AnnExcluded], Stage: string(r.Status)}
+		switch sc.ExclusionFate(r.Key) {
+		case pipeline.ReopenStays:
+			row.Fate = fateStays
+			rep.ReopenStays++
+		case pipeline.ReopenWaits:
+			row.Fate = fateWaits
+			rep.ReopenWaits++
+		default:
+			row.Fate = fateNow
+			rep.ReopenNow++
+		}
+		rep.Reopen = append(rep.Reopen, row)
 	}
 	const rf = ledger.AnnTriagePrefix + "role_fit"
 	for _, r := range recs {
@@ -117,7 +144,9 @@ func (e *env) cmdPrefilter(args []string) error {
 		fmt.Fprintln(e.stderr, "vani: prefilter: the ledger ends in a torn line; it was left out")
 	}
 	protect := protectMarked(e.stateDir, func(f string, a ...any) { fmt.Fprintf(e.stderr, "vani: prefilter: "+f+"\n", a...) })
-	rep := prefilterOf(snap.Records, p, protect)
+	sc := reopenScope(cfg)
+	sc.Defer = sc.Watched // as the run's exclusion pass has it (applyExclusions)
+	rep := prefilterOf(snap.Records, p, protect, sc)
 	jr := rep
 	jr.Fits = nonNil(jr.Fits)
 	if !*list {
@@ -141,8 +170,8 @@ type prefilterReply struct {
 func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {
 	fmt.Fprintf(w, "prefilter (dry run, nothing written): %d of %d live posting(s) would be dropped before triage (%d in the ledger)\n",
 		rep.Dropped, rep.Live, total)
-	fmt.Fprintf(w, "exclusions at the next run: %d kept posting(s) would be dropped (marked ones are kept), %d excluded posting(s) would be let back (each waits for its board to list it again; inbox and page postings come back at once)\n",
-		len(rep.Kept), len(rep.Reopen))
+	fmt.Fprintf(w, "exclusions at the next run: %d kept posting(s) would be dropped (marked ones are kept); %d excluded posting(s) no longer match: %d would wait, still dropped, until their board lists them again, %d would come back to live at once (inbox and page postings, with no listing to wait for), %d would stay dropped (their board is no longer watched)\n",
+		len(rep.Kept), len(rep.Reopen), rep.ReopenWaits, rep.ReopenNow, rep.ReopenStays)
 	reasons := make([]string, 0, len(rep.ByReason))
 	for r := range rep.ByReason {
 		reasons = append(reasons, r)
@@ -177,7 +206,14 @@ func writePrefilter(w io.Writer, rep prefilterReport, total int, list bool) {
 			fmt.Fprintf(w, "%s\t%s\t%s (now %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason, r.Stage)
 		}
 		for _, r := range rep.Reopen {
-			fmt.Fprintf(w, "%s\t%s\tlet back when its board lists it (was %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), r.Reason)
+			what := "comes back at the next run"
+			switch r.Fate {
+			case fateStays:
+				what = "stays dropped: its board is no longer watched"
+			case fateWaits:
+				what = "waits, dropped, until its board lists it"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s (was %s)\n", r.Key, jobview.CleanText(r.Title, 120, false), what, r.Reason)
 		}
 	}
 }

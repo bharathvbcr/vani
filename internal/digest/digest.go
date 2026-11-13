@@ -80,7 +80,11 @@ type Counts struct {
 	// MassHeld is the attention line for postings still in a mass hold (one
 	// line naming the boards and when the holds end; empty when none).
 	MassDead int
-	MassHeld string
+	// ShortDead is postings that died this run after being held only because
+	// their board's short listing left them out: expected closures, one
+	// attention line, not a failure.
+	ShortDead int
+	MassHeld  string
 	// BoardAttention is the attention line for boards skipped this run or
 	// listing short for days (not the stale ones: StaleBoards lists those);
 	// not a failure, one line, empty when none.
@@ -591,6 +595,9 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	}
 	if c.MassDead > 0 {
 		fmt.Fprintf(&b, "\nDied after a mass hold: %d posting(s) whose boards stopped listing them at once and never listed them again (`vani runs failures` names the boards)\n", c.MassDead)
+	}
+	if c.ShortDead > 0 {
+		fmt.Fprintf(&b, "\nDied after a short listing: %d posting(s) their board's short listing had left out and still did not list when the hold ended (expected closures on a board that lists short; not a failure)\n", c.ShortDead)
 	}
 	if c.MassHeld != "" {
 		fmt.Fprintf(&b, "\n%s\n", Escape(c.MassHeld, 4*maxFieldRunes))

@@ -577,6 +577,12 @@ func (p DropPolicy) EvaluateTitle(title, description string) (a decide.Answer, r
 	return decide.Answer{}, "", false
 }
 
+// titleReadsStaff reports whether the policy reads title as staff level, the
+// one title verdict that depends on the posting's description.
+func (p DropPolicy) titleReadsStaff(title string) bool {
+	return p.ReadTitle != nil && slices.ContainsFunc(p.ReadTitle(title), isStaffReading)
+}
+
 // isStaffReading is a title reading of seniority as staff_plus.
 func isStaffReading(r TitleReading) bool {
 	return r.Slot == "seniority" && r.Value == expyears.ValueStaff

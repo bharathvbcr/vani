@@ -61,8 +61,12 @@ func TestShortListingAppliesAPendingReopenOfWhatItLists(t *testing.T) {
 
 	// Past PendingReopenExpiry the unlisted one expires as in a complete
 	// listing: the same 14 days a mass hold lasts.
-	late := dropAt.Add(pipeline.PendingReopenExpiry + time.Hour)
-	runListing(t, w, b, all[:9], 3, late)
+	// (counted in read time: one short listing a day, the first starting the count).
+	late := at
+	for d := 1; d <= 15; d++ {
+		late = at.Add(time.Duration(d) * 24 * time.Hour)
+		runListing(t, w, b, all[:9], 3, late)
+	}
 	if n := waiting(late); n != 0 {
 		t.Fatalf("a pending reopen that stayed out of short listings for %s is still waiting: %d", pipeline.PendingReopenExpiry, n)
 	}

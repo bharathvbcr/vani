@@ -61,8 +61,12 @@ type Summary struct {
 	Held     int
 	Deferred int
 	Dead     int
-	// MassDead of Dead were mass marked: they waited out the mass hold.
-	MassDead int
+	// MassDead of Dead were mass marked by a true mass absence (the share rule or
+	// an empty listing): they waited out the mass hold. ShortDead of Dead were
+	// held only because a short listing left them out (MassShortKey): expected
+	// closures, reported and not counted in MassDead.
+	MassDead  int
+	ShortDead int
 	// Open counts the board's open postings before a full listing; Absent how
 	// many of them it left out. Zero for a partial listing.
 	Open, Absent int
@@ -179,6 +183,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			continue
 		}
 		seen[p.Key] = true
+		wasGone := full && rc.reopen.sighted(p.Key)
 		hash := p.DescriptionHash()
 		rec, known := l.Get(p.Key)
 		if known && p.Form == nil {
@@ -247,7 +252,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				return s, err
 			}
 			s.Changed++
-		case full && rec.Status == posting.Dropped && (rc.hasPendingReopen(p.Key) || rc.reopen.movedExclusion(rec, relist)):
+		case full && rec.Status == posting.Dropped && (rc.hasPendingReopen(p.Key) || wasGone || rc.reopen.movedExclusion(rec, relist)):
 			// The board lists a drop that waits to be let back, or an exclusion
 			// drop whose title, company, location or remote flag moved since it
 			// was judged (the board added Austin to a London role): judged again
@@ -346,7 +351,8 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	// PendingReopenExpiry, or whose record is no longer dropped, are cleared
 	// (pendingreopen.go). Dropped records are closed: the absence pass below
 	// never ages them, so the two never touch the same record.
-	rc.reopen.expire(l, prefix, seen, now)
+	clock := idx.clockEvidence(prefix, now)
+	rc.reopen.expire(l, prefix, seen, now, clock.behind)
 	// The absence pass (liveness.go). open is the board's open keys as the
 	// index held them when the board started, before this listing.
 	var open []posting.Key
@@ -355,7 +361,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			open = append(open, k)
 		}
 	}
-	a, err := ageAbsent(ctx, l, rc.live, open, seen, idx.clockEvidence(prefix, now), now, short)
+	a, err := ageAbsent(ctx, l, rc.live, open, seen, clock, now, short)
 	s.addAbsence(a)
 	return s, err
 }
@@ -381,6 +387,7 @@ func (s *Summary) addAbsence(a absence) {
 	s.Deferred += a.deferred
 	s.Dead += a.dead
 	s.MassDead += a.massDead
+	s.ShortDead += a.shortDead
 	s.MassMarked += a.massMarked
 	s.Mass = s.Mass || a.mass
 	s.ClockBehind = s.ClockBehind || a.clockBehind
