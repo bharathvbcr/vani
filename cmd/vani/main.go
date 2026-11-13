@@ -111,6 +111,18 @@ commands:
                              owner-labelled posting keys + normalised-text sha256 for Lappi's held-out set
   export posting-fingerprints [--json] [--out PATH] [--labels DIR] [--seed N]
                              near-duplicate fingerprints of those postings (qd-posting-heldout.v1)
+  export pooled-vectors [--json] --out DIR [--max N]
+                             one pooled, L2-normalised vector per posting that has vectors in the
+                             semantic chunk-vector log (mean of its chunk vectors) and a keys file,
+                             for an offline clustering experiment (docs/CLUSTER_STUDY.md); reads
+                             the ledger and the log without writing the state dir, and refuses an
+                             --out inside it
+  strata compare [--json] --keys FILE [--summary FILE] [--model M] [--resamples N] [--seed N]
+                             offline: does clustering those vectors give audit strata with less
+                             within-stratum variance of Sonnet's role_fit reading than the
+                             category folders and the audit's current strata? Without --summary
+                             it prints the baselines and the k to fit; with the fit binary's
+                             summary it measures each fit. Draws and labels nothing
   eval [--json] [--labels DIR] [--held-out SPLIT] [--window]
                              per-backend precision and coverage on the labelled set
   audit [--list | --json] [--blind] [--seed S] [--scored N] [--dropped N] [--closed N]
@@ -571,6 +583,8 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdAudit(args[1:])
 	case "relevance":
 		cmdErr = e.cmdRelevance(args[1:])
+	case "strata":
+		cmdErr = e.cmdStrata(args[1:])
 	case "doctor":
 		cmdErr = e.cmdDoctor(args[1:])
 	default:

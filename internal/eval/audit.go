@@ -157,7 +157,7 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 		if _, done := labeled[c.Key]; done {
 			continue
 		}
-		src := fmt.Sprintf("decile:%d", i*10/len(scored)+1)
+		src := decileSource(i, len(scored))
 		deciles[src] = append(deciles[src], c.Key)
 	}
 	classes := map[string][]posting.Key{}
@@ -184,6 +184,46 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 		drawGroup(&plan, shut, q.Closed, seed)
 	}
 	return plan
+}
+
+// decileSource is the stratum of the i'th (from 0, in score order) of n scored
+// postings: "decile:1" is the lowest tenth, "decile:10" the highest.
+func decileSource(i, n int) string { return fmt.Sprintf("decile:%d", i*10/n+1) }
+
+// AuditStrata is the stratum AuditDraw files each candidate under, for every
+// candidate whether or not it is labelled: the score decile (cut over the whole
+// scored pool, ties by key), "dropped:<class>" or "closed:<status>". A key
+// listed twice keeps its first entry, as the draw does. It draws nothing and
+// is what the strata comparison (internal/clusterstudy) reads the audit's
+// current cells from.
+func AuditStrata(cands []AuditCandidate) map[posting.Key]string {
+	out := make(map[posting.Key]string, len(cands))
+	var scored []AuditCandidate
+	seen := map[posting.Key]bool{}
+	for _, c := range cands {
+		if c.Key == "" || seen[c.Key] {
+			continue
+		}
+		seen[c.Key] = true
+		switch {
+		case c.Closed:
+			out[c.Key] = closedSource(c.Class)
+		case c.Dropped:
+			out[c.Key] = droppedSource(c.Class)
+		default:
+			scored = append(scored, c)
+		}
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].Score != scored[j].Score {
+			return scored[i].Score < scored[j].Score
+		}
+		return scored[i].Key < scored[j].Key
+	})
+	for i, c := range scored {
+		out[c.Key] = decileSource(i, len(scored))
+	}
+	return out
 }
 
 // WeekSeed is the ISO week of t ("2026-W43"): a draw stays the same all week.

@@ -400,12 +400,18 @@ func staticOf(r ledger.Record) rowStatic {
 			panic("jobview: digest.TriageSlots names a slot rowStatic does not hold: " + slot)
 		}
 	}
-	if cat := CleanText(ann[ledger.AnnCategory], 80, false); cat != "" {
-		st.category = cat
-	} else if cat := CleanText(ann[ledger.AnnTriagePrefix+"category"], 80, false); cat != "" {
-		st.category = cat
-	}
+	st.category = CategoryOf(r)
 	return st
+}
+
+// CategoryOf is r's career category: the category the ledger holds, else the
+// triage slot's reading, else "" (no reading). It is the one place that says
+// where a record's category lives.
+func CategoryOf(r ledger.Record) string {
+	if cat := CleanText(r.Annotations[ledger.AnnCategory], 80, false); cat != "" {
+		return cat
+	}
+	return CleanText(r.Annotations[ledger.AnnTriagePrefix+"category"], 80, false)
 }
 
 // triage is the slot readings a Job's Triage map holds: the triage slots in

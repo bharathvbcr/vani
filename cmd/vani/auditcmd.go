@@ -125,6 +125,21 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 	if err != nil {
 		return nil, err
 	}
+	cands, err := e.auditCandidates(b)
+	if err != nil {
+		return nil, err
+	}
+	if seed == "" {
+		seed = eval.WeekSeed(now())
+	}
+	plan := eval.AuditDraw(cands, done, seed, q)
+	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
+}
+
+// auditCandidates is every posting the weekly audit may draw: the kept ones
+// with their priority and the dropped and closed ones with their class, none
+// that the owner has already judged by a mark. Labels are not read here.
+func (e *env) auditCandidates(b *browsing) ([]eval.AuditCandidate, error) {
 	kept, err := b.view("all", "default", false)
 	if err != nil {
 		return nil, err
@@ -145,11 +160,7 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 			cands = append(cands, c)
 		}
 	}
-	if seed == "" {
-		seed = eval.WeekSeed(now())
-	}
-	plan := eval.AuditDraw(cands, done, seed, q)
-	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
+	return cands, nil
 }
 
 // closedOrDropped is r as an audit candidate when the engine dropped it (with
