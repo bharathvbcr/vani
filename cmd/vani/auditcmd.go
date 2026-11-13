@@ -125,31 +125,42 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 	if err != nil {
 		return nil, err
 	}
-	kept, err := b.view("all", "default", false)
+	cands, err := b.auditCandidates(e.dropRules(), true)
 	if err != nil {
 		return nil, err
-	}
-	var cands []eval.AuditCandidate
-	for _, k := range kept {
-		if b.m[k.Job.Key].Mark != marks.None {
-			continue // judged by its mark already, as in the digest's Explore
-		}
-		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
-	}
-	rules := e.dropRules()
-	for _, r := range b.snap.Records {
-		if b.m[r.Key].Mark != marks.None {
-			continue
-		}
-		if c, ok := closedOrDropped(r, rules); ok {
-			cands = append(cands, c)
-		}
 	}
 	if seed == "" {
 		seed = eval.WeekSeed(now())
 	}
 	plan := eval.AuditDraw(cands, done, seed, q)
 	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
+}
+
+// auditCandidates is every posting the audit's strata stand over: each kept
+// posting with its priority score, each dropped one with its drop class and each
+// closed one with its status. skipMarked leaves out a posting the owner already
+// judged with a mark, as the digest's Explore does.
+func (b *browsing) auditCandidates(rules []eval.DropRule, skipMarked bool) ([]eval.AuditCandidate, error) {
+	kept, err := b.view("all", "default", false)
+	if err != nil {
+		return nil, err
+	}
+	var cands []eval.AuditCandidate
+	for _, k := range kept {
+		if skipMarked && b.m[k.Job.Key].Mark != marks.None {
+			continue // judged by its mark already, as in the digest's Explore
+		}
+		cands = append(cands, eval.AuditCandidate{Key: k.Job.Key, Score: k.Job.Priority})
+	}
+	for _, r := range b.snap.Records {
+		if skipMarked && b.m[r.Key].Mark != marks.None {
+			continue
+		}
+		if c, ok := closedOrDropped(r, rules); ok {
+			cands = append(cands, c)
+		}
+	}
+	return cands, nil
 }
 
 // closedOrDropped is r as an audit candidate when the engine dropped it (with

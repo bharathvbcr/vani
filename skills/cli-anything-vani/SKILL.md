@@ -155,7 +155,16 @@ before running one.
 - `vani jobs resume build KEY`
 - `vani reasons draft`
 - `vani kbmatch run`
-- `vani teacher`
+- `vani teacher`. `vani teacher --task would_apply_pair` is the pairwise would-apply auditor: it
+  asks which of two postings of one audit stratum the owner would rather apply to, given the
+  owner's frozen labelled titles, and keeps the answers as silver labels in
+  `<state>/silver_pairs.jsonl`, never in the owner's labels. A real run needs `--budget-usd N`
+  and the auditor's own daily cap (`vani teacher cap --usd N`), which is unset, and so spends
+  nothing, until the owner sets it; it also needs the frozen exemplar set (`vani teacher
+  freeze`). Never set a cap or freeze for the owner. `--pairs N` bounds the run (default 50, at
+  most 500), `--both-orders` asks each pair twice, and `--of`, `--sample`, `--max`, `--keys`,
+  `--draw-out` and `--with-readings-of` are refused for it. `--dry-run` prints the pair count,
+  the worst-case cost and one question with the postings' text elided, and writes nothing.
 - `vani draft`, `vani suggest` and `vani resume` take a JSON request on stdin and write a
   JSON reply.
 - `vani doctor` asks Opus whether boards that read nothing are failing silently and whether a
@@ -168,6 +177,12 @@ before running one.
 
 `jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher` and `doctor` take `--dry-run`,
 which prices the work and asks nothing.
+
+`vani teacher report` reads, and spends nothing: the auditor's AUC on the owner's gold labels made
+after the freeze, beside the title part's on the same postings. Under 10 yes and 30 no scored
+postings it says "insufficient" and shows no AUC, which is not a verdict. `vani teacher cap` shows
+or sets the auditor's daily cap and `vani teacher freeze` writes the exemplar set; both are the
+owner's calls.
 
 **Owner tools.** Not for unattended use:
 

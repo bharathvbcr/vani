@@ -41,6 +41,28 @@ An escalation reading was asked only the escalated slots (the same context, fewe
 
 `text_sha256`, `fixture_sha`, `prompt_hash`, `kb_digest_sha` and the row identity are unchanged. The new fields are not part of the identity, so no stored reading is asked again because of them.
 
+## Silver pair log (`silver_pairs.jsonl`)
+
+One row per asked pair and order of `vani teacher --task would_apply_pair`. It is a separate log from the
+teacher store: a reading there is about one posting, a pair has two. It is never `labels.jsonl`, and
+nothing but the auditor's own run (to skip answered pairs) and `vani teacher report` opens it.
+
+| Field | Value |
+|---|---|
+| `key_a`, `key_b` | the postings in the order the model saw them; `swapped` is true when that is the reverse of the keys' sort order |
+| `stratum` | the audit stratum both were drawn from |
+| `text_sha256_a`, `text_sha256_b` | `eval.HashText` of each description |
+| `render_sha256` | sha256 of the exact context bytes sent |
+| `model`, `fixture_sha`, `prompt_hash` | the model; `wouldapply.Fixture()`; `wouldapply.PromptHash(summary, exemplars)` |
+| `exemplar_sha` | the sha256 of the frozen exemplar set (`silver_exemplars.json`) the question carried |
+| `reading`, `answer`, `detail` | the slot's reading; `a`, `b` or `neither` when answered, else empty; a detail code, never model text |
+| `at` | when |
+
+A row is current under the same model, fixture, prompt hash and exemplar set, of the same rendered pair in
+the same order. Lines are bounded (16 KiB), a torn tail is repaired before the next append and skipped on
+read, and a run holds `silver_pairs.lock`. The auditor's spend is `state/budget/wouldapply-cap.json`
+(`daily_usd`, and `spent_nano` per UTC day); with no file, or a cap of zero, nothing is spent.
+
 ## Manual retriage store (`retriage/readings.jsonl`, `op: "set"` lines)
 
 | Field | Value |

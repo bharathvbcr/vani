@@ -1065,6 +1065,16 @@ Three things measure the ranking against the owner's judgement; none changes a r
   AUC, read only where the part was known evidence. `vani labels --json` is the label
   vocabulary the screens read once at launch.
 
+  `vani teacher --task would_apply_pair` is a pairwise would-apply auditor: a Claude model is
+  shown two postings of one audit stratum, your target summary and a frozen set of your own
+  labelled titles (`vani teacher freeze`), and says which you would rather apply to. Its answers
+  are silver labels in `silver_pairs.jsonl`, never in `labels.jsonl`, and change no ranking or
+  drop. A real run needs `--budget-usd` and the auditor's own daily cap (`vani teacher cap --usd N`),
+  which spends nothing until you set it; `--dry-run` prints the pair count, the worst case and one
+  question with the postings' text elided. `vani teacher report` gives its AUC on your gold labels
+  made after the freeze, next to the title part's, and says "insufficient" below 10 yes and 30 no
+  (`docs/RUNTIME.md`, "The pairwise would_apply auditor").
+
 A calibration needs about 100 judged labels and the weight fit 150; both refuse to run below that.
 
 ## Knowledge-base matching (semantic)

@@ -444,6 +444,9 @@ const jobsCheckpointAfter = 8 << 20
 // beside the ledger directory (which only its lock holder writes), saved by
 // whichever read folded at least jobsCheckpointAfter bytes.
 func (e *env) jobsReaderOptions() ledger.ReaderOptions {
+	if e.noCheckpoint {
+		return ledger.ReaderOptions{} // a read that must write nothing keeps no checkpoint
+	}
 	return ledger.ReaderOptions{Checkpoint: filepath.Join(e.stateDir, "readmodel", "ledger.ckpt"), SaveAfter: jobsCheckpointAfter}
 }
 

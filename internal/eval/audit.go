@@ -128,6 +128,36 @@ func AuditSample(cands []AuditCandidate, labeled map[posting.Key]Entry, seed str
 // The scored and dropped groups draw exactly what AuditSample draws for the
 // same seed, whatever q.Closed is: each group spends only its own places.
 func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed string, q AuditQuotas) AuditPlan {
+	deciles, classes, shut := auditBuckets(cands, labeled)
+	var plan AuditPlan
+	drawGroup(&plan, deciles, q.Scored, seed)
+	drawGroup(&plan, classes, q.Dropped, seed)
+	if q.Closed > 0 {
+		drawGroup(&plan, shut, q.Closed, seed)
+	}
+	return plan
+}
+
+// AuditStrata is every stratum the audit draws from, with its members: the
+// score deciles ("decile:N", cut over the whole scored pool), the drop classes
+// ("dropped:<class>") and the closed statuses ("closed:<status>"), as AuditDraw
+// buckets them, for a caller that pairs postings within a stratum. A posting
+// with an entry in labeled is left out, so pass nil to keep the labelled ones.
+// Members are in no particular order; a key listed twice counts once.
+func AuditStrata(cands []AuditCandidate, labeled map[posting.Key]Entry) map[string][]posting.Key {
+	deciles, classes, shut := auditBuckets(cands, labeled)
+	out := make(map[string][]posting.Key, len(deciles)+len(classes)+len(shut))
+	for _, m := range []map[string][]posting.Key{deciles, classes, shut} {
+		for name, ks := range m {
+			out[name] = ks
+		}
+	}
+	return out
+}
+
+// auditBuckets sorts the unlabelled candidates into the audit's three groups of
+// strata: score deciles, drop classes and closed statuses.
+func auditBuckets(cands []AuditCandidate, labeled map[posting.Key]Entry) (deciles, classes, shut map[string][]posting.Key) {
 	var scored, dropped, closed []AuditCandidate
 	seen := map[posting.Key]bool{}
 	for _, c := range cands {
@@ -152,7 +182,7 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 		}
 		return scored[i].Key < scored[j].Key
 	})
-	deciles := map[string][]posting.Key{}
+	deciles = map[string][]posting.Key{}
 	for i, c := range scored {
 		if _, done := labeled[c.Key]; done {
 			continue
@@ -160,7 +190,7 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 		src := fmt.Sprintf("decile:%d", i*10/len(scored)+1)
 		deciles[src] = append(deciles[src], c.Key)
 	}
-	classes := map[string][]posting.Key{}
+	classes = map[string][]posting.Key{}
 	for _, c := range dropped {
 		if _, done := labeled[c.Key]; done {
 			continue
@@ -168,7 +198,7 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 		src := droppedSource(c.Class)
 		classes[src] = append(classes[src], c.Key)
 	}
-	shut := map[string][]posting.Key{}
+	shut = map[string][]posting.Key{}
 	for _, c := range closed {
 		if _, done := labeled[c.Key]; done {
 			continue
@@ -176,14 +206,7 @@ func AuditDraw(cands []AuditCandidate, labeled map[posting.Key]Entry, seed strin
 		src := closedSource(c.Class)
 		shut[src] = append(shut[src], c.Key)
 	}
-
-	var plan AuditPlan
-	drawGroup(&plan, deciles, q.Scored, seed)
-	drawGroup(&plan, classes, q.Dropped, seed)
-	if q.Closed > 0 {
-		drawGroup(&plan, shut, q.Closed, seed)
-	}
-	return plan
+	return deciles, classes, shut
 }
 
 // WeekSeed is the ISO week of t ("2026-W43"): a draw stays the same all week.
