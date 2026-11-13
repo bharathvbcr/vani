@@ -526,6 +526,30 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
 - **Outage detection.** A title drop is no backend reading. It does not reset the unread
   breaker, and it does not stop a phase in which no backend read anything from failing
   (`pipeline.AdvancePlan.TitleDrop`).
+- **"VP" is a rank at banks, not a role (2026-11-12, config edited; schema change needs the
+  owner).** In the live config, `VP` and `Vice President` were manager match words. They dropped
+  344 postings on the title alone, nearly all individual-contributor roles at Goldman Sachs,
+  JPMorgan, AQR and Citi ("Software Engineer, Vice President"). These words now sit in their own
+  manager read, after the Manager/Director/Head of/Chief read. That read has an `unless` list of
+  nouns for a person's job (Engineer, Scientist, Researcher, Analyst, Associate, Architect,
+  Developer) and specific work phrases (Software Engineering, Quantitative, Machine Learning,
+  Applied AI, Engineering Lead, and others). A title it abstains on goes to the decision model. It
+  never gets another value, and "VP of Engineering" stays dropped. Measured by
+  `vani retriage --dry-run --title-drops` on the live ledger with the old and new configs:
+  - 154 of the 344 return, all bank individual-contributor roles except Mistral's
+    "VP, Global Developer Relations", which the model now reads.
+  - No other company's executive VP returns.
+  - The rest stay dropped: bank governance, data-management and risk roles, and executive VPs.
+  - "Chief of Staff" and the "Senior / Principal" spellings joined the staff_plus read's `unless`.
+    The 59 Chief of Staff roles now read as manager ("Chief") and stay dropped. `staff_plus` is
+    a rank penalty, not a drop.
+  - "Director" was measured the same way and left alone. Its 1,104 drops are real directors,
+    except a handful of bank "Executive Director" engineers far above the target level.
+  - The backup is `config.json.bak-2026-11-12-vp-unless` beside the config.
+  - The remaining gap is structural: what separates a bank's VP from an executive VP is the
+    company, and `TitleRead` has no company scope. Adding a company list to a read (`companies`
+    or `unless_companies`) changes the config schema, and older `vani` binaries would refuse
+    the field. Owner's call.
 
 ## Run speed (applied 2026-10-19, measured on fakes only)
 
