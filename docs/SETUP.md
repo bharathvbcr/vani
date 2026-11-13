@@ -274,8 +274,29 @@ with what, at what scale), at most 1,024 bytes after whitespace is collapsed to 
 No name, contact, location, work authorization, or names of people, employers or schools. The
 config loader does not scan the main file for those terms. `vani track` checks a track file's
 summary against a built-in list of contact and work-authorization terms, plus
-`identifying-words.txt` in the tracks directory. An empty summary is valid JSON and a coarser
-ceiling.
+`identifying-words.txt` in the tracks directory. An empty summary (or one of invisible characters
+alone) is valid JSON and a coarser ceiling.
+
+`vani run`, `vani daemon` and the other commands that put `target_summary` in a model prompt refuse
+while it is set and `identifying-words.txt` is missing or has no terms. The expected file is
+`<state dir>/tracks/identifying-words.txt` (the refusal and `vani status` print the full path): one
+term per line, `#` starts a comment, at least one term. The terms are your name, employers, schools
+and anything else that must not reach a model; project names stay out of it if drafts should keep
+them. `run` and `daemon` have no flag to skip the check (only `vani teacher` and `vani kbmatch run`
+take `--allow-missing-identifying-words`), so create the file first. A daemon that is already
+running re-checks before each run and refuses a run, recording a failure that names `target_summary`,
+when the list is emptied or deleted or gains a term the summary holds.
+
+`motivation_notes` goes to the drafter's model. It is checked against the built-in list only (the
+owner's list is not applied): an `@` address or handle, linkedin, github and work-authorization
+wording (visa, h-1b, opt, sponsorship, citizen, nonprofit, cap-exempt) are refused by
+`vani config motivation --set`, at config load and before a draft. The error names the field, not
+the term; a note that uses one of those words innocently has to be reworded.
+
+A drop rule's `min_openrouter_prob` is `0` (never drops on the model's reading) or at least `0.9`;
+`min_lappi_score` is `0` or at least `0.8` (Lappi's score is a top-two probability margin, so `0.8`
+is the same floor as `p >= 0.9` on the top label). A track's drop rules are held to the same floor
+when the track is applied.
 
 The embedder is in-process on Metal, darwin/arm64, cgo on, Xcode command line tools, build tag
 `tessl`. The binding links

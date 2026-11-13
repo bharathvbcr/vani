@@ -158,6 +158,43 @@ func TestBlankLookingSummaryIsEmptyEverywhere(t *testing.T) {
 	}
 }
 
+// The refusal says which file is expected and what it needs, in wireApp (run,
+// daemon) and in status, and does not offer a flag run and daemon do not take.
+func TestMissingWordsRefusalNamesTheExpectedFile(t *testing.T) {
+	for name, setupWords := range map[string]func(t *testing.T, stateDir string){
+		"missing": func(*testing.T, string) {},
+		"empty":   func(t *testing.T, s string) { writeKBWords(t, s, "# no terms yet") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, stateDir, cfg := summaryConfig(t, cleanSummary)
+			setupWords(t, stateDir)
+			want := filepath.Join(stateDir, "tracks", "identifying-words.txt")
+			check := func(what, msg string) {
+				t.Helper()
+				if !strings.Contains(msg, want) || !strings.Contains(msg, "at least one term") || strings.Contains(msg, "--allow-missing") {
+					t.Errorf("%s: %q; want the expected path %q, \"at least one term\" and no flag", what, msg, want)
+				}
+				noTerm(t, what, msg, cleanSummary)
+			}
+			app, err := wireApp(cfg, stateDir, nil)
+			if err == nil {
+				app.close()
+				t.Fatal("wireApp built the app")
+			}
+			check("wireApp", err.Error())
+			s, ok := targetSummaryStatus(t)
+			if !ok || s.OK {
+				t.Fatalf("status facet %+v (present %v), want not ok", s, ok)
+			}
+			check("status", s.Reason)
+			o, _ := mustCode(t, 0, "status")
+			if !strings.Contains(o, want) {
+				t.Errorf("status text does not name %s:\n%s", want, o)
+			}
+		})
+	}
+}
+
 func TestWireAppFailsClosedWithoutAUsableWordsFile(t *testing.T) {
 	// Missing, empty (comments only) and unreadable (a term past the bound).
 	for name, setupWords := range map[string]func(t *testing.T, stateDir string){

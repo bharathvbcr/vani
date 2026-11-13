@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -68,8 +69,8 @@ func checkPromptSummary(cfg config.Config, stateDir string, allowMissing bool) e
 		if w.Missing {
 			state = "does not exist"
 		}
-		return fmt.Errorf("%w: %s %s in %s, so the owner's identifying terms cannot be checked against the summary; no model prompt is built from it (add the file, or pass --%s where the command takes it)",
-			errTargetSummary, track.WordsFile, state, dir, kbAllowMissingFlag)
+		return fmt.Errorf("%w: %s %s: the file expected is %s, and it needs at least one term (one per line, # starts a comment), so the owner's identifying terms can be checked against the summary; no model prompt is built from it until it does",
+			errTargetSummary, track.WordsFile, state, filepath.Join(dir, track.WordsFile))
 	}
 	if n := len(w.Found(cfg.TargetSummary)); n > 0 {
 		return fmt.Errorf("%w: contains %d term(s) from the identifying-words list (the terms are not shown); no model prompt is built from it. Edit target_summary in the config to describe the roles without them, or apply a track whose summary is clean (vani track apply)",

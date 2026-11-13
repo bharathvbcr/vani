@@ -117,6 +117,18 @@ Keychain write).
 (`Drafting.swift`, `DraftRunner.KeySource`). Reading `anthropic-api-key` from the Keychain
 directly would bypass that choice, so `vani` does not.
 
+### The identifying-words file gates `target_summary`
+
+With a non-empty `target_summary`, `vani run`, `vani daemon` and every command that builds a model
+prompt from it refuse unless `<state dir>/tracks/identifying-words.txt` exists and has at least one
+term (one per line, `#` comments). The refusal, and the `target_summary` line of `vani status`
+(`--json`: `target_summary.reason`), print the exact expected path and say it needs a term; they
+never print a term. `run` and `daemon` take no override. `vani doctor` refuses the same way, with no
+override either. A running daemon re-checks the list before each run (a run is refused, recorded as
+failed, when the list was emptied, deleted or now matches the summary); it does not fall back to the
+summary it started with. An empty summary, or one made of invisible characters alone, sends
+nothing and needs no file.
+
 ### By entry point
 
 | Entry point | Started by | Decision model key | Claude key |
