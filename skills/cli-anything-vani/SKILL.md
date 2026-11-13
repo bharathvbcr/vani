@@ -173,6 +173,7 @@ which prices the work and asks nothing.
 
 - `vani label` and `vani audit` collect the owner's labels.
 - `vani rankfit` and `vani export heldout` fit and export from those labels.
+  `vani rankfit --spare-seniority` writes the owner's seniority relaxation to the rank weights file.
 - `vani kb sync` copies the knowledge base into DevPrism.
 - `vani bench local` benchmarks local models.
 - `vani semantic warm` embeds postings.

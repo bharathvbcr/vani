@@ -19,6 +19,24 @@ were ported with notice. Source files do not carry an upstream copyright header.
   spend; a source that cannot be read is named, never shown as an empty table. This is stage 0 of
   the adaptive-ranking plan: it decides whether any model's reading may stand in for the owner's
   label.
+- **Sensitivity of the relevance verdicts** (`internal/eval/labelmode.go`, `vani relevance`). The
+  reader table and the part AUC are repeated under four readings of the labels: yes or maybe
+  wanted, yes only, maybes left out, and engineering titles only (a word-list title check; a
+  non-engineering word wins). A verdict that holds in one reading only shows as such. The reader
+  table also gives the seniority each reader read on its mismatch_seniority readings.
+- **One-tap would you apply** (`vani audit answer --shown`, the Mac app's job detail). A posting
+  answered from a surface takes the stratum and inclusion probability of its newest impression
+  that carries them, else is recorded as a manual label; an impression log that cannot be read is
+  an error. The job detail has a Would you apply? row that writes through it.
+- **Seniority-gate relaxation, off by default** (`Weights.SpareSeniorityMismatch`,
+  `vani rankfit --spare-seniority`). The triage rubric reads mismatch_seniority against an
+  early-career engineer whatever the target summary says. A rank weights file may list seniority
+  readings (`mid`, `senior`, `staff_plus`; never `manager`) at which such a reading is not a
+  mismatch: no gate, fit part unknown. It only loosens. `vani relevance` shows a shadow of two
+  variants: the AUC of the age-free relevance per label reading before and after, and each judged
+  posting it moves with its percentile among open postings. On the live ledger (2026-11-12)
+  neither variant changed any AUC; sparing staff_plus too moved one judged posting (84th
+  percentile before and after) and 373 of 29,311 open postings.
 - **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
   (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
   `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings
