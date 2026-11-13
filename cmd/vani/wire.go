@@ -192,6 +192,9 @@ type wired struct {
 	// fetches is each board's detail and pay counts, keyed the way the board
 	// report spells the token. applyFetchesLocked copies them onto the report.
 	fetches map[boardKey]boardFetch
+	// prefilter is the current run's listing-time drops: the audit sample they
+	// feed and a count by rule (prefilterwire.go). readBoards sets it.
+	prefilter *prefilterRun
 	// recordGaps is true when this run will ask a decision backend. A list-only
 	// pass leaves shadow and notes gaps off the record.
 	recordGaps bool

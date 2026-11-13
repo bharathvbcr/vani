@@ -350,8 +350,15 @@ type boardsReport struct {
 	// reads) rejected before any detail request, on the adapters that read a
 	// detail per posting. They were never stored, so no audit or retriage can
 	// see them; a later listing under a policy that no longer drops them
-	// stores them as new.
+	// stores them as new. A bounded sample of them is kept for the weekly
+	// audit (audit/prefilter-sample.json, prefilterwire.go); the audit class of
+	// each is "dropped:prefilter:<rule>".
 	Prefiltered int `json:"prefiltered,omitempty"`
+	// PrefilteredByRule is those rows by the rule that dropped them
+	// (pipeline.PrefilterRule: "exclude_title", "exclude_location",
+	// "read_<slot>" ...), counted as the adapters reported them this run, so a
+	// row listed again on a later run is counted again. Additive.
+	PrefilteredByRule map[string]int `json:"prefiltered_by_rule,omitempty"`
 	// Mass counts read boards whose full listing newly marked postings as a mass
 	// absence (a share of the board's open postings, or all of them, left it: an
 	// outage, a moved board, a renumbering; pipeline liveness.go). Their absent

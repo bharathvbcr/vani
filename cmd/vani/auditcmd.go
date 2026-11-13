@@ -89,6 +89,21 @@ type auditDraw struct {
 	seed  string
 	plan  eval.AuditPlan
 	picks []eval.AuditPick // plan.Interleaved(seed)
+	// prefilter holds the sampled pre-ledger drops by key (prefilterwire.go): a
+	// pick whose key is here is not a ledger record.
+	prefilter map[posting.Key]pipeline.PrefilterRow
+	// pfWeek and pfSeen are the current week's sample size and how many
+	// listing-time drops the week's runs reported, for the draw's header.
+	pfWeek, pfSeen int
+}
+
+// recordOf is the record a pick's card shows: the ledger's, or for a sampled
+// pre-ledger drop its listed fields.
+func (d *auditDraw) recordOf(k posting.Key) (ledger.Record, bool) {
+	if r, ok := findRecord(d.b.snap, k); ok {
+		return r, true
+	}
+	return prefilterRecord(d.prefilter, k)
 }
 
 // checkAuditDraw validates the draw flags the audit commands share.
@@ -156,11 +171,23 @@ func (e *env) drawAudit(q eval.AuditQuotas, seed, labels string) (*auditDraw, er
 			cands = append(cands, c)
 		}
 	}
+	// The listing-time drops never reached the ledger, so the sample the run
+	// kept stands in for them: each row is a dropped candidate of its own class.
+	sample := e.loadPrefilterSample()
+	rows := prefilterRows(sample)
+	for _, r := range sample.Rows() {
+		if _, inLedger := findRecord(b.snap, r.Key); inLedger {
+			continue // a key a ledger record has is that record's
+		}
+		cands = append(cands, eval.AuditCandidate{Key: r.Key, Dropped: true, Class: r.Class()})
+	}
 	if seed == "" {
 		seed = eval.WeekSeed(now())
 	}
 	plan := eval.AuditDraw(cands, done, seed, q)
-	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
+	held, seen := sample.Week(eval.WeekSeed(now()))
+	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed),
+		prefilter: rows, pfWeek: len(held), pfSeen: seen}, nil
 }
 
 // closedOrDropped is r as an audit candidate when the engine dropped it (with
@@ -223,6 +250,18 @@ type auditPickJSON struct {
 	Key     posting.Key `json:"key"`
 	Stratum string      `json:"stratum"`
 	PSelect float64     `json:"p_select"`
+	// Listed is a sampled pre-ledger drop's listed fields (no description):
+	// such a pick is no ledger row, so a screen has no jobs row to read them
+	// from. Absent for a ledger pick.
+	Listed *auditListedJSON `json:"listed,omitempty"`
+}
+
+// auditListedJSON is what a listing said of a row dropped before the ledger.
+type auditListedJSON struct {
+	ATS      posting.ATS `json:"ats"`
+	Company  string      `json:"company,omitempty"`
+	Title    string      `json:"title"`
+	Location string      `json:"location,omitempty"`
 }
 
 type auditStratumJSON struct {
@@ -265,7 +304,11 @@ func (e *env) cmdAudit(args []string) error {
 		if err == nil {
 			out.Seed = d.seed
 			for _, p := range d.picks {
-				out.Picks = append(out.Picks, auditPickJSON{Key: p.Key, Stratum: p.Source, PSelect: p.PSelect})
+				pj := auditPickJSON{Key: p.Key, Stratum: p.Source, PSelect: p.PSelect}
+				if r, ok := d.prefilter[p.Key]; ok {
+					pj.Listed = &auditListedJSON{ATS: r.ATS, Company: r.Company, Title: r.Title, Location: r.Location}
+				}
+				out.Picks = append(out.Picks, pj)
 			}
 			for _, st := range d.plan.Strata {
 				out.Strata = append(out.Strata, auditStratumJSON{Stratum: st.Source, Pool: st.Pool, Taken: st.Taken})
@@ -286,6 +329,10 @@ func (e *env) cmdAudit(args []string) error {
 			fmt.Fprintf(e.stdout, "  %-34s pool %4d, drawn %d\n", st.Source, st.Pool, st.Taken)
 		}
 	}
+	if d.pfSeen > 0 { // a capped sample: say how much it stands for
+		fmt.Fprintf(e.stdout, "  pre-ledger drops this week: %d kept in the sample of the %d the runs reported (cap %d a week)\n",
+			d.pfWeek, d.pfSeen, pipeline.DefaultPrefilterSamplePerWeek)
+	}
 	if *list {
 		for _, p := range d.picks {
 			fmt.Fprintf(e.stdout, "%s\tp_select=%.4f\t%s\n", p.Source, p.PSelect, p.Key)
@@ -294,7 +341,7 @@ func (e *env) cmdAudit(args []string) error {
 	}
 	recs := make([]ledger.Record, 0, len(d.picks))
 	for _, p := range d.picks {
-		r, ok := findRecord(d.b.snap, p.Key)
+		r, ok := d.recordOf(p.Key)
 		if !ok {
 			return fmt.Errorf("audit: drawn posting %s is not in the ledger", p.Key)
 		}
@@ -372,7 +419,7 @@ type auditAnswerJSON struct {
 // source and p came from the caller; otherwise they are the draw's.
 func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
-	var snap ledger.Snapshot
+	var find func(posting.Key) (ledger.Record, bool)
 	src, prob := source, p
 	if explicit {
 		var err error
@@ -383,7 +430,12 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		if err != nil {
 			return auditAnswerJSON{}, err
 		}
-		snap = b.snap
+		find = func(k posting.Key) (ledger.Record, bool) {
+			if r, ok := findRecord(b.snap, k); ok {
+				return r, true
+			}
+			return prefilterRecord(prefilterRows(e.loadPrefilterSample()), k)
+		}
 	} else {
 		d, err := e.drawAudit(q, seed, labels)
 		if err != nil {
@@ -396,9 +448,9 @@ func (e *env) answerAudit(k posting.Key, verdict, source string, p float64, expl
 		if i < 0 {
 			return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the draw for seed %s; pass --source and --p-select", k, d.seed)
 		}
-		s, snap, src, prob = d.s, d.b.snap, d.picks[i].Source, d.picks[i].PSelect
+		s, find, src, prob = d.s, d.recordOf, d.picks[i].Source, d.picks[i].PSelect
 	}
-	r, ok := findRecord(snap, k)
+	r, ok := find(k)
 	if !ok {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the ledger", k)
 	}

@@ -214,6 +214,10 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// the entire ledger on every board. If a prefix is ever reconciled before
 	// another board with the same prefix lists, storedFor falls back to w.storedFor.
 	initialRecs := w.led.All()
+	// The listing-time drops of this read feed the audit's prefilter sample,
+	// saved once the boards are done, however the read ended.
+	w.openPrefilterSample()
+	defer w.savePrefilterSample()
 	var prefixMu sync.Mutex
 	dirtyPrefix := map[string]bool{}
 	storedFor := func(b sources.Board) []posting.Posting {
@@ -250,7 +254,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// spends at most workday.MaxDetails requests a run.
 	wd, err := workday.NewWith(d, workday.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, workdayFetch(st))
@@ -265,7 +269,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// smartrecruiters.MaxDetails requests a board a run).
 	sr, err := smartrecruiters.NewWith(d, smartrecruiters.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st smartrecruiters.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, smartRecruitersFetch(st))
@@ -297,7 +301,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// rippling.MaxDetails requests a board a run).
 	rp, err := rippling.NewWith(d, rippling.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st rippling.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Prefiltered: st.Prefiltered})
@@ -312,7 +316,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// talentbrew.MaxDetails pages a board a run.
 	tb, err := talentbrew.NewWith(d, talentbrew.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st talentbrew.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
@@ -327,7 +331,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// never fetched, so a run asks for its search pages and the new details.
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
@@ -338,7 +342,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// requests a board a run).
 	srcs[posting.Avature] = avature.NewWith(d, avature.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
@@ -419,6 +423,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
 	applyBacklogLocked(&boards, health)
+	boards.PrefilteredByRule = w.prefilterRulesLocked()
 	w.boards = &boards
 	w.mu.Unlock()
 	return pipeline.BoardCounts{Configured: boards.Configured, Read: boards.Read}, err
