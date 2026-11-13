@@ -115,12 +115,14 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 		p.Skip = listOnly
 		// The semantic order reads the cache the warm before the advance phase
 		// fills, so it is resolved when the phase orders, not when it is planned.
-		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, w.advanceOrder(), usFirst) }
+		slots := withSlots(p.Limit)
+		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, w.advanceOrder(), usFirst, slots) }
 		scopeAdvance(&p, tuned, w.warnf)
 	case kindInbox:
 		// An inbox poll is not a run and takes no run options; the config's
 		// advance_us_first orders it all the same.
-		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, inboxUSFirst) }
+		slots := withSlots(p.Limit)
+		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, inboxUSFirst, slots) }
 	}
 	// Counts only. The callback has no posting key; an inbox or rescore with
 	// no live run id is a no-op inside noteLive's writer.
