@@ -62,6 +62,11 @@ const (
 	reopenClassModel   = "model"   // a model drop on a reading still bound to its text: back on that reading
 	reopenClassFresh   = "fresh"   // a model drop whose text moved since its reading: back to Live
 	reopenClassRefresh = "refresh" // an unjudged model drop the owner asked to re-read: back to Live
+	// reopenClassExclusion is an exclusion drop the exclusions no longer match
+	// (ApplyExclusions), or one a listing shows moved (SightingReopen.event): at
+	// the sighting it is judged against the exclusions on the listed text and
+	// comes back to Live, or stays dropped.
+	reopenClassExclusion = "exclusion"
 )
 
 func reopenClassOf(c dropClass) string {
@@ -80,7 +85,7 @@ func reopenClassOf(c dropClass) string {
 
 func validReopenClass(s string) bool {
 	switch s {
-	case reopenClassTitle, reopenClassModel, reopenClassFresh, reopenClassRefresh:
+	case reopenClassTitle, reopenClassModel, reopenClassFresh, reopenClassRefresh, reopenClassExclusion:
 		return true
 	}
 	return false
@@ -217,16 +222,41 @@ func (s *SightingReopen) pending(k posting.Key) (PendingReopen, bool) {
 }
 
 func (s *SightingReopen) forget(k posting.Key) {
+	if s.Pending == nil {
+		return
+	}
 	delete(s.Pending.Items, k)
 	s.changed = true
 }
 
+// movedExclusion reports whether rec is an exclusion drop that a full listing
+// shows moved: a field the exclusions key on (title, company, location, remote)
+// differs between what is stored and what the board lists now, with the
+// description unchanged (a changed description reopens the record whatever the
+// rules say, in Reconcile). The drop was judged on the stored fields, so the
+// listing's may no longer match it. A nil SightingReopen has no policy to judge
+// with, so no record is one.
+func (s *SightingReopen) movedExclusion(rec ledger.Record, listed posting.Posting) bool {
+	if s == nil || !Excluded(rec) {
+		return false
+	}
+	st := rec.Posting
+	return st.Title != listed.Title || st.Company != listed.Company || st.Location != listed.Location || st.Remote != listed.Remote
+}
+
 // event is what a full listing that shows rec (dropped, with a pending
-// reopen) again writes: the reopen, judged again on listed, or nothing. In
-// both cases the pending reopen is spent.
+// reopen or an exclusion drop whose fields moved) again writes: the reopen,
+// judged again on listed, or nothing. A pending reopen is spent either way.
 func (s *SightingReopen) event(l ledger.Ledger, rec ledger.Record, listed posting.Posting, hash string, now time.Time) (ledger.Event, bool) {
-	e, _ := s.pending(rec.Key)
-	s.forget(rec.Key)
+	e, queued := s.pending(rec.Key)
+	if queued {
+		s.forget(rec.Key)
+	} else {
+		e.Class = reopenClassExclusion // only a moved exclusion drop gets here unqueued
+	}
+	if e.Class == reopenClassExclusion {
+		return s.exclusionEvent(rec, listed, hash, now, queued)
+	}
 	r := rec
 	r.Posting, r.BodyEvicted = listed, false
 	sc := s.Scope
@@ -255,6 +285,40 @@ func (s *SightingReopen) event(l ledger.Ledger, rec ledger.Record, listed postin
 	if ev.Annotations == nil {
 		ev.Annotations = map[string]string{}
 	}
+	ev.Annotations[DescHashKey] = hash
+	s.Applied++
+	return ev, true
+}
+
+const reasonExclusionDrop = "the exclusions no longer match it"
+
+// exclusionEvent judges an exclusion drop again on the listed text: back to
+// Live (triage forgotten, the listing taken) when the exclusions no longer
+// match it. When they still match, a drop whose fields moved stays dropped but
+// takes the listing and the reason the exclusions give it now (an event that
+// keeps Status Dropped, so the exclusion pass judges the board's text from here
+// on, not the stale fields it would otherwise mark pending again every run);
+// one whose fields did not move gets no event. Only a record that is still an
+// exclusion drop is judged; a queued entry on any other record is just spent.
+// queued says the drop had a pending reopen, which Cleared counts when the
+// drop stays.
+func (s *SightingReopen) exclusionEvent(rec ledger.Record, listed posting.Posting, hash string, now time.Time, queued bool) (ledger.Event, bool) {
+	why, still := s.Policy.excluded(listed)
+	if still && Excluded(rec) && s.movedExclusion(rec, listed) {
+		if queued {
+			s.Cleared++
+		}
+		return ledger.Event{V: ledger.SchemaVersion, At: now, Key: rec.Key, Status: posting.Dropped, Posting: &listed,
+			Annotations: map[string]string{AnnExcluded: why}, Reason: "listed again with moved fields; the exclusions still match it"}, true
+	}
+	if still || !Excluded(rec) {
+		if queued {
+			s.Cleared++
+		}
+		return ledger.Event{}, false
+	}
+	ev := reopenEvent(rec, now, reasonExclusionDrop+", listed again")
+	ev.Posting = &listed
 	ev.Annotations[DescHashKey] = hash
 	s.Applied++
 	return ev, true

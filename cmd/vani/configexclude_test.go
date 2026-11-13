@@ -231,9 +231,9 @@ func TestPrefilterReportsExclusions(t *testing.T) {
 	out, _ := mustCode(t, 0, "prefilter", "--list")
 	for _, want := range []string{
 		"1 of 1 live posting(s) would be dropped before triage",
-		"1 kept posting(s) would be dropped (marked ones are kept), 1 excluded posting(s) would return to live",
+		"1 kept posting(s) would be dropped (marked ones are kept), 1 excluded posting(s) would be let back (each waits for its board to list it again; inbox and page postings come back at once)",
 		"gh:a:2\tData Intern\texcluded: title matches \"intern\" (now scored)",
-		"gh:a:4\tPlatform Engineer\treturns to live (was excluded: title matches \"platform\")",
+		"gh:a:4\tPlatform Engineer\tlet back when its board lists it (was excluded: title matches \"platform\")",
 		"read strong_fit or partial_fit (false drops): 1",
 	} {
 		if !strings.Contains(out, want) {

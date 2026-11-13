@@ -245,8 +245,10 @@ stateDiagram-v2
   - At most 128 entries per list and 100 bytes per entry; empty or duplicate entries are refused.
   - Where it applies: a Live posting is dropped at triage before any backend (and Workday rows by
     title before their detail request); every run first drops kept postings (triaged through
-    digested) it now matches, never one you marked, and returns to live the postings it dropped
-    that it no longer matches. `vani jobs` and the Jobs tab hide matching unmarked roles at once.
+    digested) it now matches, never one you marked, and lets back the postings it dropped
+    that it no longer matches: each waits, still dropped, until its board next lists it in full (see
+    pending reopens in `vani status`), so a loosened rule never floods the queue with roles that may
+    be gone. `vani jobs` and the Jobs tab hide matching unmarked roles at once.
     The reason is the `exclude.matched` annotation. `vani prefilter --list` shows what the next
     run will do; `vani config exclude [--set]` (and Settings › Exclude postings) read and replace
     it as JSON. Tracks leave it alone.
