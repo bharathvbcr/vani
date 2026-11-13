@@ -131,6 +131,12 @@ final class AppModel {
         ResumeStudioClient(runner: draftRunner)
     }
 
+    /// `vani doctor` for the Pipeline tab's doctor: a review asks Opus, so it runs through the draft
+    /// runner like a re-triage. Its estimate and `--last` start `vani` with no key.
+    var doctorClient: DoctorClient {
+        DoctorClient(runner: draftRunner)
+    }
+
     /// `vani jobs cover` for the Resume card's letter. Build spends the draft budget. Use does not.
     var coverClient: CoverLetterClient {
         CoverLetterClient(runner: draftRunner)

@@ -2,8 +2,10 @@ package doctor
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDigestFoldsCountsAndIDsIntoOneLine(t *testing.T) {
@@ -15,7 +17,7 @@ func TestDigestFoldsCountsAndIDsIntoOneLine(t *testing.T) {
 	}, "\n"))}
 	b := Log{Name: "b.log", Body: []byte(`2026-11-11 09:00:00 workday "snapchat/snap": context deadline exceeded (Client.Timeout exceeded while awaiting headers)` + "\n" +
 		`gh pay request 0123456789abcdef0123 failed: HTTP 503`)}
-	d := Digest([]Log{a, b, {Name: "gone.log", Err: errors.New("no such file")}}, nil)
+	d := Digest([]Log{a, b, {Name: "gone.log", Err: errors.New("no such file")}}, nil, nil)
 	if d.LogsRead != 2 || len(d.Unreadable) != 1 || d.Unreadable[0] != "gone.log" {
 		t.Fatalf("read %d, unreadable %v", d.LogsRead, d.Unreadable)
 	}
@@ -85,7 +87,7 @@ func TestDigestKeepsTroubleNotRoutine(t *testing.T) {
 		`vani: logos: fetched 0, fresh 412, waiting 3, failed 0, deferred 0`,
 		`vani: idle warm: scored 40, rescored 0, failed 3 in 2 chunk(s)`,
 	}, "\n")
-	d := Digest([]Log{{Name: "run.log", Body: []byte(body)}}, nil)
+	d := Digest([]Log{{Name: "run.log", Body: []byte(body)}}, nil, nil)
 	var texts []string
 	for _, l := range d.Lines {
 		texts = append(texts, l.Text)
@@ -106,28 +108,73 @@ func TestDigestKeepsTroubleNotRoutine(t *testing.T) {
 	}
 }
 
+// A board the record left unnamed is read back from the run's log, counted as
+// the record counts it: every reconcile count but Missed and Dead.
+func TestLogBoardRunsCountsAsTheRecordDoes(t *testing.T) {
+	body := strings.Join([]string{
+		`vani: board ab/Clera: reading (456 of 467)`,
+		`vani: board az/amazon: {New:2 Changed:0 Rerendered:0 Kept:0 Redated:0 Refreshed:1 Unchanged:457 Reappeared:0 Missed:1 Dead:2 Duplicate:0 Revived:1 Invalid:0}`,
+		`vani: board ab/Clera: {New:30 Changed:0 Rerendered:0 Kept:0 Redated:0 Refreshed:0 Unchanged:223 Reappeared:0 Missed:20 Dead:0 Duplicate:0 Revived:0 Invalid:0}`,
+		`vani: board wd/snapchat/snap: {New:0 Changed:0 Unchanged:0 Missed:42 Dead:0 Duplicate:3 ListedDuplicate:0}`, // twins marked, none listed
+		`vani: board ab/Clera: {New:31 Unchanged:223 Missed:20}`,                                                     // a later line for the board is its own
+		`vani: board gh/x: details {Listed:5}`, // not a reconcile line
+	}, "\n")
+	got := LogBoardRuns(Log{Name: "r1.log", Body: []byte(body)}, "r1", t0)
+	want := map[string][3]int{"az:amazon": {461, 1, 2}, "ab:Clera": {254, 20, 0}, "wd:snapchat/snap": {0, 42, 0}}
+	if len(got) != len(want) {
+		t.Fatalf("%d boards: %+v", len(got), got)
+	}
+	for _, br := range got {
+		w, ok := want[br.Board]
+		if !ok || br.Listed == nil || *br.Listed != w[0] || br.Missed != w[1] || br.Dead != w[2] ||
+			br.Outcome != OutcomeRead || !br.FromLog || br.RunID != "r1" || !br.At.Equal(t0) {
+			t.Errorf("%+v listed %v, want %v", br, br.Listed, w)
+		}
+	}
+	// Recovered reads feed the signals like recorded ones, and are counted.
+	h := append(runs("wd:snapchat/snap", 46, 46), got[2])
+	h[2].RunID, h[2].At = "r9", t0.Add(10*time.Hour)
+	s := signalOf(t, Signals(h, nil), "wd:snapchat/snap")
+	if s.FromLog != 1 || !slices.Contains(s.Signals, SigMassMissed) {
+		t.Fatalf("%+v", s)
+	}
+	if LogBoardRuns(Log{Name: "x", Err: errors.New("gone")}, "x", t0) != nil {
+		t.Fatal("an unreadable log yielded boards")
+	}
+}
+
 // The redactor runs before a line is kept, so nothing it removes is sent.
 func TestDigestRedactsBeforeKeeping(t *testing.T) {
 	d := Digest([]Log{{Name: "x", Body: []byte("request failed: Authorization: Bearer sk-secret-123")}}, func(s string) string {
 		return strings.ReplaceAll(s, "sk-secret-123", "[redacted]")
-	})
+	}, nil)
 	if len(d.Lines) != 1 || strings.Contains(d.Lines[0].Text, "secret") || !strings.Contains(d.Lines[0].Text, "[redacted]") {
 		t.Fatalf("%+v", d.Lines)
+	}
+}
+
+// A line the screen flags (an identifying word) is withheld whole and
+// counted, after redaction: nothing of it is kept or sent.
+func TestDigestWithholdsScreenedLines(t *testing.T) {
+	body := "answer failed: needs visa review for applicant\nboard gh/x: timed out\n"
+	d := Digest([]Log{{Name: "x", Body: []byte(body)}}, nil, func(s string) bool { return strings.Contains(s, "visa") })
+	if d.Withheld != 1 || d.LinesSeen != 2 || len(d.Lines) != 1 || strings.Contains(d.Lines[0].Text, "visa") {
+		t.Fatalf("%+v", d)
 	}
 }
 
 // Adversarial logs: empty, a single huge line, a tail whose first line is
 // partial, no final newline, more distinct lines than the cap.
 func TestDigestBounds(t *testing.T) {
-	if d := Digest(nil, nil); d.LogsRead != 0 || len(d.Lines) != 0 {
+	if d := Digest(nil, nil, nil); d.LogsRead != 0 || len(d.Lines) != 0 {
 		t.Fatalf("%+v", d)
 	}
 	huge := strings.Repeat("error ", maxScanLine) // one line past the scan bound
-	d := Digest([]Log{{Name: "h", Body: []byte(huge + "\nfailed after\n")}}, nil)
+	d := Digest([]Log{{Name: "h", Body: []byte(huge + "\nfailed after\n")}}, nil, nil)
 	if d.TooLong != 1 || len(d.Lines) != 1 || d.Lines[0].Text != "failed after" {
 		t.Fatalf("huge line: %+v", d)
 	}
-	d = Digest([]Log{{Name: "t", Truncated: true, Body: []byte("rror half a line\nreal failure\nlast failure no newline")}}, nil)
+	d = Digest([]Log{{Name: "t", Truncated: true, Body: []byte("rror half a line\nreal failure\nlast failure no newline")}}, nil, nil)
 	if len(d.TailOnlyFor) != 1 || len(d.Lines) != 2 {
 		t.Fatalf("tail: %+v", d)
 	}
@@ -140,7 +187,7 @@ func TestDigestBounds(t *testing.T) {
 	for i := 0; i < MaxLogLines+15; i++ {
 		many = append(many, "failed board "+strings.Repeat("x", i+1))
 	}
-	d = Digest([]Log{{Name: "m", Body: []byte(strings.Join(many, "\n"))}}, nil)
+	d = Digest([]Log{{Name: "m", Body: []byte(strings.Join(many, "\n"))}}, nil, nil)
 	if len(d.Lines) != MaxLogLines || d.LeftOut != 15 || d.Distinct != MaxLogLines+15 {
 		t.Fatalf("cap: kept %d, left out %d, distinct %d", len(d.Lines), d.LeftOut, d.Distinct)
 	}

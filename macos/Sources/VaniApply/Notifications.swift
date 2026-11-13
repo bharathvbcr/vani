@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let jobs: JobsModel
     let audit: AuditModel
     let pipeline: PipelineModel
+    let doctor: DoctorModel
     let exclusions: ExclusionsEditor
     private var pollTask: Task<Void, Never>?
 
@@ -39,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             : RunAnnouncer(store: DefaultsAnnouncedRuns(), poster: UserNotificationPoster(), lock: NotifierLock(),
                            handoffGrace: AnnounceLaunch.handoffGrace(arguments: CommandLine.arguments))
         pipeline = PipelineModel(client: { model.pipelineClient }, launcher: { model.manualRunLauncher }, announcer: announcer)
+        doctor = DoctorModel(client: { model.doctorClient })
         super.init()
     }
 
