@@ -255,10 +255,10 @@ func oracleForgetMisses(ann map[string]string) map[string]string {
 //	than half of them absent, and at least 2, does the same; a mass-marked posting dies after at least 2 misses and 14 days
 //	since its own first miss.
 //	A short listing (the board counted more rows than it listed) marks every
-//	absent posting mass, whatever the share. The mark carries a cause: "short"
-//	when only short listings marked the posting in its episode, none of them a
-//	mass absence by the rules above; a listing that is a mass absence by those
-//	rules clears it. A mass-marked posting's death counts as ShortDead when
+//	absent posting mass, whatever the share, and is never itself a mass
+//	absence by the rules above. The mark carries a cause: "short" when only
+//	short listings marked the posting in its episode; a full listing that is a
+//	mass absence by the rules above clears it. A mass-marked posting's death counts as ShortDead when
 //	its cause is "short" and as MassDead otherwise (a mark with no cause is
 //	not short).
 //	The clock: a listing ages nothing when the ledger holds events between 1
@@ -324,7 +324,7 @@ func oracleAbsence(ctx context.Context, l ledger.Ledger, existing []ledger.Recor
 		return s, nil
 	}
 	n, a := len(open), len(absent)
-	trueMass := (n >= 2 && a == n) || (n >= 10 && 4*a >= n) || (n < 10 && a >= 2 && 2*a > n)
+	trueMass := !short && ((n >= 2 && a == n) || (n >= 10 && 4*a >= n) || (n < 10 && a >= 2 && 2*a > n))
 	mass := short || trueMass
 	for _, k := range absent {
 		if err := ctx.Err(); err != nil {

@@ -298,8 +298,7 @@ func TestPendingReopenSightingCancelled(t *testing.T) {
 	}
 }
 
-// The store round-trips, drops entries past twice the expiry on load (a board
-// removed or failing that long), refuses an oversized or malformed file, and
+// The store round-trips, keeps old entries on load whatever the clock, refuses an oversized or malformed file, and
 // treats a missing file as empty.
 func TestPendingReopensFile(t *testing.T) {
 	dir := t.TempDir()
@@ -313,9 +312,15 @@ func TestPendingReopensFile(t *testing.T) {
 	if err := s.Save(path, t0); err != nil {
 		t.Fatal(err)
 	}
-	back, err := LoadPendingReopens(path, t0)
-	if err != nil || back.Len() != 1 || back.Expired != 1 || back.Items["gh:acme:1"].Class != "model" {
+	// Changed 2026-11-12: nothing is cleared for age on load, whatever the clock
+	// says (a clock 28+ days ahead used to wipe the whole set, ledger-wide).
+	back, err := LoadPendingReopens(path, t0.Add(365*24*time.Hour))
+	if err != nil || back.Len() != 2 || back.Expired != 0 || back.Items["gh:acme:1"].Class != "model" {
 		t.Fatalf("round trip: %+v (%v)", back, err)
+	}
+	// A board that left the watchlist is cleared, clock-free.
+	if n := back.ClearUnwatched(func(k posting.Key) bool { return k != "gh:acme:2" }); n != 1 || back.Len() != 1 || back.Expired != 1 {
+		t.Fatalf("ClearUnwatched: %d cleared, %+v", n, back)
 	}
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)

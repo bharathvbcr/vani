@@ -48,6 +48,16 @@ func TestPendingReopenSurvivesAClockJump(t *testing.T) {
 	if rec(t, l, k).Status != posting.Dropped {
 		t.Fatal("reopened")
 	}
+	// The jump does not stall the entry: right-clock daily reads count again
+	// (the first, behind the jump's read, counts nothing) and it expires.
+	var expired int
+	for d := 2; d < 40 && s.Len() == 1; d++ {
+		_, so := sighting(t, l, s, loosened, at.Add(time.Duration(d)*24*time.Hour), true, other)
+		expired += so.Expired
+	}
+	if expired != 1 || s.GoneLen() != 1 {
+		t.Fatalf("after the jump the entry never expired through reads: %d expired, %d pending, %d gone", expired, s.Len(), s.GoneLen())
+	}
 }
 
 // A board that failed for two weeks counts nothing: one read afterwards adds at

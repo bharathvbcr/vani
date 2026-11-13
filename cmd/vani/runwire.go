@@ -465,6 +465,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 		w.warnf("exclusions: pending reopens not kept this run: %v", perr)
 		pending = pipeline.NewPendingReopens()
 	}
+	if perr == nil && len(w.cfg.Watchlist) > 0 {
+		pending.ClearUnwatched(pipeline.WatchedBy(w.cfg.Watchlist))
+	}
 	sc := reopenScope(w.cfg)
 	sc.Defer, sc.Pending = sc.Watched, pending
 	goneBefore := pending.GoneLen()

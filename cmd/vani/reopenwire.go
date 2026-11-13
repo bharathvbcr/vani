@@ -28,6 +28,11 @@ func (w *wired) reopenOnSighting(rec *pipeline.Reconciler, at time.Time) (finish
 		w.warnf("pending reopens not applied this run: %v", err)
 		return func() {}
 	}
+	// Entries of a board no longer on the watchlist will never be shown (an empty
+	// watchlist clears nothing: that is a config the run reports elsewhere).
+	if len(w.cfg.Watchlist) > 0 {
+		pending.ClearUnwatched(pipeline.WatchedBy(w.cfg.Watchlist))
+	}
 	// Always attached, even with nothing pending: a full listing that shows an
 	// exclusion drop moved is judged by it too (SightingReopen.movedExclusion).
 	so := &pipeline.SightingReopen{Policy: dropPolicy(w.cfg, w.cfg.Decide.OpenRouterName()), Scope: reopenScope(w.cfg), Pending: pending}

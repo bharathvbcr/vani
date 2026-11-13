@@ -46,10 +46,6 @@ const (
 	// bound they could fill the set and make every title and model mark OverCap.
 	// The rest of the bound is always left to those.
 	MaxPendingExclusions = 30_000
-	// pendingReopenMaxAge clears an entry on load whatever its board did: a
-	// board removed from the watchlist, or one that has not listed for that
-	// long, never sees its postings again.
-	pendingReopenMaxAge = 2 * PendingReopenExpiry
 	// MaxPendingReopens bounds the set. The live ledger holds about 34,000
 	// drops, and a mark beyond the bound is counted, never silently lost.
 	MaxPendingReopens = 40_000
@@ -138,6 +134,27 @@ func (s *PendingReopens) Len() int {
 	return len(s.Items)
 }
 
+// ClearUnwatched clears the entries (and expired marks) of boards watched says
+// are no longer on the watchlist: no listing will ever show them, so they would
+// wait for ever. It counts them in Expired and returns how many it cleared.
+// Clock-free, unlike the age limit it replaces.
+func (s *PendingReopens) ClearUnwatched(watched func(posting.Key) bool) int {
+	n := 0
+	for k := range s.Items {
+		if !watched(k) {
+			delete(s.Items, k)
+			n++
+		}
+	}
+	for k := range s.Gone {
+		if !watched(k) {
+			delete(s.Gone, k)
+		}
+	}
+	s.Expired += n
+	return n
+}
+
 // GoneLen is how many exclusion drops expired unseen and are not marked again
 // until listed.
 func (s *PendingReopens) GoneLen() int {
@@ -168,9 +185,11 @@ type pendingReopenFile struct {
 // LoadPendingReopens reads the set at path. A missing file is an empty set.
 // A file that is oversized, malformed, of another version or holds an entry
 // it cannot read is an error, so a set that could not be read is never taken
-// for an empty one. Entries older than twice PendingReopenExpiry are cleared
-// and counted in Expired.
-func LoadPendingReopens(path string, now time.Time) (*PendingReopens, error) {
+// for an empty one. Nothing is cleared for age here: a clock cannot be trusted
+// to say an entry is old (one 28 days ahead used to wipe the whole set), so
+// expiry is counted in read time (SightingReopen.expire) and a board that left
+// the watchlist is cleared by ClearUnwatched. now is not used.
+func LoadPendingReopens(path string, _ time.Time) (*PendingReopens, error) {
 	f, err := atomicfile.OpenRead(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return NewPendingReopens(), nil
@@ -202,10 +221,6 @@ func LoadPendingReopens(path string, now time.Time) (*PendingReopens, error) {
 	for k, e := range pf.Items {
 		if k.ATS() == "" || !validReopenClass(e.Class) || e.At.IsZero() {
 			return nil, fmt.Errorf("pending reopens: %s: entry %q is not readable", path, k)
-		}
-		if now.Sub(e.At) >= pendingReopenMaxAge {
-			s.Expired++
-			continue
 		}
 		s.Items[k] = e
 	}
@@ -419,12 +434,14 @@ func (s *SightingReopen) expire(l ledger.Ledger, prefix string, seen map[posting
 		if seen[k] || frozen {
 			continue
 		}
-		if e.Last.IsZero() || e.Last.After(now) { // the first read that leaves it out, or a clock behind the last one
-			if e.Last.IsZero() {
-				e.Last = now
-				s.Pending.Items[k] = e
-				s.changed = true
-			}
+		if e.Last.IsZero() || e.Last.After(now) {
+			// The first read that leaves it out, or one whose clock is behind the
+			// last counted read (that read ran ahead, or this one is set back):
+			// count nothing, and count from this read on, so one jump never
+			// stalls the entry until real time passes it.
+			e.Last = now
+			s.Pending.Items[k] = e
+			s.changed = true
 			continue
 		}
 		e.Out += min(now.Sub(e.Last), ClockWindow)

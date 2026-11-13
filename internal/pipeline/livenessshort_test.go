@@ -52,6 +52,23 @@ func TestShortListingDeathsAreShortDeadNotMassDead(t *testing.T) {
 	}
 }
 
+// A short listing that leaves out a large share (here 8 of 20, over the 25%
+// share rule) is still a short listing: only a full listing can be a true mass
+// absence, so its deaths are ShortDead and fail no run.
+func TestShortListingOverTheShareIsStillShort(t *testing.T) {
+	l := openLedger(t)
+	b := probeBoard("bigshort")
+	reviewRead(t, l, b, t0, idRange(0, 20))
+	var total Summary
+	for d := 1; d <= 16; d++ {
+		s := shortRead(t, l, b, t0.Add(time.Duration(d)*24*time.Hour), idRange(0, 12))
+		total.Dead, total.MassDead, total.ShortDead = total.Dead+s.Dead, total.MassDead+s.MassDead, total.ShortDead+s.ShortDead
+	}
+	if total.Dead != 8 || total.ShortDead != 8 || total.MassDead != 0 {
+		t.Fatalf("deaths: %+v", total)
+	}
+}
+
 func TestShortThenTrueMassUpgradesTheCause(t *testing.T) {
 	l := openLedger(t)
 	b := probeBoard("upgrade")
