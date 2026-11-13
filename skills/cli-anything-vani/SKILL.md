@@ -93,7 +93,10 @@ and work while a run holds the ledger.
 - `vani audit --list --disagree N` shows a draw with N picks from the "teacher wants" disagreement
   cell (the teacher's stored role_fit against the engine); `--disagree-rejects N` adds the
   "teacher rejects" cell, off by default. It needs `teacher_readings.jsonl`, and those labels stay
-  out of every estimate. The quotas are the owner's call; do not answer for the owner.
+  out of every estimate. `--yes-neighbours N` draws from the 50 unlabelled postings nearest the
+  owner's yes answers (refused unless `vani relevance`'s taste column passes); `--engineering N`
+  draws at random from engineering-titled postings. Both default to 0 and leave the random draw
+  as it was. The quotas are the owner's call; do not answer for the owner.
 - `vani version` prints the build and `vani config check` validates the config.
 - `vani track list|show`, `vani lca lookup`, `vani employer lookup`, `vani kbmatch status`
   and `vani semantic status` print smaller reports.
@@ -190,7 +193,9 @@ before running one.
 - `vani doctor` asks Opus whether boards that read nothing are failing silently and whether a
   random sample of dropped postings were dropped for the right reason (no drop about
   sponsorship is sampled). It only reports, never changes a posting, and writes
-  `<state>/doctor/<UTC>.md` and `.json`. Its key comes from the environment only. A run needs
+  `<state>/doctor/<UTC>.md` and `.json`, and appends each drop verdict (no free text) to
+  `<state>/silver_doctor.jsonl`, a silver log that only `vani relevance` reads, against the
+  owner's answers; no verdict is a label. Its key comes from the environment only. A run needs
   `--budget-usd N` covering its worst case (`--dry-run --show` prints both requests and that
   cost); it exits 1 when a part failed or judged fewer boards or postings than it was sent.
   `vani --json doctor --last` reads the newest report and spends nothing.

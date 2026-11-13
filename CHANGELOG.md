@@ -9,6 +9,17 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Taste column, yes-neighbour cell, engineering group, doctor silver log** (Fable's third pass
+  on the second enhancement review). `vani relevance` gains a taste column: each judged posting's
+  nearness to the owner's other yes answers, from stored vectors, against the title part. `vani
+  audit --yes-neighbours N` draws from the 50 unlabelled postings nearest those answers, and is
+  refused unless the taste column beats the title part. `vani audit --engineering N` draws at
+  random from engineering-titled postings. Both are overlays: the random draw is unchanged. Labels
+  from the neighbour cell count as cell labels; engineering labels count in the auditor's
+  evaluation and the yes yield but stay out of the relevance strata, drop recall, the reader table
+  and the weight fit (`vani rankfit` prints how many). `vani doctor` appends its drop verdicts,
+  without free text, to `silver_doctor.jsonl`, which `vani relevance` compares with the owner's
+  answers once there are 10 yes and 30 no. No verdict is a label. All off by default.
 - **Disagreement cells and the yes yield** (`vani audit --disagree N [--teacher M]`,
   `internal/eval/yesyield.go`, `vani relevance`). The weekly draw can add N postings where the
   teacher's stored role_fit reading (default Sonnet) disagrees with the engine: wanted but dropped

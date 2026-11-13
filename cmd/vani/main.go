@@ -134,7 +134,11 @@ commands:
                              disagreement cells (teacher M's role_fit against the engine: wants but
                              dropped or low; rejects but top decile, off by default), over an
                              unchanged random draw; those labels stay out of every estimate
-                             (together at most 2x --scored + --dropped)
+                             (together at most 2x --scored + --dropped);
+                             [--yes-neighbours N] adds picks from the 50 postings nearest the
+                             owner's yes answers (refused unless the taste column passes; counts
+                             in the cap); [--engineering N] adds random engineering-titled picks
+                             (kept out of the strata, drop recall and the weight fit; no cap)
                              (audit-sample is the old name)
   audit answer --key K --verdict yes|maybe|no|skip [--reason R] [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from
