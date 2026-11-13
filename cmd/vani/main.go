@@ -309,7 +309,9 @@ commands:
   prefilter [--json] [--list]
                              dry run of the prefilter (exclude, and title_signals.read with the
                              drop rules): how many live postings it would drop before triage,
-                             which kept ones the next run's exclusions drop or let back (when their board lists them),
+                             which kept ones the next run's exclusions drop, and which excluded ones
+                             they no longer match: wait for their board to list them, come back at once,
+                             or stay dropped (board no longer watched),
                              and how the decision model read the ones it already read (never
                              writes)
   bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]

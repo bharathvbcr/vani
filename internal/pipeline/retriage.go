@@ -145,6 +145,34 @@ func (sc ReopenScope) reachable(k posting.Key) bool {
 // deferred reports whether k's reopen waits for a sighting.
 func (sc ReopenScope) deferred(k posting.Key) bool { return sc.Defer != nil && sc.Defer(k) }
 
+// ReopenFate is what ApplyExclusions does with an excluded record the
+// exclusions no longer match.
+type ReopenFate int
+
+const (
+	// ReopenStays: its board is no longer watched, so it stays dropped.
+	ReopenStays ReopenFate = iota
+	// ReopenWaits: it is marked as a pending reopen and comes back when its
+	// board's full listing shows it again.
+	ReopenWaits
+	// ReopenNow: it has no full listing to wait for (a weakly keyed posting) and
+	// comes back to Live at the next run.
+	ReopenNow
+)
+
+// ExclusionFate is the outcome letBack gives an excluded record the exclusions
+// no longer match, under this scope with Defer set to Watched, as the run's
+// exclusion pass has it (runwire applyExclusions).
+func (sc ReopenScope) ExclusionFate(k posting.Key) ReopenFate {
+	switch {
+	case !sc.reachable(k):
+		return ReopenStays
+	case sc.Watched != nil && sc.Watched(k):
+		return ReopenWaits
+	}
+	return ReopenNow
+}
+
 // WatchedBy is the ReopenScope.Watched of a watchlist: a key is watched when
 // it falls under one of the boards' key prefixes, the same test the absence
 // pass ages a board's records by (Reconcile, ledgerIndex.board), so a
