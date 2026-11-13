@@ -31,8 +31,8 @@ const (
 	// MaxVersions is how many versions one posting keeps.
 	MaxVersions = 20
 	// MaxJobs is how many postings the store holds.
-	MaxJobs = 200
-	maxKey  = 2048
+	MaxJobs  = 200
+	maxKey   = 2048
 	lockWait = 5 * time.Second
 )
 

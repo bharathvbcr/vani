@@ -779,7 +779,10 @@ func (e *env) cmdDaemon(args []string) error {
 	if model != nil && !model.Enabled {
 		fmt.Fprintf(e.stderr, "vani: daemon: %s\n", model.Reason)
 	}
-	if err := writeDaemonAnnouncement(e.stateDir, daemonRecord{V: runRequestVersion, PID: pid, StartedAt: now(), Model: model}); err != nil {
+	// The executable is recorded so a vani built elsewhere can tell this daemon
+	// from a reused pid (status, run-request). Absent when it cannot be found.
+	exe, _ := os.Executable()
+	if err := writeDaemonAnnouncement(e.stateDir, daemonRecord{V: runRequestVersion, PID: pid, StartedAt: now(), Exe: exe, Model: model}); err != nil {
 		return fmt.Errorf("announcing the daemon: %w", err)
 	}
 	defer func() {

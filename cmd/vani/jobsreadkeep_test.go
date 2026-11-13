@@ -339,7 +339,7 @@ func TestJobsServeKeepsNoFactsMapWithAnUnsavedStore(t *testing.T) {
 	if resp := g.s.runOp("the lock released", serveOps["list"], []string{"--view", "all"}); !resp.OK {
 		t.Fatalf("the lock released: %+v", resp.Error)
 	}
-	disk :=jobfacts.Open(g.e.jobsFactsPath(), jobfacts.Version(readKeepVocab(t)))
+	disk := jobfacts.Open(g.e.jobsFactsPath(), jobfacts.Version(readKeepVocab(t)))
 	if disk.Len() != g.res.store.Len() {
 		t.Fatalf("the store on disk holds %d facts, the resident one %d: a kept map stood in for a save", disk.Len(), g.res.store.Len())
 	}

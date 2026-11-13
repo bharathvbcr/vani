@@ -72,6 +72,10 @@ type daemonRecord struct {
 	V         int       `json:"v"`
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"started_at"`
+	// Exe is the daemon's own executable, as it knew it. A vani of another
+	// build matches a live pid against it: the pid, the start time and this
+	// path together name the daemon. Absent in a daemon.json an older vani wrote.
+	Exe string `json:"exe,omitempty"`
 	// Model is the decision model's state in this daemon (daemonmodel.go);
 	// absent when the config names none or the daemon predates the field.
 	Model *daemonModel `json:"model,omitempty"`
@@ -80,6 +84,10 @@ type daemonRecord struct {
 var (
 	errRequestStale = errors.New("run request is stale")
 	errNoDaemon     = errors.New("no running vani daemon")
+	// errOtherBinaryDaemon marks a daemon that runs, of another vani binary. It
+	// also wraps errNoDaemon (this binary cannot ask it), but run-once is no
+	// remedy: a run made here would contend with that daemon for the ledger.
+	errOtherBinaryDaemon = errors.New("the daemon is a different vani binary")
 )
 
 func runsPath(stateDir, name string) string { return filepath.Join(stateDir, runRecordDir, name) }
@@ -227,10 +235,16 @@ func liveDaemon(stateDir string) (daemonRecord, error) {
 	case err != nil:
 		return daemonRecord{}, fmt.Errorf("%w: %w", errNoDaemon, err)
 	}
-	if !daemonIsLive(d) {
-		return daemonRecord{}, fmt.Errorf("%w: the daemon recorded as pid %d is gone (it did not exit cleanly)", errNoDaemon, d.PID)
+	state, exe := classifyDaemon(d)
+	switch state {
+	case daemonThisBinary:
+		return d, nil
+	case daemonOtherBinary:
+		return daemonRecord{}, fmt.Errorf("%w: pid %d is running a different vani binary (%s); ask from that one (%w)", errNoDaemon, d.PID, exe, errOtherBinaryDaemon)
+	case daemonUnconfirmed:
+		return daemonRecord{}, fmt.Errorf("%w: pid %d, recorded as the daemon, is running %s, which is neither this binary nor one daemon.json names", errNoDaemon, d.PID, exe)
 	}
-	return d, nil
+	return daemonRecord{}, fmt.Errorf("%w: the daemon recorded as pid %d is gone (it did not exit cleanly)", errNoDaemon, d.PID)
 }
 
 // clearClaimedRequest removes a claimed request an earlier daemon left: its
@@ -497,6 +511,9 @@ func (e *env) requestRun(opts runOptions) (reply runRequestReply, err error) {
 	}
 	d, err := liveDaemon(e.stateDir)
 	if err != nil {
+		if errors.Is(err, errOtherBinaryDaemon) {
+			return runRequestReply{}, err
+		}
 		return runRequestReply{}, fmt.Errorf("%w; with no daemon running, `vani run-once` makes the run itself", err)
 	}
 	at := now()
