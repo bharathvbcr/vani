@@ -17,11 +17,13 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
+	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 )
 
@@ -80,7 +82,12 @@ type File struct {
 	FittedAt    time.Time                         `json:"fitted_at"`
 	Shares      *Shares                           `json:"shares,omitempty"`
 	Calibration map[string]jobinsight.Calibration `json:"calibration,omitempty"`
-	Report      *Report                           `json:"report,omitempty"`
+	// SpareSeniorityMismatch is jobinsight.Weights.SpareSeniorityMismatch:
+	// seniority readings at which a mismatch_seniority role_fit is not a
+	// mismatch. Set by the owner (`vani rankfit --spare-seniority`), never by a
+	// fit; it only loosens.
+	SpareSeniorityMismatch []string `json:"spare_seniority_mismatch,omitempty"`
+	Report                 *Report  `json:"report,omitempty"`
 }
 
 // Validate refuses a file Apply could not use whole.
@@ -91,8 +98,11 @@ func (f File) Validate() error {
 	if f.FittedAt.IsZero() {
 		return errors.New("rankfit: file has no fitted_at")
 	}
-	if f.Shares == nil && len(f.Calibration) == 0 {
-		return errors.New("rankfit: file has neither shares nor calibration")
+	if f.Shares == nil && len(f.Calibration) == 0 && len(f.SpareSeniorityMismatch) == 0 {
+		return errors.New("rankfit: file has no shares, calibration or spared seniority")
+	}
+	if err := checkSpareSeniority(f.SpareSeniorityMismatch); err != nil {
+		return err
 	}
 	if f.Shares != nil {
 		sum := 0.0
@@ -165,7 +175,31 @@ func (f File) Apply(base jobinsight.Weights) jobinsight.Weights {
 		}
 		maps.Copy(w.Calibration, f.Calibration)
 	}
+	if len(f.SpareSeniorityMismatch) > 0 {
+		w.SpareSeniorityMismatch = slices.Clone(f.SpareSeniorityMismatch)
+	}
 	return w
+}
+
+// checkSpareSeniority refuses a spared level that is not one of the triage
+// seniority slot's options, a duplicate, or "manager": sparing a people-manager
+// role from a seniority mismatch is not what the relaxation is for, and the
+// owner's live drop rule removes managers.
+func checkSpareSeniority(levels []string) error {
+	opts := jdtriage.SlotValues()["seniority"]
+	seen := map[string]bool{}
+	for _, v := range levels {
+		switch {
+		case !slices.Contains(opts, v):
+			return fmt.Errorf("rankfit: spared seniority %q is not one of %s", v, strings.Join(opts, ", "))
+		case v == "manager":
+			return errors.New("rankfit: manager cannot be spared from a seniority mismatch")
+		case seen[v]:
+			return fmt.Errorf("rankfit: spared seniority %q is listed twice", v)
+		}
+		seen[v] = true
+	}
+	return nil
 }
 
 // Write validates f and writes it to path atomically, creating its directory.

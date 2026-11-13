@@ -147,6 +147,25 @@ func BuildPartAUC(items []Item, base jobinsight.Weights, scope string, keep func
 	return out
 }
 
+// AUCWithInterval is the Mann-Whitney AUC of pos over neg with its 95%
+// stratified bootstrap interval, the statistic BuildPartAUC reports; ok is
+// false below MinPartAUCClass in either class or above MaxPartAUCItems.
+// resamples is clamped as in BuildPartAUC.
+func AUCWithInterval(pos, neg []float64, resamples int, seed uint64) (a, lo, hi float64, ok bool) {
+	switch {
+	case resamples <= 0:
+		resamples = DefaultPartAUCResamples
+	case resamples > MaxPartAUCResamples:
+		resamples = MaxPartAUCResamples
+	}
+	if len(pos) < MinPartAUCClass || len(neg) < MinPartAUCClass || len(pos) > MaxPartAUCItems || len(neg) > MaxPartAUCItems {
+		return 0, 0, 0, false
+	}
+	a = auc(pos, neg)
+	lo, hi = bootstrapAUC(pos, neg, resamples, rand.New(rand.NewPCG(seed, 1)))
+	return a, lo, hi, !math.IsNaN(a)
+}
+
 // auc is the Mann-Whitney AUC of pos over neg, ties counted half.
 func auc(pos, neg []float64) float64 {
 	if len(pos) == 0 || len(neg) == 0 {

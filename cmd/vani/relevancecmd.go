@@ -122,6 +122,8 @@ func (e *env) cmdRelevance(args []string) error {
 	eng := engineeringOf(b.snap)
 	sens := buildSensitivity(done, b.snap.Records, store, status, names, items, itemsErr, base, eng)
 	out.Sensitivity = &sens
+	shadow := e.buildSeniorityShadow(done, b.snap)
+	out.SeniorityShadow = &shadow
 	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())
 		fmt.Fprint(e.stdout, recall.Markdown())
@@ -136,6 +138,7 @@ func (e *env) cmdRelevance(args []string) error {
 			fmt.Fprint(e.stdout, p.Markdown())
 		}
 		fmt.Fprint(e.stdout, sens.Markdown())
+		fmt.Fprint(e.stdout, shadow.Markdown())
 	})
 }
 
@@ -221,6 +224,9 @@ type relevanceReply struct {
 	// Sensitivity repeats Readers and the all-postings PartAUC under each
 	// eval.LabelMode, so a verdict that holds in one reading only shows as such.
 	Sensitivity *sensitivityReply `json:"sensitivity,omitempty"`
+	// SeniorityShadow is what sparing mismatch_seniority at some levels would
+	// do to the judged postings' order (measurement only).
+	SeniorityShadow *seniorityShadow `json:"seniority_shadow,omitempty"`
 }
 
 // dropAgreement is the drop-candidate agreement for a run that has not read

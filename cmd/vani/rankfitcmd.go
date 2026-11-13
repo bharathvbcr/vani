@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"math"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,9 +42,17 @@ func (e *env) cmdRankfit(args []string) error {
 	holdout := fs.Int("holdout", rankfit.DefaultHoldoutPct, "percent of audit judgments held out to evaluate the fit (1-90)")
 	maxPairs := fs.Int("max-pairs", rankfit.DefaultMaxPairs, "training pairs above which they are sampled")
 	dry := fs.Bool("dry-run", false, "print the label counts and what would run; fit and write nothing")
+	spare := fs.String("spare-seniority", "", "set the seniority readings (comma list, e.g. mid,senior) at which a mismatch_seniority role_fit is not a mismatch, in the weights file, and fit nothing; \"none\" clears it")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the counts, what ran or would, and the fit")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *spare != "" {
+		path := *out
+		if path == "" {
+			path = filepath.Join(e.stateDir, "rank", "weights.json")
+		}
+		return e.rankfitSpareSeniority(path, *spare, *dry, *asJSON)
 	}
 	if !slices.Contains(rankfitParts, *part) {
 		return usagef("rankfit: --part must be one of %s", strings.Join(rankfitParts, ", "))
@@ -193,6 +203,59 @@ func (e *env) cmdRankfit(args []string) error {
 	fmt.Fprintf(w, "wrote %s\nto rank by it, set rank_weights_file to that path in the config\n", path)
 	jr.Written = true
 	return e.reply(*asJSON, jr, nil, func() {})
+}
+
+// rankfitSpareSeniority sets the weights file's spared seniority levels
+// (`vani rankfit --spare-seniority`): read the file at path if there is one
+// (a file that cannot be read is an error, never overwritten), set the list,
+// keep everything else, write it back validated. "none" clears the list; a
+// file left with nothing in it is refused rather than written empty.
+func (e *env) rankfitSpareSeniority(path, list string, dry, asJSON bool) error {
+	var levels []string
+	if strings.TrimSpace(list) != "none" {
+		for _, v := range strings.Split(list, ",") {
+			if v = strings.TrimSpace(v); v != "" {
+				levels = append(levels, v)
+			}
+		}
+		if len(levels) == 0 {
+			return usagef("rankfit: --spare-seniority wants a comma list of seniority readings, or none")
+		}
+	}
+	f := rankfit.File{V: rankfit.FileVersion, FittedAt: now().UTC()}
+	if _, err := os.Stat(path); err == nil {
+		if f, err = rankfit.Load(path); err != nil {
+			return fmt.Errorf("rankfit: %s exists and cannot be read, so it is left as it is: %w", path, err)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("rankfit: %w", err)
+	}
+	f.SpareSeniorityMismatch = levels
+	if err := f.Validate(); err != nil {
+		return usagef("%v", err)
+	}
+	reply := struct {
+		Path    string   `json:"path"`
+		Spared  []string `json:"spared"`
+		DryRun  bool     `json:"dry_run"`
+		Written bool     `json:"written"`
+	}{Path: path, Spared: nonNil(levels), DryRun: dry}
+	if !dry {
+		if err := rankfit.Write(path, f); err != nil {
+			return err
+		}
+		reply.Written = true
+	}
+	return e.reply(asJSON, reply, nil, func() {
+		switch {
+		case dry:
+			fmt.Fprintf(e.stdout, "dry run: would set spared seniority to %v in %s\n", nonNil(levels), path)
+		case len(levels) == 0:
+			fmt.Fprintf(e.stdout, "cleared spared seniority in %s\n", path)
+		default:
+			fmt.Fprintf(e.stdout, "spared seniority %v written to %s\nto rank by it, set rank_weights_file to that path in the config\n", levels, path)
+		}
+	})
 }
 
 // rankfitReply is `vani rankfit --json`: the label counts, each part that would

@@ -1,6 +1,9 @@
 package jobinsight
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
 // A score is computed in two stages, so a caller that keeps what did not
 // change (`vani jobs serve`) recomputes only what did:
@@ -69,6 +72,20 @@ func ScoreWith(in Inputs, w Weights) Result {
 	return b.Close(ClosingOf(in), w)
 }
 
+// sparesLevel reports whether in's mismatch_seniority role_fit is spared by
+// w.SpareSeniorityMismatch: the seniority slot was answered with a listed level.
+func (w Weights) sparesLevel(in Inputs) bool {
+	if in.RoleFit.Value != mismatchSeniority || !in.Seniority.Answered || in.Seniority.Value == "" {
+		return false
+	}
+	for _, v := range w.SpareSeniorityMismatch {
+		if strings.TrimSpace(v) == in.Seniority.Value {
+			return true
+		}
+	}
+	return false
+}
+
 // BlendOf is the first stage of ScoreWith: everything but freshness and the
 // company factor. It reads no age, half-life or company field of in.
 func BlendOf(in Inputs, w Weights) Blend {
@@ -78,7 +95,7 @@ func BlendOf(in Inputs, w Weights) Blend {
 
 	fitConf := w.conf(in.RoleFit)
 	base, ok := w.fitValue(in.RoleFit.Value)
-	if !ok {
+	if !ok || w.sparesLevel(in) {
 		fitConf = 0
 	}
 	parts[0] = blendPart{"fit", w.Fit, base, fitConf > 0, fitConf}
