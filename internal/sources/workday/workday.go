@@ -124,7 +124,8 @@ type Stats struct {
 	// counts rows, not distinct postings, and includes the query's stubs. A
 	// query whose total cannot be believed (pagedTotal) adds nothing, as it
 	// gives no count to fall short of. The postings behind these rows go unseen
-	// this run, so Reconcile's absence pass ages any stored ones toward Dead.
+	// this run, so the caller reconciles a board with Short > 0 as a partial
+	// listing: stored postings it did not list are not absent, and age nothing.
 	Short int `json:"short,omitempty"`
 }
 

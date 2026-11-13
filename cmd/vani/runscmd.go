@@ -955,7 +955,7 @@ func shortListingLines(b *boardsReport) []string {
 			moreRows += it.Short
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("Listed short: %s: %d counted job(s) not listed; stored ones age as absent", boardName(it), it.Short))
+		lines = append(lines, fmt.Sprintf("Listed short: %s: %d counted job(s) not listed; nothing on the board ages while it is short", boardName(it), it.Short))
 	}
 	if more > 0 {
 		lines = append(lines, fmt.Sprintf("Listed short: %d more board(s), %d counted job(s) not listed", more, moreRows))
