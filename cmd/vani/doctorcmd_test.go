@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -240,6 +241,22 @@ func TestDoctorPartialReviewFailsTheCommand(t *testing.T) {
 	}
 	if md, _ := os.ReadFile(mds[0]); !strings.Contains(string(md), "Not examined (signalled, but not judged") || !strings.Contains(string(md), "gh:acme") {
 		t.Fatalf("report:\n%s", md)
+	}
+	// The JSON reply of a partial review says it failed and still names the
+	// report, so the Mac app can open what was judged.
+	out, _ := mustCode(t, 1, "doctor", "--json", "--budget-usd", "5")
+	var reply struct {
+		Report, Error, Code string
+		Worst               float64 `json:"worst_case_usd"`
+	}
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		t.Fatalf("%v: %q", err, out)
+	}
+	if !strings.HasSuffix(reply.Report, ".md") || !strings.Contains(reply.Error, "judged 0 of the") || reply.Code != codeRuntime || reply.Worst <= 0 {
+		t.Fatalf("%+v", reply)
+	}
+	if _, err := os.Stat(strings.TrimSuffix(reply.Report, ".md") + ".json"); err != nil {
+		t.Fatalf("the named report has no .json: %v", err)
 	}
 }
 

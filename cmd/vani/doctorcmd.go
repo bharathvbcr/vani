@@ -84,13 +84,37 @@ type doctorPlanJSON struct {
 	WordsPartial   bool              `json:"identifying_words_builtin_only,omitempty"`
 	LogMissing     int               `json:"runs_with_unnamed_boards_and_no_log,omitempty"`
 	Drops          int               `json:"drops_sampled"`
+	Seed           string            `json:"seed,omitempty"` // the drop sample's; pass it back to run what was priced
 	Strata         []doctor.Stratum  `json:"strata,omitempty"`
 	LeftOut        map[string]int    `json:"drops_left_out,omitempty"`
 	WorstUSD       float64           `json:"worst_case_usd"`
 	Requests       map[string]string `json:"requests,omitempty"` // part -> size line
-	Report         string            `json:"report,omitempty"`   // the written report (real runs)
-	Error          string            `json:"error,omitempty"`
+	Report         string            `json:"report,omitempty"`   // the written report's .md (real runs)
+	// Sent is set once every refusal has passed, just before the first request:
+	// a failure with it false spent nothing; with it true, it may have spent.
+	Sent bool `json:"sent"`
+	// Result is the report itself (real runs), as the .json beside Report
+	// holds it, so a reader needs no file of the state dir.
+	Result *doctor.Report `json:"result,omitempty"`
+	// A failed run keeps what it had: a partial review exits 1 with report
+	// and result set, so a reader can show what was judged.
+	failure
 }
+
+// doctorLastJSON is `vani doctor --last --json`: the newest report written,
+// or neither field when there is none.
+type doctorLastJSON struct {
+	Report string         `json:"report,omitempty"`
+	Result *doctor.Report `json:"result,omitempty"`
+	failure
+}
+
+// doctorMaxReportBytes bounds the read of a stored report (its two raw
+// replies are 64 KiB each; the rest is bounded by MaxBoards and MaxDrops).
+const doctorMaxReportBytes = 8 << 20
+
+// doctorReportName is the name writeDoctorReport gives a report.
+var doctorReportName = regexp.MustCompile(`^\d{8}T\d{6}Z\.json$`)
 
 func (e *env) cmdDoctor(args []string) error {
 	fs := e.newFlags("doctor")
@@ -101,9 +125,24 @@ func (e *env) cmdDoctor(args []string) error {
 	runs := fs.Int("runs", doctorDefaultRuns, fmt.Sprintf("read the newest N run records (1-%d)", maxRunHistoryScan))
 	sample := fs.Int("sample", doctorDefaultSample, fmt.Sprintf("dropped postings to sample, stratified by drop class (0-%d; 0 skips the drop review)", doctor.MaxDrops))
 	seed := fs.String("seed", "", "the sample's seed (default this ISO week, as vani audit)")
-	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan and, for a real run, where the report was written")
+	last := fs.Bool("last", false, "print the newest report written, and ask nothing")
+	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan and, for a real run, the report and where it was written")
 	if err := parse(fs, args); err != nil {
 		return err
+	}
+	if *last {
+		if *dry || *show || *budgetUSD != 0 || *model != "" || *seed != "" || *runs != doctorDefaultRuns || *sample != doctorDefaultSample {
+			return usagef("doctor: --last takes no other flag but --json")
+		}
+		reply := &doctorLastJSON{}
+		err := e.doctorLast(reply)
+		return e.reply(*asJSON, reply, err, func() {
+			if reply.Report == "" {
+				fmt.Fprintln(e.stdout, "doctor: no report has been written yet")
+				return
+			}
+			fmt.Fprintf(e.stdout, "%s\ndoctor: the newest report is %s\n", doctor.Markdown(*reply.Result, reply.Result.Cases()), reply.Report)
+		})
 	}
 	if *show && !*dry {
 		return usagef("doctor: --show only goes with --dry-run")
@@ -184,7 +223,7 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 		}
 		in.Drops, in.Strata, in.Seed = drops, strata, seed
 		in.Rules = doctorRules(cfg)
-		plan.Drops, plan.Strata, plan.LeftOut = len(drops), strata, leftOut
+		plan.Drops, plan.Seed, plan.Strata, plan.LeftOut = len(drops), seed, strata, leftOut
 		fmt.Fprintf(out, "doctor: %d dropped postings sampled (seed %q) from %d strata\n", len(drops), seed, len(strata))
 	}
 
@@ -245,10 +284,12 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 	if err != nil {
 		return err
 	}
+	plan.Sent = true
 	rep, err := doctor.Analyze(ctx, p, dcfg, in, now())
 	if err != nil {
 		return err
 	}
+	plan.Result = &rep
 	path, err := e.writeDoctorReport(rep, in.Drops)
 	if err != nil {
 		return err
@@ -271,8 +312,7 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 		}
 	}
 	if len(failed) > 0 {
-		plan.Error = strings.Join(failed, "; ")
-		return errors.New("doctor: " + plan.Error)
+		return errors.New("doctor: " + strings.Join(failed, "; "))
 	}
 	return nil
 }
@@ -611,4 +651,41 @@ func (e *env) writeDoctorReport(rep doctor.Report, drops []doctor.DropCase) (str
 		return "", fmt.Errorf("doctor: %w", err)
 	}
 	return base + ".md", nil
+}
+
+// doctorLast fills reply with the newest report writeDoctorReport wrote. No
+// report directory, or none in it, is an empty reply; a newest report that
+// cannot be read is an error, never an older one shown in its place.
+func (e *env) doctorLast(reply *doctorLastJSON) error {
+	dir := filepath.Join(e.stateDir, doctorReportDir)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("doctor: %w", err)
+	}
+	newest := ""
+	for _, en := range entries {
+		if doctorReportName.MatchString(en.Name()) && en.Name() > newest {
+			newest = en.Name()
+		}
+	}
+	if newest == "" {
+		return nil
+	}
+	path := filepath.Join(dir, newest)
+	b, truncated, err := readTail(path, doctorMaxReportBytes)
+	switch {
+	case err != nil:
+		return fmt.Errorf("doctor: reading the newest report: %w", err)
+	case truncated:
+		return fmt.Errorf("doctor: the newest report %s is larger than %d bytes", newest, doctorMaxReportBytes)
+	}
+	var rep doctor.Report
+	if err := json.Unmarshal(b, &rep); err != nil {
+		return fmt.Errorf("doctor: the newest report %s is unreadable: %w", newest, err)
+	}
+	reply.Report, reply.Result = strings.TrimSuffix(path, ".json")+".md", &rep
+	return nil
 }

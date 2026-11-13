@@ -1,0 +1,199 @@
+{
+  "model": "claude-opus-5-5",
+  "runs_read": 30,
+  "run_problems": [
+    "r9.json: unreadable"
+  ],
+  "boards_signaled": 3,
+  "board_reads_recovered_from_logs": 1578,
+  "identifying_words_builtin_only": true,
+  "runs_with_unnamed_boards_and_no_log": 1,
+  "drops_sampled": 3,
+  "seed": "2026-W46",
+  "strata": [
+    {
+      "name": "title:staff_plus",
+      "pool": 3996,
+      "taken": 2
+    },
+    {
+      "name": "model:role_fit",
+      "pool": 120,
+      "taken": 1
+    }
+  ],
+  "drops_left_out": {
+    "sponsorship": 5
+  },
+  "worst_case_usd": 1.234567,
+  "requests": {
+    "boards": "21 KB prompt, 16000 max tokens",
+    "drops": "88 KB prompt, 16000 max tokens"
+  },
+  "report": "/state/doctor/20261112T143005Z.md",
+  "sent": true,
+  "result": {
+    "at": "2026-11-12T14:30:05Z",
+    "model": "claude-opus-5-5",
+    "through": "2026-11-12T12:30:05Z",
+    "seed": "2026-W46",
+    "boards": {
+      "asked": 3,
+      "answered": 2,
+      "error": "doctor: the reply was cut off",
+      "patterns": [
+        {
+          "title": "Workday empty answers",
+          "detail": "two wd boards read 0",
+          "refs": [
+            "wd:snapchat/snap"
+          ],
+          "fix": "treat Listed:0 with Total\u003e0 as a failure"
+        }
+      ],
+      "raw_reply": "{\"boards\":["
+    },
+    "board_findings": [
+      {
+        "board": "wd:snapchat/snap",
+        "verdict": "silent_failure",
+        "confidence": "high",
+        "evidence": "46 then 0 with no error",
+        "next_step": "re-read the board by hand"
+      },
+      {
+        "board": "gh:graphite",
+        "verdict": "truly_empty",
+        "confidence": "medium",
+        "evidence": "0 every run, API agrees",
+        "next_step": "none"
+      }
+    ],
+    "boards_not_examined": [
+      "gh:canva"
+    ],
+    "drops": {
+      "asked": 3,
+      "answered": 2,
+      "error": "doctor: a key was not sent",
+      "patterns": [
+        {
+          "title": "Staff titles dropped",
+          "detail": "staff_plus no longer excluded",
+          "refs": [
+            "gh:acme:1"
+          ],
+          "fix": "vani jobs retriage --title-drops"
+        }
+      ],
+      "raw_reply": "{\"drops\":[{\"key\":\"zz\"}]}"
+    },
+    "drop_findings": [
+      {
+        "key": "gh:acme:1",
+        "verdict": "wrong_drop",
+        "cause": "title_rule_too_broad",
+        "why": "a staff role the target wants"
+      },
+      {
+        "key": "lv:beta:2",
+        "verdict": "correct_drop",
+        "cause": "none",
+        "why": "a sales role"
+      }
+    ],
+    "drops_not_examined": [
+      "ab:gamma:3"
+    ],
+    "drops_sent": [
+      {
+        "key": "gh:acme:1",
+        "stratum": "title:staff_plus",
+        "company": "Acme",
+        "title": "Staff Engineer"
+      },
+      {
+        "key": "lv:beta:2",
+        "stratum": "title:staff_plus",
+        "company": "Beta",
+        "title": "Account Executive"
+      },
+      {
+        "key": "ab:gamma:3",
+        "stratum": "model:role_fit",
+        "company": "Gamma",
+        "title": "Platform Engineer",
+        "body_missing": true
+      }
+    ],
+    "strata": [
+      {
+        "name": "title:staff_plus",
+        "pool": 3996,
+        "taken": 2
+      },
+      {
+        "name": "model:role_fit",
+        "pool": 120,
+        "taken": 1
+      }
+    ],
+    "signals": [
+      {
+        "board": "wd:snapchat/snap",
+        "company": "Snap",
+        "signals": [
+          "zero_after_nonzero",
+          "mass_missed"
+        ],
+        "runs": 3,
+        "runs_from_log": 1,
+        "reads": 3,
+        "zero_reads": 1,
+        "failures": 1,
+        "median_listed": 46,
+        "latest_listed": 0,
+        "listed_series": [
+          46,
+          46,
+          0,
+          -1
+        ],
+        "max_missed_in_one_run": 42,
+        "last_error": "context deadline exceeded",
+        "raw_details": [
+          "r02.log: {Listed:0 Queries:10 Prefiltered:0}"
+        ]
+      }
+    ],
+    "logs": {
+      "lines": [
+        {
+          "text": "workday \"snapchat/snap\": HTTP 503",
+          "count": 3,
+          "logs": 2
+        }
+      ],
+      "logs_read": 30,
+      "lines_seen": 41,
+      "distinct": 12,
+      "left_out": 1,
+      "withheld": 2,
+      "too_long": 1,
+      "unreadable": [
+        "gone.log"
+      ],
+      "tail_only_for": [
+        "big.log"
+      ]
+    },
+    "unrecorded_boards_newest_run": 4,
+    "board_reads_recovered_from_logs": 1578,
+    "run_problems": [
+      "r9.json: unreadable"
+    ],
+    "runs_with_unnamed_boards_and_no_log": 1
+  },
+  "error": "doctor: boards: doctor: the reply was cut off; drops: judged 2 of the 3 sent; the rest are not examined",
+  "code": "runtime"
+}

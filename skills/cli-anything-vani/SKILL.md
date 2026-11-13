@@ -158,9 +158,15 @@ before running one.
 - `vani teacher`
 - `vani draft`, `vani suggest` and `vani resume` take a JSON request on stdin and write a
   JSON reply.
+- `vani doctor` asks Opus whether boards that read nothing are failing silently and whether a
+  random sample of dropped postings were dropped for the right reason. It only reports, never
+  changes a posting, and writes `<state>/doctor/<UTC>.md` and `.json`. A run needs
+  `--budget-usd N` covering its worst case; it exits 1 when a part failed or judged fewer
+  boards or postings than it was sent. `vani --json doctor --last` reads the newest report and
+  spends nothing.
 
-`jobs retriage`, `jobs resume build`, `kbmatch run` and `teacher` take `--dry-run`, which
-prices the work and asks nothing.
+`jobs retriage`, `jobs resume build`, `kbmatch run`, `teacher` and `doctor` take `--dry-run`,
+which prices the work and asks nothing.
 
 **Owner tools.** Not for unattended use:
 

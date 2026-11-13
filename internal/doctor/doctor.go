@@ -160,6 +160,27 @@ type Part struct {
 	Raw string `json:"raw_reply,omitempty"`
 }
 
+// SampledDrop names a posting the drop review was sent: enough to show and
+// tally a finding from a stored report. Its description and readings are not
+// kept.
+type SampledDrop struct {
+	Key         string `json:"key"`
+	Stratum     string `json:"stratum"`
+	Company     string `json:"company"`
+	Title       string `json:"title"`
+	BodyMissing bool   `json:"body_missing,omitempty"`
+}
+
+// Cases is the sampled drops as Markdown and Tally take them, for a report
+// read back without the cases it was built from.
+func (r Report) Cases() []DropCase {
+	out := make([]DropCase, 0, len(r.Sampled))
+	for _, s := range r.Sampled {
+		out = append(out, DropCase{Key: s.Key, Stratum: s.Stratum, Company: s.Company, Title: s.Title, BodyMissing: s.BodyMissing})
+	}
+	return out
+}
+
 // Report is the doctor's whole output.
 type Report struct {
 	At          time.Time      `json:"at"`
@@ -172,6 +193,7 @@ type Report struct {
 	Drops       Part           `json:"drops"`
 	DropFinds   []DropFinding  `json:"drop_findings,omitempty"`
 	DropsLeft   []string       `json:"drops_not_examined,omitempty"`
+	Sampled     []SampledDrop  `json:"drops_sent,omitempty"` // which postings the drop review was sent, without their text
 	Strata      []Stratum      `json:"strata,omitempty"`
 	Signals     []BoardSignal  `json:"signals,omitempty"`
 	Logs        LogDigest      `json:"logs"`
@@ -412,6 +434,9 @@ func Analyze(ctx context.Context, p llm.Provider, cfg Config, in Input, now time
 
 	sentD := sentDrops(in.Drops)
 	rep.Drops.Asked = len(sentD)
+	for _, d := range sentD {
+		rep.Sampled = append(rep.Sampled, SampledDrop{Key: d.Key, Stratum: d.Stratum, Company: d.Company, Title: d.Title, BodyMissing: d.BodyMissing})
+	}
 	if rq.Drops != nil {
 		text, err := turn(ctx, p, cfg, *rq.Drops)
 		if err == nil {
