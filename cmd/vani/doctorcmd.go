@@ -81,7 +81,6 @@ type doctorPlanJSON struct {
 	RunProblems    []string          `json:"run_problems,omitempty"`
 	BoardsSignaled int               `json:"boards_signaled"`
 	Recovered      int               `json:"board_reads_recovered_from_logs"`
-	WordsPartial   bool              `json:"identifying_words_builtin_only,omitempty"`
 	LogMissing     int               `json:"runs_with_unnamed_boards_and_no_log,omitempty"`
 	Drops          int               `json:"drops_sampled"`
 	Seed           string            `json:"seed,omitempty"` // the drop sample's; pass it back to run what was priced

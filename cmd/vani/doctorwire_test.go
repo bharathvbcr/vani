@@ -56,7 +56,7 @@ func doctorGoldenReply() doctorPlanJSON {
 	}
 	return doctorPlanJSON{
 		Model: "claude-opus-5-5", RunsRead: 30, RunProblems: []string{"r9.json: unreadable"}, BoardsSignaled: 3, Recovered: 1578,
-		WordsPartial: true, LogMissing: 1, Drops: 3, Seed: "2026-W46", Strata: strata,
+		LogMissing: 1, Drops: 3, Seed: "2026-W46", Strata: strata,
 		LeftOut: map[string]int{"sponsorship": 5}, WorstUSD: 1.234567,
 		Requests: map[string]string{"boards": "21 KB prompt, 16000 max tokens", "drops": "88 KB prompt, 16000 max tokens"},
 		Report:   "/state/doctor/20261112T143005Z.md", Sent: true, Result: &rep,

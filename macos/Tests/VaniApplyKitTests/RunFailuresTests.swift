@@ -71,6 +71,9 @@ final class RunFailuresTests: XCTestCase {
             // failures. Deaths after a true mass hold still are (below).
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":0,"mass":1,"mass_marked":42,"items":[{"ats":"wd","token":"snap/snap","outcome":"read","listed":0}]}}"#,
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":5,"short_dead":3}}"#,
+            // A freeze a clock set back by days causes kills nothing: attention, not a failure
+            // (vani counts it in clock_set_back, apart from the failing clock_behind).
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":0,"clock_set_back":1,"items":[{"ats":"gh","token":"x","outcome":"read","listed":0,"clock_behind":true,"clock_set_back":true}]}}"#,
             // A short listing is kept by design: shown, never a failure.
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":3,"short":12,"items":[{"ats":"wd","token":"a/B","outcome":"read","listed":3,"short":12}]}}"#,
             #"{"ok":true,"state":"ok","near_dup":{"similarity_note":"vector cache off"}}"#,
@@ -155,6 +158,13 @@ final class RunFailuresTests: XCTestCase {
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":5,"clock_behind":1}}"#,
             // Postings that died at the end of a mass hold: the owner should see them.
             #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":0,"mass_dead":20}}"#,
+            // A true mass absence by the share rule (6 of 20 open postings, a full listing),
+            // dead after the 14-day hold: the same failure, with the item naming the board.
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":14,"mass_dead":6,"items":[{"ats":"gh","token":"acme","outcome":"read","listed":14,"mass_dead":6,"dead":6}]}}"#,
+            // Postings an unreadable-row listing held that then died (counted in mass_dead).
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":9,"mass_dead":1,"items":[{"ats":"wd","token":"a/B","outcome":"read","listed":9,"mass_dead":1,"unreadable_dead":1}]}}"#,
+            // A clock behind within the window (the older guard) still fails.
+            #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":5,"clock_behind":1,"items":[{"ats":"gh","token":"x","outcome":"read","listed":5,"clock_behind":true}]}}"#,
         ]
         for json in failing {
             XCTAssertTrue(try decodeRun(json).hasFailures, json)
