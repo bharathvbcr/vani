@@ -132,6 +132,8 @@ func (e *env) cmdRelevance(args []string) error {
 		out.PartAUCError = itemsErr.Error()
 	} else {
 		out.PartAUC = partAUCOf(items, base)
+		taste := e.tasteOf(items, b.snap)
+		out.Taste = &taste
 	}
 	eng := engineeringOf(b.snap)
 	sens := buildSensitivity(sampled, b.snap.Records, store, status, names, items, itemsErr, base, eng)
@@ -157,6 +159,9 @@ func (e *env) cmdRelevance(args []string) error {
 		}
 		for _, p := range out.PartAUC {
 			fmt.Fprint(e.stdout, p.Markdown())
+		}
+		if out.Taste != nil {
+			fmt.Fprint(e.stdout, out.Taste.Markdown())
 		}
 		fmt.Fprint(e.stdout, sens.Markdown())
 		fmt.Fprint(e.stdout, shadow.Markdown())
@@ -251,6 +256,10 @@ type relevanceReply struct {
 	Readers      *eval.ReaderAgreement `json:"readers,omitempty"`
 	PartAUC      []rankfit.PartAUC     `json:"part_auc,omitempty"`
 	PartAUCError string                `json:"part_auc_error,omitempty"`
+	// Taste is the nearness-to-yes column against the title part (report
+	// only; it gates the yes-neighbour audit cell). Absent when the judged
+	// items could not be built (PartAUCError says why).
+	Taste *rankfit.Taste `json:"taste,omitempty"`
 	// Sensitivity repeats Readers and the all-postings PartAUC under each
 	// eval.LabelMode, so a verdict that holds in one reading only shows as such.
 	Sensitivity *sensitivityReply `json:"sensitivity,omitempty"`
