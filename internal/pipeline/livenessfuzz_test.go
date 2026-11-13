@@ -20,7 +20,15 @@ package pipeline
 //	    after its last event (it then waits exactly one read) or the read froze
 //	    on events ahead of its clock;
 //	(c) a read whose clock is more than 3 days ahead never kills a posting
-//	    whose last event was written under a right clock.
+//	    whose last event was written under a right clock;
+//	(d) an upper bound in true time that does not lean on the oracle's
+//	    stamps: at a read under a right clock that froze nothing and came at
+//	    most 3 days after the posting's last event, a posting is dead once its
+//	    hold plus an hour has passed since the first read under a right clock
+//	    that missed it after its last miss under a wrong one (or since the
+//	    read at which its first sighting, taken under a clock that ran ahead,
+//	    first read as past). A rule that kept restarting an episode would
+//	    keep it alive past this.
 //
 // The owner's text, as the oracle reads it: a posting absent from a full
 // listing is missed; its first miss is stamped; a stamp more than an hour
@@ -187,6 +195,12 @@ type fuzzPost struct {
 	firstTrue       time.Time // true time of the read that set first
 	firstOff        time.Duration
 	massed          bool
+	// firstSeenOff is the clock error of the read that first saw it; seenPast
+	// that a read under a right clock has seen that sighting as past;
+	// cleanStart is (d)'s start (true time), zero when none.
+	firstSeenOff time.Duration
+	seenPast     bool
+	cleanStart   time.Time
 }
 
 // fuzzTally is what the sequences reached.
@@ -305,11 +319,11 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 		for k := range distinct {
 			p := known[k]
 			if p == nil {
-				known[k] = &fuzzPost{board: r.board, firstSeen: clock, last: clock, lastOff: r.off}
+				known[k] = &fuzzPost{board: r.board, firstSeen: clock, last: clock, lastOff: r.off, firstSeenOff: r.off}
 				continue
 			}
 			if p.misses > 0 || p.dead() {
-				*p = fuzzPost{board: p.board, firstSeen: p.firstSeen, last: clock, lastOff: r.off}
+				*p = fuzzPost{board: p.board, firstSeen: p.firstSeen, firstSeenOff: p.firstSeenOff, seenPast: p.seenPast, last: clock, lastOff: r.off}
 			}
 		}
 		if r.partial {
@@ -347,9 +361,22 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			p := known[k]
 			if p.misses == 0 {
 				p.massed = false
+				p.cleanStart = time.Time{}
+			}
+			// (d)'s start: the first read under a right clock that missed it since
+			// the last miss under a wrong one, moved to the read at which its first
+			// sighting, taken under a clock that ran ahead, first reads as past.
+			if r.off != 0 {
+				p.cleanStart = time.Time{}
+			} else {
+				seenPast := !p.firstSeen.After(clock.Add(time.Hour))
+				if p.cleanStart.IsZero() || (seenPast && !p.seenPast && p.firstSeenOff > 0) {
+					p.cleanStart = r.at
+				}
+				p.seenPast = p.seenPast || seenPast
 			}
 			p.misses++
-			if p.misses == 1 || p.first.After(clock.Add(time.Hour)) || p.first.Before(p.firstSeen) {
+			if p.misses == 1 || p.first.After(clock.Add(time.Hour)) || (!p.firstSeen.After(clock.Add(time.Hour)) && p.first.Before(p.firstSeen.Add(-time.Hour))) {
 				p.first, p.firstTrue, p.firstOff = clock, r.at, r.off
 			}
 			if mass && !p.massed {
@@ -367,6 +394,8 @@ func fuzzOne(t *testing.T, base string, seed int, tally *fuzzTally) {
 			p.last, p.lastOff = clock, r.off
 			rec, _ := l.Get(k)
 			switch {
+			case !due && !waits && r.off == 0 && !p.cleanStart.IsZero() && r.at.Sub(p.cleanStart) >= hold+time.Hour:
+				failf(i, "(d) %s alive %s (true) after its first miss under a right clock, hold %s: a restart or freeze the rule does not allow", k, r.at.Sub(p.cleanStart), hold)
 			case due && !waits:
 				if rec.Status != posting.Dead {
 					failf(i, "(b) %s alive with %d misses, %s (clock) after its first miss, hold %s", k, p.misses, clock.Sub(p.first), hold)
