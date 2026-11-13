@@ -46,7 +46,7 @@ func trackSetup(t *testing.T) (cfgPath, tracksDir string) {
 	}
 	cfg.DropRules = []config.DropRule{
 		{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinOpenRouterProb: 0.95},
-		{Slot: "role_fit", Values: []string{"adjacent"}, MinOpenRouterProb: 0.5},
+		{Slot: "role_fit", Values: []string{"adjacent"}, MinOpenRouterProb: 0.9},
 		{Slot: "work_mode", Values: []string{"onsite"}, MinOpenRouterProb: 0.9},
 	}
 	if err := config.Save(cfgPath, cfg); err != nil {
@@ -157,7 +157,7 @@ func TestTrackSwitchRemovesPreviousTrackRulesAndShowsOldSummary(t *testing.T) {
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	hybridOff := `{"slot": "work_mode", "values": ["hybrid"], "min_jev_prob": 0.8, "min_lappi_score": 0},`
+	hybridOff := `{"slot": "work_mode", "values": ["hybrid"], "min_jev_prob": 0.9, "min_lappi_score": 0},`
 	remote := strings.NewReplacer(`"ml-systems"`, `"remote"`, `"drop_rules": [`, `"drop_rules": [`+hybridOff,
 		"Early-career ML systems", "Remote ML systems").Replace(testTrack)
 	if err := os.WriteFile(filepath.Join(dir, "remote.json"), []byte(remote), 0o600); err != nil {
