@@ -338,6 +338,18 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   (`main.swift:20-29`) and the flags (`main.swift:31-58`) grant nothing a same-user process does
   not already have. Security impact: no change. Revisit if the host gains a capability the same
   user cannot exercise directly, for example a Keychain ACL bound to the host's signature.
+- **R1 "seen recently" half of reopen: BLOCKED on a contract change (2026-11-12, the owner decides).**
+  A policy or title reopen could apply at once for a drop its board's latest full listing (within
+  36h) still showed, and wait for a sighting otherwise. No existing annotation tells which: a dropped
+  record is closed, so the absence pass never ages it (`missed_runs`, `missed_since` and
+  `mass_missed_since` stay as they were at the drop), and a full listing that shows it again, same
+  text, writes no event (`default: s.Unchanged++` in `reconcile`; an event would move its last event,
+  which dates the drop the digest footer counts). Its last event is the drop itself, so it says only
+  that the posting was listed before the drop. What it needs is a per-key "last full-listing sighting
+  time" that does not move the record's last event: a ledger field or annotation excluded from
+  `LastEvent` (a change to the `internal/ledger` contract), or a state file beside
+  `reopen/pending.json` holding, per board, the time of its latest full listing and the dropped keys
+  it showed. Not built.
 - **A2-4 residual: CLOSED 2026-11-12.** A board under `liveness.mass_min_open` (10) whose
   non-empty listing leaves more than half of its open postings absent (and at least 2) is a mass
   absence and holds them 14 days (`massAbsence`, docs/RUNTIME.md "Mass absence"; oracle and
