@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -33,7 +32,7 @@ var errTargetSummary = errors.New("config target_summary")
 // flag the kb_match path already takes; the built-in list is still applied),
 // refuse as a found term does. An empty summary carries nothing to check.
 func checkPromptSummary(cfg config.Config, stateDir string, allowMissing bool) error {
-	if strings.TrimSpace(cfg.TargetSummary) == "" {
+	if track.Blank(cfg.TargetSummary) {
 		return nil
 	}
 	dir := track.Dir(cfg, stateDir)
@@ -90,7 +89,7 @@ func (e *env) targetSummaryFacetOf(cfg config.Config, cfgErr error) targetSummar
 	switch {
 	case cfgErr != nil:
 		return targetSummaryFacet{facet: facet{Reason: "not checked: the config could not be read"}}
-	case strings.TrimSpace(cfg.TargetSummary) == "":
+	case track.Blank(cfg.TargetSummary):
 		return targetSummaryFacet{facet: facet{OK: true, Reason: genericTargetNote(cfg)}, GenericDefault: true}
 	}
 	if err := checkPromptSummary(cfg, e.stateDir, false); err != nil {

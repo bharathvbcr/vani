@@ -143,6 +143,21 @@ func TestWireAppBuildsWithACleanOrEmptySummary(t *testing.T) {
 	}
 }
 
+// A summary of invisible characters alone is an empty one everywhere: nothing
+// is sent from it, so it needs no words file, and status names the generic
+// default rather than checking a blank.
+func TestBlankLookingSummaryIsEmptyEverywhere(t *testing.T) {
+	for _, summary := range []string{"\u200b", "\u200b\u200d \u2060", "\u00ad\ufeff", "\u0301"} {
+		_, stateDir, cfg := summaryConfig(t, summary) // no words file
+		if err := checkPromptSummary(cfg, stateDir, false); err != nil {
+			t.Errorf("summary %q: %v; a blank summary sends nothing", summary, err)
+		}
+		if s, ok := targetSummaryStatus(t); !ok || !s.OK || !s.GenericDefault {
+			t.Errorf("summary %q: status %+v (present %v), want the generic default", summary, s, ok)
+		}
+	}
+}
+
 func TestWireAppFailsClosedWithoutAUsableWordsFile(t *testing.T) {
 	// Missing, empty (comments only) and unreadable (a term past the bound).
 	for name, setupWords := range map[string]func(t *testing.T, stateDir string){

@@ -168,6 +168,13 @@ func TestProfileEmptyAndBad(t *testing.T) {
 	if p, err := ProfileFromBank(b, "  "); err != nil || p.Target != DefaultTarget {
 		t.Errorf("empty target: profile target %q, err %v; want DefaultTarget", p.Target, err)
 	}
+	// A summary of invisible characters and spaces alone is empty too, not a
+	// junk target the embedder compares against.
+	for _, blank := range []string{"\u200b", "\u200b\u200d \u2060", "\u00ad\ufeff", "\u0301"} {
+		if p, err := ProfileFromBank(b, blank); err != nil || p.Target != DefaultTarget || !p.GenericTarget {
+			t.Errorf("blank target %q: target %q generic %v, err %v; want DefaultTarget", blank, p.Target, p.GenericTarget, err)
+		}
+	}
 	for name, raw := range map[string]string{
 		"malformed":      `{"entries": `,
 		"duplicate key":  `{"entries": {"a": {"title": "x"}, "a": {"title": "y"}}}`,

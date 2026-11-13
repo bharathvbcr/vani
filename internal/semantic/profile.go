@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/kbsync"
+	"github.com/bharathvbcr/Vani/internal/track"
 )
 
 // skillsLabel labels the chunks made of stack terms.
@@ -46,7 +47,10 @@ const DefaultTarget = "early-career software, ML or systems engineering roles"
 // the decision model makes when none is stated, so the calibration ceiling
 // still exists and semantic matching is not silently off.
 func ProfileFromBank(b kbsync.Bank, targetSummary string) (Profile, error) {
-	target := truncBytes(tidy(kbsync.PlainText(targetSummary)), MaxProfileChunkBytes)
+	target := ""
+	if !track.Blank(targetSummary) {
+		target = truncBytes(tidy(kbsync.PlainText(targetSummary)), MaxProfileChunkBytes)
+	}
 	generic := target == ""
 	if generic {
 		target = DefaultTarget
