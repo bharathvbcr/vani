@@ -19,7 +19,10 @@ were ported with notice. Source files do not carry an upstream copyright header.
   evaluation and the yes yield but stay out of the relevance strata, drop recall, the reader table
   and the weight fit (`vani rankfit` prints how many). `vani doctor` appends its drop verdicts,
   without free text, to `silver_doctor.jsonl`, which `vani relevance` compares with the owner's
-  answers once there are 10 yes and 30 no. No verdict is a label. All off by default.
+  answers once there are 10 yes and 30 no. No verdict is a label. All off by default. The Mac
+  app's Audit tab has steppers for the neighbour and engineering picks, and after a Maybe or a No
+  it asks what kept the posting from a yes (level, domain, location, employer type, other; one
+  key each, Return for none), sent as `audit answer --reason`.
 - **Disagreement cells and the yes yield** (`vani audit --disagree N [--teacher M]`,
   `internal/eval/yesyield.go`, `vani relevance`). The weekly draw can add N postings where the
   teacher's stored role_fit reading (default Sonnet) disagrees with the engine: wanted but dropped

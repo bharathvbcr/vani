@@ -78,6 +78,36 @@ final class AuditTests: XCTestCase {
         XCTAssertEqual(f.calls.count, 2, "an out-of-range quota must not reach vani")
     }
 
+    func testOverlayPicksAreSentOnlyWhenWantedAndBounded() throws {
+        let f = try fakeAuditVani(self, draw: drawReply)
+        _ = try client(f).draw(AuditOverlays(disagree: 3, neighbours: 4, engineering: 10))
+        _ = try client(f).draw(AuditOverlays(neighbours: 2))
+        _ = try client(f).draw(AuditOverlays(engineering: AuditClient.maxEngineering))
+        _ = try client(f).draw(AuditOverlays())
+        XCTAssertEqual(f.calls, ["audit --json --blind --disagree=3 --yes-neighbours=4 --engineering=10",
+                                 "audit --json --blind --yes-neighbours=2",
+                                 "audit --json --blind --engineering=\(AuditClient.maxEngineering)",
+                                 "audit --json --blind"])
+        for bad in [AuditOverlays(neighbours: -1), AuditOverlays(neighbours: AuditClient.maxNeighbours + 1),
+                    AuditOverlays(disagree: 20, neighbours: 11), // the two share vani's cap
+                    AuditOverlays(engineering: -1), AuditOverlays(engineering: AuditClient.maxEngineering + 1)] {
+            XCTAssertThrowsError(try client(f).draw(bad), "\(bad)")
+        }
+        XCTAssertEqual(f.calls.count, 4, "an out-of-range quota must not reach vani")
+    }
+
+    func testAReasonGoesOnlyWithMaybeOrNo() throws {
+        let pick = AuditPick(key: "gh:acme:2", stratum: "decile:3", pSelect: 0.5)
+        XCTAssertEqual(try AuditClient.answerArguments(pick, .no, reason: .employerType).last, "--reason=employer_type")
+        XCTAssertEqual(try AuditClient.answerArguments(pick, .maybe, reason: .level).last, "--reason=level")
+        XCTAssertFalse(try AuditClient.answerArguments(pick, .no, reason: nil).contains { $0.hasPrefix("--reason") })
+        XCTAssertThrowsError(try AuditClient.answerArguments(pick, .yes, reason: .domain))
+        XCTAssertThrowsError(try AuditClient.answerArguments(pick, .skip, reason: .other))
+        // The values are vani's (eval.WouldApplyReasons), in its order, with shortcuts 1 to 5.
+        XCTAssertEqual(AuditReason.allCases.map(\.rawValue), ["level", "domain", "location", "employer_type", "other"])
+        XCTAssertEqual(AuditReason.allCases.map(\.shortcut), ["1", "2", "3", "4", "5"])
+    }
+
     func testAnswerWritesThroughVaniAuditAnswerWithTheDrawnNumbers() throws {
         let reply = #"{"key":"gh:acme:2","verdict":"maybe","stratum":"dropped:title:role_fit","p_select":0.5}"#
         let f = try fakeAuditVani(self, draw: drawReply, answer: reply)

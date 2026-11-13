@@ -25,8 +25,18 @@ struct AuditView: View {
         .navigationTitle("Audit")
         .toolbar {
             ToolbarItem {
-                Stepper("Disagreement picks: \(model.disagree)", value: $model.disagree, in: 0...AuditClient.maxDisagree)
+                Stepper("Disagreement picks: \(model.disagree)", value: $model.disagree, in: 0...model.maxDisagree)
                     .help("Postings a teacher model wants that the engine dropped or ranked low, added to the next draw. Their answers stay out of every estimate.")
+                    .disabled(model.loading)
+            }
+            ToolbarItem {
+                Stepper("Near your yeses: \(model.neighbours)", value: $model.neighbours, in: 0...model.maxNeighbours)
+                    .help("Postings nearest the ones you answered yes, added to the next draw. Vani refuses them until nearness orders your answers better than titles do. With the disagreement picks, at most \(AuditClient.maxDisagree). Their answers stay out of every estimate.")
+                    .disabled(model.loading)
+            }
+            ToolbarItem {
+                Stepper("Engineering picks: \(model.engineering)", value: $model.engineering, in: 0...AuditClient.maxEngineering, step: 5)
+                    .help("Random engineering-titled postings, kept and dropped, added to the next draw. Their answers score the auditor but stay out of the ranking estimates and the weight fit.")
                     .disabled(model.loading)
             }
         }
@@ -123,7 +133,7 @@ private struct Cards: View {
             HStack(spacing: 10) {
                 ForEach(AuditVerdict.allCases, id: \.self) { v in
                     Button {
-                        Task { await model.answer(v) }
+                        Task { await model.choose(v) }
                     } label: {
                         Text("\(v.title)  \(String(v.shortcut).uppercased())").frame(maxWidth: .infinity)
                     }
@@ -132,11 +142,44 @@ private struct Cards: View {
                     .disabled(model.card == nil || model.saving)
                 }
             }
+            if let pending = model.pendingVerdict {
+                ReasonRow(verdict: pending)
+            }
             Text("Would you apply to this posting? Vani's own reading is hidden so it cannot sway you.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(maxWidth: 760, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+/// What kept a maybe or a no from a yes: one digit each, Return for no reason,
+/// Escape to take the verdict back. The answer is written only from here.
+private struct ReasonRow: View {
+    @Environment(AuditModel.self) private var model
+    let verdict: AuditVerdict
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(verdict.title): what kept it from a yes?").font(.subheadline).fontWeight(.medium)
+            HStack(spacing: 8) {
+                ForEach(AuditReason.allCases, id: \.self) { r in
+                    Button {
+                        Task { await model.giveReason(r) }
+                    } label: {
+                        Text("\(r.title)  \(String(r.shortcut))").frame(maxWidth: .infinity)
+                    }
+                    .keyboardShortcut(KeyEquivalent(r.shortcut), modifiers: [])
+                }
+                Button("No reason") { Task { await model.giveReason(nil) } }
+                    .keyboardShortcut(.return, modifiers: [])
+                Button("Cancel", role: .cancel) { model.cancelReason() }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
+            .disabled(model.saving)
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
