@@ -340,7 +340,12 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   user cannot exercise directly, for example a Keychain ACL bound to the host's signature.
 - **A2-4 residual: a well-formed empty listing during an ATS outage ages the board; no floor
   (audit 2026-10-20; DECLINED 2026-10-21, Fable delegated).** The reasons and the contract are in
-  "Known limits" under "Absence ages every open posting" (the Residual bullet).
+  "Known limits" under "Absence ages every open posting" (the Residual bullet). **Revisited
+  2026-11-12, not closed:** a board with `liveness.mass_min_open` (10) or more open postings, or
+  any board from 2 open that answers empty, now holds its postings 14 days (docs/RUNTIME.md "When a
+  posting dies"; `ReconcileShort` for a short listing). The residual is a board under that floor
+  (5 postings, say) that answers a well-formed non-empty list missing most of them: it still dies
+  after two such reads, and `died_from` restores the postings when the board lists them again.
 - **ft-3189102e criterion 2: `COUNTRY_SECOND_LEVELS` is 14 second levels, so `a.me.uk` and `b.me.uk`
   collide (2026-10-20).** `extension/src/normalize.ts:124-141` (`ac co com edu go gob gov ltd mil ne
   net or org plc`); `siteKey` keeps the last two labels for any other suffix, so `me.uk` is one key
