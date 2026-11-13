@@ -448,8 +448,16 @@ type boardReport struct {
 	// Short is rows a read board counted but did not list: a Workday query
 	// under its 2000-row window that ended before its own total
 	// (workday.Stats.Short). The listing is kept, not failed, so the postings
-	// behind those rows go unseen and stored ones age toward dead.
+	// behind those rows go unseen, so the board is reconciled as a partial listing and ages nothing (shortreconcile.go).
 	Short int `json:"short,omitempty"`
+
+	// DeferredSince and ShortSince, set when Deferred or Short is, are when the
+	// board's current streak of good reads with that count began (board
+	// health, boardbacklog.go). The oldest deferred row is no older than
+	// DeferredSince; a short board ages nothing while ShortSince is open.
+	// Additive.
+	DeferredSince *time.Time `json:"deferred_since,omitempty"`
+	ShortSince    *time.Time `json:"short_since,omitempty"`
 
 	// endedRun marks the board whose failure ended the listing (the run was
 	// cancelled, or the ledger failed under it): its outcome says nothing

@@ -530,6 +530,9 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 			for _, l := range shortListingLines(r.Boards) {
 				b.add(b.clean(l))
 			}
+			for _, l := range deferredBacklogLines(r.Boards, runReportAt(r, at)) {
+				b.add(b.clean(l))
+			}
 		}
 		if a := r.Advance; a != nil {
 			b.add(b.clean(fmt.Sprintf("Advance: %d of %d eligible attempted (cap %d), %d unread, %d failed, %d deferred; stopped: %s",
@@ -759,6 +762,10 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 		if l := massHeldLine(r.Boards.MassHeld, r.Boards.MassHeldCount, r.Boards.MassHeldPostings); l != "" {
 			b.add(b.clean(l))
 		}
+		// Boards with an ongoing problem that is not a failure (boardbacklog.go).
+		if l := boardAttentionLine(r.Boards, runReportAt(r, at), true); l != "" {
+			b.add(b.clean(l))
+		}
 	}
 	if len(detailLines) == 0 && !has {
 		b.add("No failures in this run.")
@@ -937,7 +944,7 @@ func massDeadLine(it boardReport) string {
 // shortListingLines names each read board that listed fewer jobs than it
 // counts (boardReport.Short), at most maxShortLines of them. Not a failure:
 // the listing is kept by design, but the postings it did not list go unseen,
-// and stored ones age toward dead. Boards past the bound, and the short rows of
+// and the board ages nothing while it is short. Boards past the bound, and the short rows of
 // boards the record could not keep, are counted on their own lines.
 func shortListingLines(b *boardsReport) []string {
 	if b == nil || b.Short <= 0 {
@@ -955,7 +962,7 @@ func shortListingLines(b *boardsReport) []string {
 			moreRows += it.Short
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("Listed short: %s: %d counted job(s) not listed; stored ones age as absent", boardName(it), it.Short))
+		lines = append(lines, fmt.Sprintf("Listed short: %s: %d counted job(s) not listed; nothing on the board ages while it is short", boardName(it), it.Short))
 	}
 	if more > 0 {
 		lines = append(lines, fmt.Sprintf("Listed short: %d more board(s), %d counted job(s) not listed", more, moreRows))

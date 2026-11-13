@@ -253,9 +253,6 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			if st.Short > 0 {
-				w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings among them age as absent", b.ATS, b.Token, st.Short)
-			}
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short})
 		},
 	})
@@ -328,7 +325,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: policy.ListedDrops(),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Gone: st.Gone, Prefiltered: st.Prefiltered})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
 		},
 	})
 	// Avature: a detail page per posting, bounded like Workday's (stored
@@ -343,9 +340,10 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		},
 	})
 	srcs[posting.Apple] = apple.NewWith(d, apple.Options{
+		Stored: storedFor,
 		Report: func(b sources.Board, st apple.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Gone: st.Gone})
+			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
 		},
 	})
 	var pageErr error
@@ -372,7 +370,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		prefixMu.Lock()
 		dirtyPrefix[b.KeyPrefix()] = true
 		prefixMu.Unlock()
-		return rec.Reconcile(ctx, b, listed, now)
+		return w.reconcileBoard(ctx, rec, b, listed, now)
 	}
 	// Before the first board: added is 0, not an unreported count.
 	w.noteLive(runProgress{Stage: progressListing, Total: len(w.cfg.Watchlist), Added: progressCount(0)})
@@ -393,6 +391,9 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// read as "no stale board". Only a listing that reached every board prunes,
 	// and only against the config's whole watchlist, never this run's cut.
 	at := now()
+	if health != nil {
+		health.fetches = w.fetchSnapshot()
+	}
 	boards.Stale, boards.StaleCount, boards.HealthError = health.record(w.watchedBoards(), boards.all, err == nil, at, w.warnf)
 	for _, s := range boards.Stale {
 		w.warnf("stale board: %s", staleBoardLine(s, at))
@@ -412,6 +413,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	}
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
+	applyBacklogLocked(&boards, health)
 	w.boards = &boards
 	w.mu.Unlock()
 	return pipeline.BoardCounts{Configured: boards.Configured, Read: boards.Read}, err

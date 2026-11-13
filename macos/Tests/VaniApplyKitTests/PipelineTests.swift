@@ -372,6 +372,20 @@ final class PipelineTests: XCTestCase {
         XCTAssertEqual(issue.detail, "Intel (wd intel/External), Hooli (pg hooli)")
     }
 
+    /// A board that has had no good read for over 36 hours is attention on the
+    /// last run's card, though the run itself did not fail.
+    func testStaleBoardsAreAttentionNotAFailure() throws {
+        let run = #"{"ok":true,"state":"ok","boards":{"configured":3,"read":3,"failed":0,"skipped":0,"listed":9,"stale_count":2,"items":[]}}"#
+        let s = try decode(statusReply(lastRun: run))
+        XCTAssertEqual(s.lastRun.boards?.staleCount, 2)
+        XCTAssertFalse(s.lastRun.hasFailures)
+        XCTAssertEqual(s.health(at: now), .warning)
+        let issue = try XCTUnwrap(s.issues(at: now).first { $0.title.contains("no good read") })
+        XCTAssertEqual(issue.title, "2 boards with no good read for over 36 hours")
+        let none = try decode(statusReply(lastRun: #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":1,"stale_count":0,"items":[]}}"#))
+        XCTAssertNil(none.issues(at: now).first { $0.title.contains("no good read") })
+    }
+
     func testEveryBoardReadIsHealthy() throws {
         let run = #"{"ok":true,"state":"ok","boards":{"configured":1,"read":1,"failed":0,"skipped":0,"listed":1,"items":[{"ats":"gh","token":"a","outcome":"read","listed":1}]}}"#
         let s = try decode(statusReply(lastRun: run))

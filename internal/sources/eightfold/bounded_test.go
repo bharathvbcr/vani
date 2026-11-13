@@ -68,7 +68,7 @@ func bounded(t *testing.T, n int, replies map[string]srctest.Reply, stored []pos
 }
 
 func accounted(st Stats) bool {
-	return st.Reused+st.Fetched+st.Refreshed+st.Prefiltered+st.Gone == st.Listed
+	return st.Reused+st.Fetched+st.Refreshed+st.Prefiltered+st.Deferred+st.Gone == st.Listed
 }
 
 // With every position stored, a run asks for no detail but those whose refresh

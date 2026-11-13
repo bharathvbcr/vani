@@ -55,8 +55,20 @@ import (
 )
 
 const (
-	// MaxPostings bounds one board: each posting costs a details request.
-	MaxPostings = 200
+	// MaxPostings bounds the positions one board's searches may list in a run:
+	// a search page is 10 of them, so it is also the bound on the search pages
+	// (maxPages). The search is paged by start offset to its count, and a
+	// listing that cannot reach the count fails the board (search). It was 200
+	// when each position cost a detail request every run; stored positions are
+	// reused now, and the detail requests are bounded by MaxDetails instead.
+	MaxPostings = 500
+	// MaxDetails bounds the detail requests of one board in a run: new
+	// positions first, then stored ones whose re-read is due. New positions
+	// past it are deferred to a later run (Stats.Deferred); they are not
+	// stored, so their absence ages nothing. Deferral needs the stored
+	// postings (Options.Stored): without them a board of more than MaxDetails
+	// positions fails, as it cannot tell a deferred position from a stored one.
+	MaxDetails = 100
 	// pageSize is what the search returns at most per request (asking for
 	// 100 still returned 10 on 2026-10-19; v2 on 2026-10-22).
 	pageSize = 10
@@ -79,8 +91,8 @@ const (
 	// search answered 429 with no Retry-After after a burst of about ten
 	// unspaced requests, while its details and every Microsoft request
 	// answered. The rate it tolerates was not measured: 2 s is a guess that
-	// keeps a full board (21 search pages and 200 details, 221 requests) to
-	// 7.4 min of waiting. It sits above egress's one-second per-host floor, so
+	// keeps a full board (maxPages search pages and MaxDetails details, 152
+	// requests) to 5 min of waiting. It sits above egress's one-second per-host floor, so
 	// the two never add: a paced wait already spans that interval.
 	paceEvery = 2 * time.Second
 	// paceBudget bounds a board's waiting, as page.BoardTimeout bounds a
@@ -102,7 +114,7 @@ var (
 var errDetailGone = errors.New("detail is gone (HTTP 404)")
 
 // Stats counts what one List did. Every listed position is counted once, in
-// Reused, Fetched, Refreshed, Prefiltered or Gone.
+// Reused, Fetched, Refreshed, Prefiltered, Deferred or Gone.
 type Stats struct {
 	Listed int `json:"listed"`
 	// Reused positions were returned as stored, with no detail request.
@@ -116,6 +128,9 @@ type Stats struct {
 	Prefiltered int `json:"prefiltered,omitempty"`
 	// Gone positions' details answered 404: closed since the search.
 	Gone int `json:"gone,omitempty"`
+	// Deferred positions were new and past MaxDetails: not returned, not
+	// stored, and fetched on a later run.
+	Deferred int `json:"deferred,omitempty"`
 	// V2 is set when the board was read through /api/apply/v2: its pcsx search
 	// answered 403, or its host's robots.txt disallows pcsx.
 	V2 bool `json:"v2,omitempty"`
@@ -321,7 +336,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err != nil {
 		return nil, err
 	}
-	st := Stats{Listed: len(ids), V2: a.v2, Prefiltered: pl.Prefiltered}
+	st := Stats{Listed: len(ids), V2: a.v2, Prefiltered: pl.Prefiltered, Deferred: pl.Deferred}
 	if s.opt != nil && s.opt.Report != nil {
 		defer func() { s.opt.Report(b, st) }()
 	}
@@ -374,9 +389,10 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 // planDetails is the bounded detail step for the listed positions: which get a
 // detail request, which are reused from the postings an earlier run stored
 // (looked up by the key a row builds, so another board's posting never
-// matches), and which new ones DropListed drops from their row. The limit is
-// MaxPostings, the most a board may list, so no new position is ever deferred:
-// reuse alone bounds the requests.
+// matches), which new ones DropListed drops from their row, and which new ones
+// are past MaxDetails and wait for a later run (deferred: not returned, and
+// not stored, so their absence ages nothing). Deferral needs the stored
+// postings; without them the board fails.
 func (s *source) planDetails(b sources.Board, domain string, ids []listing, seen time.Time) (srcutil.DetailPlan, []posting.Key, map[posting.Key]posting.Posting, error) {
 	stored := map[posting.Key]posting.Posting{}
 	var drop func(posting.Posting) bool
@@ -406,10 +422,10 @@ func (s *source) planDetails(b sources.Board, domain string, ids []listing, seen
 			rows[i].Drop = drop(posting.Posting{ATS: posting.Eightfold, Company: company, Title: srcutil.Title(l.name)})
 		}
 	}
-	pl := srcutil.PlanDetails(rows, srcutil.Day(seen), MaxPostings)
-	if pl.Deferred > 0 {
-		// Unreachable while the limit is MaxPostings; a deferred position could
-		// not be told from a stored one left out, which would age it as absent.
+	pl := srcutil.PlanDetails(rows, srcutil.Day(seen), MaxDetails)
+	if pl.Deferred > 0 && (s.opt == nil || s.opt.Stored == nil) {
+		// Without the stored postings a deferred position could not be told
+		// from a stored one left out, which would age it as absent.
 		return srcutil.DetailPlan{}, nil, nil, fmt.Errorf("eightfold %q: %w: %d positions deferred", b.Token, srcutil.ErrTooManyPostings, pl.Deferred)
 	}
 	return pl, keys, stored, nil

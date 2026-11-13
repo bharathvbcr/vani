@@ -1992,6 +1992,14 @@ extension PipelineStatus {
                 names.isEmpty ? nil : names)
         }
 
+        // An ongoing board problem is attention, never a failure (it does not
+        // reach `hasFailures`): boards no good read has touched for over 36 hours
+        // (cmd/vani/boardhealth.go), whose postings stop being refreshed.
+        if lastRun.state != .running, let b = lastRun.boards, b.staleCount > 0 {
+            add(.warning, "\(b.staleCount) board\(b.staleCount == 1 ? "" : "s") with no good read for over 36 hours",
+                "their postings are not being refreshed; vani status names them")
+        }
+
         if !schedule.ok { add(.warning, "The schedule could not be read", schedule.reason) }
         // A schedule nothing fires reads as fine everywhere else: say it. Quiet
         // only when nothing is overdue and nothing waits; the schedule row still

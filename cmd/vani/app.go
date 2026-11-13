@@ -657,6 +657,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		counts.ClockBehind = boards.ClockBehind
 		counts.MassDead = boards.MassDead
 		counts.MassHeld = massHeldLine(boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings)
+		counts.BoardAttention = boardAttentionLine(boards, at, false)
 		counts.EmptyCount = boards.EmptyCount
 		counts.EmptyBoards = emptyBoardLines(slices.Clone(boards.Empty))
 	}
