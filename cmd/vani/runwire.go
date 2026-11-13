@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -445,7 +446,26 @@ func (w *wired) annotateNearDups(ctx context.Context, protect func(posting.Key) 
 // run. Marked postings are never dropped. A Live posting a location rule could
 // not read is kept and counted on fo (pipeline.CauseLocationUnreadable).
 func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, protect func(posting.Key) bool, now time.Time, fo *pipeline.FailOpen) error {
-	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo)
+	// An excluded posting the exclusions no longer match waits, still dropped,
+	// for its board's next full listing (the pending reopens `vani retriage`
+	// keeps, applied by reopenOnSighting). The run holds the ledger lock, which
+	// serialises the set's writers. A set that cannot be read is never taken for
+	// an empty one nor overwritten: this run marks into a throwaway set, so a
+	// watched posting still lets nothing back at once.
+	path := filepath.Join(w.stateDir, pipeline.PendingReopenFile)
+	pending, perr := pipeline.LoadPendingReopens(path, now)
+	if perr != nil {
+		w.warnf("exclusions: pending reopens not kept this run: %v", perr)
+		pending = pipeline.NewPendingReopens()
+	}
+	sc := reopenScope(w.cfg)
+	sc.Defer, sc.Pending = sc.Watched, pending
+	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo, &sc)
+	if perr == nil && (ch.Deferred > 0 || ch.Unqueued > 0 || pending.Expired > 0) {
+		if serr := pending.Save(path, time.Now()); serr != nil {
+			err = errors.Join(err, fmt.Errorf("pending reopens: %w", serr))
+		}
+	}
 	w.mu.Lock()
 	w.exclusions = summarizeExclusions(ch)
 	w.mu.Unlock()
@@ -455,8 +475,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 	if ch.BodyUnavailable > 0 {
 		w.warnf("exclusions: %d posting(s) left as they are because their stored description could not be read back", ch.BodyUnavailable)
 	}
-	if len(ch.Drop) > 0 || len(ch.Reopen) > 0 {
-		w.warnf("exclusions: dropped %d posting(s), returned %d to live", len(ch.Drop), len(ch.Reopen))
+	if len(ch.Drop) > 0 || ch.Reopened > 0 || ch.Deferred > 0 || ch.OverCap > 0 {
+		w.warnf("exclusions: dropped %d posting(s), returned %d to live; %d waiting for their board to list them again (%d already), %d on a board no longer watched left dropped, %d left out over the bound of %d",
+			len(ch.Drop), ch.Reopened, ch.Deferred, ch.AlreadyPending, ch.Stale, ch.OverCap, pipeline.MaxPendingReopens)
 	}
 	return nil
 }

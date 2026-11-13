@@ -21,7 +21,7 @@ func TestApplyExclusionsOneUnreadableBodyDoesNotBlockTheRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := DropPolicy{Exclude: descExclude("relocation")}
-	if ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), p, nil, nil); err != nil || len(ch.Drop) != 1 {
+	if ch, err := ApplyExclusions(ctx, l, t0.Add(time.Hour), p, nil, nil, nil); err != nil || len(ch.Drop) != 1 {
 		t.Fatalf("first pass: %+v %v", ch, err)
 	}
 	l = reopenLedger(t, dir, l)
@@ -34,7 +34,7 @@ func TestApplyExclusionsOneUnreadableBodyDoesNotBlockTheRest(t *testing.T) {
 	if _, err := Reconcile(ctx, l, board, []posting.Posting{fresh}, t0.Add(90*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	ch, err := ApplyExclusions(ctx, l, t0.Add(2*time.Hour), p, nil, nil)
+	ch, err := ApplyExclusions(ctx, l, t0.Add(2*time.Hour), p, nil, nil, nil)
 	if err != nil || ch.BodyUnavailable != 1 || len(ch.Drop) != 1 || len(ch.Reopen) != 0 {
 		t.Fatalf("want 1 unavailable, 1 drop, no reopen, no error: %+v %v", ch, err)
 	}

@@ -226,15 +226,23 @@ func summarizeNearDup(nd pipeline.NearDupReport, err error) *nearDupSummary {
 // exclusionSummary is pipeline.ExclusionChange as counts. Unread and
 // BodyUnavailable are checks that could not run, which is not a pass.
 type exclusionSummary struct {
-	Dropped         int `json:"dropped,omitempty"`
+	Dropped int `json:"dropped,omitempty"`
+	// Reopened came back to Live at once; Deferred were marked as pending
+	// reopens, still dropped, for their board's next full listing; Stale are on
+	// a board no longer watched and stay dropped.
 	Reopened        int `json:"reopened,omitempty"`
+	Deferred        int `json:"deferred,omitempty"`
+	AlreadyPending  int `json:"already_pending,omitempty"`
+	Stale           int `json:"stale,omitempty"`
+	OverCap         int `json:"over_cap,omitempty"`
 	Unread          int `json:"unread,omitempty"`
 	BodyUnavailable int `json:"body_unavailable,omitempty"`
 }
 
 func summarizeExclusions(ch pipeline.ExclusionChange) *exclusionSummary {
 	return &exclusionSummary{
-		Dropped: len(ch.Drop), Reopened: len(ch.Reopen), Unread: len(ch.Unread),
+		Dropped: len(ch.Drop), Reopened: ch.Reopened, Deferred: ch.Deferred, AlreadyPending: ch.AlreadyPending,
+		Stale: ch.Stale, OverCap: ch.OverCap, Unread: len(ch.Unread),
 		BodyUnavailable: ch.BodyUnavailable,
 	}
 }

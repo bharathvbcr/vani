@@ -234,10 +234,15 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				return s, err
 			}
 			s.Changed++
-		case full && rec.Status == posting.Dropped && rc.hasPendingReopen(p.Key):
-			// The board lists a drop that waits to be let back: judged again on
-			// this text, it comes back now or stays dropped, and either way
-			// the pending reopen is spent.
+		case full && rec.Status == posting.Dropped && (rc.hasPendingReopen(p.Key) || rc.reopen.movedExclusion(rec, relist)):
+			// The board lists a drop that waits to be let back, or an exclusion
+			// drop whose title, company, location or remote flag moved since it
+			// was judged (the board added Austin to a London role): judged again
+			// on this text, it comes back now or stays dropped, and either way
+			// a pending reopen is spent. An exclusion drop that stays takes the
+			// moved fields too (a later pass judges the board's text, not stale
+			// fields); that event dates the drop the digest footer counts, once
+			// per move.
 			// Either way the listing shows it, so an absence episode it was in when
 			// dropped ends here (liveness.go), as it would on any listing: a later
 			// reopen must not carry the old misses into its next absence.
@@ -256,6 +261,10 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			e.Annotations = clearMissMarks(e.Annotations)
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
+			}
+			if e.Status == posting.Dropped {
+				s.Refreshed++ // an exclusion drop that stays, taking the listed fields
+				break
 			}
 			s.Reopened++
 		case rec.Status == posting.Dead:
