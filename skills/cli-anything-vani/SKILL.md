@@ -148,6 +148,11 @@ and calls no decision backend.
 - `vani digest` writes the digest. `vani daemon` and `vani launchd plist` run and install the
   scheduler.
 - Maintenance commands: `vani retriage`, `vani rescore`, `vani migrate`.
+- `vani retriage --stale-drops [--json]` is a read-only, no-spend report of dropped postings that
+  today's rules would not drop, by drop class (keys and classes, no posting text; a drop it cannot
+  re-judge is counted as "not judged"). `--rescue` (the owner runs it; `--dry-run` only counts)
+  returns the stale model drops to `unsure`, readings kept, and never touches a drop the rules
+  still make. Do not run `--rescue` without the owner's go-ahead.
 
 **Spend from the daily LLM budget.** Each of these sends posting text to a provider; ask
 before running one.
