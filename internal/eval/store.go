@@ -408,6 +408,12 @@ func (s *Store) Labels() (map[posting.Key]Entry, int, error) {
 	}
 }
 
+// LabelsAt reads the labels in labelDir as Labels does, for a caller that must
+// not create anything (a dry run): it opens no store, so no directory is made.
+func LabelsAt(labelDir string) (map[posting.Key]Entry, int, error) {
+	return (&Store{labelDir: labelDir}).Labels()
+}
+
 // readLine returns one line without its newline, discarding bytes beyond max
 // (tooLong then reports the cut). err is io.EOF with the final partial line.
 func readLine(br *bufio.Reader, max int) (line string, tooLong bool, err error) {

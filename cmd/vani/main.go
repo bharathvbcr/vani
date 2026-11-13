@@ -176,7 +176,20 @@ commands:
                              with the same question, and keep its readings (teacher_readings.jsonl)
                              for Lappi's agreement filter; --dry-run prices it and asks nothing;
                              a real run needs --budget-usd and stops at the lesser of it and the
-                             daily llm cap's headroom
+                             daily llm cap's headroom. --task would_apply_pair [--pairs N]
+                             [--both-orders] [--seed N] asks which of two postings of one audit
+                             stratum you would rather apply to, given your frozen labelled titles
+                             (silver labels in silver_pairs.jsonl, never in labels.jsonl; it also
+                             needs the auditor's own cap, below, and refuses until one is set)
+  teacher freeze [--json] [--replace]
+                             freeze your yes and no labelled titles as the auditor's exemplar set
+                             (silver_exemplars.json); labels made after it are the evaluation set
+  teacher cap [--json] [--usd N]
+                             show or set the would_apply auditor's own daily cap (state/budget/
+                             wouldapply-cap.json); unset it spends nothing
+  teacher report [--json] [--seed N]
+                             the auditor's AUC on your gold labels made after the freeze, beside the
+                             title part's on the same postings ("insufficient" below 10 yes and 30 no)
   impressions log --surface jobs|audit --slate ID [--section S] [--json]
                              record the rows a screen shows ({"rows":[{"key","position"}]} on
                              stdin), once per slate; keys and positions only, never a title
@@ -345,6 +358,10 @@ type env struct {
 	paths  config.Resolved
 	stdout io.Writer
 	stderr io.Writer
+
+	// noCheckpoint makes the jobs reads (jobsReaderOptions) keep no ledger
+	// checkpoint, for a dry run that promises to write nothing.
+	noCheckpoint bool
 
 	// jsonAsked is the running command's --json flag (jsonFlag); nil when it
 	// has none. runEnv reads it to reply {"error","code"} for a failure the

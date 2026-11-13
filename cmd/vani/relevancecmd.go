@@ -118,7 +118,7 @@ func (e *env) cmdRelevance(args []string) error {
 	readers.TeacherDetail = detail
 	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers}
 	base := jobinsight.DefaultWeights()
-	items, itemsErr := e.judgedItems(done, b.snap, base)
+	items, itemsErr := e.judgedItems(done, b.snap, base, nil)
 	if itemsErr != nil {
 		out.PartAUCError = itemsErr.Error()
 	} else {
@@ -193,8 +193,10 @@ var partAUCScopes = []struct {
 // judgedItems builds each audit-judged posting's Score parts exactly as `vani
 // rankfit` does (rankfitItems) under base. Marks and impressions are read for
 // the scores the owner saw and the company factor; neither becomes a label
-// here. A source that cannot be read is an error, never an empty table.
-func (e *env) judgedItems(done map[posting.Key]eval.Entry, snap ledger.Snapshot, base jobinsight.Weights) ([]rankfit.Item, error) {
+// here. keep, when not nil, admits only the postings it is true for (`vani
+// teacher report` keeps the gold labels made after the exemplar freeze). A
+// source that cannot be read is an error, never an empty table.
+func (e *env) judgedItems(done map[posting.Key]eval.Entry, snap ledger.Snapshot, base jobinsight.Weights, keep func(posting.Key) bool) ([]rankfit.Item, error) {
 	me, err := marks.Read(marks.Dir(e.stateDir))
 	if err != nil {
 		return nil, fmt.Errorf("read marks: %w", err)
@@ -208,7 +210,7 @@ func (e *env) judgedItems(done map[posting.Key]eval.Entry, snap ledger.Snapshot,
 		return nil, err
 	}
 	for k, t := range targets {
-		if !t.Judged {
+		if !t.Judged || (keep != nil && !keep(k)) {
 			delete(targets, k) // passed-over impressions: not the owner's answer
 		}
 	}

@@ -122,6 +122,16 @@ func (f deciderFunc) Decide(ctx context.Context, q decide.Question) (decide.Answ
 }
 
 func (e *env) cmdTeacher(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "freeze":
+			return e.cmdTeacherFreeze(args[1:])
+		case "cap":
+			return e.cmdTeacherCap(args[1:])
+		case "report":
+			return e.cmdTeacherReport(args[1:])
+		}
+	}
 	fs := e.newFlags("teacher")
 	dry := fs.Bool("dry-run", false, "say what would be sent and what it would cost, and ask nothing")
 	budgetUSD := fs.Float64("budget-usd", 0, "the most this run may spend, in dollars (required for a real run; no default)")
@@ -132,18 +142,22 @@ func (e *env) cmdTeacher(args []string) error {
 	sampleN := fs.Int("sample", 0, "ask about a uniform random sample of this many of the postings (0: no sampling); drawn before --max, deterministic for --seed")
 	seed := fs.Uint64("seed", 0, "the seed of --sample's draw (only with --sample)")
 	readingsOf := fs.String("with-readings-of", "", "keep only postings that already have a current reading by this model (this task, fixture and prompt, and for kb_match this knowledge-base digest), applied before --sample")
-	taskFlag := fs.String("task", teacherTaskJD, fmt.Sprintf("the question asked: %s (the triage question) or %s (does the work match your knowledge base; the full digest is sent)", teacherTaskJD, teacherTaskKB))
+	taskFlag := fs.String("task", teacherTaskJD, fmt.Sprintf("the question asked: %s (the triage question), %s (does the work match your knowledge base; the full digest is sent) or %s (which of two postings of one stratum would you rather apply to; the frozen exemplar titles are sent; silver labels only)", teacherTaskJD, teacherTaskKB, teacherTaskPair))
+	pairsN := fs.Int("pairs", defaultTeacherPairs, fmt.Sprintf("with --task %s: the most pairs to ask about this run (1-%d)", teacherTaskPair, eval.MaxPairsPerRun))
+	bothOrders := fs.Bool("both-orders", false, fmt.Sprintf("with --task %s: ask each pair in both orders (doubles the questions; position bias averages out)", teacherTaskPair))
 	keysFile := fs.String("keys", "", "ask only about the posting keys this file lists, one per line (an unknown or duplicate key is refused); without --sample they are asked in the file's order")
 	drawOut := fs.String("draw-out", "", "save the drawn keys, in the order they are asked, to this file (default: a new file under the state directory's teacher_draws/); pass it back with --keys to resume the same sample")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the plan, the estimate and what the run did (the text goes to stderr)")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
-	if *taskFlag != teacherTaskJD && *taskFlag != teacherTaskKB {
-		return usagef("teacher: --task must be %s or %s", teacherTaskJD, teacherTaskKB)
+	if *taskFlag != teacherTaskJD && *taskFlag != teacherTaskKB && *taskFlag != teacherTaskPair {
+		return usagef("teacher: --task must be %s, %s or %s", teacherTaskJD, teacherTaskKB, teacherTaskPair)
 	}
 	budgetSet, sampleSet, seedSet := false, false, false
+	given := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) {
+		given[f.Name] = true
 		switch f.Name {
 		case "budget-usd":
 			budgetSet = true
@@ -153,11 +167,17 @@ func (e *env) cmdTeacher(args []string) error {
 			seedSet = true
 		}
 	})
+	if err := checkTeacherPairFlags(*taskFlag, given); err != nil {
+		return err
+	}
 	if sampleSet && *sampleN < 1 {
 		return usagef("teacher: --sample must be at least 1")
 	}
-	if seedSet && !sampleSet {
+	if seedSet && !sampleSet && *taskFlag != teacherTaskPair {
 		return usagef("teacher: --seed needs --sample")
+	}
+	if *taskFlag == teacherTaskPair && (*pairsN < 1 || *pairsN > eval.MaxPairsPerRun) {
+		return usagef("teacher: --pairs must be 1-%d", eval.MaxPairsPerRun)
 	}
 	if !*dry {
 		if !budgetSet {
@@ -174,9 +194,14 @@ func (e *env) cmdTeacher(args []string) error {
 		return usagef("teacher: --max must not be negative")
 	}
 	o := teacherOpts{dry: *dry, budgetUSD: *budgetUSD, model: *modelFlag, of: *of, conc: *conc, maxN: *maxN,
-		sample: sampleSet, sampleN: *sampleN, seed: *seed, readingsOf: *readingsOf, task: *taskFlag, keys: *keysFile, drawOut: *drawOut}
+		sample: sampleSet, sampleN: *sampleN, seed: *seed, readingsOf: *readingsOf, task: *taskFlag, keys: *keysFile, drawOut: *drawOut,
+		pairs: *pairsN, bothOrders: *bothOrders, seedSet: seedSet}
 	jr := &teacherReply{DryRun: *dry}
-	err := e.textToStderr(*asJSON, func() error { return e.teacherRun(o, jr) })
+	run := e.teacherRun
+	if o.task == teacherTaskPair {
+		run = e.teacherPairs
+	}
+	err := e.textToStderr(*asJSON, func() error { return run(o, jr) })
 	if !*asJSON {
 		return err
 	}
@@ -192,12 +217,17 @@ type teacherOpts struct {
 	conc, maxN, sampleN   int
 	sample                bool
 	seed                  uint64
+	// pairs, bothOrders and seedSet belong to --task would_apply_pair.
+	pairs      int
+	bothOrders bool
+	seedSet    bool
 }
 
 // The --task names.
 const (
-	teacherTaskJD = "jd_triage"
-	teacherTaskKB = "kb_match"
+	teacherTaskJD   = "jd_triage"
+	teacherTaskKB   = "kb_match"
+	teacherTaskPair = "would_apply_pair"
 )
 
 // teacherKBMatchFixture identifies the kb_match question's definition, the
@@ -251,6 +281,8 @@ type teacherReply struct {
 	DryRun bool             `json:"dry_run"`
 	Plan   *teacherPlanJSON `json:"plan,omitempty"`
 	Run    *teacherRunJSON  `json:"run,omitempty"`
+	// Pairs is what a --task would_apply_pair run says beyond the shared plan.
+	Pairs *teacherPairsJSON `json:"pairs,omitempty"`
 	failure
 }
 
@@ -647,6 +679,35 @@ func teacherPrices(cfg config.Config, model string) (budget.Prices, string, erro
 // usd formats nano-USD with the four decimals a per-posting price needs.
 func usd(nano int64) string { return fmt.Sprintf("$%.4f", float64(nano)/1e9) }
 
+// teacherCost is what a list of measured questions would cost at some prices:
+// the input tokens' sum, smallest and largest, how many are over the long-prompt
+// tier, and the typical and worst-case cost in nano-USD (typical counts a reply
+// of teacherTypicalOut tokens, worst every reply at its full budget and every
+// prompt at its physical ceiling).
+type teacherCost struct {
+	sum, lo, hi, long int
+	typical, worst    int64
+}
+
+func teacherCostOf(p budget.Prices, toks []teacherPrompt) teacherCost {
+	c := teacherCost{lo: math.MaxInt}
+	for _, m := range toks {
+		n := m.Estimate
+		c.sum += n
+		c.lo, c.hi = min(c.lo, n), max(c.hi, n)
+		if p.LongPromptAbove > 0 && n > p.LongPromptAbove {
+			c.long++
+		}
+		if ch, err := p.Charge(llm.Usage{InputTokens: max(n, 1), OutputTokens: teacherTypicalOut}); err == nil {
+			c.typical += ch
+		}
+		if w, err := p.Reserve(m.Ceiling, llmbackend.DefaultMaxTokens+llmbackend.ReasoningHeadroom); err == nil {
+			c.worst += w
+		}
+	}
+	return c
+}
+
 func (e *env) teacherReport(cfg config.Config, model, first, source string, p budget.Prices, sel eval.TeacherSelection, already int, toks []teacherPrompt, capNano int64, task string, digestBytes int) *teacherPlanJSON {
 	plan := &teacherPlanJSON{First: first, Model: model, Provider: cfg.LLM.Provider, Candidates: len(sel.Candidates), NoText: sel.NoText,
 		Inherited: sel.Inherited, Already: already, ToAsk: len(toks), DailyCapUSD: cfg.Decide.DailyUSD.LLM}
@@ -659,23 +720,8 @@ func (e *env) teacherReport(cfg config.Config, model, first, source string, p bu
 	if len(toks) == 0 {
 		return plan
 	}
-	var sum, lo, hi, long int
-	lo = math.MaxInt
-	var typical, worst int64
-	for _, m := range toks {
-		n := m.Estimate
-		sum += n
-		lo, hi = min(lo, n), max(hi, n)
-		if p.LongPromptAbove > 0 && n > p.LongPromptAbove {
-			long++
-		}
-		if c, err := p.Charge(llm.Usage{InputTokens: max(n, 1), OutputTokens: teacherTypicalOut}); err == nil {
-			typical += c
-		}
-		if w, err := p.Reserve(m.Ceiling, llmbackend.DefaultMaxTokens+llmbackend.ReasoningHeadroom); err == nil {
-			worst += w
-		}
-	}
+	c := teacherCostOf(p, toks)
+	sum, lo, hi, long, typical, worst := c.sum, c.lo, c.hi, c.long, c.typical, c.worst
 	plan.InputTokens = &teacherTokens{Mean: sum / len(toks), Min: lo, Max: hi, Total: sum}
 	plan.PriceSource, plan.TypicalUSD, plan.MaxUSD = source, float64(typical)/1e9, float64(worst)/1e9
 	if task == teacherTaskKB {
