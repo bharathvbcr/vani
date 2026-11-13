@@ -84,13 +84,17 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(doc.Jobs))
 	seenID := map[string]bool{}
+	rows := srcutil.NewRows(ctx, b, len(doc.Jobs))
 	for i, j := range doc.Jobs {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		p, err := j.posting(b, seen)
 		if err != nil {
-			return nil, fmt.Errorf("feed %q: job %d: %w", b.Token, i, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("feed %q: job %d: %w", b.Token, i, ferr)
+			}
+			continue
 		}
 		id := strings.ToLower(strings.TrimSpace(j.PartnerJobID))
 		if seenID[id] {
@@ -98,6 +102,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 		seenID[id] = true
 		out = append(out, p)
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("feed %q: %w", b.Token, err)
 	}
 	return out, nil
 }
