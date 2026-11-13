@@ -102,15 +102,20 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	var out []posting.Posting
 	keys := map[posting.Key]bool{}
+	rows := srcutil.NewRows(ctx, b, 0)
 	for _, term := range terms {
 		jobs, err := s.search(ctx, term, b.Filters)
 		if err != nil {
 			return nil, fmt.Errorf("amazon %q: search %q: %w", b.Token, term, err)
 		}
+		rows.Add(len(jobs))
 		for _, j := range jobs {
 			p, err := j.posting(b, seen)
 			if err != nil {
-				return nil, fmt.Errorf("amazon %q: search %q: job %q: %w", b.Token, term, j.IDIcims, err)
+				if ferr := rows.Bad(err); ferr != nil {
+					return nil, fmt.Errorf("amazon %q: search %q: job %q: %w", b.Token, term, j.IDIcims, ferr)
+				}
+				continue
 			}
 			if !keys[p.Key] {
 				keys[p.Key] = true
@@ -121,6 +126,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("amazon %q: %w: the board's searches together list more than %d postings; narrow them",
 				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
 		}
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("amazon %q: %w", b.Token, err)
 	}
 	return out, nil
 }

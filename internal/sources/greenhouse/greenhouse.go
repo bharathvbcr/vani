@@ -39,7 +39,9 @@ func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
 func (s *source) ATS() posting.ATS { return posting.Greenhouse }
 
 type response struct {
-	Jobs []job `json:"jobs"`
+	// Jobs are decoded one row at a time (List), so a row of the wrong type is
+	// one bad row, not an undecodable board.
+	Jobs []json.RawMessage `json:"jobs"`
 }
 
 type job struct {
@@ -77,15 +79,30 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(resp.Jobs))
-	for i, j := range resp.Jobs {
-		p, err := j.posting(b, seen)
+	// kept is the jobs behind out, by position: a skipped row leaves both.
+	kept := make([]job, 0, len(resp.Jobs))
+	rows := srcutil.NewRows(ctx, b, len(resp.Jobs))
+	for i, raw := range resp.Jobs {
+		var j job
+		err := json.Unmarshal(raw, &j)
+		var p posting.Posting
+		if err == nil {
+			p, err = j.posting(b, seen)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("greenhouse %q: job %d: %w", b.Token, i, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("greenhouse %q: job %d: %w", b.Token, i, ferr)
+			}
+			continue
 		}
 		out = append(out, p)
+		kept = append(kept, j)
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("greenhouse %q: %w", b.Token, err)
 	}
 	if s.pay != nil {
-		if err := s.applyPay(ctx, b, resp.Jobs, out); err != nil {
+		if err := s.applyPay(ctx, b, kept, out); err != nil {
 			return nil, fmt.Errorf("greenhouse %q: %w", b.Token, err)
 		}
 	}

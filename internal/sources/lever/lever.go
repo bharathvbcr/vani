@@ -4,6 +4,7 @@ package lever
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -74,7 +75,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	} else if b.Region != "" {
 		return nil, fmt.Errorf("lever %q: unknown region %q", b.Token, b.Region)
 	}
-	var posts []lpost
+	// Rows are decoded one at a time below, so a row of the wrong type is one
+	// bad row, not an undecodable board.
+	var posts []json.RawMessage
 	if err := srcutil.GetJSON(ctx, s.d, base+url.PathEscape(b.Token)+"?mode=json", &posts); err != nil {
 		return nil, fmt.Errorf("lever %q: %w", b.Token, err)
 	}
@@ -86,12 +89,24 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(posts))
-	for i, lp := range posts {
-		p, err := lp.posting(b, seen)
+	rows := srcutil.NewRows(ctx, b, len(posts))
+	for i, raw := range posts {
+		var lp lpost
+		err := json.Unmarshal(raw, &lp)
+		var p posting.Posting
+		if err == nil {
+			p, err = lp.posting(b, seen)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("lever %q: posting %d: %w", b.Token, i, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("lever %q: posting %d: %w", b.Token, i, ferr)
+			}
+			continue
 		}
 		out = append(out, p)
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("lever %q: %w", b.Token, err)
 	}
 	return out, nil
 }

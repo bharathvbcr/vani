@@ -212,6 +212,9 @@ type Stats struct {
 	// rows. Set only when List succeeds, though Report also fires for a failed
 	// board. Not in Listed: stored postings among them age as absent.
 	Short int `json:"short,omitempty"`
+	// Relocated reused rows were listed with a place other than the stored
+	// posting's, and were returned with the listed one.
+	Relocated int `json:"relocated,omitempty"`
 }
 
 // NewWith returns the Oracle HCM source with the bounded detail step: stored
@@ -406,6 +409,12 @@ func (s *source) details(ctx context.Context, b sources.Board, t target, rows []
 	for _, i := range pl.Reuse {
 		p := stored[keys[i]]
 		p.SeenAt = seen
+		// A posting's location is built from its row alone, so a place that
+		// moved shows without a request (srcutil.Relocate).
+		if loc, moved := srcutil.Relocate(p.Location, rowLocation(rows[i])); moved {
+			p.Location = loc
+			st.Relocated++
+		}
 		slot[i] = &p
 		st.Reused++
 	}
@@ -485,11 +494,7 @@ func (s *source) detail(ctx context.Context, b sources.Board, t target, r row, s
 	if err := srcutil.CheckURL("job url", pub); err != nil {
 		return posting.Posting{}, err
 	}
-	var secondary []string
-	for _, l := range r.SecondaryLocations {
-		secondary = append(secondary, l.Name)
-	}
-	location := joinLocations(r.PrimaryLocation, secondary)
+	location := rowLocation(r)
 	if location == "" {
 		location = joinLocations(d.PrimaryLocation, nil)
 	}
@@ -532,6 +537,16 @@ func description(d detailItem) string {
 		}
 	}
 	return lead + htmltext.Text(strings.Join(parts, "<br><br>"), room)
+}
+
+// rowLocation is the location a listed row names: its primary place then its
+// secondary ones, as the posting built from the row carries them.
+func rowLocation(r row) string {
+	var secondary []string
+	for _, l := range r.SecondaryLocations {
+		secondary = append(secondary, l.Name)
+	}
+	return joinLocations(r.PrimaryLocation, secondary)
 }
 
 // joinLocations is the primary location then the other ones, trimmed, without

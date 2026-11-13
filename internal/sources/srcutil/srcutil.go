@@ -214,6 +214,10 @@ type RateLimitedError struct {
 	// noRequest is set when the host's memory refused the request, so none was
 	// sent: the 429 behind it was seen earlier (this run or a previous one).
 	noRequest bool
+	// ra is the final 429's Retry-After (at most an hour), when it gave one.
+	// It is what the host's in-run cooldown waits for (HostThrottle).
+	ra    time.Duration
+	hasRA bool
 }
 
 func (e *RateLimitedError) Error() string {
@@ -426,7 +430,7 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 	case err == nil:
 		th.answered(host)
 	case errors.As(err, &rl) && !rl.noRequest:
-		th.limited(host, probeWhy != "")
+		th.limitedBy(host, probeWhy != "", rl)
 	default:
 		th.inconclusive(host, probeWhy != "")
 	}
@@ -526,7 +530,8 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 		// told apart from one that is broken, a gateway status as the plain status.
 		giveUp := func(why string) error {
 			if code == http.StatusTooManyRequests {
-				return &RateLimitedError{Host: se.Host, Method: method, Path: req.URL.Path, Attempts: attempt + 1, Why: why, Status: se}
+				ra, hasRA := retryAfter(hdr, now())
+				return &RateLimitedError{Host: se.Host, Method: method, Path: req.URL.Path, Attempts: attempt + 1, Why: why, Status: se, ra: ra, hasRA: hasRA}
 			}
 			return fmt.Errorf("sources: %s %s: %w (%s)", verb, req.URL.Redacted(), se, why)
 		}

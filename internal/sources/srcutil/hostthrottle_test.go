@@ -179,8 +179,11 @@ func TestRunRetryBudgetConcurrentSpend(t *testing.T) {
 	}
 }
 
-// Gap 2a. A host that ended rate limited is asked once more by the next board,
-// without retries, and not at all after that.
+// Gap 2a. A host that ended rate limited cools, and the next boards probe it
+// once each, without retries, after a longer wait each time; a host that
+// answers 429 to maxInRunProbeFailures probes is blocked for the rest of the
+// run (this was: one probe, then blocked at once, which left every later board
+// on a shared host unread because of one 429).
 func TestHostThrottleSecondBoardProbesOnceThenBlocks(t *testing.T) {
 	waits := noWait(t)
 	noJitter(t)
@@ -196,13 +199,20 @@ func TestHostThrottleSecondBoardProbesOnceThenBlocks(t *testing.T) {
 	}
 	spentBefore := len(*waits)
 
-	wantWhy(t, getFrom(boardCtx(run), f, "ms.test"), "host rate limited earlier this run; probed once")
-	if f.count("ms.test") != 7 || len(*waits) != spentBefore {
-		t.Errorf("second board: %d requests in all, waits %v; want one probe and no waiting", f.count("ms.test"), *waits)
+	// The probes of boards two to four wait the host's cooldown out first (the
+	// waits are what the stub records; the real clock barely moves, so each is
+	// the cooldown less a hair).
+	for i, wantWait := range []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second} {
+		wantWhy(t, getFrom(boardCtx(run), f, "ms.test"), "host rate limited earlier this run; probed once")
+		got := *waits
+		if f.count("ms.test") != 7+i || len(got) != spentBefore+i+1 || got[len(got)-1] > wantWait || got[len(got)-1] < wantWait-time.Second {
+			t.Fatalf("board %d: %d requests in all, waits %v; want one probe after about %v", i+2, f.count("ms.test"), got, wantWait)
+		}
 	}
+	spentBefore = len(*waits)
 	rl := wantWhy(t, getFrom(boardCtx(run), f, "ms.test"), "host rate limited earlier this run; probed once")
-	if f.count("ms.test") != 7 || len(*waits) != spentBefore || !rl.noRequest {
-		t.Errorf("third board: %d requests in all; want none sent", f.count("ms.test"))
+	if f.count("ms.test") != 9 || len(*waits) != spentBefore || !rl.noRequest {
+		t.Errorf("board five: %d requests in all, waits %v; want none sent and no waiting", f.count("ms.test"), *waits)
 	}
 	// Other hosts are unaffected.
 	if err := getFrom(boardCtx(run), newFakeHosts(func(string, int) srctest.Reply { return ok200 }), "other.test"); err != nil {
@@ -528,8 +538,8 @@ func TestHostThrottleHostCaseFolds(t *testing.T) {
 	wantWhy(t, getFrom(run, f, "MS.test"), "")
 	wantWhy(t, getFrom(run, f, "ms.TEST"), "probed once")
 	wantWhy(t, getFrom(run, f, "Ms.Test"), "probed once")
-	if n := f.count("MS.test") + f.count("ms.TEST") + f.count("Ms.Test"); n != 6 {
-		t.Errorf("%d requests, want 5 and 1 probe", n)
+	if n := f.count("MS.test") + f.count("ms.TEST") + f.count("Ms.Test"); n != 7 {
+		t.Errorf("%d requests, want 5 and 2 probes (the host cools between them)", n)
 	}
 }
 

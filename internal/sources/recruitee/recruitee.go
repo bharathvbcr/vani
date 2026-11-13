@@ -95,10 +95,14 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(resp.Offers))
 	keys := make(map[posting.Key]int, len(resp.Offers))
+	rows := srcutil.NewRows(ctx, b, len(resp.Offers))
 	for i, o := range resp.Offers {
 		p, keep, err := o.posting(b, seen)
 		if err != nil {
-			return nil, fmt.Errorf("recruitee %q: offer %d: %w", b.Token, i, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("recruitee %q: offer %d: %w", b.Token, i, ferr)
+			}
+			continue
 		}
 		if !keep {
 			continue
@@ -108,6 +112,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 		keys[p.Key] = i
 		out = append(out, p)
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("recruitee %q: %w", b.Token, err)
 	}
 	return out, nil
 }

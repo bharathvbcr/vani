@@ -131,6 +131,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(resp.Jobs))
 	ids := make([]string, 0, len(resp.Jobs))
+	rows := srcutil.NewRows(ctx, b, len(resp.Jobs))
 	for i, j := range resp.Jobs {
 		// An unlisted job is reachable by link but not published on the board.
 		if j.IsListed != nil && !*j.IsListed {
@@ -138,10 +139,16 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 		p, err := j.posting(b, seen)
 		if err != nil {
-			return nil, fmt.Errorf("ashby %q: job %d: %w", b.Token, i, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("ashby %q: job %d: %w", b.Token, i, ferr)
+			}
+			continue
 		}
 		out = append(out, p)
 		ids = append(ids, strings.TrimSpace(j.ID))
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("ashby %q: %w", b.Token, err)
 	}
 	if s.forms != nil {
 		if err := s.forms.read(ctx, s, b, out, ids); err != nil {

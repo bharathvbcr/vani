@@ -41,6 +41,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/recruitee"
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/teamtailor"
 	"github.com/bharathvbcr/Vani/internal/sources/tiktok"
@@ -388,6 +389,9 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 			Outcome: tk.Outcome, InFlight: tk.InFlight,
 		})
 	})
+	// A row an adapter cannot read is skipped and counted as a shortfall,
+	// which reconcileBoard folds as a short listing (badrows.go).
+	ctx = srcutil.WithBadRowSink(ctx, w.badRowSink)
 	health := openBoardHealth(w.stateDir, w.warnf) // reporting only: nothing below reads it back into reconcile
 	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
 	// Every board the listing finished feeds health, whether or not the run
