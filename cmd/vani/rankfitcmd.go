@@ -214,25 +214,23 @@ type rankfitReply struct {
 	failure
 }
 
-// rankfitWeights builds each labelled posting's Score parts: as feedback
-// recorded them when it was judged or shown, which is what the owner saw;
-// else scored now under base, as `vani jobs` would rank it (the same insight).
-// It fits the shares and prints the comparison with the hand weights.
-func (e *env) rankfitWeights(snap ledger.Snapshot, me map[posting.Key]marks.Entry, targets map[posting.Key]rankfit.Target,
-	base jobinsight.Weights, opt rankfit.Options, w io.Writer) (rankfit.FitResult, error) {
+// rankfitItems builds each target's Score parts, the one way the fit and the
+// relevance report's part AUC both read them: as feedback recorded them when
+// the posting was judged or shown, else scored now under base. recorded counts
+// the first kind; absent counts targets with no ledger record (left out).
+func (e *env) rankfitItems(snap ledger.Snapshot, me map[posting.Key]marks.Entry, targets map[posting.Key]rankfit.Target,
+	base jobinsight.Weights) (items []rankfit.Item, recorded, absent int, err error) {
 	var in *insight
 	byKey := make(map[posting.Key]ledger.Record, len(snap.Records))
 	for _, r := range snap.Records {
 		byKey[r.Key] = r
 	}
-	var items []rankfit.Item
-	absent, recorded := 0, 0
 	for _, k := range slices.Sorted(maps.Keys(targets)) {
 		t := targets[k]
 		if t.Scores != nil {
 			it, err := rankfit.ItemFromScores(string(k), *t.Scores, base, t)
 			if err != nil {
-				return rankfit.FitResult{}, err
+				return nil, 0, 0, err
 			}
 			items, recorded = append(items, it), recorded+1
 			continue
@@ -243,16 +241,28 @@ func (e *env) rankfitWeights(snap ledger.Snapshot, me map[posting.Key]marks.Entr
 			continue
 		}
 		if in == nil {
-			var err error
 			if in, err = e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, me); err != nil {
-				return rankfit.FitResult{}, err
+				return nil, 0, 0, err
 			}
 		}
 		it, err := rankfit.ItemFrom(string(k), jobinsight.ScoreWith(jobinsight.InputsFor(r, in.rc), base), t)
 		if err != nil {
-			return rankfit.FitResult{}, err
+			return nil, 0, 0, err
 		}
 		items = append(items, it)
+	}
+	return items, recorded, absent, nil
+}
+
+// rankfitWeights builds each labelled posting's Score parts: as feedback
+// recorded them when it was judged or shown, which is what the owner saw;
+// else scored now under base, as `vani jobs` would rank it (the same insight).
+// It fits the shares and prints the comparison with the hand weights.
+func (e *env) rankfitWeights(snap ledger.Snapshot, me map[posting.Key]marks.Entry, targets map[posting.Key]rankfit.Target,
+	base jobinsight.Weights, opt rankfit.Options, w io.Writer) (rankfit.FitResult, error) {
+	items, recorded, absent, err := e.rankfitItems(snap, me, targets, base)
+	if err != nil {
+		return rankfit.FitResult{}, err
 	}
 	fmt.Fprintf(w, "weight fit: %d labelled postings with the scores recorded when judged or shown, %d scored now, %d not in the ledger and left out\n",
 		recorded, len(items)-recorded, absent)

@@ -239,13 +239,13 @@ func TestScoreHostileInputs(t *testing.T) {
 		"nan everywhere": {
 			RoleFit: Slot{Value: "strong_fit", Answered: true, P: nan, HasP: true}, Coverage: nan, HasCoverage: true,
 			Semantic: nan, HasSemantic: true, Target: true, TitleHits: -5, BodyHits: -5, TitleSignals: true, TitleRank: -9,
-			HalfLifeDays: nan, Company: CompanyMarks{-3, -4}, Penalties: []Penalty{{Slot{P: nan, HasP: true, Answered: true}}},
+			HalfLifeDays: nan, Company: CompanyMarks{-3, -4}, Penalties: []Penalty{{Slot: Slot{P: nan, HasP: true, Answered: true}}},
 		},
 		"inf everywhere": {
 			RoleFit: Slot{Value: "strong_fit", P: inf, HasP: true}, Coverage: inf, HasCoverage: true,
 			Semantic: -inf, HasSemantic: true, Target: true, TitleHits: math.MaxInt, BodyHits: math.MaxInt,
 			TitleSignals: true, TitleRank: math.MaxInt, AgeKnown: true, AgeDays: math.MaxInt, HalfLifeDays: inf,
-			Penalties: []Penalty{{Slot{P: inf, HasP: true}}, {Slot{P: -inf, HasP: true}}},
+			Penalties: []Penalty{{Slot: Slot{P: inf, HasP: true}}, {Slot: Slot{P: -inf, HasP: true}}},
 		},
 		"negative and huge": {
 			RoleFit: sl("strong_fit", -3), Coverage: -50, HasCoverage: true, Semantic: 9, HasSemantic: true,

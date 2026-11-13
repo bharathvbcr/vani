@@ -353,7 +353,7 @@ func planPolicyDrop(l ledger.Ledger, r ledger.Record, p DropPolicy, sc ReopenSco
 	var c dropClass
 	switch {
 	case backend == TitleBackend:
-		if _, _, still := p.EvaluateTitle(r.Posting.Title); still {
+		if _, _, still := p.EvaluateTitle(r.Posting.Title, r.Posting.Description); still {
 			return dropStays
 		}
 		c = dropTitle

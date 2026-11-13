@@ -6,8 +6,13 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
+	"github.com/bharathvbcr/Vani/internal/feedback"
+	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
+	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/rankfit"
 )
 
 // maxPrecisionK bounds one -k value.
@@ -21,7 +26,7 @@ func (e *env) cmdRelevance(args []string) error {
 	fs := e.newFlags("relevance")
 	labels := fs.String("labels", "", "label directory (default: state dir)")
 	ks := fs.String("k", "", "comma list of k for precision@k (default 5,10,20)")
-	asJSON := e.jsonFlag(fs, `{"relevance","drop_agreement"} on stdout: the raw counts the tables are built from`)
+	asJSON := e.jsonFlag(fs, `{"relevance","drop_recall","teacher_proxy","drop_agreement","readers","part_auc"} on stdout: the raw counts the tables are built from`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -103,13 +108,74 @@ func (e *env) cmdRelevance(args []string) error {
 	}
 	recall := eval.BuildDropRecall(done, b.recallMembers(rules))
 	proxy := eval.BuildTeacherDropProxy(b.snap.Records, rules, e.openTeacherReadings())
-	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy}
+	store, status, detail := e.openTeacherLog()
+	readers := eval.BuildReaderAgreement(done, b.snap.Records, store, status, names)
+	readers.TeacherDetail = detail
+	out := relevanceReply{Relevance: rep, DropAgreement: &agree, DropRecall: &recall, TeacherProxy: &proxy, Readers: &readers}
+	if parts, err := e.partAUC(done, b.snap); err != nil {
+		out.PartAUCError = err.Error()
+	} else {
+		out.PartAUC = parts
+	}
 	return e.reply(*asJSON, out, nil, func() {
 		fmt.Fprint(e.stdout, rep.Markdown())
 		fmt.Fprint(e.stdout, recall.Markdown())
 		fmt.Fprint(e.stdout, proxy.Markdown())
 		fmt.Fprint(e.stdout, agree.Markdown())
+		fmt.Fprint(e.stdout, readers.Markdown())
+		fmt.Fprint(e.stdout, "\n## Score parts against the owner\n")
+		if out.PartAUCError != "" {
+			fmt.Fprintf(e.stdout, "\nnot computed: %s\n", out.PartAUCError)
+		}
+		for _, p := range out.PartAUC {
+			fmt.Fprint(e.stdout, p.Markdown())
+		}
 	})
+}
+
+// partAUCScopes are the judged postings the part AUC is computed over: all of
+// them, and the scored stratum alone (the postings the ranking orders).
+var partAUCScopes = []struct {
+	name string
+	keep func(*rankfit.Item) bool
+}{
+	{"all judged postings", nil},
+	{"scored stratum (score deciles)", func(it *rankfit.Item) bool { return rankfit.StratumOf(it.Source) == rankfit.StratumScored }},
+}
+
+// partAUC sets each Score part against the owner's audit judgments, building
+// the parts exactly as `vani rankfit` does (rankfitItems) under the hand
+// weights. Marks and impressions are read for the scores the owner saw and
+// the company factor; neither becomes a label here. A source that cannot be
+// read is an error, never an empty table.
+func (e *env) partAUC(done map[posting.Key]eval.Entry, snap ledger.Snapshot) ([]rankfit.PartAUC, error) {
+	me, err := marks.Read(marks.Dir(e.stateDir))
+	if err != nil {
+		return nil, fmt.Errorf("read marks: %w", err)
+	}
+	shown, err := feedback.ReadImpressions(e.stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("read impressions: %w", err)
+	}
+	targets, _, err := rankfit.Targets(done, shown.Rows, nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, t := range targets {
+		if !t.Judged {
+			delete(targets, k) // passed-over impressions: not the owner's answer
+		}
+	}
+	base := jobinsight.DefaultWeights()
+	items, _, _, err := e.rankfitItems(snap, me, targets, base)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]rankfit.PartAUC, 0, len(partAUCScopes))
+	for _, s := range partAUCScopes {
+		out = append(out, rankfit.BuildPartAUC(items, base, s.name, s.keep, rankfit.DefaultPartAUCResamples, 1))
+	}
+	return out, nil
 }
 
 // relevanceReply is `vani relevance --json`. DropAgreementError replaces
@@ -124,6 +190,13 @@ type relevanceReply struct {
 	TeacherProxy       *eval.TeacherDropProxy `json:"teacher_proxy,omitempty"`
 	DropAgreement      *eval.DropAgreement    `json:"drop_agreement,omitempty"`
 	DropAgreementError string                 `json:"drop_agreement_error,omitempty"`
+	// Readers is every triage reader (engine backend, teacher model) against
+	// the owner's would_apply; PartAUC each Score part's AUC on the judged
+	// postings, or PartAUCError why it could not be computed. Absent with no
+	// judged labels.
+	Readers      *eval.ReaderAgreement `json:"readers,omitempty"`
+	PartAUC      []rankfit.PartAUC     `json:"part_auc,omitempty"`
+	PartAUCError string                `json:"part_auc_error,omitempty"`
 }
 
 // dropAgreement is the drop-candidate agreement for a run that has not read

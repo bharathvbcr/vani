@@ -194,7 +194,7 @@ The score pill on a job page is one of two different numbers, and its label says
 
 In the scrape drawer, **Crawl all pages → Vani** reads every page of the listing you are on, not
 just the one on screen, and sends the jobs to Vani the way **Save to Vani** does (`ingestJobs`,
-batches of at most 200; `src/crawlrun.ts`, `src/crawler.ts`). Progress shows under the button,
+every job, in batches of at most 200; `src/crawlrun.ts`, `src/crawler.ts`). Progress shows under the button,
 **Stop** ends the crawl and sends nothing, and the last line says what was read, what was left out
 and what Vani answered.
 
@@ -240,6 +240,16 @@ and what Vani answered.
   board's own count (two of its facets agreeing) was reached and nothing was left out.
 - **Batches** close at 200 jobs or 800 KiB, whichever comes first. The size is counted the way the
   Mac host measures its 1 MiB bound, with every `/` escaped. A live 200-job NVIDIA batch was 749 KB.
+  **Save to Vani** (drawer and popup) sends through the same batches (`sendScrape`), so a 669-job
+  page goes as four messages, not as 200 with the rest left behind; it shows which jobs are in flight,
+  and the popup has to stay open until the last batch (closing it ends the batches after the one in
+  flight). A send is reported ok only when no batch failed. Checked with `bun test` against a fake
+  host (2026-11-12). Not checked: multi-batch Save into the real Mac host, and the popup and drawer
+  wiring in the loaded extension. The host side names each spooled batch by time and random bytes, and
+  `vani` drains 50 a time, so back-to-back batches are not expected to collide (read, not run).
+- **A Workday URL cut to fit is named.** More than 20 filters, more than 200 values in one filter, or
+  a search over 200 characters is cut, which changes the listing the crawl reads, so the crawl names
+  the cut and is not complete.
 - **Saving the search:** a Workday board with more than 5,000 jobs is not saved as a daily search,
   because the daemon's Workday adapter (`workday.MaxPostings` for a board with no `max_postings`)
   refuses a board that size on every run. The status line says so. Narrow the board with a search

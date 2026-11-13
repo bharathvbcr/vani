@@ -28,6 +28,7 @@ struct PipelineView: View {
                     StatusHeader(status: s)
                     ScheduleSection(daemon: s.daemon)
                     LastRunSection(status: s)
+                    DoctorSection()
                     SpendSection(backends: s.backends)
                     LedgerSection(ledger: s.ledger)
                     DecideSection(decide: s.decide, config: s.config)
@@ -527,7 +528,7 @@ private struct StatusHeader: View {
     }
 }
 
-private struct Panel<Content: View>: View {
+struct Panel<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 
@@ -657,6 +658,9 @@ private struct LastRunSection: View {
                 }
                 if let boards = run.boards, let fetch = boards.fetchSummary {
                     Row(label: "Board fetches", value: fetchLine(boards, fetch), secondary: boards.payFailed == 0, verbatim: true)
+                }
+                if let short = run.boards?.shortSummary {
+                    Row(label: "Listed short", value: PipelineStatus.bounded(short, max: 500), secondary: true, verbatim: true)
                 }
                 if let adv = run.advance {
                     AdvanceRows(advance: adv)

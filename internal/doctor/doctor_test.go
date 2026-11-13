@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
@@ -142,6 +143,10 @@ func TestAFailedPartIsNeverACleanBill(t *testing.T) {
 			if rep.Boards.Error == "" || len(rep.BoardFinds) != 0 || rep.Boards.Answered != 0 {
 				t.Fatalf("boards part %+v with %d findings", rep.Boards, len(rep.BoardFinds))
 			}
+			// The model answered and the answer was paid for: it is kept.
+			if rep.Boards.Raw != p.boards {
+				t.Fatalf("raw reply %q, want the reply", rep.Boards.Raw)
+			}
 			if len(rep.NotExamined) != 2 {
 				t.Fatalf("not examined %v", rep.NotExamined)
 			}
@@ -187,6 +192,21 @@ func TestProviderDown(t *testing.T) {
 	}
 	if !strings.Contains(rep.Boards.Error, "connection refused") || !strings.Contains(rep.Drops.Error, "connection refused") || len(p.reqs) != 2 {
 		t.Fatalf("%+v %+v %d", rep.Boards, rep.Drops, len(p.reqs))
+	}
+	if rep.Boards.Raw != "" || rep.Drops.Raw != "" {
+		t.Fatal("a reply that never came was kept")
+	}
+}
+
+func TestRawOfIsBoundedOnARuneBoundary(t *testing.T) {
+	if got := rawOf("short"); got != "short" {
+		t.Fatal(got)
+	}
+	long := strings.Repeat("é", MaxRawBytes) // 2 bytes a rune, so the bound falls inside one
+	got := rawOf(long)
+	body, _, _ := strings.Cut(got, "\n[cut: ")
+	if len(body) > MaxRawBytes || !utf8.ValidString(body) || !strings.Contains(got, "bytes kept]") {
+		t.Fatalf("%d bytes, valid %v", len(body), utf8.ValidString(body))
 	}
 }
 

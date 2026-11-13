@@ -23,6 +23,9 @@ type walker struct {
 	rows []row
 	// deleted counts the deleted-requisition markers listed (tombstoneRE).
 	deleted int
+	// short is the rows the terms counted and did not list, within the
+	// allowance, every term's (Stats.Short).
+	short int
 	// requests counts the listing requests of every term; maxRequests bounds
 	// them: every term's pages up to the board's limit, plus the first page.
 	requests    int
@@ -169,5 +172,8 @@ func (w *walker) walk(ctx context.Context, term string) error {
 	if len(here) < first.total-shortfall(first.total) {
 		return fmt.Errorf("%w: the board listed %d of the %d jobs it counts", errIncomplete, len(here), first.total)
 	}
+	// Within the allowance the term is kept; its gap is counted, never below
+	// zero, so one term listing past its total cancels no other's gap.
+	w.short += max(0, first.total-len(here))
 	return nil
 }

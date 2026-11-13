@@ -9,7 +9,8 @@ import { type Offer, offerSubject } from "./applied";
 import { BASICS, BASICS_HOST, basicsFields, basicsSaveOutcome, basicsValues } from "./basics";
 import { intentOf } from "./intents";
 import { boardTotalText, exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult, skippedText, unreadText } from "./scraper";
-import { type IngestSource, buildIngestBatch, describeIngest, leftOutText, prepareIngest } from "./ingest";
+import { type IngestSource, sendable } from "./ingest";
+import { sendScrape } from "./crawler";
 import { type RelevanceResult } from "./relevance";
 import { scoreWord } from "./jobrow";
 import type { PortalInfo } from "./portal";
@@ -912,18 +913,22 @@ let scrapedBoardTotal: number | undefined;
 /** Navigation links the scraped page's link reader left out (ScrapeResult.skipped). */
 let scrapedSkipped = 0;
 
-/** Send jobs to Vani and say what Vani answered, or why nothing was sent; a failure is shown, never swallowed. */
-async function sendToVani(scrape: { pageUrl: string; pageTitle: string; jobs: readonly IngestSource[] }, saveSearch: boolean): Promise<{ ok: boolean; text: string }> {
-  const p = prepareIngest(scrape, saveSearch);
-  if ("error" in p) return { ok: false, text: p.error };
-  let reply: unknown;
-  try {
-    reply = await bg<unknown>(p.req);
-  } catch (e) {
-    return { ok: false, text: `Could not reach Vani: ${friendlyError(e).line}` };
-  }
-  const out = describeIngest(reply);
-  return { ok: out.ok, text: `${out.text}${p.leftOut ? `. ${p.leftOut}` : ""}` };
+/**
+ * Send jobs to Vani, every one, in bounded batches (crawler.ts sendScrape), and say what Vani answered, or
+ * why nothing was sent; a failure is shown, never swallowed. `onBatch` names the jobs in flight.
+ */
+async function sendToVani(
+  scrape: { pageUrl: string; pageTitle: string; jobs: readonly IngestSource[] },
+  saveSearch: boolean,
+  onBatch?: (from: number, to: number, total: number) => void,
+): Promise<{ ok: boolean; text: string }> {
+  return sendScrape(scrape, saveSearch, async m => {
+    try {
+      return await bg<unknown>(m as ToBackground);
+    } catch (e) {
+      throw new Error(friendlyError(e).line);
+    }
+  }, onBatch);
 }
 
 function renderPortal(portal?: PortalInfo): void {
@@ -1358,8 +1363,8 @@ function renderScraper(): void {
   const filtered = selectJobs(scrapedJobs, filter);
   const active = filtering(filter);
   const acted = jobsToActOn(scrapedJobs, filter);
-  const batch = buildIngestBatch(acted);
-  const sendNote = saveSendNote(acted.length, batch.jobs.length, leftOutText(batch));
+  const can = sendable(acted);
+  const sendNote = saveSendNote(acted.length, can.count, can.leftOut);
   const countEl = $("#scraper-count");
   if (countEl) countEl.textContent = countLabel(filtered.length, scrapedJobs.length, active);
   const scope = $("#scraper-scope");
@@ -1436,7 +1441,10 @@ function initScraper(): void {
       if (out) out.textContent = "Sending...";
       try {
         const again = ($("#scraper-save-search") as HTMLInputElement | null)?.checked ?? false;
-        const r = await sendToVani({ ...scrapedPage, jobs }, again);
+        // Past one batch the popup must stay open: closing it ends the batches after the one in flight.
+        const r = await sendToVani({ ...scrapedPage, jobs }, again, (from, to, total) => {
+          if (out && gen === scrapeGen && total > to - from + 1) out.textContent = `Sending ${from}–${to} of ${total}… keep this popup open until it finishes.`;
+        });
         if (gen !== scrapeGen) return;
         if (out) out.textContent = r.text;
         status(r.ok ? `Vani: ${r.text}.` : r.text, r.ok ? "ok" : "error");

@@ -147,14 +147,28 @@ func scoreWithOracle(in Inputs, w Weights) Result {
 	}
 
 	gate := 1.0
+	// A seniority penalty under a mismatch_seniority reading is the same fact:
+	// the stronger of the two applies, written here as a separate pass.
+	var levelPens []float64
 	for _, p := range in.Penalties {
 		if mismatch && p.Slot.Value == in.RoleFit.Value {
 			continue // the same reading, penalised once by the mismatch gate below
 		}
-		gate *= 1 - clamp01(w.PenaltyStrength)*w.conf(p.Slot)
+		f := 1 - clamp01(w.PenaltyStrength)*w.conf(p.Slot)
+		if mismatch && in.RoleFit.Value == "mismatch_seniority" && p.Name == "seniority" {
+			levelPens = append(levelPens, f)
+			continue
+		}
+		gate *= f
 	}
 	if mismatch {
-		gate *= 1 - clamp01(w.Mismatch)*fitConf
+		m := 1 - clamp01(w.Mismatch)*fitConf
+		for _, f := range levelPens {
+			if f < m {
+				m = f
+			}
+		}
+		gate *= m
 	}
 	if excluded {
 		gate *= clamp01(w.ExcludedTitle)

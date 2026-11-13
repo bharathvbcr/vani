@@ -163,6 +163,24 @@ describe("parseWorkdayBoard", () => {
     const many = Array.from({ length: 40 }, (_, i) => `f${i}=${hex(i)}`).join("&");
     expect(Object.keys(parseWorkdayBoard(`${ORIGIN}/External?${many}`)!.facets).length).toBe(20);
   });
+  test("a URL cut to fit says so: the crawl is then not the listing the page shows", () => {
+    const many = Array.from({ length: 40 }, (_, i) => `f${i}=${hex(i)}`).join("&");
+    expect(parseWorkdayBoard(`${ORIGIN}/External?${many}`)!.cut).toBe("the page applies 40 filters and the crawl reads the first 20");
+    const wide = Array.from({ length: 205 }, (_, i) => `locations=${hex(i)}`).join("&");
+    const w = parseWorkdayBoard(`${ORIGIN}/External?${wide}`)!;
+    expect(w.facets.locations!.length).toBe(200);
+    expect(w.cut).toBe("the page's locations filter has 205 values and the crawl reads the first 200");
+    const q = parseWorkdayBoard(`${ORIGIN}/External?q=${"a".repeat(250)}`)!;
+    expect(q.cut).toBe("the page's search is 250 characters and the crawl reads the first 200");
+    // Within the bounds nothing is said, and the board reads as before.
+    expect(parseWorkdayBoard(`${ORIGIN}/External?q=gpu&jobFamilyGroup=${hex(1)}`)!.cut).toBeUndefined();
+  });
+  test("a crawl of a cut URL is not complete, and its notes say why", async () => {
+    const many = Array.from({ length: 40 }, (_, i) => `f${i}=${hex(i)}`).join("&");
+    const r = await crawlWorkday(parseWorkdayBoard(`${ORIGIN}/External?${many}`)!, { company: "Acme" }, fakeWorkday({ jobs: makeJobs(5) }));
+    expect(r.complete).toBe(false);
+    expect(r.notes).toContain("the page applies 40 filters and the crawl reads the first 20");
+  });
 });
 
 describe("crawlWorkday", () => {

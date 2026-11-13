@@ -9,6 +9,16 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Readers and score parts against the owner** (`internal/eval/readeragree.go`,
+  `internal/rankfit/partauc.go`, `vani relevance`). The report now sets every triage reader against
+  the owner's would_apply labels: each engine backend from the ledger and each teacher model in
+  `teacher_readings.jsonl`. It gives each reader's role_fit sensitivity and specificity (Wilson
+  intervals) and a value-by-answer table for role_fit and seniority. It also gives each Score part's
+  AUC on the judged postings, with a stratified bootstrap interval, over all judged postings and
+  over the scored stratum. The parts are built as `vani rankfit` builds them. Counts only, no
+  spend; a source that cannot be read is named, never shown as an empty table. This is stage 0 of
+  the adaptive-ranking plan: it decides whether any model's reading may stand in for the owner's
+  label.
 - **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
   (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
   `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings
@@ -17,6 +27,11 @@ were ported with notice. Source files do not carry an upstream copyright header.
   cost, and a real run needs `--budget-usd` to cover that cost. Sponsorship rules, readings and
   drops never leave the machine. A failed part is written as failed and the command exits 1.
   [docs/RUNTIME.md](docs/RUNTIME.md) describes it.
+- **Pipeline doctor in the Mac app.** The Pipeline tab has a Pipeline doctor panel: price a review
+  (nothing sent), confirm a budget, run it, and read the report (boards failing silently and wrong
+  drops first, with the model's evidence, next steps and fixes). The newest report shows on launch.
+  `vani doctor --json` now carries the report (`result`), the drop sample's `seed` and `sent`, a
+  partial review's reply keeps its report, and `vani doctor --last` prints the newest report.
 - **Features, benchmarks, and credits.** The README leads with what Vani fetches
   and what it refuses to do. Board caps in that list match the adapter
   constants (Avature 400, IBM 500, D. E. Shaw 1,000, SmartRecruiters and
@@ -154,6 +169,24 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **The weight fit reads the scores the owner saw, not an empty record** (`internal/rankfit`,
+  `Targets`). Audit cards and Mac app Jobs rows are logged without Score's parts. `Targets` took
+  each posting's newest impression as its scores, and for an audited posting that is the
+  scoreless audit card. `ItemFromScores` then refused it ("no recorded gate or fresh"), so
+  `vani rankfit --part weights` could not have run on any audit label once past its threshold.
+  It now takes the newest impression that recorded scores, else scores the posting now. A
+  scoreless Jobs row still counts as a pass.
+- **Ranking: a role's level is penalised once, and "Staff" must agree with the years asked**
+  (`internal/jobinsight`, `internal/expyears`, `internal/pipeline`). A seniority rank penalty and a
+  `mismatch_seniority` role-fit reading say the same thing, yet both multiplied the gate, so a
+  senior role in the owner's area (Anthropic's TPU Performance Engineer, gate 0.24) sank below
+  off-domain staff roles that neither touched. The gate now takes the stronger of the two;
+  `mismatch_domain` and a seniority penalty still compound. A `staff_plus` reading whose posting
+  asks fewer than 7 years (the largest lower bound of its "N years" figures) is ranked at the level
+  those years imply (5 or more senior, otherwise mid), and a title read as staff abstains on such a
+  posting, so `vani retriage --title-drops` reopens one dropped that way (Perplexity's "Member of
+  Data Staff"). With no figure, or 7 or more years, the staff reading stands. On the owner's ledger,
+  with `staff_plus` added to `rank_penalties`, Anthropic's top 30 went from 15 staff+ roles to none.
 - **Extension scraper**: a page read link by link stopped at its first 100 job links and said
   nothing, so Anthropic's careers page (669 jobs on one page) gave 100, and **Crawl all pages**
   called that complete. It now reads up to 2000 distinct job links (`MAX_PAGE_JOB_LINKS`); a posting
@@ -171,15 +204,33 @@ were ported with notice. Source files do not carry an upstream copyright header.
   Pager controls are never jobs; a board reader's link back to the listing that names no posting is
   left out; and when most job links name a posting (a number, a UUID or a job parameter), the link
   reader leaves out those that do not and says how many.
+- **Extension Save sends every job**: **Save to Vani** in the drawer and the popup sent one message of
+  at most 200 jobs, so Anthropic's 669 went as 200 with "469 not sent (at most 200 at a time)", and a
+  page of 200 full postings could pass the Mac host's 1 MiB bound in that one message and be refused
+  whole. Save now goes through the crawl's batched sender (`sendScrape` over `sendCrawl`: 200 jobs or
+  800 KiB a batch, the search saved by the first), says "Sending 201–400 of 669…" while it runs, and
+  is reported ok only when no batch failed. A message that never reached Vani reads "Could not reach
+  Vani", never "Vani refused". Only jobs no batch can carry are named as left out. The popup must stay
+  open until the last batch: closing it ends the batches after the one in flight.
+- **Extension crawl of a cut Workday URL**: a page URL with more than 20 filters, more than 200 values
+  in one filter, or a search over 200 characters was cut to fit in silence, so the crawl read a
+  different listing from the page's and could call it complete. The cut is now named in the crawl's
+  notes and the crawl is incomplete.
+- **Extension typecheck**: the fill reason `not_run` (contact checks that could not run) had no words
+  in the panel's reason table, so `bun run typecheck` failed on `main`.
 - **Workday short listings are counted**: a query under the 2000-row window that ends before the
   board's own total is still kept, not failed, but the rows it counted and did not list are now
   recorded (`boards.short`, `items[].short` in the run record) and named per board by
-  `vani runs show` ("Listed short: …"). Stored postings among them age as absent, so the gap is
-  now visible. It is not a failure.
+  `vani runs show` ("Listed short: …", largest first). Stored postings among them age as absent,
+  so the gap is now visible. It is not a failure. The same count now covers a Workday split whose
+  allowance let a gap pass, and the hundredth that SmartRecruiters, Oracle HCM and IBM listings
+  may lose before they fail; a board that then fails is not counted, as nothing ages. The app's
+  run panel shows a **Listed short** row.
 - **Inbox fold line adds up**: "folded N batch(es), M job(s)" now splits M into new, already known,
   duplicate of a stored job, invalid and repeated, prints any remainder as unaccounted, and says
   the other records it marked as duplicates apart. `pipeline.Summary` gains `ListedDuplicate`;
-  `Duplicate` keeps its meaning.
+  `Duplicate` keeps its meaning. The inbox status (`vani status`, the app's Inbox row) carries the
+  same split, and each board's reconcile counts in the run record carry `listed_duplicate`.
 - `stages.jsonl` refuses a symlinked leaf on read and after compaction, as `marks.jsonl` does.
 - `BankStoreTests.testConcurrentWritersLoseNothing` no longer fails under heavy machine load.
 - **Workday**: a posting whose detail has an empty jobReqId is keyed by the id its path and

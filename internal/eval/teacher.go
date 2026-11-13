@@ -265,6 +265,25 @@ func (r TeacherRow) validate() error {
 	return nil
 }
 
+// LatestByModel returns k's newest row of task per model ("" is jd_triage),
+// whatever fixture or prompt it was made under: the reader agreement wants
+// every model's last word on a posting, and says how many prompts it spans.
+func (s *TeacherStore) LatestByModel(task string, k posting.Key) map[string]TeacherRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]TeacherRow{}
+	for _, r := range s.byKey[k] {
+		if r.Task != task {
+			continue
+		}
+		if prev, ok := out[r.Model]; ok && r.At.Before(prev.At) {
+			continue // file order breaks ties: a later line with the same time wins
+		}
+		out[r.Model] = r
+	}
+	return out
+}
+
 // Len is how many valid rows the log holds.
 func (s *TeacherStore) Len() int { s.mu.Lock(); defer s.mu.Unlock(); return s.rows }
 

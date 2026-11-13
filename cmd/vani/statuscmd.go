@@ -209,6 +209,13 @@ type inboxFacet struct {
 	New        int       `json:"new,omitempty"`
 	Duplicate  int       `json:"duplicate,omitempty"`
 	Live       int       `json:"live,omitempty"`
+	// Jobs and its split are inboxStatus's; additive.
+	Jobs            int `json:"jobs,omitempty"`
+	ListedDuplicate int `json:"listed_duplicate,omitempty"`
+	Known           int `json:"known,omitempty"`
+	Invalid         int `json:"invalid,omitempty"`
+	Repeated        int `json:"repeated,omitempty"`
+	Unaccounted     int `json:"unaccounted,omitempty"`
 }
 
 type scheduleFacet struct {
@@ -486,6 +493,8 @@ func (e *env) inboxFacet() *inboxFacet {
 		facet: facet{OK: true}, At: st.At, Error: st.Error,
 		Bad: st.Bad, Unreadable: st.Unreadable, Remaining: st.Remaining,
 		Folded: st.Folded, New: st.New, Duplicate: st.Duplicate, Live: st.Live,
+		Jobs: st.Jobs, ListedDuplicate: st.ListedDuplicate, Known: st.Known,
+		Invalid: st.Invalid, Repeated: st.Repeated, Unaccounted: st.Unaccounted,
 	}
 }
 

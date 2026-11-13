@@ -37,6 +37,17 @@ type inboxStatus struct {
 	New        int       `json:"new,omitempty"`
 	Duplicate  int       `json:"duplicate,omitempty"`
 	Live       int       `json:"live,omitempty"`
+	// Jobs is the folded batches' jobs. New, ListedDuplicate, Known, Invalid,
+	// Repeated and Unaccounted split it as drainResult does, Unaccounted
+	// negative when the counts overrun it. Duplicate keeps its meaning: listed
+	// duplicates and the records the fold marked, together. Additive: an older
+	// reader ignores these keys.
+	Jobs            int `json:"jobs,omitempty"`
+	ListedDuplicate int `json:"listed_duplicate,omitempty"`
+	Known           int `json:"known,omitempty"`
+	Invalid         int `json:"invalid,omitempty"`
+	Repeated        int `json:"repeated,omitempty"`
+	Unaccounted     int `json:"unaccounted,omitempty"`
 }
 
 func inboxStatusPath(stateDir string) string {

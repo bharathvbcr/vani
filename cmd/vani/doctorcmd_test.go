@@ -2,19 +2,22 @@ package main
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/track"
 )
 
 type doctorStream struct {
@@ -45,11 +48,16 @@ func (f *doctorFake) Capability(model string) (llm.Capability, bool) {
 	return llm.Capability{Provider: "fake", Model: model, MaxOutputTokens: 64000}, true
 }
 func (f *doctorFake) Stream(_ context.Context, req llm.Request) (llm.Stream, error) {
-	f.sent = append(f.sent, req.System+"\n"+req.Messages[0].Text())
+	all := req.System + "\n" + req.Messages[0].Text()
+	f.sent = append(f.sent, all)
+	reply := f.boards
 	if strings.Contains(req.System, "audit the drop decisions") {
-		return &doctorStream{text: f.drops}, nil
+		reply = f.drops
 	}
-	return &doctorStream{text: f.boards}, nil
+	if reply == "echo" {
+		reply = doctorEcho(strings.Contains(req.System, "audit the drop decisions"), req.Messages[0].Text())
+	}
+	return &doctorStream{text: reply}, nil
 }
 
 const doctorSponsorTitle = "Engineer Needing Sponsorship Review"
@@ -67,23 +75,39 @@ func doctorSetup(t *testing.T) (state string, home string) {
 	cfg.TargetSummary = "early-career ML systems roles"
 	cfg.LLM = config.LLM{Provider: "anthropic", Model: "claude-test", InputNanoUSDPerToken: 3000, OutputNanoUSDPerToken: 15000}
 	cfg.Decide.DailyUSD.LLM = 5
-	cfg.Watchlist = []sources.Board{{ATS: "gh", Token: "acme", Company: "Acme"}, {ATS: "gh", Token: "quiet", Company: "Quiet"}}
+	cfg.Watchlist = []sources.Board{{ATS: "gh", Token: "acme", Company: "Acme"}, {ATS: "gh", Token: "quiet", Company: "Quiet"}, {ATS: "gh", Token: "loud", Company: "Loud"}}
 	cfg.DropRules = []config.DropRule{
 		{Slot: "role_fit", Values: []string{"mismatch_domain"}, MinOpenRouterProb: 0.9},
 		{Slot: "sponsorship", Values: []string{"no_sponsorship"}, MinOpenRouterProb: 0.9},
 	}
 	cfg.AllowedHosts = append(cfg.AllowedHosts, "boards-api.greenhouse.io")
 	writeConfig(t, cfgPath, cfg)
+	// The owner's identifying words: a made-up name stands in for theirs.
+	if err := os.MkdirAll(filepath.Join(state, "tracks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "tracks", track.WordsFile), []byte(doctorOwnerWord+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	zero := 0
 	for i := range 3 {
 		r := runRecord{V: 1, PID: 100 + i, StartedAt: time.Date(2026, 11, 10+i, 9, 0, 0, 0, time.UTC), Outcome: "ok"}
-		r.Boards = &boardsReport{Configured: 2, Read: 1, Items: []boardReport{{ATS: "gh", Token: "acme", Company: "Acme", Outcome: boardRead, Listed: &zero}}}
+		// gh:quiet was read but the record's size bound left it unnamed;
+		// gh:loud failed with an error naming a work-authorization page.
+		r.Boards = &boardsReport{Configured: 3, Read: 2, Failed: 1, Unrecorded: 1, Items: []boardReport{
+			{ATS: "gh", Token: "acme", Company: "Acme", Outcome: boardRead, Listed: &zero},
+			{ATS: "gh", Token: "loud", Company: "Loud", Outcome: boardFailed, Error: "loud: the visa sponsorship page timed out"},
+		}}
 		if err := writeRunHistory(state, r); err != nil {
 			t.Fatal(err)
 		}
 		log := "vani: board gh/acme: details {Listed:0 Requests:1 Prefiltered:0}\n" +
-			"vani: board gh/acme: failed reading " + filepath.Join(home, "Library", "x.json") + ": permission denied\n"
+			"vani: board gh/acme: failed reading " + filepath.Join(home, "Library", "x.json") + ": permission denied\n" +
+			"vani: board gh/acme: answer failed for " + doctorOwnerWord + "'s resume: timed out\n" +
+			"vani: inbox: work authorization check failed\n" +
+			"vani: board gh/acme: {New:0 Unchanged:0 Missed:0 Dead:0}\n" +
+			"vani: board gh/quiet: {New:1 Unchanged:11 Missed:0 Dead:0}\n"
 		if err := os.WriteFile(filepath.Join(state, runRecordDir, runHistoryDir, runID(r)+".log"), []byte(log), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -103,7 +127,31 @@ func doctorSetup(t *testing.T) (state string, home string) {
 	add("gh:acme:1", "Account Executive", map[string]string{"triage.backend": "title", "triage.role_fit": "mismatch_domain"})
 	add("gh:acme:2", "Welder", map[string]string{"triage.backend": "d1-ultra", "triage.role_fit": "mismatch_domain", "triage.role_fit.p": "0.97"})
 	add("gh:acme:3", doctorSponsorTitle, map[string]string{"triage.backend": "d1-ultra", "triage.sponsorship": "no_sponsorship", "triage.sponsorship.p": "0.95"})
+	add("gh:acme:4", doctorExcludedTitle, map[string]string{"triage.backend": eval.ExcludeBackend, eval.AnnExcludeMatched: "description: no clearance"})
 	return state, home
+}
+
+const (
+	doctorOwnerWord     = "zorblaxquill" // stands for the owner's name in identifying-words.txt
+	doctorExcludedTitle = "Engineer Dropped By An Owner Exclusion"
+)
+
+// doctorEcho answers every board and posting a request's user message sent
+// (the system prompt's schema examples are not data), as a model that did its
+// job would, so a test can tell a complete review from a partial one.
+func doctorEcho(drops bool, req string) string {
+	if drops {
+		var ds []string
+		for _, m := range regexp.MustCompile(`"key":"([^"]+)"`).FindAllStringSubmatch(req, -1) {
+			ds = append(ds, `{"key":"`+m[1]+`","verdict":"correct_drop","cause":"none","why":"fine"}`)
+		}
+		return `{"drops":[` + strings.Join(ds, ",") + `],"patterns":[]}`
+	}
+	var bs []string
+	for _, m := range regexp.MustCompile(`"board":"([^"]+)"`).FindAllStringSubmatch(req, -1) {
+		bs = append(bs, `{"board":"`+m[1]+`","verdict":"unclear","confidence":"low","evidence":"e","next_step":"n"}`)
+	}
+	return `{"boards":[` + strings.Join(bs, ",") + `],"patterns":[]}`
 }
 
 // doctorSeams replaces the provider and the spend reader; built reports
@@ -128,7 +176,13 @@ func TestDoctorDryRunSendsAndWritesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(state, doctorReportDir)); !os.IsNotExist(err) {
 		t.Fatalf("a dry run wrote a report: %v", err)
 	}
-	for _, want := range []string{"3 run records read", "boards tripped a signal", "dropped postings sampled", "worst case", "zero_every_run", "Listed:0 Requests:1 Prefiltered:0"} {
+	// gh:quiet, unnamed by every record, is read back from the logs (3 runs),
+	// so it is not reported as a board no run reached; gh:acme, which the
+	// records name, is not read back twice.
+	if strings.Contains(out, `"board":"gh:quiet"`) {
+		t.Errorf("a board recovered from the logs was signalled:\n%s", out)
+	}
+	for _, want := range []string{"3 board reads the records left unnamed recovered from run logs", "boards tripped a signal", "dropped postings sampled", "worst case", "zero_every_run", "Listed:0 Requests:1 Prefiltered:0"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, out)
 		}
@@ -141,7 +195,8 @@ func TestDoctorDryRunSendsAndWritesNothing(t *testing.T) {
 func doctorNoPersonal(t *testing.T, sent, home string) {
 	t.Helper()
 	low := strings.ToLower(sent)
-	for _, bad := range []string{"sponsor", strings.ToLower(home), strings.ToLower(filepath.Base(home))} {
+	for _, bad := range []string{"sponsor", "visa", "work authorization", "clearance", doctorOwnerWord,
+		strings.ToLower(home), strings.ToLower(filepath.Base(home)), strings.ToLower(doctorExcludedTitle)} {
 		if strings.Contains(low, bad) {
 			t.Errorf("sent text carries %q", bad)
 		}
@@ -171,9 +226,43 @@ func TestDoctorRefusesBeforeBuildingAProvider(t *testing.T) {
 	}
 }
 
+// A reply that judges nothing it was sent is a partial review: the report is
+// written, everything is named as not examined, and the command fails.
+func TestDoctorPartialReviewFailsTheCommand(t *testing.T) {
+	state, _ := doctorSetup(t)
+	doctorSeams(t, &doctorFake{boards: `{"boards":[],"patterns":[]}`, drops: `{"drops":[],"patterns":[]}`}, 0)
+	_, e := mustCode(t, 1, "doctor", "--budget-usd", "5")
+	if !strings.Contains(e, "boards: judged 0 of the") || !strings.Contains(e, "drops: judged 0 of the") {
+		t.Fatalf("stderr %q", e)
+	}
+	mds, _ := filepath.Glob(filepath.Join(state, doctorReportDir, "*.md"))
+	if len(mds) != 1 {
+		t.Fatalf("reports %v", mds)
+	}
+	if md, _ := os.ReadFile(mds[0]); !strings.Contains(string(md), "Not examined (signalled, but not judged") || !strings.Contains(string(md), "gh:acme") {
+		t.Fatalf("report:\n%s", md)
+	}
+	// The JSON reply of a partial review says it failed and still names the
+	// report, so the Mac app can open what was judged.
+	out, _ := mustCode(t, 1, "doctor", "--json", "--budget-usd", "5")
+	var reply struct {
+		Report, Error, Code string
+		Worst               float64 `json:"worst_case_usd"`
+	}
+	if err := json.Unmarshal([]byte(out), &reply); err != nil {
+		t.Fatalf("%v: %q", err, out)
+	}
+	if !strings.HasSuffix(reply.Report, ".md") || !strings.Contains(reply.Error, "judged 0 of the") || reply.Code != codeRuntime || reply.Worst <= 0 {
+		t.Fatalf("%+v", reply)
+	}
+	if _, err := os.Stat(strings.TrimSuffix(reply.Report, ".md") + ".json"); err != nil {
+		t.Fatalf("the named report has no .json: %v", err)
+	}
+}
+
 func TestDoctorRealRunWritesTheReport(t *testing.T) {
 	state, home := doctorSetup(t)
-	f := &doctorFake{boards: `{"boards":[],"patterns":[]}`, drops: `{"drops":[],"patterns":[]}`}
+	f := &doctorFake{boards: "echo", drops: "echo"}
 	doctorSeams(t, f, 0)
 	out, _ := mustCode(t, 0, "doctor", "--budget-usd", "5")
 	if len(f.sent) != 2 {
@@ -189,10 +278,63 @@ func TestDoctorRealRunWritesTheReport(t *testing.T) {
 		t.Fatalf("reports %v %v\n%s", mds, jss, out)
 	}
 	md, _ := os.ReadFile(mds[0])
-	// Nothing was judged, so everything signalled is named as not examined.
-	if !strings.Contains(string(md), "Not examined (signalled, but not judged") || !strings.Contains(string(md), "gh:acme") {
+	// Every board and drop was judged: none is named as not examined, and the
+	// withheld lines are counted.
+	if strings.Contains(string(md), "Not examined") || !strings.Contains(string(md), "| gh:acme | unclear |") ||
+		!strings.Contains(string(md), "were withheld for an identifying word") {
 		t.Fatalf("report:\n%s", md)
 	}
+	// gh:loud's error names a visa page: the board is judged, its error withheld.
+	if sent := strings.Join(f.sent, "\n"); !strings.Contains(sent, `"board":"gh:loud"`) || !strings.Contains(sent, doctorWithheld) {
+		t.Fatalf("gh:loud not sent with its error withheld:\n%s", sent)
+	}
+}
+
+// Nothing is sent when the identifying-word list cannot be read, when the
+// target summary holds an identifying word, or when no run record can be read.
+func TestDoctorRefusesWhatItCannotScreenOrJudge(t *testing.T) {
+	t.Run("words unreadable", func(t *testing.T) {
+		state, _ := doctorSetup(t)
+		built := doctorSeams(t, &doctorFake{boards: "echo", drops: "echo"}, 0)
+		p := filepath.Join(state, "tracks", track.WordsFile)
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(p, 0o700); err != nil { // a directory cannot be read as the list
+			t.Fatal(err)
+		}
+		if _, e := mustCode(t, 1, "doctor", "--budget-usd", "5"); !strings.Contains(e, "identifying-word list is unreadable") || *built {
+			t.Fatalf("stderr %q, built %v", e, *built)
+		}
+	})
+	t.Run("target names the owner", func(t *testing.T) {
+		state, _ := doctorSetup(t)
+		built := doctorSeams(t, &doctorFake{boards: "echo", drops: "echo"}, 0)
+		cfgPath := os.Getenv("VANI_CONFIG")
+		cfg, err := config.Load(cfgPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.TargetSummary = "roles fit for " + doctorOwnerWord
+		writeConfig(t, cfgPath, cfg)
+		_ = state
+		if _, e := mustCode(t, 1, "doctor", "--budget-usd", "5"); !strings.Contains(e, "target_summary holds") || *built {
+			t.Fatalf("stderr %q, built %v", e, *built)
+		}
+	})
+	t.Run("no history", func(t *testing.T) {
+		state, _ := doctorSetup(t)
+		built := doctorSeams(t, &doctorFake{boards: "echo", drops: "echo"}, 0)
+		files, _ := filepath.Glob(filepath.Join(state, runRecordDir, runHistoryDir, "*.json"))
+		for _, f := range files {
+			if err := os.WriteFile(f, []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, e := mustCode(t, 1, "doctor", "--dry-run"); !strings.Contains(e, "no run record could be read") || *built {
+			t.Fatalf("stderr %q", e)
+		}
+	})
 }
 
 // A part that fails exits non-zero, and the report is still written with the failure in it.
@@ -232,13 +374,11 @@ func TestReadTailBounds(t *testing.T) {
 	if err != nil || cut || len(b) != 16 {
 		t.Fatalf("%q %v %v", b, cut, err)
 	}
-	if err := os.Symlink(p, filepath.Join(dir, "link.log")); err == nil {
-		if _, _, err := readTail(filepath.Join(dir, "link.log"), 10); err == nil || errors.Is(err, os.ErrNotExist) {
-			// atomicfile.OpenRead refuses a symlinked leaf; either way it is not read as the log.
-			if err == nil {
-				t.Error("a symlink read as a log")
-			}
-		}
+	if err := os.Symlink(p, filepath.Join(dir, "link.log")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _, err := readTail(filepath.Join(dir, "link.log"), 10); err == nil {
+		t.Errorf("a symlinked leaf was read as a log: %q", b)
 	}
 }
 
@@ -248,5 +388,24 @@ func TestDoctorRedactorFoldsHomeAndUser(t *testing.T) {
 	got := r("open /Users/someone/Library/x: denied; SomeOne's access_token=abc123")
 	if strings.Contains(strings.ToLower(got), "someone") || !strings.Contains(got, "~/Library/x") || strings.Contains(got, "abc123") {
 		t.Fatalf("%q", got)
+	}
+	// A character whose lower case is longer ("İ") once switched the fold off
+	// for the whole line.
+	got = r("İstanbul board failed for SOMEONE and someone")
+	if strings.Contains(strings.ToLower(got), "someone") {
+		t.Fatalf("non-ASCII line kept the user name: %q", got)
+	}
+}
+
+func TestSponsorshipSlotCoversWorkAuthorizationNames(t *testing.T) {
+	for _, s := range []string{"sponsorship", "model:sponsorship", "work_authorization", "citizenship", "security_clearance", "h1b_status", "title:opt", "visa_type", "green_card"} {
+		if !sponsorshipSlot(s) {
+			t.Errorf("%q not treated as work authorization", s)
+		}
+	}
+	for _, s := range []string{"role_fit", "seniority", "model:other", "title:options", "category", "work_mode"} {
+		if sponsorshipSlot(s) {
+			t.Errorf("%q treated as work authorization", s)
+		}
 	}
 }

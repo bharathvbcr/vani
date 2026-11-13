@@ -117,6 +117,11 @@ func (c TargetCounts) Judged() int { return c.Yes + c.Maybe + c.No }
 func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m map[posting.Key]marks.Mark) (map[posting.Key]Target, TargetCounts, error) {
 	var c TargetCounts
 	newest := map[posting.Key]int{} // index of each key's newest impression
+	// scored is each key's newest impression that recorded Score's parts. An
+	// audit card and a Mac app Jobs row are logged without them, and an empty
+	// record is not the scores the owner saw: taking it made every audited
+	// posting unbuildable (ItemFromScores: no recorded gate or fresh).
+	scored := map[posting.Key]int{}
 	// passable holds the keys a surface other than the audit showed. An audit
 	// card asks one question; leaving it unanswered, or answering skip, is not
 	// passing the posting over, so an audit impression alone never makes a
@@ -126,6 +131,11 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 		if j, ok := newest[im.Key]; !ok || !im.At.Before(shown[j].At) {
 			newest[im.Key] = i
 		}
+		if recordedScores(im.Scores) {
+			if j, ok := scored[im.Key]; !ok || !im.At.Before(shown[j].At) {
+				scored[im.Key] = i
+			}
+		}
 		if im.Surface != feedback.SurfaceAudit {
 			passable[im.Key] = true
 		}
@@ -134,7 +144,7 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 	// (the closed strata). No other signal may bring them back in as a pass.
 	excluded := map[posting.Key]bool{}
 	scores := func(k posting.Key) *feedback.Scores {
-		if i, ok := newest[k]; ok {
+		if i, ok := scored[k]; ok {
 			s := shown[i].Scores
 			return &s
 		}
@@ -198,6 +208,13 @@ func Targets(labels map[posting.Key]eval.Entry, shown []feedback.Impression, m m
 	}
 	return out, c, nil
 }
+
+// recordedScores reports whether an impression recorded Score's parts at all.
+// Only a record with no factors was logged by a surface that keeps no scores
+// (an audit card, a Jobs row). A partial record (factors without gate or
+// fresh) is still taken, so ItemFromScores refuses it loudly rather than the
+// fit quietly rescoring a posting whose record is broken.
+func recordedScores(s feedback.Scores) bool { return len(s.Factors) > 0 }
 
 // PlattSamples sets each labelled triage slot (internal/eval, read only)
 // against the reading the ledger holds for it: one sample per answered slot

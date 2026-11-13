@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/expyears"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -70,10 +71,15 @@ func inputsForOracle(r ledger.Record, c RankContext) Inputs {
 		if !s.Answered {
 			continue
 		}
+		if rule.Slot == "seniority" && s.Value == "staff_plus" {
+			if level, ok := expyears.BelowStaff(r.Posting.Description); ok {
+				s.Value = level
+			}
+		}
 		for _, v := range rule.Values {
 			if strings.TrimSpace(v) == s.Value && s.Value != "" {
 				seen[rule.Slot] = true
-				in.Penalties = append(in.Penalties, Penalty{Slot: s})
+				in.Penalties = append(in.Penalties, Penalty{Name: rule.Slot, Slot: s})
 				break
 			}
 		}

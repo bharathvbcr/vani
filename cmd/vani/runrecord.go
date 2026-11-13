@@ -479,7 +479,10 @@ type reconcileCounts struct {
 	Missed     int `json:"missed,omitempty"`
 	Dead       int `json:"dead,omitempty"`
 	Duplicate  int `json:"duplicate,omitempty"`
-	Invalid    int `json:"invalid,omitempty"`
+	// ListedDuplicate is the part of Duplicate that is listed postings stored
+	// as a duplicate; the rest is other records marked as their twins.
+	ListedDuplicate int `json:"listed_duplicate,omitempty"`
+	Invalid         int `json:"invalid,omitempty"`
 	// Open is the board's open postings when the listing began and Absent how
 	// many of them it left out (pipeline.Summary); Held is the absent ones past
 	// the miss count that were kept alive inside their hold. Mass says the
