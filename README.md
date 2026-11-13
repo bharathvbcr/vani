@@ -492,6 +492,9 @@ flowchart TD
     weights with a warning, never silently. `vani rankfit --spare-seniority mid,senior` writes
     the seniority levels at which a mismatch_seniority reading neither gates nor counts against
     fit (`none` clears it; `manager` is refused); `vani relevance` shows its shadow first.
+    `--silver-prior` pulls the weight fit toward shares fitted to the would_apply auditor's
+    answers (never about a posting you judged); only your judgments made after the exemplar
+    freeze are held out, and the same gold gate decides.
   - The knowledge-base match (`internal/semantic`) leaves out lines that ask the same of every
     candidate (a degree, years of experience, communication skills, work authorization), scores
     a posting that offers few distinct lines lower than one that offers a full set, and no

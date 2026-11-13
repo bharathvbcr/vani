@@ -153,6 +153,10 @@ and calls no decision backend.
   re-judge is counted as "not judged"). `--rescue` (the owner runs it; `--dry-run` only counts)
   returns the stale model drops to `unsure`, readings kept, and never touches a drop the rules
   still make. Do not run `--rescue` without the owner's go-ahead.
+- `vani retriage --silver-drops [--json]` is the read-only report of model drops the would_apply
+  auditor keeps picking, with the rule's precision on gold. `--rescue` returns them to `unsure`
+  within a daily cap, and only while `vani teacher report` says go. It is the owner's call, like
+  the stale rescue.
 
 **Spend from the daily LLM budget.** Each of these sends posting text to a provider; ask
 before running one.
@@ -195,6 +199,8 @@ owner's calls.
 - `vani label` and `vani audit` collect the owner's labels.
 - `vani rankfit` and `vani export heldout` fit and export from those labels.
   `vani rankfit --spare-seniority` writes the owner's seniority relaxation to the rank weights file.
+  `vani rankfit --part weights --silver-prior` pretrains the weight fit on the auditor's answers;
+  the gold gate still decides.
 - `vani kb sync` copies the knowledge base into DevPrism.
 - `vani bench local` benchmarks local models.
 - `vani semantic warm` embeds postings.

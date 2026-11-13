@@ -57,6 +57,20 @@ were ported with notice. Source files do not carry an upstream copyright header.
   readings, which the summary also steers, stay as they are, and the report says so. It lists every
   posting answered yes with its percentile among open postings before and after. A build without
   `-tags tessl` says the semantic part was not computed and compares the keyword part only.
+- **Silver rescue rule (D6)** (`vani retriage --silver-drops [--rescue]`). This reports the model
+  drops that the pairwise would_apply auditor keeps picking over their stratum. The bar is a score
+  of at least `--min-score` over at least `--min-games` comparisons, with no answer of "neither". It
+  also reports the rule's precision on gold labels made after the exemplar freeze. `--rescue`
+  returns them to unsure, best first and at most `--max-per-day` per day, but only while the
+  auditor's verdict on gold under today's question is go. It never rescues title drops, owner
+  exclusions, or work authorization and work_mode drops. A rescued posting is scored like any
+  uncertain one and the runner does not triage it again. Nothing runs unless the owner asks.
+- **Silver-pretrained weight fit** (`vani rankfit --part weights --silver-prior`). The auditor's
+  decisive answers fit Score's shares first, and the owner-labelled fit is pulled toward those
+  shares instead of the hand weights (`rankfit.Options.Prior`). Answers about any posting the owner
+  judged are left out. Only judgments made after the exemplar freeze are held out
+  (`Options.TrainOnly`). The gold-only fit on the same split is reported beside it, and the gold
+  gate (`Beats`) still decides whether anything is written.
 - **Pipeline doctor** (`cmd/vani/doctorcmd.go`, `internal/doctor`). `vani doctor` has Claude
   (`llm.model`, Opus) read per-board signals over the newest run records, with each board's raw
   `details` lines, the run logs' distinct trouble lines, and a seeded sample of dropped postings

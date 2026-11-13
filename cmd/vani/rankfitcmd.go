@@ -42,6 +42,7 @@ func (e *env) cmdRankfit(args []string) error {
 	holdout := fs.Int("holdout", rankfit.DefaultHoldoutPct, "percent of audit judgments held out to evaluate the fit (1-90)")
 	maxPairs := fs.Int("max-pairs", rankfit.DefaultMaxPairs, "training pairs above which they are sampled")
 	dry := fs.Bool("dry-run", false, "print the label counts and what would run; fit and write nothing")
+	silverPrior := fs.Bool("silver-prior", false, "with the weight fit: pull it toward shares fitted to the would_apply auditor's answers instead of the hand weights; held out are only owner judgments made after the exemplar freeze, and the gold gate decides as before")
 	spare := fs.String("spare-seniority", "", "set the seniority readings (comma list, e.g. mid,senior) at which a mismatch_seniority role_fit is not a mismatch, in the weights file, and fit nothing; \"none\" clears it")
 	asJSON := e.jsonFlag(fs, "one JSON object on stdout: the counts, what ran or would, and the fit")
 	if err := parse(fs, args); err != nil {
@@ -56,6 +57,9 @@ func (e *env) cmdRankfit(args []string) error {
 	}
 	if !slices.Contains(rankfitParts, *part) {
 		return usagef("rankfit: --part must be one of %s", strings.Join(rankfitParts, ", "))
+	}
+	if *silverPrior && *part == "platt" {
+		return usagef("rankfit: --silver-prior is for the weight fit")
 	}
 	if !(*lambda > 0) || *lambda > 1e6 {
 		return usagef("rankfit: --lambda must be more than 0 and at most 1e6")
@@ -186,7 +190,26 @@ func (e *env) cmdRankfit(args []string) error {
 		base = f.Apply(base)
 	}
 	if doWeights {
-		res, err := e.rankfitWeights(snap, me, targets, base, rankfit.Options{Lambda: *lambda, Seed: *seed, HoldoutPct: *holdout, MaxPairs: *maxPairs}, w)
+		opt := rankfit.Options{Lambda: *lambda, Seed: *seed, HoldoutPct: *holdout, MaxPairs: *maxPairs}
+		if *silverPrior {
+			sp, err := e.rankfitSilverPrior(snap, me, lab, base, *lambda, w)
+			if sp != nil {
+				jr.SilverPrior = sp
+			}
+			if err != nil {
+				return e.reply(*asJSON, jr, err, nil)
+			}
+			opt.TrainOnly = sp.TrainOnly
+			fmt.Fprintln(w, "gold-only fit on the same split, for comparison:")
+			gold, err := e.rankfitWeights(snap, me, targets, base, opt, w)
+			if err != nil {
+				return err
+			}
+			sp.GoldOnly = &gold
+			opt.Prior = &sp.Prior.Shares
+			fmt.Fprintln(w, "fit pulled toward the silver prior (this one is gated and written):")
+		}
+		res, err := e.rankfitWeights(snap, me, targets, base, opt, w)
 		if err != nil {
 			return err
 		}
@@ -274,6 +297,8 @@ type rankfitReply struct {
 	NotRun       []string        `json:"not_run"`
 	Report       *rankfit.Report `json:"report"`
 	Written      bool            `json:"written"`
+	// SilverPrior is the prior and the gold-only comparison, with --silver-prior.
+	SilverPrior *silverPriorFit `json:"silver_prior,omitempty"`
 	failure
 }
 

@@ -1,6 +1,9 @@
 package eval
 
 import (
+	"cmp"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/decide/wouldapply"
@@ -75,6 +78,39 @@ type PairStats struct {
 // answer. It returns the scores by key and the stats; with no usable answer the
 // map is empty.
 func ScorePairs(rows []PairRow, id PairIdent) (map[posting.Key]PostingScore, PairStats) {
+	usable, st := latestUsable(rows, id)
+	if len(usable) == 0 {
+		return map[posting.Key]PostingScore{}, st
+	}
+	return scoreUsable(usable, st)
+}
+
+// DecisivePair is one answer that chose a posting: Win over Lose.
+type DecisivePair struct{ Win, Lose posting.Key }
+
+// DecisivePairs are the answers under id that chose one posting of the pair,
+// read as ScorePairs reads them (the newest answer per pair and order);
+// "neither" and abstentions are left out.
+func DecisivePairs(rows []PairRow, id PairIdent) []DecisivePair {
+	usable, _ := latestUsable(rows, id)
+	out := make([]DecisivePair, 0, len(usable))
+	for _, r := range usable {
+		switch r.Answer {
+		case wouldapply.OptA:
+			out = append(out, DecisivePair{Win: r.KeyA, Lose: r.KeyB})
+		case wouldapply.OptB:
+			out = append(out, DecisivePair{Win: r.KeyB, Lose: r.KeyA})
+		}
+	}
+	slices.SortFunc(out, func(a, b DecisivePair) int {
+		return cmp.Or(strings.Compare(string(a.Win), string(b.Win)), strings.Compare(string(a.Lose), string(b.Lose)))
+	})
+	return out
+}
+
+// latestUsable is the answered rows under id, the newest per pair and order,
+// and the counts of the rest.
+func latestUsable(rows []PairRow, id PairIdent) ([]PairRow, PairStats) {
 	var st PairStats
 	type slot struct {
 		lo, hi  posting.Key
@@ -111,10 +147,22 @@ func ScorePairs(rows []PairRow, id PairIdent) (map[posting.Key]PostingScore, Pai
 		}
 	}
 	st.Usable = len(usable)
-	if len(usable) == 0 {
-		return map[posting.Key]PostingScore{}, st
-	}
+	// Map order must not reach the scores' order of addition.
+	slices.SortFunc(usable, func(a, b PairRow) int {
+		return cmp.Or(strings.Compare(string(a.KeyA), string(b.KeyA)), strings.Compare(string(a.KeyB), string(b.KeyB)), cmp.Compare(boolInt(a.Swapped), boolInt(b.Swapped)))
+	})
+	return usable, st
+}
 
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// scoreUsable scores the usable rows (latestUsable).
+func scoreUsable(usable []PairRow, st PairStats) (map[posting.Key]PostingScore, PairStats) {
 	picks := map[posting.Key]*PostingScore{}
 	get := func(k posting.Key) *PostingScore {
 		if p, ok := picks[k]; ok {
