@@ -43,6 +43,7 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 		for _, title := range titles {
 			for _, loc := range locs {
 				n++
+				req := roleReq(title, loc)
 				// Three digits or more, so the link names a posting. Boards 0 and 1
 				// share links, as do boards 2 and 4.
 				link := b
@@ -52,7 +53,7 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 				case 4:
 					link = 2
 				}
-				p := posting.Posting{Company: bd.Company, Title: title, Location: loc, URL: fmt.Sprintf("https://careers.acme.test/jobs/%d%03d", link, n)}
+				p := posting.Posting{Company: bd.Company, Title: title, Location: loc, URL: fmt.Sprintf("https://careers.acme.test/jobs/%d%03d?req_id=%s", link, n, req)}
 				var key posting.Key
 				var err error
 				switch bd.ATS {

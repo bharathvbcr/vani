@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"fmt"
+	"hash/fnv"
 	"reflect"
 	"testing"
 	"time"
@@ -12,11 +14,30 @@ import (
 
 var lvBoard = sources.Board{ATS: posting.Lever, Token: "acmelv", Company: "Acme"}
 
+// roleReq is a requisition id the same role (title and place) has on every
+// ATS, as a company that lists one requisition on two boards gives it. The
+// helpers below put it in a posting's link when a test names none, so two
+// postings of one role share an id (rule 2 folds them) and a different role
+// does not. roleLink is that link; its path is per-posting, so only the id
+// ties two of them (rule 1 needs the whole link to match).
+func roleReq(title, loc string) string {
+	h := fnv.New32a()
+	h.Write([]byte(title + "|" + loc))
+	return fmt.Sprintf("RQ%08x", h.Sum32())
+}
+
+func roleLink(host, id, title, loc string) string {
+	return "https://" + host + "/job/" + id + "?req_id=" + roleReq(title, loc)
+}
+
 func ghJob(t *testing.T, id, title, loc, url string) posting.Posting {
 	t.Helper()
 	k, err := posting.GreenhouseKey("acme", id)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if url == "" {
+		url = roleLink("boards.greenhouse.io", id, title, loc)
 	}
 	return posting.Posting{Key: k, ATS: posting.Greenhouse, Company: "Acme", Title: title, Location: loc, URL: url, Description: "d"}
 }
@@ -27,7 +48,22 @@ func lvJob(t *testing.T, id, title, loc, url string) posting.Posting {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if url == "" {
+		url = roleLink("jobs.lever.co", id, title, loc)
+	}
 	return posting.Posting{Key: k, ATS: posting.Lever, Company: "Acme", Title: title, Location: loc, URL: url, Description: "d"}
+}
+
+// ghBare and lvBare are the same postings with no requisition id anywhere: a
+// key, a company, a title and a place, and a link that names no job.
+func ghBare(t *testing.T, id, title, loc string) posting.Posting {
+	p := ghJob(t, id, title, loc, "https://boards.greenhouse.io/acme")
+	return p
+}
+
+func lvBare(t *testing.T, id, title, loc string) posting.Posting {
+	p := lvJob(t, id, title, loc, "https://jobs.lever.co/acmelv")
+	return p
 }
 
 func reconcileOne(t *testing.T, l ledger.Ledger, b sources.Board, now time.Time, ps ...posting.Posting) Summary {
