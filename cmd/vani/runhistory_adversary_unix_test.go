@@ -12,8 +12,15 @@ import (
 	"time"
 )
 
-// saveWithin fails the test if saveRunRecord is still running after a second.
-// A FIFO open would otherwise block the test until the package timeout.
+// saveDeadline is how long saveWithin lets saveRunRecord run. It only has to
+// tell a blocked open (which never returns) from a slow save: a second was
+// too tight for a save under a full-suite load, which failed the symlink
+// test with nothing wrong.
+const saveDeadline = 15 * time.Second
+
+// saveWithin fails the test if saveRunRecord is still running after
+// saveDeadline. A FIFO open would otherwise block the test until the package
+// timeout.
 func saveWithin(t *testing.T, e *env, r runRecord) {
 	t.Helper()
 	done := make(chan struct{})
@@ -23,8 +30,8 @@ func saveWithin(t *testing.T, e *env, r runRecord) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("saveRunRecord did not return within a second")
+	case <-time.After(saveDeadline):
+		t.Fatalf("saveRunRecord did not return within %s", saveDeadline)
 	}
 }
 
