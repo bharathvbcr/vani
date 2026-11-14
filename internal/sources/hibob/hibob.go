@@ -104,16 +104,23 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(ads))
 	keys := make(map[posting.Key]int, len(ads))
+	rows := srcutil.NewRows(ctx, b, len(ads))
 	for i, ad := range ads {
 		p, err := ad.posting(b, seen)
 		if err != nil {
-			return nil, fmt.Errorf("hibob %q: posting %d: %w", b.Token, i, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("hibob %q: posting %d: %w", b.Token, i, ferr)
+			}
+			continue
 		}
 		if prev, dup := keys[p.Key]; dup {
 			return nil, fmt.Errorf("hibob %q: postings %d and %d share key %s", b.Token, prev, i, p.Key)
 		}
 		keys[p.Key] = i
 		out = append(out, p)
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("hibob %q: %w", b.Token, err)
 	}
 	return out, nil
 }

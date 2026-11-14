@@ -298,7 +298,7 @@ func TestReviveDemotesTheLiveTwinsItOutranks(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		weak := posting.Posting{Key: fk, ATS: posting.Other, Company: "Acme", Title: "Staff Engineer", Location: "Remote", Description: "d"}
+		weak := posting.Posting{Key: fk, ATS: posting.Other, Company: "Acme", Title: "Staff Engineer", Location: "Remote", Description: "d", URL: roleLink("agg.example", "1", "Staff Engineer", "Remote")}
 		if err := l.Append(ctx, ledger.Event{V: ledger.SchemaVersion, At: reviveDay(1), Key: fk, Status: posting.Live, Posting: &weak, Reason: "seed"}); err != nil {
 			t.Fatal(err)
 		}

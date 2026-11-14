@@ -314,6 +314,17 @@ were ported with notice. Source files do not carry an upstream copyright header.
   `vani rankfit --part weights` could not have run on any audit label once past its threshold.
   It now takes the newest impression that recorded scores, else scores the posting now. A
   scoreless Jobs row still counts as a pass.
+- **Semantic score cache keeps the browsable postings** (`internal/semantic`). The cache held
+  20,000 scores and evicted the oldest first, but the owner's boards hold about 29,000 browsable
+  postings. Each warm evicted live scores to make room for the ones it had just scored, so the idle
+  warmer re-scored the same overflow forever (1.68 million scores and 0.69 million rescores over its
+  windows, with 9,311 postings always unscored). A posting that lost its score ranked on the 0.4
+  prior. The cache now evicts the way the chunk-vector log does: postings outside the live set
+  first, then the lowest ranked, then the oldest; a posting the current warm scored is never
+  evicted for room unless the live set ranks it. The cap is 80,000, and the 64 MiB bound now
+  sheds entries in proportion to the excess instead of half the cache. A warm that still has to
+  evict a browsable posting reports it (`scores_evicted_live`, and a line from the idle warmer)
+  rather than doing it silently.
 - **Ranking: a role's level is penalised once, and "Staff" must agree with the years asked**
   (`internal/jobinsight`, `internal/expyears`, `internal/pipeline`). A seniority rank penalty and a
   `mismatch_seniority` role-fit reading say the same thing, yet both multiplied the gate, so a

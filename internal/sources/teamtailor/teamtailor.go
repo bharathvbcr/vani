@@ -181,6 +181,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := map[string]bool{}
 	out := make([]posting.Posting, 0)
 	keys := map[posting.Key]int{}
+	rows := srcutil.NewRows(ctx, b, 0)
 	for page := 1; page <= maxFeedPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -207,14 +208,18 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if err := srcutil.CheckCount(len(items)); err != nil {
 			return nil, fmt.Errorf("teamtailor %q: %w", b.Token, err)
 		}
-		if err := srcutil.CheckCount(len(out) + len(items)); err != nil {
+		if err := srcutil.CheckCount(len(out) + rows.Skipped() + len(items)); err != nil {
 			return nil, fmt.Errorf("teamtailor %q: %w", b.Token, err)
 		}
+		rows.Add(len(items))
 		now := s.now()
 		for i, it := range items {
 			p, err := it.posting(b, doc.Title, now)
 			if err != nil {
-				return nil, fmt.Errorf("teamtailor %q: page %d item %d: %w", b.Token, page, i, err)
+				if ferr := rows.Bad(err); ferr != nil {
+					return nil, fmt.Errorf("teamtailor %q: page %d item %d: %w", b.Token, page, i, ferr)
+				}
+				continue
 			}
 			if prev, dup := keys[p.Key]; dup {
 				return nil, fmt.Errorf("teamtailor %q: items %d and %d share key %s", b.Token, prev, len(keys), p.Key)
@@ -224,6 +229,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 		next = strings.TrimSpace(doc.NextURL)
 		if next == "" {
+			if err := rows.Done(); err != nil {
+				return nil, fmt.Errorf("teamtailor %q: %w", b.Token, err)
+			}
 			return out, nil
 		}
 		if len(out) >= srcutil.MaxPostings {

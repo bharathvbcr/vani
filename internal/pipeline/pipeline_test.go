@@ -36,7 +36,8 @@ func ghPost(t *testing.T, id, desc string) posting.Posting {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return posting.Posting{Key: k, ATS: posting.Greenhouse, Company: "Acme", Title: "Engineer " + id, Location: "Remote", Description: desc}
+	return posting.Posting{Key: k, ATS: posting.Greenhouse, Company: "Acme", Title: "Engineer " + id, Location: "Remote", Description: desc,
+		URL: roleLink("boards.greenhouse.io", id, "Engineer "+id, "Remote")}
 }
 
 func rec(t *testing.T, l ledger.Ledger, k posting.Key) ledger.Record {
@@ -373,7 +374,7 @@ func TestCrossSourceDedupe(t *testing.T) {
 	Reconcile(ctx, l, board, []posting.Posting{ats}, t0)
 
 	fk, _ := posting.FallbackKey("ACME", "engineer 1!", "remote")
-	agg := posting.Posting{Key: fk, ATS: posting.Other, Company: "ACME", Title: "engineer 1!", Location: "remote", Description: "x"}
+	agg := posting.Posting{Key: fk, ATS: posting.Other, Company: "ACME", Title: "engineer 1!", Location: "remote", Description: "x", URL: roleLink("agg.example", "1", "engineer 1!", "remote")}
 	aggBoard := sources.Board{ATS: posting.Other, Token: "aggregator"}
 	s, err := Reconcile(ctx, l, aggBoard, []posting.Posting{agg}, t0.Add(time.Hour))
 	if err != nil || s.Duplicate != 1 || s.New != 0 {
@@ -400,7 +401,7 @@ func TestCrossSourceDedupeFallbackFirst(t *testing.T) {
 	l := openLedger(t)
 	fk, _ := posting.FallbackKey("Acme", "Engineer 1", "Remote")
 	aggBoard := sources.Board{ATS: posting.Other, Token: "aggregator"}
-	Reconcile(ctx, l, aggBoard, []posting.Posting{{Key: fk, ATS: posting.Other, Company: "Acme", Title: "Engineer 1", Location: "Remote", Description: "x"}}, t0)
+	Reconcile(ctx, l, aggBoard, []posting.Posting{{Key: fk, ATS: posting.Other, Company: "Acme", Title: "Engineer 1", Location: "Remote", Description: "x", URL: roleLink("agg.example", "1", "Engineer 1", "Remote")}}, t0)
 	Reconcile(ctx, l, board, []posting.Posting{ghPost(t, "1", "d")}, t0.Add(time.Hour))
 	if r := rec(t, l, fk); r.Status != posting.Duplicate {
 		t.Fatalf("earlier fallback record not deduped: %+v", r)

@@ -78,6 +78,8 @@ type reconcileFunc func(ctx context.Context, b sources.Board, listed []posting.P
 func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting.ATS]sources.Source, pageErr error,
 	reconcile reconcileFunc, warnf func(string, ...any), cooldownFile string) (boardsReport, error) {
 	throttle, saveThrottle := openHostThrottle(cooldownFile, warnf)
+	starved, saveStarved := openStarved(starvedFile(cooldownFile), warnf)
+	watchlist = starvedFirst(watchlist, starved) // boards a throttled host refused last run go first
 	ctx, stop := context.WithCancel(ctx)
 	// Cooldowns are saved after in-flight fetches return, so a 429 seen by a
 	// board the run then stops is still remembered. Stop unblocks those fetches.
@@ -107,6 +109,7 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		tried = append(tried, e)
 		return append([]boardReport(nil), tried...)
 	}
+	defer func() { saveStarved(snapshot()) }()
 	report := func() boardsReport { return boardsReportOf(len(watchlist), snapshot()) }
 	total := len(watchlist)
 	if total == 0 {
@@ -219,6 +222,12 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 		}
 		if sum.MassDead > 0 {
 			warnf("board %s/%s: %d postings held by a mass absence died: the mass hold ended and the board still does not list them", b.ATS, b.Token, sum.MassDead)
+		}
+		if sum.UnreadableDead > 0 {
+			warnf("board %s/%s: %d of those were held because rows the adapter could not read may have been them", b.ATS, b.Token, sum.UnreadableDead)
+		}
+		if sum.ShortDead > 0 {
+			warnf("board %s/%s: %d postings held because its listing was short died: the hold ended and the board still does not list them", b.ATS, b.Token, sum.ShortDead)
 		}
 		if sum.Deferred > 0 {
 			warnf("board %s/%s: %d deaths wait one more read: more than %s passed since those postings' last event", b.ATS, b.Token, sum.Deferred, pipeline.ClockWindow)
@@ -585,8 +594,8 @@ func reconcileCountsOf(s pipeline.Summary) *reconcileCounts {
 	return &reconcileCounts{New: s.New, Changed: s.Changed, Rerendered: s.Rerendered, Kept: s.Kept, Redated: s.Redated,
 		Refreshed: s.Refreshed, Revived: s.Revived, Unchanged: s.Unchanged,
 		Reappeared: s.Reappeared, Missed: s.Missed, Dead: s.Dead, Duplicate: s.Duplicate, ListedDuplicate: s.ListedDuplicate, Reopened: s.Reopened, Invalid: s.Invalid,
-		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind,
-		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead}
+		Open: s.Open, Absent: s.Absent, Held: s.Held, Mass: s.Mass, MassMarked: s.MassMarked, ClockBehind: s.ClockBehind, ClockSetBack: s.ClockSetBack,
+		ClockAhead: s.ClockAhead, Deferred: s.Deferred, MassDead: s.MassDead, ShortDead: s.ShortDead, UnreadableDead: s.UnreadableDead}
 }
 
 // recordFirst is whether a board's entry is kept before plain read ones when
@@ -595,7 +604,7 @@ func recordFirst(e boardReport) bool {
 	if e.Outcome != boardRead {
 		return true
 	}
-	return e.Reconcile != nil && (e.Reconcile.MassMarked > 0 || e.Reconcile.ClockBehind || e.Reconcile.MassDead > 0)
+	return e.Reconcile != nil && (e.Reconcile.MassMarked > 0 || e.Reconcile.ClockBehind || e.Reconcile.MassDead > 0 || e.Reconcile.ShortDead > 0)
 }
 
 // boardsReportOf totals the tried boards out of configured and keeps as many
@@ -613,10 +622,14 @@ func boardsReportOf(configured int, tried []boardReport) boardsReport {
 			if e.Reconcile.MassMarked > 0 { // a listing that only carries earlier marks is not news
 				r.Mass++
 			}
-			if e.Reconcile.ClockBehind {
+			switch {
+			case e.Reconcile.ClockBehind && e.Reconcile.ClockSetBack:
+				r.ClockSetBack++ // a freeze that kills nothing: attention, not a failure
+			case e.Reconcile.ClockBehind:
 				r.ClockBehind++
 			}
 			r.MassDead += e.Reconcile.MassDead
+			r.ShortDead += e.Reconcile.ShortDead
 			r.DeathsDeferred += e.Reconcile.Deferred
 		}
 		switch e.Outcome {

@@ -30,7 +30,48 @@ func storedAs(t *testing.T, id string) posting.Posting {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return posting.Posting{Key: key, ATS: posting.Avature, Title: "stored " + id, SeenAt: fixedNow.Add(-24 * time.Hour)}
+	// The place the fake's listing cards show, so a reused row is one whose
+	// place did not move.
+	return posting.Posting{Key: key, ATS: posting.Avature, Title: "stored " + id, Location: "United States - NY New York", SeenAt: fixedNow.Add(-24 * time.Hour)}
+}
+
+// A reused row takes the place its card shows now, with no detail request: a
+// move would otherwise stay hidden until the row's re-read turn.
+func TestReusedRowCarriesTheCardsPlace(t *testing.T) {
+	for name, tc := range map[string]struct {
+		stored    string
+		want      string
+		relocated int
+	}{
+		"moved":            {"United States - CA San Francisco", "United States - NY New York", 1},
+		"unchanged":        {"United States - NY New York", "United States - NY New York", 0},
+		"case and spacing": {" united states -  ny new york ", " united states -  ny new york ", 0},
+		"stored had none":  {"", "United States - NY New York", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t, 10)
+			_, notDue := idsByTurn(f)
+			st := storedAs(t, notDue[0])
+			st.Location = tc.stored
+			s, stats := f.bounded([]posting.Posting{st}, nil)
+			got, err := s.List(context.Background(), board())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reused *posting.Posting
+			for i := range got {
+				if got[i].Key == st.Key {
+					reused = &got[i]
+				}
+			}
+			if reused == nil || reused.Title != "stored "+notDue[0] || reused.Location != tc.want {
+				t.Fatalf("reused posting %+v; want the stored text with place %q", reused, tc.want)
+			}
+			if stats.Reused != 1 || stats.Relocated != tc.relocated || f.detailCount() != len(f.ids)-1 {
+				t.Fatalf("stats %+v, %d detail requests; want one reused, %d relocated, a detail for each other row", *stats, f.detailCount(), tc.relocated)
+			}
+		})
+	}
 }
 
 // idsByTurn splits the fake's ids by whether fixedNow is their re-read day.

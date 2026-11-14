@@ -192,19 +192,24 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	var out []posting.Posting
 	keys := map[posting.Key]bool{}
 	short := 0
+	rows := srcutil.NewRows(ctx, b, 0)
 	for _, term := range terms {
 		jobs, missed, err := s.search(ctx, term)
 		if err != nil {
 			return nil, fmt.Errorf("ibm %q: search %q: %w", b.Token, term, err)
 		}
 		short += missed
+		rows.Add(len(jobs))
 		for _, j := range jobs {
 			if confluentTitle(j.Title) != (token == TokenConfluent) {
 				continue // the other board's role
 			}
 			p, err := j.posting(b, token, seen)
 			if err != nil {
-				return nil, fmt.Errorf("ibm %q: search %q: job %s: %w", b.Token, term, j.ID, err)
+				if ferr := rows.Bad(err); ferr != nil {
+					return nil, fmt.Errorf("ibm %q: search %q: job %s: %w", b.Token, term, j.ID, ferr)
+				}
+				continue
 			}
 			if !keys[p.Key] {
 				keys[p.Key] = true
@@ -215,6 +220,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			return nil, fmt.Errorf("ibm %q: %w: the board's searches together list more than %d postings; narrow them",
 				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
 		}
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("ibm %q: %w", b.Token, err)
 	}
 	if s.opt.Report != nil {
 		s.opt.Report(b, Stats{Listed: len(out), Short: short})

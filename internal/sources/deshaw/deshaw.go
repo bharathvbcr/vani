@@ -127,13 +127,17 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(entries))
 	byKey := map[posting.Key]posting.Posting{}
+	rows := srcutil.NewRows(ctx, b, len(entries))
 	for _, e := range entries {
 		if e.Data.ActiveOnJobsListing != nil && !*e.Data.ActiveOnJobsListing {
 			continue
 		}
 		p, err := e.posting(b, seen)
 		if err != nil {
-			return nil, fmt.Errorf("deshaw %q: job %d: %w", b.Token, e.Data.ID, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("deshaw %q: job %d: %w", b.Token, e.Data.ID, ferr)
+			}
+			continue
 		}
 		if prev, dup := byKey[p.Key]; dup {
 			if prev != p {
@@ -144,7 +148,12 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		byKey[p.Key] = p
 		out = append(out, p)
 	}
-	if len(out) == 0 {
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("deshaw %q: %w", b.Token, err)
+	}
+	// A skipped row proves the page held postings: an empty result is then a
+	// short listing, which the report above already carries, not a wrong page.
+	if len(out) == 0 && rows.Skipped() == 0 {
 		return nil, fmt.Errorf("deshaw %q: %w: no active postings", b.Token, ErrShape)
 	}
 	if len(out) > MaxPostings {

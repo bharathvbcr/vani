@@ -104,6 +104,9 @@ func (x Exclude) Match(p posting.Posting) (why string, ok bool) {
 		return fmt.Sprintf("location matches %q", m), true
 	}
 	if x.outsideOnly(p) {
+		if x.unrecognisedOutside(p) {
+			return "location is outside only_locations (" + UnrecognisedLocationMark + ")", true
+		}
 		return "location is outside only_locations", true
 	}
 	if len(x.Descriptions) > 0 {
@@ -212,6 +215,27 @@ func (x Exclude) outsideOnly(p posting.Posting) bool {
 		}
 	}
 	return !o.remote || remoteMatch(x.OnlyLocations, o.scope, false) == ""
+}
+
+// UnrecognisedLocationMark is in the reason Match gives when only_locations
+// dropped a posting at least one of whose places the location tables do not
+// know: such a place reads as outside the list, but it may be a US town the
+// tables lack (usCityNames in internal/location/us.go), so the drop is
+// counted, listed and audited as a class of its own. The ledger keeps the
+// reason, the audit class ("exclude:location_unrecognised") and the count
+// derive from it, and a test pins the three together.
+const UnrecognisedLocationMark = "unrecognised location"
+
+// unrecognisedOutside reports whether a posting outsideOnly drops has a place
+// the tables do not know among its options: the drop rests on a name nothing
+// placed rather than on a place known to be elsewhere.
+func (x Exclude) unrecognisedOutside(p posting.Posting) bool {
+	for _, opt := range optionsOf(p).opts {
+		if opt.Unrecognised {
+			return true
+		}
+	}
+	return false
 }
 
 // onlyUnjudged reports whether only_locations keeps a location only because

@@ -104,8 +104,9 @@ func NewMatcher(e Embedder, p Profile, cacheDir string) (*Matcher, error) {
 	return m, nil
 }
 
-// SetMaxEntries sets how many scored postings the cache keeps (oldest evicted
-// first). It applies from the next save.
+// SetMaxEntries sets how many scored postings the cache keeps. Past it, the
+// postings outside the live set (SetVectorPriority) go first, then the lowest
+// ranked, then the oldest. It applies from the next save.
 func (m *Matcher) SetMaxEntries(n int) {
 	m.mu.Lock()
 	m.maxEntries = max(n, 1)
@@ -262,6 +263,15 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 	if len(todo) == 0 && len(rescore) == 0 {
 		return rep, nil
 	}
+	// The texts this Warm may score: a save never evicts them for room unless
+	// the live set ranks them.
+	mine := make(map[string]bool, len(todo)+len(rescore))
+	for _, p := range todo {
+		mine[p.hash] = true
+	}
+	for _, p := range rescore {
+		mine[p.hash] = true
+	}
 
 	pd, err := m.ensureProfile(ctx)
 	if err != nil {
@@ -327,7 +337,7 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 			m.rescoreTick(rep.Rescored)
 		}
 		if rep.Rescored%rescoreSaveEvery == 0 {
-			if err := m.save(); err != nil {
+			if err := m.save(&rep, mine); err != nil {
 				rep.note(err)
 				rep.Skipped += len(rescore) - ri - 1 + len(todo)
 				return rep, err
@@ -339,7 +349,7 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 		rep.Skipped += len(rescore) - ri + len(todo)
 	}
 	if rep.Rescored > 0 {
-		if err := m.save(); err != nil {
+		if err := m.save(&rep, mine); err != nil {
 			rep.note(err)
 			if runErr == nil {
 				runErr = err
@@ -411,7 +421,7 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 		m.appendVectors(vs, recs, &rep)
 		i = j
 		if groups++; groups%8 == 0 {
-			if err := m.save(); err != nil {
+			if err := m.save(&rep, mine); err != nil {
 				rep.note(err)
 				rep.Skipped += len(todo) - i
 				return rep, err
@@ -428,7 +438,7 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 		}
 	}
 	if rep.Scored > 0 {
-		if err := m.save(); err != nil {
+		if err := m.save(&rep, mine); err != nil {
 			rep.note(err)
 			if runErr == nil {
 				runErr = err
@@ -459,10 +469,16 @@ func (m *Matcher) store(key string, e *entry) {
 	m.mu.Unlock()
 }
 
-func (m *Matcher) save() error {
+// save writes the scores, evicting by the live set (SetVectorPriority) with
+// mine, the texts this Warm scored, counted as the highest unless ranked, and
+// adds what it evicted to rep.
+func (m *Matcher) save(rep *Report, mine map[string]bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return saveScores(filepath.Join(m.dir, scoresFileName), m.sf, m.maxEntries)
+	n, live, err := saveScores(filepath.Join(m.dir, scoresFileName), m.sf, m.maxEntries, MaxCacheBytes, keepRule{live: m.vecPrio, mine: mine})
+	rep.ScoresEvicted += n
+	rep.ScoresEvictedLive += live
+	return err
 }
 
 // ensureProfile embeds the profile chunks and the calibration anchors once

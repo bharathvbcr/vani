@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 )
 
 // A board's backlog and its ongoing problems, as reporting.
@@ -155,7 +157,8 @@ func deferredBacklogLines(b *boardsReport, at time.Time) []string {
 // that is not a failure: boards with no good read for over boardStaleAfter
 // (when withStale; the digest lists them in a section of their own), boards
 // skipped this run, and boards whose listing has been short for over
-// boardStaleAfter, which therefore age nothing. "" when there are none. Names
+// boardStaleAfter: what they leave out is held for the mass hold from each
+// posting's own first miss, then dies (Summary.ShortDead). "" when there are none. Names
 // are bounded (maxAttentionNames per kind); the counts are exact.
 func boardAttentionLine(b *boardsReport, at time.Time, withStale bool) string {
 	if b == nil {
@@ -183,12 +186,21 @@ func boardAttentionLine(b *boardsReport, at time.Time, withStale bool) string {
 		parts = append(parts, kindPart(n, "skipped this run", skipped))
 	}
 	if len(long) > 0 {
-		parts = append(parts, kindPart(len(long), "listing short for over "+boardStaleAfter.String()+", so nothing on them ages", long))
+		parts = append(parts, kindPart(len(long), "listing short for over "+boardStaleAfter.String()+", so the postings they leave out are held "+ageText(b.massHold())+" from their first miss and then die", long))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return "Boards not being read (attention, not a failure): " + strings.Join(parts, "; ")
+}
+
+// massHold is the mass hold the run was configured with (MassHoldHours), or the
+// default for a record that predates the field.
+func (b *boardsReport) massHold() time.Duration {
+	if b != nil && b.MassHoldHours > 0 {
+		return time.Duration(b.MassHoldHours) * time.Hour
+	}
+	return pipeline.DefaultMassHold
 }
 
 // kindPart is "N kind (a, b, ... and M more)" for one kind of board.

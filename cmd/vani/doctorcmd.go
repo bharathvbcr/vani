@@ -81,7 +81,6 @@ type doctorPlanJSON struct {
 	RunProblems    []string          `json:"run_problems,omitempty"`
 	BoardsSignaled int               `json:"boards_signaled"`
 	Recovered      int               `json:"board_reads_recovered_from_logs"`
-	WordsPartial   bool              `json:"identifying_words_builtin_only,omitempty"`
 	LogMissing     int               `json:"runs_with_unnamed_boards_and_no_log,omitempty"`
 	Drops          int               `json:"drops_sampled"`
 	Seed           string            `json:"seed,omitempty"` // the drop sample's; pass it back to run what was priced
@@ -190,12 +189,18 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 	if err != nil {
 		return fmt.Errorf("doctor: the identifying-word list is unreadable, so nothing is sent: %w", err)
 	}
+	// A missing or term-less list screens only the built-in words, and the
+	// summary, the log lines and the sampled drops would go out on that. doctor
+	// has no override: nothing is sent until the list has at least one term.
+	if !words.Personal {
+		state := "has no terms"
+		if words.Missing {
+			state = "does not exist"
+		}
+		return fmt.Errorf("doctor: %s %s in %s, so the owner's identifying terms cannot be screened; nothing is sent (add the file with at least one term)", track.WordsFile, state, track.Dir(cfg, e.stateDir))
+	}
 	if hits := words.Found(summary); len(hits) > 0 {
 		return fmt.Errorf("doctor: target_summary holds %d identifying term(s); nothing is sent", len(hits))
-	}
-	plan.WordsPartial = !words.Personal
-	if plan.WordsPartial {
-		fmt.Fprintf(out, "doctor: no %s in %s, so only the built-in identifying words are screened out\n", track.WordsFile, track.Dir(cfg, e.stateDir))
 	}
 	redact := doctorRedactor()
 	screen := func(s string) bool { return len(words.Found(s)) > 0 }

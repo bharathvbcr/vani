@@ -145,6 +145,34 @@ func (sc ReopenScope) reachable(k posting.Key) bool {
 // deferred reports whether k's reopen waits for a sighting.
 func (sc ReopenScope) deferred(k posting.Key) bool { return sc.Defer != nil && sc.Defer(k) }
 
+// ReopenFate is what ApplyExclusions does with an excluded record the
+// exclusions no longer match.
+type ReopenFate int
+
+const (
+	// ReopenStays: its board is no longer watched, so it stays dropped.
+	ReopenStays ReopenFate = iota
+	// ReopenWaits: it is marked as a pending reopen and comes back when its
+	// board's full listing shows it again.
+	ReopenWaits
+	// ReopenNow: it has no full listing to wait for (a weakly keyed posting) and
+	// comes back to Live at the next run.
+	ReopenNow
+)
+
+// ExclusionFate is the outcome letBack gives an excluded record the exclusions
+// no longer match, under this scope with Defer set to Watched, as the run's
+// exclusion pass has it (runwire applyExclusions).
+func (sc ReopenScope) ExclusionFate(k posting.Key) ReopenFate {
+	switch {
+	case !sc.reachable(k):
+		return ReopenStays
+	case sc.Watched != nil && sc.Watched(k):
+		return ReopenWaits
+	}
+	return ReopenNow
+}
+
 // WatchedBy is the ReopenScope.Watched of a watchlist: a key is watched when
 // it falls under one of the boards' key prefixes, the same test the absence
 // pass ages a board's records by (Reconcile, ledgerIndex.board), so a
@@ -353,7 +381,18 @@ func planPolicyDrop(l ledger.Ledger, r ledger.Record, p DropPolicy, sc ReopenSco
 	var c dropClass
 	switch {
 	case backend == TitleBackend:
-		if _, _, still := p.EvaluateTitle(r.Posting.Title, r.Posting.Description); still {
+		// l.All() hands a dropped record back without its body, and a staff
+		// reading is set aside when the description states fewer than staff
+		// years: judged on an empty description it would stay dropped for
+		// ever. Read the body (one bounded read) only when the verdict can
+		// depend on it; one that cannot be read back is not judged.
+		tr := r
+		if r.BodyEvicted && p.titleReadsStaff(r.Posting.Title) {
+			if tr = ledger.Full(l, r); tr.BodyEvicted {
+				return dropStays
+			}
+		}
+		if _, _, still := p.EvaluateTitle(tr.Posting.Title, tr.Posting.Description); still {
 			return dropStays
 		}
 		c = dropTitle

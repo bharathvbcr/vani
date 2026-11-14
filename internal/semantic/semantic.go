@@ -105,8 +105,13 @@ const (
 	MaxDescriptionBytes = 256 << 10
 	// MaxWarmDocs caps the postings one Warm call scores.
 	MaxWarmDocs = 5000
-	// DefaultMaxEntries caps cached postings; the oldest are evicted first.
-	DefaultMaxEntries = 20000
+	// DefaultMaxEntries caps cached postings. Past it, those outside the live set
+	// (Matcher.SetVectorPriority) are evicted first, then the lowest ranked, then
+	// the oldest. It sits above the browsable postings the owner's boards hold
+	// (about 29,000 on 2026-11-12; at 20,000 the warmers re-scored the overflow
+	// forever) and below what MaxCacheBytes holds (about 100,000 at the ~640
+	// bytes an entry encodes to).
+	DefaultMaxEntries = 80000
 	// MaxCacheBytes caps a cache file, on read and on write.
 	MaxCacheBytes = 64 << 20
 
@@ -175,6 +180,11 @@ type Report struct {
 	VectorsCount     int    // postings with stored vectors when the call ended
 	VectorsBytes     int64  // log size when the call ended
 	VectorsErr       string // first problem with the log, empty when none; scoring went on without it
+
+	// The score cache (cache.go). A live eviction means the cache is smaller
+	// than the live set: that posting will be scored again by a later warm.
+	ScoresEvicted     int // scored postings dropped to stay within DefaultMaxEntries and MaxCacheBytes
+	ScoresEvictedLive int // of those, postings in the live set (SetVectorPriority)
 }
 
 // TextHash identifies a posting's scored text: the first 16 bytes of sha256

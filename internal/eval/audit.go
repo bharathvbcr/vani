@@ -176,6 +176,10 @@ const (
 	DroppedPrefix  = "dropped:"
 	ClosedPrefix   = "closed:"
 	unknownDropped = DroppedPrefix + "unknown:other"
+	// PrefilterStratumPrefix starts the stratum of a row dropped at listing
+	// time, before the ledger: "dropped:prefilter:<rule>" (the class
+	// pipeline.PrefilterClassPrefix names, filed as every drop class is).
+	PrefilterStratumPrefix = DroppedPrefix + "prefilter:"
 )
 
 // droppedSource is the stratum of a dropped posting of class c.

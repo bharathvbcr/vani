@@ -25,7 +25,7 @@ func spoolBatch(t *testing.T, stateDir, token string, titles ...string) {
 	t.Helper()
 	var jobs []inbox.Job
 	for i, title := range titles {
-		jobs = append(jobs, inbox.Job{Title: title, Company: "Acme", Location: "Remote", URL: "https://careers.acme.com/jobs/" + string(rune('a'+i)) + title[:1]})
+		jobs = append(jobs, inbox.Job{Title: title, Company: "Acme", Location: "Remote", URL: "https://careers.acme.com/jobs/" + string(rune('a'+i)) + title[:1] + "123"})
 	}
 	if _, err := inbox.Write(filepath.Join(stateDir, inbox.Dir), inbox.Batch{Token: token, Company: "Acme", Jobs: jobs}); err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestPollInboxFoldsAndAdvancesOnlyTheNewLiveKeys(t *testing.T) {
 	// An ATS record already holds the Platform Engineer role.
 	gh, _ := posting.GreenhouseKey("acme", "9")
 	if err := w.led.Append(context.Background(), ledger.Event{V: 1, At: time.Now(), Key: gh, Status: posting.Live, Reason: "new",
-		Posting: &posting.Posting{Key: gh, ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote", URL: "https://boards.greenhouse.io/acme/jobs/9"}}); err != nil {
+		Posting: &posting.Posting{Key: gh, ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote", URL: "https://careers.acme.com/jobs/aP123"}}); err != nil {
 		t.Fatal(err)
 	}
 	var got [][]ledger.Record

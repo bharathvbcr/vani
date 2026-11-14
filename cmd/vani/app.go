@@ -310,6 +310,16 @@ func (e *env) dailySteps(ctx context.Context, app *App, cfg config.Config, opts 
 	if errors.Is(reloadErr, errBoardSelection) {
 		return stagePipeline, reloadErr
 	}
+	// The config this run will use, fresh or the previous one a stale reload
+	// fell back to, is checked against the words file as it is now. A summary
+	// that passed at start (or at the last good reload) can fail since: a term
+	// added, the file deleted or emptied. The run is refused rather than sent
+	// with the previous summary: it is the model-prompt stages (triage,
+	// reasons, backfill) that carry it, and they are not separable from the
+	// run, so the failure is recorded and the next run re-checks.
+	if err := checkPromptSummary(cfg, e.stateDir, false); err != nil {
+		return stagePipeline, errors.Join(reloadErr, err)
+	}
 	stage, err = e.runAndPublish(ctx, app, cfg, opts, rec)
 	return stage, errors.Join(reloadErr, err)
 }
@@ -671,6 +681,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		}
 		counts.ClockBehind = boards.ClockBehind
 		counts.MassDead = boards.MassDead
+		counts.ShortDead = boards.ShortDead
 		counts.MassHeld = massHeldLine(boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings)
 		counts.BoardAttention = boardAttentionLine(boards, at, false)
 		counts.EmptyCount = boards.EmptyCount
@@ -830,6 +841,12 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 		fmt.Fprintln(e.stdout, line)
 	}
 	for _, l := range boardHealthLines(e.boardHealthFacet(cfg, at), at) {
+		fmt.Fprintln(e.stdout, l)
+	}
+	for _, l := range unwatchedLines(unwatchedCompaniesOf(recs, cfg, e.stateDir)) {
+		fmt.Fprintln(e.stdout, l)
+	}
+	for _, l := range rankWeightsLines(rankWeightsFacetOf(cfg)) {
 		fmt.Fprintln(e.stdout, l)
 	}
 	sched := withAwaitingUS(scheduleKeeping(cfg, scheduleOf(cfg, nil, at), dfacet, last, &live, at), &us)

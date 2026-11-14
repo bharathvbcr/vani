@@ -25,7 +25,9 @@ import (
 //   - A full listing is a mass absence when it leaves at least MassShare of the
 //     board's open postings absent (distinct keys, counted before the listing)
 //     with at least MassMinOpen open. An empty answer is one too on a board of
-//     any size from EmptyListingMinOpen open (a named extension of the owner's
+//     any size from EmptyListingMinOpen open, and on a board under MassMinOpen
+//     open so is a non-empty listing that leaves out more than half of the open
+//     postings and at least SmallBoardMinAbsent of them (a named extension of the owner's
 //     rule: a small board that shows none of its postings is the classic wrong
 //     tenant or broken read, and keeping is the safe error). Every posting such
 //     a listing leaves absent is mass marked (MassMissedSinceKey). The mark only
@@ -51,6 +53,16 @@ import (
 //     of the events until it passes them (ClockWindow plus the span of the runs
 //     that wrote them), and names the newest event it saw (Summary.ClockAhead).
 //     One or two stray records on another board do not freeze this one.
+//     A second, wider freeze covers a clock set back by days: at least
+//     ClockQuorum of the board's OWN records with events more than ClockWindow
+//     and at most SetBackCap ahead freeze it the same way (a run's burst of
+//     misses is what a set-back leaves ahead). Without it aging goes on under
+//     the set-back clock, stamps first misses early, and ends a mass hold early
+//     by the set-back once the clock is right. One or two own records, records
+//     on other boards and events past SetBackCap freeze nothing, and the freeze
+//     ends when real time passes the newest event; the cost is that a run under
+//     a clock that ran ahead by up to SetBackCap, which touched that many of a
+//     board's postings, freezes the board until real time catches up.
 //   - Unreadable stamps. A stamp more than MaxStampAhead past now, or before
 //     more than MaxStampAhead before the posting was first seen (a clock set
 //     back past its history), is
@@ -91,6 +103,22 @@ const (
 	// current episode, with when it was first so marked. Read only while
 	// missed_runs > 0.
 	MassMissedSinceKey = "mass_missed_since"
+	// MassShortKey is "short" on a mass-marked posting whose every mass
+	// listing in the current episode was a short listing (a board that counted
+	// more rows than it listed), never a true mass absence. Its death is an
+	// expected closure, reported (Summary.ShortDead) but not a failure; a
+	// posting with no value (the ledger before this key, or one a true mass
+	// absence ever marked) counts as a mass death. Read only while
+	// mass_missed_since is set; forgotten with it.
+	MassShortKey = "mass_short"
+	// massShortValue and massUnreadableValue are MassShortKey's values. The
+	// second is a posting a short listing that skipped unreadable rows marked: it
+	// is held for as long as any listing skips rows, and its death (on a listing
+	// that skipped none) is a mass death, a failure naming the board
+	// (Summary.UnreadableDead). An older build reads it as "not short": a mass
+	// death, which also fails the run.
+	massShortValue      = "short"
+	massUnreadableValue = "unreadable"
 	// OrdinaryHold is how long an ordinary absence lasts, from its first miss,
 	// before it can kill: a daily run kills on its second miss, two runs an hour
 	// apart cannot.
@@ -101,6 +129,10 @@ const (
 	// EmptyListingMinOpen is the fewest open postings from which a listing that
 	// shows none of them is a mass absence whatever the floor.
 	EmptyListingMinOpen = 2
+	// SmallBoardMinAbsent is the fewest absent postings from which a listing of
+	// a board under the floor that leaves out more than half of its open
+	// postings is a mass absence (closes FOLLOWUPS A2-4).
+	SmallBoardMinAbsent = 2
 	// ClockWindow is how much time the rule takes on trust: events further
 	// ahead than this are not read as a clock behind (so a clock that once ran
 	// ahead freezes nothing for longer than this), and a death that needs more
@@ -110,6 +142,18 @@ const (
 	// Longer than a day's run plus a missed one, so daily runs are never
 	// deferred.
 	ClockWindow = 72 * time.Hour
+	// SetBackCap bounds the second clock guard: a quorum (ClockQuorum) of the
+	// board's own records with events more than ClockWindow and at most
+	// SetBackCap ahead of a read freezes the board's aging, as events within
+	// ClockWindow do. Such a quorum is what a clock set back by days leaves
+	// behind (the last run's burst of misses is that far ahead), and aging under
+	// it would stamp first misses early and end a mass hold early by the
+	// set-back once the clock is right. A month covers a mistyped date or day;
+	// further ahead is read as a clock that ran ahead, as before, because the
+	// ledger cannot tell the two apart and every day of the cap is a day a
+	// ran-ahead run's new postings can freeze their board: the freeze lasts from
+	// the read until real time passes the newest of them, never past the cap.
+	SetBackCap = 30 * 24 * time.Hour
 	// ClockQuorum is how many records anywhere in the ledger must carry events
 	// within ClockWindow ahead for a board none of whose own records do to be
 	// frozen: a clock set back puts the last run's whole burst ahead; one or two
@@ -207,6 +251,12 @@ func massAbsence(lv Liveness, open, absent int) bool {
 	if open >= EmptyListingMinOpen && absent == open {
 		return true
 	}
+	if open < lv.MassMinOpen {
+		// A board under the floor leans on the ordinary rule for a posting or
+		// two, but a listing that is missing more than half of its open
+		// postings (and at least 2) is a wrong tenant or a broken read.
+		return absent >= SmallBoardMinAbsent && 2*absent > open
+	}
 	return open >= lv.MassMinOpen && float64(absent) >= lv.MassShare*float64(open)-1e-9
 }
 
@@ -218,6 +268,7 @@ func clearMissMarks(ann map[string]string) map[string]string {
 	}
 	ann[MissedSinceKey] = ""
 	ann[MassMissedSinceKey] = ""
+	ann[MassShortKey] = ""
 	return ann
 }
 
@@ -250,7 +301,10 @@ func stampOf(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 // newest event that says so. Aging resumes once the clock passes it.
 type clockEvidence struct {
 	behind bool
-	ahead  time.Time
+	// setBack: behind only by a quorum of the board's own events further ahead than
+	// ClockWindow (a clock set back by days); none lies within the window.
+	setBack bool
+	ahead   time.Time
 }
 
 // clockEvidence reads the board under prefix (liveness.go "The clock"): an
@@ -271,10 +325,29 @@ func (x *ledgerIndex) clockEvidence(prefix string, now time.Time) clockEvidence 
 	if j := sort.Search(len(ev), func(j int) bool { return ev[j].After(hi) }); j-i >= ClockQuorum {
 		c = clockEvidence{behind: true, ahead: ev[j-1]}
 	}
+	capHi := now.Add(SetBackCap)
+	var far int
+	var farNewest time.Time
 	for _, k := range x.board(prefix) {
-		if t := x.info[k].last; t.After(lo) && !t.After(hi) && t.After(c.ahead) {
-			c = clockEvidence{behind: true, ahead: t}
+		t := x.info[k].last
+		switch {
+		case t.After(lo) && !t.After(hi):
+			if t.After(c.ahead) {
+				c = clockEvidence{behind: true, ahead: t}
+			}
+		case t.After(hi) && !t.After(capHi):
+			far++
+			if t.After(farNewest) {
+				farNewest = t
+			}
 		}
+	}
+	// A quorum of the board's own records further ahead than ClockWindow but
+	// within SetBackCap: a clock set back by days (liveness.go "The clock").
+	if far >= ClockQuorum && !c.behind {
+		c = clockEvidence{behind: true, ahead: farNewest, setBack: true}
+	} else if far >= ClockQuorum && farNewest.After(c.ahead) {
+		c.ahead = farNewest
 	}
 	return c
 }
@@ -285,8 +358,11 @@ type absence struct {
 	missed, held, dead int
 	massMarked         int // postings this listing newly marked
 	deferred           int // deaths that waited a read for an unwitnessed gap (in held)
-	massDead           int // deaths of mass-marked postings (in dead)
+	massDead           int // deaths of mass-marked postings a true mass absence marked (in dead)
+	shortDead          int // deaths of postings only short listings marked (in dead, not in massDead)
+	unreadableDead     int // deaths of postings an unreadable-row listing held (in massDead)
 	mass, clockBehind  bool
+	clockSetBack       bool
 	clockAhead         time.Time
 }
 
@@ -294,7 +370,7 @@ type absence struct {
 // keys before the listing, seen the keys it listed, clock what the ledger says
 // about now. It writes the miss, hold and death events in one batched append;
 // its counts say what was written, so a pass that failed reports none of them.
-func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, clock clockEvidence, now time.Time, short bool) (absence, error) {
+func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting.Key, seen map[posting.Key]bool, clock clockEvidence, now time.Time, kind shortKind) (absence, error) {
 	lv = lv.resolved()
 	var a absence
 	a.open = len(open)
@@ -309,10 +385,18 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		return a, nil
 	}
 	if clock.behind {
-		a.clockBehind, a.clockAhead = true, clock.ahead
+		a.clockBehind, a.clockAhead, a.clockSetBack = true, clock.ahead, clock.setBack
 		return a, nil
 	}
-	mass := short || massAbsence(lv, len(open), len(absent))
+	// Only a listing that is the board's whole word can be a true mass absence
+	// by share: a short listing leaves out what it leaves out because it is
+	// short, however much that is, so what it holds dies as a short death
+	// (MassShortKey). A listing that shows none of the board's open postings is
+	// one whether or not it is short (the Snap case: an empty read).
+	short := kind != shortNone
+	unreadable := kind == shortUnreadable
+	trueMass := massAbsence(lv, len(open), len(absent)) && (!short || len(absent) == len(open))
+	mass := short || trueMass
 
 	var w absence
 	evs := make([]ledger.Event, 0, len(absent))
@@ -324,12 +408,18 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		if !ok || closed(cur.Status) {
 			continue
 		}
-		e, o := absenceEvent(lv, cur, mass, now)
+		e, o := absenceEvent(lv, cur, mass, trueMass, unreadable, now)
 		switch o.outcome {
 		case absentDead:
 			w.dead++
-			if o.massed {
+			switch {
+			case o.massed && o.shortOnly:
+				w.shortDead++
+			case o.massed:
 				w.massDead++
+				if o.unreadable {
+					w.unreadableDead++
+				}
 			}
 		case absentHeld:
 			w.held++
@@ -348,7 +438,7 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		return a, err
 	}
 	a.missed, a.held, a.dead, a.massMarked, a.mass = w.missed, w.held, w.dead, w.massMarked, mass
-	a.deferred, a.massDead = w.deferred, w.massDead
+	a.deferred, a.massDead, a.shortDead, a.unreadableDead = w.deferred, w.massDead, w.shortDead, w.unreadableDead
 	return a, nil
 }
 
@@ -362,14 +452,23 @@ const (
 
 // absenceResult is what one absence did to a posting.
 type absenceResult struct {
-	outcome  absentOutcome
-	newMark  bool // this listing mass-marked it
-	massed   bool // it is mass marked (after this listing)
-	deferred bool // its death was due only by an unwitnessed gap, and waits a read
+	outcome   absentOutcome
+	newMark   bool // this listing mass-marked it
+	massed    bool // it is mass marked (after this listing)
+	shortOnly bool // ... and only short listings ever marked it in this episode
+	// unreadable: ... and a listing that skipped unreadable rows marked it, and no
+	// true mass absence since (MassShortKey "unreadable"): a death is a failing one.
+	unreadable bool
+	deferred   bool // its death was due only by an unwitnessed gap, and waits a read
 }
 
 // absenceEvent is the event one more full-listing absence writes for cur.
-func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Time) (ledger.Event, absenceResult) {
+// massListing says the listing marks its absent postings mass; trueMass that it
+// does so by the mass rule itself, not only because it was a short listing;
+// unreadable that the listing skipped rows it could not read, which may be
+// the posting itself: such a listing kills nothing (the posting is held), and
+// what it marked dies only on a later listing that skipped nothing.
+func absenceEvent(lv Liveness, cur ledger.Record, massListing, trueMass, unreadable bool, now time.Time) (ledger.Event, absenceResult) {
 	misses := cur.MissedRuns + 1
 	ongoing := cur.MissedRuns > 0
 	first, ok := readStamp(cur, MissedSinceKey, now)
@@ -379,14 +478,30 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Tim
 	// The mass mark persists through the episode; any value counts, so a
 	// mangled mark still holds. A new episode starts unmarked.
 	massSince, newMark := "", false
+	shortOnly, unread := false, false
 	if ongoing && cur.Annotations[MassMissedSinceKey] != "" {
 		massSince = cur.Annotations[MassMissedSinceKey]
+		shortOnly = cur.Annotations[MassShortKey] == massShortValue
+		unread = cur.Annotations[MassShortKey] == massUnreadableValue
 		if _, ok := readStamp(cur, MassMissedSinceKey, now); !ok {
 			massSince = stampOf(now)
 		}
 	}
 	if massListing && massSince == "" {
 		massSince, newMark = stampOf(now), true
+		shortOnly = !trueMass && !unreadable // marked by a short listing alone
+	} else if trueMass || unreadable {
+		shortOnly = false // a true mass absence, or unreadable rows, upgrade the cause: it fails the run if they die
+	}
+	// Unreadable rows mark the episode until a true mass absence takes it over;
+	// the cause is kept through later short or complete listings.
+	unread = (unread || (unreadable && massSince != "")) && !trueMass
+	short := ""
+	switch {
+	case massSince != "" && shortOnly:
+		short = massShortValue
+	case massSince != "" && unread:
+		short = massUnreadableValue
 	}
 	hold := OrdinaryHold
 	if massSince != "" {
@@ -396,14 +511,19 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Tim
 		ledger.MissedRunsKey: strconv.Itoa(misses),
 		MissedSinceKey:       stampOf(first),
 		MassMissedSinceKey:   massSince, // "" forgets a stale mark of an earlier episode
+		MassShortKey:         short,
 	}
 	e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: cur.Key, Status: cur.Status, Annotations: ann,
 		Reason: fmt.Sprintf("absent from board (%d)", misses)}
 	if massSince != "" {
 		e.Reason = fmt.Sprintf("absent from board (%d), mass absence", misses)
 	}
-	res := absenceResult{newMark: newMark, massed: massSince != ""}
+	res := absenceResult{newMark: newMark, massed: massSince != "", shortOnly: short == massShortValue, unreadable: short == massUnreadableValue}
 	due := misses >= MissesToDead && !now.Before(first.Add(hold))
+	unreadableHeld := due && unreadable
+	if unreadableHeld {
+		due = false // the posting may be the row this listing could not read
+	}
 	// An unwitnessed gap: more than ClockWindow since the posting's last event
 	// (its previous miss). A clock that jumped ahead, or came back from being set
 	// back, looks the same as that long a gap, so the next read decides: this
@@ -422,6 +542,9 @@ func absenceEvent(lv Liveness, cur ledger.Record, massListing bool, now time.Tim
 			e.Reason = fmt.Sprintf("absent from board %d times over %s", misses, OrdinaryHold)
 		}
 		res.outcome = absentDead
+	case unreadableHeld:
+		e.Reason += ", held: this listing skipped rows it could not read, and the posting may be one of them"
+		res.outcome = absentHeld
 	case res.deferred:
 		e.Reason += fmt.Sprintf(", held one more read: %s since its last event is more than the %s the rule takes on trust (a clock that jumped looks the same)",
 			gap.Round(time.Hour), ClockWindow)

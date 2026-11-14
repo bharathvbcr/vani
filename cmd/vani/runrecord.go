@@ -237,14 +237,26 @@ type exclusionSummary struct {
 	OverCap         int `json:"over_cap,omitempty"`
 	Unread          int `json:"unread,omitempty"`
 	BodyUnavailable int `json:"body_unavailable,omitempty"`
+	// UnrecognisedLocation is the part of Dropped that only_locations dropped
+	// because a place of the location names nothing the location tables know
+	// (a US town they lack reads this way): dropped, but possibly wrongly.
+	// `vani prefilter` lists them and the audit draws them as the class
+	// "exclude:location_unrecognised". Additive.
+	UnrecognisedLocation int `json:"unrecognised_location,omitempty"`
 }
 
 func summarizeExclusions(ch pipeline.ExclusionChange) *exclusionSummary {
-	return &exclusionSummary{
+	s := &exclusionSummary{
 		Dropped: len(ch.Drop), Reopened: ch.Reopened, Deferred: ch.Deferred, AlreadyPending: ch.AlreadyPending,
 		Stale: ch.Stale, OverCap: ch.OverCap, Unread: len(ch.Unread),
 		BodyUnavailable: ch.BodyUnavailable,
 	}
+	for _, why := range ch.Reasons {
+		if pipeline.UnrecognisedLocationReason(why) {
+			s.UnrecognisedLocation++
+		}
+	}
+	return s
 }
 
 // logoSummary is logo.Result as counts. MissingHosts is how many hosts were
@@ -350,8 +362,15 @@ type boardsReport struct {
 	// reads) rejected before any detail request, on the adapters that read a
 	// detail per posting. They were never stored, so no audit or retriage can
 	// see them; a later listing under a policy that no longer drops them
-	// stores them as new.
+	// stores them as new. A bounded sample of them is kept for the weekly
+	// audit (audit/prefilter-sample.json, prefilterwire.go); the audit class of
+	// each is "dropped:prefilter:<rule>".
 	Prefiltered int `json:"prefiltered,omitempty"`
+	// PrefilteredByRule is those rows by the rule that dropped them
+	// (pipeline.PrefilterRule: "exclude_title", "exclude_location",
+	// "read_<slot>" ...), counted as the adapters reported them this run, so a
+	// row listed again on a later run is counted again. Additive.
+	PrefilteredByRule map[string]int `json:"prefiltered_by_rule,omitempty"`
 	// Mass counts read boards whose full listing newly marked postings as a mass
 	// absence (a share of the board's open postings, or all of them, left it: an
 	// outage, a moved board, a renumbering; pipeline liveness.go). Their absent
@@ -369,11 +388,21 @@ type boardsReport struct {
 	// clock that ran ahead. A failure: those boards age nothing until the clock
 	// passes the events. Additive.
 	ClockBehind int `json:"clock_behind,omitempty"`
-	// MassDead is postings a mass absence had marked that died this run, their
-	// mass hold over and their board still not listing them. A failure, so the
-	// owner sees them: a mass hold usually ends in its postings coming back.
-	// Counted in the items' dead too. Additive.
+	// ClockSetBack counts read boards whose full listing aged nothing only because
+	// a quorum of their own events lie days ahead of the clock (a clock set back by
+	// days). A freeze kills nothing, so it is attention, not a failure. Additive.
+	ClockSetBack int `json:"clock_set_back,omitempty"`
+	// MassDead is postings a true mass absence (the share rule or an empty
+	// listing) had marked that died this run, their mass hold over and their
+	// board still not listing them. A failure, so the owner sees them: a mass
+	// hold usually ends in its postings coming back. Counted in the items' dead
+	// too. Additive. A new mass marking (Mass) is attention, not a failure.
 	MassDead int `json:"mass_dead,omitempty"`
+	// ShortDead is postings held only because a short listing left them out
+	// (pipeline.MassShortKey) that died this run after the mass hold: expected
+	// closures on a board that lists short, shown on the attention line, not a
+	// failure. Counted in the items' dead too. Additive.
+	ShortDead int `json:"short_dead,omitempty"`
 	// DeathsDeferred is deaths that waited one more read because more than
 	// pipeline.ClockWindow had passed since the posting's last event (a gap a
 	// jumped clock would also make). Shown, not a failure. Additive.
@@ -386,6 +415,9 @@ type boardsReport struct {
 	MassHeld         []massHeldBoard `json:"mass_held,omitempty"`
 	MassHeldCount    int             `json:"mass_held_count,omitempty"`
 	MassHeldPostings int             `json:"mass_held_postings,omitempty"`
+	// MassHoldHours is the mass hold this run was configured with (liveness.mass_hold_hours),
+	// so a line that names the hold says the one in force. 0 reads as the default. Additive.
+	MassHoldHours int `json:"mass_hold_hours,omitempty"`
 	// Short is rows the boards counted but did not list, together (see
 	// boardReport.Short). Additive: readers that do not know the key ignore it.
 	Short int `json:"short,omitempty"`
@@ -493,16 +525,24 @@ type reconcileCounts struct {
 	// ClockBehind that it aged nothing because the ledger holds events stamped
 	// ahead of the clock, ClockAhead the newest such event. Deferred is deaths
 	// that waited a read for a gap of more than pipeline.ClockWindow; MassDead
-	// is deaths of mass-marked postings.
-	Open        int       `json:"open,omitempty"`
-	Absent      int       `json:"absent,omitempty"`
-	Held        int       `json:"held,omitempty"`
-	Mass        bool      `json:"mass,omitempty"`
-	MassMarked  int       `json:"mass_marked,omitempty"`
-	ClockBehind bool      `json:"clock_behind,omitempty"`
-	ClockAhead  time.Time `json:"clock_ahead,omitzero"`
-	Deferred    int       `json:"deaths_deferred,omitempty"`
-	MassDead    int       `json:"mass_dead,omitempty"`
+	// is deaths of postings a true mass absence marked, ShortDead of ones only a
+	// short listing held.
+	Open        int  `json:"open,omitempty"`
+	Absent      int  `json:"absent,omitempty"`
+	Held        int  `json:"held,omitempty"`
+	Mass        bool `json:"mass,omitempty"`
+	MassMarked  int  `json:"mass_marked,omitempty"`
+	ClockBehind bool `json:"clock_behind,omitempty"`
+	// ClockSetBack: the freeze (ClockBehind) rests only on events days ahead (a clock
+	// set back by days), which is attention and not a failure.
+	ClockSetBack bool      `json:"clock_set_back,omitempty"`
+	ClockAhead   time.Time `json:"clock_ahead,omitzero"`
+	Deferred     int       `json:"deaths_deferred,omitempty"`
+	MassDead     int       `json:"mass_dead,omitempty"`
+	ShortDead    int       `json:"short_dead,omitempty"`
+	// UnreadableDead is the part of MassDead held by a listing that skipped rows
+	// it could not read: they fail the run like any mass death.
+	UnreadableDead int `json:"unreadable_dead,omitempty"`
 }
 
 func runRecordPath(stateDir string) string {

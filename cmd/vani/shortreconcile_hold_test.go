@@ -60,7 +60,7 @@ func TestShortListingMassHoldEndsAtFourteenDays(t *testing.T) {
 		}
 	}
 	s := runListing(t, w, b, listed, 2, first.Add(pipeline.DefaultMassHold))
-	if st, _ := ledgerStatusOf(t, w, missing); st != posting.Dead || s.Dead != 1 || s.MassDead != 1 {
+	if st, _ := ledgerStatusOf(t, w, missing); st != posting.Dead || s.Dead != 1 || s.ShortDead != 1 || s.MassDead != 0 {
 		t.Fatalf("after 14 days of short listings that never show it: %s, %+v", st, s)
 	}
 }

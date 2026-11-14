@@ -147,12 +147,13 @@ type DropRecall struct {
 	MissedYes   *RecallShare  `json:"missed_yes,omitempty"`
 	ByClass     []RecallShare `json:"by_class,omitempty"`
 	ByClassYes  []RecallShare `json:"by_class_yes,omitempty"`
-	OutOfPool   int           `json:"out_of_pool"` // posting closed, untriaged or gone
-	Moved       int           `json:"moved"`       // drawn from another stratum than it sits in now
-	Renamed     int           `json:"renamed"`     // drawn from its cell under an old class name; counted in the cell
-	NotAudit    int           `json:"not_audit"`   // drawn by Explore or another surface, not an audit stratum
-	Manual      int           `json:"manual"`      // no sampling stratum
-	MarkedOut   int           `json:"marked"`      // counted by the mark instead
+	OutOfPool   int           `json:"out_of_pool"`         // posting closed, untriaged or gone
+	Moved       int           `json:"moved"`               // drawn from another stratum than it sits in now
+	Renamed     int           `json:"renamed"`             // drawn from its cell under an old class name; counted in the cell
+	NotAudit    int           `json:"not_audit"`           // drawn by Explore or another surface, not an audit stratum
+	Prefilter   int           `json:"prefilter,omitempty"` // drawn from the capped sample of pre-ledger drops: no cell, no known population
+	Manual      int           `json:"manual"`              // no sampling stratum
+	MarkedOut   int           `json:"marked"`              // counted by the mark instead
 	Selected    int           `json:"selected_on_reading"`
 	Engineering int           `json:"engineering"`
 	Draws       int           `json:"draws"`
@@ -271,6 +272,9 @@ func BuildDropRecall(labels map[posting.Key]Entry, members []RecallMember) DropR
 			continue
 		case !auditStratum(e.Source):
 			out.NotAudit++ // Explore or another surface: not a uniform draw of any cell
+			continue
+		case !in && strings.HasPrefix(e.Source, PrefilterStratumPrefix):
+			out.Prefilter++ // a row dropped before the ledger: no cell, no population
 			continue
 		case !in:
 			out.OutOfPool++
@@ -612,6 +616,9 @@ func (d DropRecall) Markdown() string {
 	}
 	if n := d.OutOfPool + d.Moved + d.NotAudit + d.Manual + d.MarkedOut; n > 0 {
 		fmt.Fprintf(&b, "\nLabels left out: %d on postings no longer kept or dropped (closed, untriaged or gone), %d drawn from another stratum than the posting sits in now, %d not drawn from an audit stratum (Explore or another surface), %d with no sampling stratum, %d on marked postings (counted by the mark).\n", d.OutOfPool, d.Moved, d.NotAudit, d.Manual, d.MarkedOut)
+	}
+	if d.Prefilter > 0 {
+		fmt.Fprintf(&b, "\n%d label(s) are on rows dropped at listing time, before the ledger; they are a capped sample of a population nobody counted, so no cell above includes them.\n", d.Prefilter)
 	}
 	if d.Renamed > 0 {
 		fmt.Fprintf(&b, "\n%d label(s) were drawn from their cell under an older drop-class name and are counted in it.\n", d.Renamed)

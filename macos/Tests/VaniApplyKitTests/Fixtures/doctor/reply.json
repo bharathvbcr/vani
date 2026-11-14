@@ -6,7 +6,6 @@
   ],
   "boards_signaled": 3,
   "board_reads_recovered_from_logs": 1578,
-  "identifying_words_builtin_only": true,
   "runs_with_unnamed_boards_and_no_log": 1,
   "drops_sampled": 3,
   "seed": "2026-W46",

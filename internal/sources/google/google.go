@@ -81,6 +81,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	var out []posting.Posting
 	keys := map[posting.Key]bool{}
+	rows := srcutil.NewRows(ctx, b, 0)
 	for _, term := range terms {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -93,10 +94,17 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if err != nil {
 			return nil, fmt.Errorf("google %q: search %q: %w", b.Token, term, err)
 		}
-		for i, j := range jobs {
-			p, err := j.posting(b, seen)
+		rows.Add(len(jobs))
+		for i, d := range jobs {
+			p, err := d.j.posting(b, seen)
+			if d.err != nil {
+				p, err = posting.Posting{}, d.err
+			}
 			if err != nil {
-				return nil, fmt.Errorf("google %q: search %q: job %d: %w", b.Token, term, i, err)
+				if ferr := rows.Bad(err); ferr != nil {
+					return nil, fmt.Errorf("google %q: search %q: job %d: %w", b.Token, term, i, ferr)
+				}
+				continue
 			}
 			if keys[p.Key] {
 				continue
@@ -107,6 +115,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if len(out) > MaxPostings {
 			return nil, fmt.Errorf("google %q: %w: more than %d postings", b.Token, srcutil.ErrTooManyPostings, MaxPostings)
 		}
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("google %q: %w", b.Token, err)
 	}
 	return out, nil
 }
@@ -138,7 +149,7 @@ const dsMarker = "AF_initDataCallback({key: 'ds:1'"
 // decodeResults finds the ds:1 block and decodes its result list. It reads
 // one JSON value starting at the block's "data:", so nothing after the value
 // (the rest of the script) is guessed at.
-func decodeResults(page []byte) ([]job, error) {
+func decodeResults(page []byte) ([]decoded, error) {
 	at := bytes.Index(page, []byte(dsMarker))
 	if at < 0 {
 		return nil, ErrNoResults
@@ -171,15 +182,23 @@ func decodeResults(page []byte) ([]job, error) {
 		return nil, fmt.Errorf("%w: %d jobs match, page 1 holds %d; use a narrower term or the target_level/location filters",
 			ErrTruncated, total, len(rows))
 	}
-	jobs := make([]job, 0, len(rows))
+	jobs := make([]decoded, 0, len(rows))
 	for i, r := range rows {
 		j, err := decodeJob(r)
 		if err != nil {
-			return nil, fmt.Errorf("%w: result %d: %v", ErrShape, i, err)
+			err = fmt.Errorf("%w: result %d: %v", ErrShape, i, err)
 		}
-		jobs = append(jobs, j)
+		jobs = append(jobs, decoded{j: j, err: err})
 	}
 	return jobs, nil
+}
+
+// decoded is one result row: the job, or why the row could not be read. The
+// page's count was checked against the raw row count before this, so a row
+// that fails here is still one the page sent.
+type decoded struct {
+	j   job
+	err error
 }
 
 // Field positions in one ds:1 result, as observed on 2026-10-19.

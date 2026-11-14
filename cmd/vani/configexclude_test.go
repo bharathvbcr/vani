@@ -231,9 +231,11 @@ func TestPrefilterReportsExclusions(t *testing.T) {
 	out, _ := mustCode(t, 0, "prefilter", "--list")
 	for _, want := range []string{
 		"1 of 1 live posting(s) would be dropped before triage",
-		"1 kept posting(s) would be dropped (marked ones are kept), 1 excluded posting(s) would be let back (each waits for its board to list it again; inbox and page postings come back at once)",
+		// No watchlist here: gh:a:4's board is not watched, so it stays dropped
+		// (it was reported as let back before, which it never was).
+		"1 kept posting(s) would be dropped (marked ones are kept); 1 excluded posting(s) no longer match: 0 would wait, still dropped, until their board lists them again, 0 would come back to live at once (inbox and page postings, with no listing to wait for), 1 would stay dropped (their board is no longer watched)",
 		"gh:a:2\tData Intern\texcluded: title matches \"intern\" (now scored)",
-		"gh:a:4\tPlatform Engineer\tlet back when its board lists it (was excluded: title matches \"platform\")",
+		"gh:a:4\tPlatform Engineer\tstays dropped: its board is no longer watched (was excluded: title matches \"platform\")",
 		"read strong_fit or partial_fit (false drops): 1",
 	} {
 		if !strings.Contains(out, want) {

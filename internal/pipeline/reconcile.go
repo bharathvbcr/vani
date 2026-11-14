@@ -61,8 +61,16 @@ type Summary struct {
 	Held     int
 	Deferred int
 	Dead     int
-	// MassDead of Dead were mass marked: they waited out the mass hold.
-	MassDead int
+	// MassDead of Dead were mass marked by a true mass absence (the share rule or
+	// an empty listing): they waited out the mass hold. ShortDead of Dead were
+	// held only because a short listing left them out (MassShortKey): expected
+	// closures, reported and not counted in MassDead.
+	MassDead  int
+	ShortDead int
+	// UnreadableDead of MassDead were held by a listing that skipped rows it
+	// could not read (MassShortKey "unreadable"): counted in MassDead, so they
+	// fail the run, and named apart so the report says why.
+	UnreadableDead int
 	// Open counts the board's open postings before a full listing; Absent how
 	// many of them it left out. Zero for a partial listing.
 	Open, Absent int
@@ -77,7 +85,10 @@ type Summary struct {
 	// clock passes it. Either the clock is behind or those events were written
 	// under a clock that ran ahead; the ledger cannot tell which.
 	ClockBehind bool
-	ClockAhead  time.Time
+	// ClockSetBack says the freeze rests only on a quorum of the board's own events
+	// further ahead than ClockWindow (a clock set back by days), none within it.
+	ClockSetBack bool
+	ClockAhead   time.Time
 	// Duplicate counts every record this fold stored or marked as a
 	// duplicate: listed postings stored as one (ListedDuplicate) and other
 	// records this listing marked as their twins.
@@ -123,7 +134,7 @@ func Reconcile(ctx context.Context, l ledger.Ledger, b sources.Board, listed []p
 // ledger as it stands when the board starts, as a fresh scan would: the
 // boards before it included, this board's own writes not.
 func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, true, false)
+	return rc.reconcile(ctx, b, listed, now, true, shortNone)
 }
 
 // ReconcileShort folds a board's listing that counted more rows than it listed
@@ -133,23 +144,45 @@ func (rc *Reconciler) Reconcile(ctx context.Context, b sources.Board, listed []p
 // left out, so every open posting absent from it is treated as a mass absence
 // (liveness.go): kept and held for MassHold from its own first miss, and
 // never killed by the ordinary rule. Pending reopens the listing leaves out
-// expire as in a full listing, after the same PendingReopenExpiry that a
-// mass hold lasts.
+// are not aged by it at all (only a clean full listing counts toward
+// PendingReopenExpiry): it cannot say the posting is gone.
 func (rc *Reconciler) ReconcileShort(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, true, true)
+	return rc.reconcile(ctx, b, listed, now, true, shortCounted)
 }
+
+// ReconcileUnreadable folds a short listing whose shortfall includes rows the
+// adapter could not read (srcutil.BadRowSink). It is ReconcileShort with one
+// difference that matters: a posting behind an unreadable row looks exactly like
+// one its board stopped listing, so this listing never kills what it leaves
+// out, however long it has been held, and a posting it marked dies later only on
+// a listing that skipped nothing, as a mass death (it fails the run, and counts
+// in Summary.UnreadableDead so the report says why). A board whose rows are
+// unreadable on every run therefore keeps its postings, held, rather than
+// losing them as an "expected closure".
+func (rc *Reconciler) ReconcileUnreadable(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
+	return rc.reconcile(ctx, b, listed, now, true, shortUnreadable)
+}
+
+// shortKind is what a full listing says about the postings it leaves out.
+type shortKind int
+
+const (
+	shortNone       shortKind = iota // it is the board's whole word
+	shortCounted                     // it counted more rows than it listed
+	shortUnreadable                  // ... and some rows it skipped could not be read
+)
 
 // ReconcilePartial folds postings that are part of a board's listing, not the
 // whole of it (a page the user scraped in the browser): it shares Reconcile's
 // listing loop but runs no absence pass, so a posting missing from the batch is
 // never missed or aged. A partial listing says nothing about what is absent.
 func (rc *Reconciler) ReconcilePartial(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
-	return rc.reconcile(ctx, b, listed, now, false, false)
+	return rc.reconcile(ctx, b, listed, now, false, shortNone)
 }
 
 // reconcile is the listing loop both entry points share; full says the listing
 // is the board's whole, so records it lacks are aged.
-func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full, short bool) (Summary, error) {
+func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full bool, short shortKind) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
 	idx := rc.index()
@@ -179,6 +212,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			continue
 		}
 		seen[p.Key] = true
+		wasGone := full && rc.reopen.sighted(p.Key)
 		hash := p.DescriptionHash()
 		rec, known := l.Get(p.Key)
 		if known && p.Form == nil {
@@ -247,7 +281,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 				return s, err
 			}
 			s.Changed++
-		case full && rec.Status == posting.Dropped && (rc.hasPendingReopen(p.Key) || rc.reopen.movedExclusion(rec, relist)):
+		case full && rec.Status == posting.Dropped && (rc.hasPendingReopen(p.Key) || wasGone || rc.reopen.movedExclusion(rec, relist)):
 			// The board lists a drop that waits to be let back, or an exclusion
 			// drop whose title, company, location or remote flag moved since it
 			// was judged (the board added Austin to a London role): judged again
@@ -346,7 +380,8 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 	// PendingReopenExpiry, or whose record is no longer dropped, are cleared
 	// (pendingreopen.go). Dropped records are closed: the absence pass below
 	// never ages them, so the two never touch the same record.
-	rc.reopen.expire(l, prefix, seen, now)
+	clock := idx.clockEvidence(prefix, now)
+	rc.reopen.expire(l, prefix, seen, now, clock.behind, short != shortNone)
 	// The absence pass (liveness.go). open is the board's open keys as the
 	// index held them when the board started, before this listing.
 	var open []posting.Key
@@ -355,7 +390,7 @@ func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []p
 			open = append(open, k)
 		}
 	}
-	a, err := ageAbsent(ctx, l, rc.live, open, seen, idx.clockEvidence(prefix, now), now, short)
+	a, err := ageAbsent(ctx, l, rc.live, open, seen, clock, now, short)
 	s.addAbsence(a)
 	return s, err
 }
@@ -381,9 +416,12 @@ func (s *Summary) addAbsence(a absence) {
 	s.Deferred += a.deferred
 	s.Dead += a.dead
 	s.MassDead += a.massDead
+	s.ShortDead += a.shortDead
+	s.UnreadableDead += a.unreadableDead
 	s.MassMarked += a.massMarked
 	s.Mass = s.Mass || a.mass
 	s.ClockBehind = s.ClockBehind || a.clockBehind
+	s.ClockSetBack = s.ClockSetBack || a.clockSetBack
 	if a.clockAhead.After(s.ClockAhead) {
 		s.ClockAhead = a.clockAhead
 	}
@@ -533,6 +571,9 @@ func markWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting, idx 
 	}
 	var evs []ledger.Event
 	for _, k := range idx.weak[fk] {
+		if !sharesIdentity(p, idx.info[k]) {
+			continue // the tuple alone is not proof (reconcile_requisition.go)
+		}
 		r, ok := l.Get(k)
 		if !ok || r.Status.Terminal() {
 			continue
@@ -544,6 +585,8 @@ func markWeakTwins(ctx context.Context, l ledger.Ledger, p posting.Posting, idx 
 	if err != nil {
 		return n, err
 	}
-	twinned[fk] = true
+	if n > 0 {
+		twinned[fk] = true
+	}
 	return n, nil
 }

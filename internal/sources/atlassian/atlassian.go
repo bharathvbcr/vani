@@ -101,10 +101,14 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	seen := s.now()
 	out := make([]posting.Posting, 0, len(jobs))
 	byKey := map[posting.Key]posting.Posting{}
+	rows := srcutil.NewRows(ctx, b, len(jobs))
 	for i, j := range jobs {
 		p, err := j.posting(b, seen)
 		if err != nil {
-			return nil, fmt.Errorf("atlassian %q: row %d: %w", b.Token, i, err)
+			if ferr := rows.Bad(err); ferr != nil {
+				return nil, fmt.Errorf("atlassian %q: row %d: %w", b.Token, i, ferr)
+			}
+			continue
 		}
 		if prev, dup := byKey[p.Key]; dup {
 			if prev != p {
@@ -114,6 +118,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 		byKey[p.Key] = p
 		out = append(out, p)
+	}
+	if err := rows.Done(); err != nil {
+		return nil, fmt.Errorf("atlassian %q: %w", b.Token, err)
 	}
 	return out, nil
 }

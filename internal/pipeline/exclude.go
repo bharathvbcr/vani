@@ -41,11 +41,13 @@ type ExclusionChange struct {
 	// or no scope); Deferred were marked as pending reopens, still dropped, for
 	// their board's next full listing to show them (SightingReopen);
 	// AlreadyPending were marked by an earlier pass; OverCap were left out
-	// because the set is full (MaxPendingReopens); Stale are on a board no
-	// longer watched and stay dropped, as in RetriagePolicyDrops; Unqueued
-	// counts the pending reopens it cleared because the exclusions match their
-	// record again.
-	Reopened, Deferred, AlreadyPending, OverCap, Stale, Unqueued int
+	// because the set or its exclusion share is full (MaxPendingReopens,
+	// MaxPendingExclusions); Stale are on a board no longer watched and stay
+	// dropped, as in RetriagePolicyDrops; Unqueued counts the pending reopens it
+	// cleared because the exclusions match their record again; Gone are excluded
+	// records whose pending reopen already expired unseen, left unmarked until
+	// their board lists them (PendingReopens.Gone).
+	Reopened, Deferred, AlreadyPending, OverCap, Stale, Unqueued, Gone int
 	// Unread are the Live, unprotected postings kept because a location rule
 	// could not read their location (DropPolicy.ExcludeUnreadable): the check
 	// could not run, which is not the same as passing it.
@@ -164,6 +166,22 @@ func letBack(ch *ExclusionChange, recs []ledger.Record, p DropPolicy, now time.T
 			}
 		}
 	}
+	// An exclusion drop that expired unseen (Gone) is not an excluded record any
+	// more once something else reopened it; forget those.
+	if len(sc.Pending.Gone) > 0 {
+		excluded := make(map[posting.Key]bool, len(recs))
+		for _, r := range recs {
+			if Excluded(r) {
+				excluded[r.Key] = true
+			}
+		}
+		for k := range sc.Pending.Gone {
+			if !excluded[k] {
+				delete(sc.Pending.Gone, k)
+			}
+		}
+	}
+	excl := sc.Pending.count(reopenClassExclusion)
 	var atOnce []ledger.Record
 	for _, r := range ch.Reopen {
 		switch {
@@ -171,12 +189,20 @@ func letBack(ch *ExclusionChange, recs []ledger.Record, p DropPolicy, now time.T
 			ch.Stale++
 		case sc.deferred(r.Key):
 			prev, queued := sc.Pending.Items[r.Key]
+			_, gone := sc.Pending.Gone[r.Key]
 			switch {
 			case queued && prev.Class == reopenClassExclusion:
 				ch.AlreadyPending++
-			case !queued && sc.Pending.Len() >= MaxPendingReopens:
+			case gone:
+				// Its pending reopen expired unseen, so its board has not listed
+				// it for PendingReopenExpiry: it stays dropped until a full
+				// listing shows it again (SightingReopen.sighted), not marked
+				// again every two weeks.
+				ch.Gone++
+			case !queued && (sc.Pending.Len() >= MaxPendingReopens || excl >= MaxPendingExclusions):
 				ch.OverCap++
 			default:
+				excl++
 				sc.Pending.Items[r.Key] = PendingReopen{Class: reopenClassExclusion, At: now.UTC(), Reason: reasonExclusionDrop}
 				ch.Deferred++
 			}

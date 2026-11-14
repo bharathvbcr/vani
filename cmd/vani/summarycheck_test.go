@@ -143,6 +143,58 @@ func TestWireAppBuildsWithACleanOrEmptySummary(t *testing.T) {
 	}
 }
 
+// A summary of invisible characters alone is an empty one everywhere: nothing
+// is sent from it, so it needs no words file, and status names the generic
+// default rather than checking a blank.
+func TestBlankLookingSummaryIsEmptyEverywhere(t *testing.T) {
+	for _, summary := range []string{"\u200b", "\u200b\u200d \u2060", "\u00ad\ufeff", "\u0301"} {
+		_, stateDir, cfg := summaryConfig(t, summary) // no words file
+		if err := checkPromptSummary(cfg, stateDir, false); err != nil {
+			t.Errorf("summary %q: %v; a blank summary sends nothing", summary, err)
+		}
+		if s, ok := targetSummaryStatus(t); !ok || !s.OK || !s.GenericDefault {
+			t.Errorf("summary %q: status %+v (present %v), want the generic default", summary, s, ok)
+		}
+	}
+}
+
+// The refusal says which file is expected and what it needs, in wireApp (run,
+// daemon) and in status, and does not offer a flag run and daemon do not take.
+func TestMissingWordsRefusalNamesTheExpectedFile(t *testing.T) {
+	for name, setupWords := range map[string]func(t *testing.T, stateDir string){
+		"missing": func(*testing.T, string) {},
+		"empty":   func(t *testing.T, s string) { writeKBWords(t, s, "# no terms yet") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, stateDir, cfg := summaryConfig(t, cleanSummary)
+			setupWords(t, stateDir)
+			want := filepath.Join(stateDir, "tracks", "identifying-words.txt")
+			check := func(what, msg string) {
+				t.Helper()
+				if !strings.Contains(msg, want) || !strings.Contains(msg, "at least one term") || strings.Contains(msg, "--allow-missing") {
+					t.Errorf("%s: %q; want the expected path %q, \"at least one term\" and no flag", what, msg, want)
+				}
+				noTerm(t, what, msg, cleanSummary)
+			}
+			app, err := wireApp(cfg, stateDir, nil)
+			if err == nil {
+				app.close()
+				t.Fatal("wireApp built the app")
+			}
+			check("wireApp", err.Error())
+			s, ok := targetSummaryStatus(t)
+			if !ok || s.OK {
+				t.Fatalf("status facet %+v (present %v), want not ok", s, ok)
+			}
+			check("status", s.Reason)
+			o, _ := mustCode(t, 0, "status")
+			if !strings.Contains(o, want) {
+				t.Errorf("status text does not name %s:\n%s", want, o)
+			}
+		})
+	}
+}
+
 func TestWireAppFailsClosedWithoutAUsableWordsFile(t *testing.T) {
 	// Missing, empty (comments only) and unreadable (a term past the bound).
 	for name, setupWords := range map[string]func(t *testing.T, stateDir string){

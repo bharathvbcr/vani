@@ -38,6 +38,9 @@ type orderSettings struct {
 	// usFirst puts postings in the US (jobview.InUS) before the rest
 	// (withUSFirst).
 	usFirst bool
+	// slots is the run's cap on postings advanced (advance_per_run); above 0 it
+	// turns on the starvation guard (withSlots, advancestarve.go).
+	slots int
 }
 
 func settingsOf(opts []orderOption) orderSettings {
@@ -204,7 +207,15 @@ func orderAdvance(todo, all []ledger.Record, rank func(posting.Posting) int, opt
 	slices.SortStableFunc(todo, func(a, b ledger.Record) int {
 		return cmp.Compare(boolInt(pipeline.NotesDeferred(a)), boolInt(pipeline.NotesDeferred(b)))
 	})
+	promoteStarved(todo, set.slots, at)
 	return scores
+}
+
+// withSlots tells the order how many postings the run advances (its cap), so
+// postings that wait past it are not starved: see promoteStarved. Off (0) changes
+// nothing, as does a warm order.
+func withSlots(n int) orderOption {
+	return func(s *orderSettings) { s.slots = n }
 }
 
 func boolInt(b bool) int {

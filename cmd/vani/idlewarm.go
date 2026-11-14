@@ -609,6 +609,9 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 		// Read the chunk error before cancel: cancel would hide a clean return.
 		chunkDeadline := errors.Is(cctx.Err(), context.DeadlineExceeded) && errors.Is(werr, context.DeadlineExceeded)
 		ccancel()
+		if r.ScoresEvictedLive > 0 {
+			fmt.Fprintf(w.stderr, "vani: idle warm: evicted %d browsable posting score(s): the score cache is smaller than the live set, and they will be scored again\n", r.ScoresEvictedLive)
+		}
 		win.Chunks++
 		win.Scored += r.Scored
 		win.Rescored += r.Rescored

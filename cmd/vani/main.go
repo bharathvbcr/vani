@@ -349,7 +349,9 @@ commands:
   prefilter [--json] [--list]
                              dry run of the prefilter (exclude, and title_signals.read with the
                              drop rules): how many live postings it would drop before triage,
-                             which kept ones the next run's exclusions drop or let back (when their board lists them),
+                             which kept ones the next run's exclusions drop, and which excluded ones
+                             they no longer match: wait for their board to list them, come back at once,
+                             or stay dropped (board no longer watched),
                              and how the decision model read the ones it already read (never
                              writes)
   bench local [--model GGUF]... [-n N] [--questions combined|per_slot] [--batch N]
@@ -721,6 +723,22 @@ func parse(fs *flag.FlagSet, args []string) error {
 // loadConfig loads the config and warns on stderr about each old key name it
 // still uses (the file keeps working; Save writes the new names).
 func (e *env) loadConfig() (config.Config, error) {
+	cfg, err := e.loadConfigUnchecked()
+	if err != nil {
+		return config.Config{}, err
+	}
+	// motivation_notes goes to the drafter's model: a note naming a contact
+	// handle or work-authorization wording is refused with the rest of the
+	// config (config.Validate cannot see the matcher: internal/track imports it).
+	if err := checkMotivationNotes(cfg.MotivationNotes); err != nil {
+		return config.Config{}, err
+	}
+	return cfg, nil
+}
+
+// loadConfigUnchecked is loadConfig without the motivation_notes check, for
+// the one reader that must show a refused note so it can be edited.
+func (e *env) loadConfigUnchecked() (config.Config, error) {
 	cfg, old, err := config.LoadWithDeprecations(e.configPath)
 	if err != nil {
 		return config.Config{}, err
@@ -825,7 +843,10 @@ func (e *env) cmdDaemon(args []string) error {
 	if model != nil && !model.Enabled {
 		fmt.Fprintf(e.stderr, "vani: daemon: %s\n", model.Reason)
 	}
-	if err := writeDaemonAnnouncement(e.stateDir, daemonRecord{V: runRequestVersion, PID: pid, StartedAt: now(), Model: model}); err != nil {
+	// The executable is recorded so a vani built elsewhere can tell this daemon
+	// from a reused pid (status, run-request). Absent when it cannot be found.
+	exe, _ := os.Executable()
+	if err := writeDaemonAnnouncement(e.stateDir, daemonRecord{V: runRequestVersion, PID: pid, StartedAt: now(), Exe: exe, Model: model}); err != nil {
 		return fmt.Errorf("announcing the daemon: %w", err)
 	}
 	defer func() {

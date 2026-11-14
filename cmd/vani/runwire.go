@@ -41,6 +41,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/recruitee"
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/teamtailor"
 	"github.com/bharathvbcr/Vani/internal/sources/tiktok"
@@ -115,12 +116,14 @@ func (w *wired) advancePlan(kind advanceKind, policy pipeline.DropPolicy) pipeli
 		p.Skip = listOnly
 		// The semantic order reads the cache the warm before the advance phase
 		// fills, so it is resolved when the phase orders, not when it is planned.
-		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, w.advanceOrder(), usFirst) }
+		slots := withSlots(p.Limit)
+		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, w.advanceOrder(), usFirst, slots) }
 		scopeAdvance(&p, tuned, w.warnf)
 	case kindInbox:
 		// An inbox poll is not a run and takes no run options; the config's
 		// advance_us_first orders it all the same.
-		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, inboxUSFirst) }
+		slots := withSlots(p.Limit)
+		p.Order = func(todo, all []ledger.Record) { orderAdvance(todo, all, rank, inboxUSFirst, slots) }
 	}
 	// Counts only. The callback has no posting key; an inbox or rescore with
 	// no live run id is a no-op inside noteLive's writer.
@@ -214,6 +217,10 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// the entire ledger on every board. If a prefix is ever reconciled before
 	// another board with the same prefix lists, storedFor falls back to w.storedFor.
 	initialRecs := w.led.All()
+	// The listing-time drops of this read feed the audit's prefilter sample,
+	// saved once the boards are done, however the read ended.
+	w.openPrefilterSample()
+	defer w.savePrefilterSample()
 	var prefixMu sync.Mutex
 	dirtyPrefix := map[string]bool{}
 	storedFor := func(b sources.Board) []posting.Posting {
@@ -250,7 +257,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// spends at most workday.MaxDetails requests a run.
 	wd, err := workday.NewWith(d, workday.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, workdayFetch(st))
@@ -265,7 +272,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// smartrecruiters.MaxDetails requests a board a run).
 	sr, err := smartrecruiters.NewWith(d, smartrecruiters.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st smartrecruiters.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, smartRecruitersFetch(st))
@@ -297,7 +304,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// rippling.MaxDetails requests a board a run).
 	rp, err := rippling.NewWith(d, rippling.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st rippling.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Prefiltered: st.Prefiltered})
@@ -312,7 +319,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// talentbrew.MaxDetails pages a board a run.
 	tb, err := talentbrew.NewWith(d, talentbrew.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st talentbrew.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
@@ -327,7 +334,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// never fetched, so a run asks for its search pages and the new details.
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
@@ -338,7 +345,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// requests a board a run).
 	srcs[posting.Avature] = avature.NewWith(d, avature.Options{
 		Stored:     storedFor,
-		DropListed: policy.ListedDrops(),
+		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
@@ -388,6 +395,9 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 			Outcome: tk.Outcome, InFlight: tk.InFlight,
 		})
 	})
+	// A row an adapter cannot read is skipped and counted as a shortfall,
+	// which reconcileBoard folds as a short listing (badrows.go).
+	ctx = srcutil.WithBadRowSink(ctx, w.badRowSink)
 	health := openBoardHealth(w.stateDir, w.warnf) // reporting only: nothing below reads it back into reconcile
 	boards, err := listBoards(ctx, w.cfg.Watchlist, srcs, pageErr, reconcile, w.warnf, filepath.Join(w.stateDir, "hosts", "cooldown.json"))
 	// Every board the listing finished feeds health, whether or not the run
@@ -413,12 +423,14 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// Postings waiting out a mass hold, on any board, named every run while any
 	// is held (an attention line, not a failure).
 	boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings = massHeldOf(recs, w.watchedBoards(), rec.Liveness(), at)
+	boards.MassHoldHours = int(rec.Liveness().MassHold / time.Hour)
 	if l := massHeldLine(boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings); l != "" {
 		w.warnf("%s", l)
 	}
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
 	applyBacklogLocked(&boards, health)
+	boards.PrefilteredByRule = w.prefilterRulesLocked()
 	w.boards = &boards
 	w.mu.Unlock()
 	return pipeline.BoardCounts{Configured: boards.Configured, Read: boards.Read}, err
@@ -465,10 +477,14 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 		w.warnf("exclusions: pending reopens not kept this run: %v", perr)
 		pending = pipeline.NewPendingReopens()
 	}
+	if perr == nil && len(w.cfg.Watchlist) > 0 {
+		pending.ClearUnwatched(pipeline.WatchedBy(w.cfg.Watchlist))
+	}
 	sc := reopenScope(w.cfg)
 	sc.Defer, sc.Pending = sc.Watched, pending
+	goneBefore := pending.GoneLen()
 	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo, &sc)
-	if perr == nil && (ch.Deferred > 0 || ch.Unqueued > 0 || pending.Expired > 0) {
+	if perr == nil && (ch.Deferred > 0 || ch.Unqueued > 0 || pending.Expired > 0 || pending.GoneLen() != goneBefore) {
 		if serr := pending.Save(path, time.Now()); serr != nil {
 			err = errors.Join(err, fmt.Errorf("pending reopens: %w", serr))
 		}
@@ -482,9 +498,9 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 	if ch.BodyUnavailable > 0 {
 		w.warnf("exclusions: %d posting(s) left as they are because their stored description could not be read back", ch.BodyUnavailable)
 	}
-	if len(ch.Drop) > 0 || ch.Reopened > 0 || ch.Deferred > 0 || ch.OverCap > 0 {
-		w.warnf("exclusions: dropped %d posting(s), returned %d to live; %d waiting for their board to list them again (%d already), %d on a board no longer watched left dropped, %d left out over the bound of %d",
-			len(ch.Drop), ch.Reopened, ch.Deferred, ch.AlreadyPending, ch.Stale, ch.OverCap, pipeline.MaxPendingReopens)
+	if len(ch.Drop) > 0 || ch.Reopened > 0 || ch.Deferred > 0 || ch.OverCap > 0 || ch.Gone > 0 {
+		w.warnf("exclusions: dropped %d posting(s), returned %d to live; %d waiting for their board to list them again (%d already), %d on a board no longer watched left dropped, %d not listed for %s and left dropped until their board lists them, %d left out over the bound of %d (%d for exclusions)",
+			len(ch.Drop), ch.Reopened, ch.Deferred, ch.AlreadyPending, ch.Stale, ch.Gone, pipeline.PendingReopenExpiry, ch.OverCap, pipeline.MaxPendingReopens, pipeline.MaxPendingExclusions)
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Vani/internal/decide/llmbackend"
+	"github.com/bharathvbcr/Vani/internal/track"
 )
 
 // Bounds on what is sent and accepted.
@@ -242,7 +243,7 @@ func Build(cfg Config, in Input) (Requests, error) {
 		rq.Boards = &r
 	}
 	if d := sentDrops(in.Drops); len(d) > 0 {
-		if strings.TrimSpace(cfg.TargetSummary) == "" {
+		if track.Blank(cfg.TargetSummary) {
 			return Requests{}, errors.New("doctor: target_summary is empty; dropped postings are judged against it")
 		}
 		r := request(cfg, dropsSystem, dropsUser(cfg.TargetSummary, in, d))

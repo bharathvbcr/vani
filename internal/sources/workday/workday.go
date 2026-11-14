@@ -127,6 +127,9 @@ type Stats struct {
 	// this run, so the caller reconciles a board with Short > 0 as a partial
 	// listing: stored postings it did not list are not absent, and age nothing.
 	Short int `json:"short,omitempty"`
+	// Relocated reused rows were listed with a place other than the stored
+	// posting's, and were returned with the listed one (see listedPlace).
+	Relocated int `json:"relocated,omitempty"`
 }
 
 // NewWith returns the Workday source with the bounded detail step: stored
@@ -240,6 +243,21 @@ func boardCompany(b sources.Board, tenant string) string {
 // places ("3 Locations"): no place to judge until the details are read.
 var locationCount = regexp.MustCompile(`(?i)^[0-9]+\s+locations?$`)
 
+// listedPlace is the place a listed row names for a posting stored with
+// location stored, or "" when the row names none that can be compared: a count
+// ("3 Locations"), no text, or the primary place of the several the stored
+// posting joins (a row for a multi-location posting shows one of them).
+func listedPlace(stored string, row listedJob) string {
+	loc := srcutil.RowPlace(row.LocationsText)
+	if locationCount.MatchString(loc) {
+		return ""
+	}
+	if first, _, _ := strings.Cut(stored, ";"); srcutil.SamePlace(first, loc) {
+		return ""
+	}
+	return loc
+}
+
 // listedPosting is what a listed row says of its posting before its details
 // are read: the fields DropListed may judge.
 func listedPosting(b sources.Board, tenant string, row listedJob) posting.Posting {
@@ -303,6 +321,10 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	for _, i := range pl.Reuse {
 		p := stored[rows[i].ExternalPath]
 		p.SeenAt = seen
+		if loc, moved := srcutil.Relocate(p.Location, listedPlace(p.Location, rows[i])); moved {
+			p.Location = loc
+			st.Relocated++
+		}
 		slot[i] = &p
 		st.Reused++
 	}

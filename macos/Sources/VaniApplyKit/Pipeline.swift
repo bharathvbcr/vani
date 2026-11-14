@@ -950,19 +950,20 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
 
         /// Whether the run has anything to report. Same rule as
         /// cmd/vani/runscmd.go runHasFailures: a failed or interrupted run, a run
-        /// error, a board that failed to list, a new mass absence, a listing that
+        /// error, a board that failed to list, a listing that
         /// aged nothing on events stamped ahead of the clock, postings that died at
-        /// the end of a mass hold, a pay fetch that failed, a backend error, or a stage that could not finish its check. It decides
+        /// the end of a true mass hold (not one only a short listing held), a pay fetch that failed, a backend error, or a stage that could not finish its check. It decides
         /// whether Copy failures is offered. A last run vani could not read has
         /// none to report. Coverage unknown, a notes floor or budget, deferred
-        /// or gone details, a skipped pay fetch, a spent warm budget, postings carried
-        /// through a mass hold and deaths that wait a read are shown and are not
+        /// or gone details, a skipped pay fetch, a spent warm budget, a new mass
+        /// absence (attention), postings carried through a mass hold, deaths after
+        /// a short listing's hold and deaths that wait a read are shown and are not
         /// failures.
         public var hasFailures: Bool {
             guard ok else { return false }
             if state == .failed || state == .interrupted { return true }
             if let e = error, !e.isEmpty { return true }
-            if let b = boards, b.failed > 0 || b.payFailed > 0 || b.mass > 0 || b.clockBehind > 0 || b.massDead > 0 || b.items.contains(where: { $0.outcome == .failed || $0.outcome == .rateLimited }) { return true }
+            if let b = boards, b.failed > 0 || b.payFailed > 0 || b.clockBehind > 0 || b.massDead > 0 || b.items.contains(where: { $0.outcome == .failed || $0.outcome == .rateLimited }) { return true }
             if let e = impressionsError, !e.isEmpty { return true }
             if logDropped > 0 { return true }
             if shadow?.isFailure == true { return true }
@@ -1170,6 +1171,10 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             /// a mass hold and the boards holding them (an attention line, not a
             /// failure). 0 from a vani that does not report them.
             public var massDead: Int
+            /// Postings that died after being held only because their board's
+            /// short listing left them out: expected closures, shown, not a
+            /// failure. 0 from a vani that does not report them.
+            public var shortDead: Int
             public var deathsDeferred: Int
             public var massHeldCount: Int
             public var massHeldPostings: Int
@@ -1187,6 +1192,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 case massMarked = "mass_marked"
                 case clockBehind = "clock_behind"
                 case massDead = "mass_dead"
+                case shortDead = "short_dead"
                 case deathsDeferred = "deaths_deferred"
                 case massHeldCount = "mass_held_count"
                 case massHeldPostings = "mass_held_postings"
@@ -1222,6 +1228,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 held = try c.decodeIfPresent(Int.self, forKey: .held) ?? 0
                 clockBehind = try c.decodeIfPresent(Int.self, forKey: .clockBehind) ?? 0
                 massDead = try c.decodeIfPresent(Int.self, forKey: .massDead) ?? 0
+                shortDead = try c.decodeIfPresent(Int.self, forKey: .shortDead) ?? 0
                 deathsDeferred = try c.decodeIfPresent(Int.self, forKey: .deathsDeferred) ?? 0
                 massHeldCount = try c.decodeIfPresent(Int.self, forKey: .massHeldCount) ?? 0
                 massHeldPostings = try c.decodeIfPresent(Int.self, forKey: .massHeldPostings) ?? 0
@@ -1235,8 +1242,9 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                         deferred: Int = 0, payFailed: Int = 0, paySkipped: Int = 0, gone: Int = 0, payError: String? = nil,
                         mass: Int = 0, massMarked: Int = 0, held: Int = 0, clockBehind: Int = 0, prefiltered: Int = 0,
                         staleCount: Int = 0, emptyCount: Int = 0, massDead: Int = 0, deathsDeferred: Int = 0,
-                        massHeldCount: Int = 0, massHeldPostings: Int = 0, short: Int = 0) {
+                        massHeldCount: Int = 0, massHeldPostings: Int = 0, short: Int = 0, shortDead: Int = 0) {
                 self.massDead = massDead
+                self.shortDead = shortDead
                 self.deathsDeferred = deathsDeferred
                 self.massHeldCount = massHeldCount
                 self.massHeldPostings = massHeldPostings
@@ -1285,6 +1293,7 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
                 if mass > 0 { parts.append("\(mass) mass absence\(mass == 1 ? "" : "s"), \(massMarked) posting\(massMarked == 1 ? "" : "s") held") }
                 if clockBehind > 0 { parts.append("\(clockBehind) board\(clockBehind == 1 ? "" : "s") not aged: events stamped ahead of the clock") }
                 if massDead > 0 { parts.append("\(massDead) posting\(massDead == 1 ? "" : "s") died after a mass hold") }
+                if shortDead > 0 { parts.append("\(shortDead) posting\(shortDead == 1 ? "" : "s") died after a short listing held them (expected: their boards list short)") }
                 if deathsDeferred > 0 { parts.append("\(deathsDeferred) death\(deathsDeferred == 1 ? "" : "s") wait one more read") }
                 if massHeldPostings > 0 { parts.append("\(massHeldPostings) posting\(massHeldPostings == 1 ? "" : "s") on \(massHeldCount) board\(massHeldCount == 1 ? "" : "s") in a mass hold") }
                 if short > 0 { parts.append("\(short) counted but not listed") }

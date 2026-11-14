@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func TestAuditOverlaysOnByDefaultSkipWhatCannotRun(t *testing.T) {
 		t.Errorf("%d engineering picks by default, want %d", eng, defaultEngineering)
 	}
 	// The random draw is the one the overlays sit over.
-	if !equalKeys(randomPicks(d), randomPicks(overlayDrawSeed(t, "w1", noOverlays...))) {
+	if !maps.Equal(randomPicks(d), randomPicks(overlayDrawSeed(t, "w1", noOverlays...))) {
 		t.Error("the default overlays changed the random draw")
 	}
 
@@ -210,16 +211,4 @@ func randomPicks(d auditJSON) map[string]bool {
 		}
 	}
 	return out
-}
-
-func equalKeys(a, b map[string]bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if !b[k] {
-			return false
-		}
-	}
-	return true
 }

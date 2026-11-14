@@ -192,6 +192,7 @@ type lister struct {
 	only  map[string]bool // the same codes, as a set; nil when there is no filter
 	have  map[string]bool // ids already listed, by an earlier term
 	out   []posting.Posting
+	bad   *srcutil.Rows // rows that could not be read, skipped and counted
 }
 
 func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, error) {
@@ -206,7 +207,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, fmt.Errorf("tiktok %q: %w", b.Token, err)
 	}
 	l := &lister{s: s, b: b, site: site, seen: s.now(), have: map[string]bool{},
-		pace: srcutil.Pacer{Every: pace, Budget: paceBudget, Sleep: s.wait}}
+		pace: srcutil.Pacer{Every: pace, Budget: paceBudget, Sleep: s.wait}, bad: srcutil.NewRows(ctx, b, 0)}
 	if len(b.Filters) > 0 {
 		if err := l.resolveFilters(ctx); err != nil {
 			return nil, fmt.Errorf("tiktok %q: %w", b.Token, err)
@@ -223,6 +224,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 			}
 			return nil, fmt.Errorf("tiktok %q: search %q: %w", b.Token, t, err)
 		}
+	}
+	if err := l.bad.Done(); err != nil {
+		return nil, fmt.Errorf("tiktok %q: %w", b.Token, err)
 	}
 	return l.out, nil
 }
@@ -345,6 +349,7 @@ func (l *lister) run(ctx context.Context, term string) error {
 			}
 			return fmt.Errorf("%w: offset %d answered no rows with %d of %d read", ErrShape, offset, len(read), total)
 		}
+		l.bad.Add(len(rows))
 		for i, r := range rows {
 			if !idRE.MatchString(r.ID) {
 				return fmt.Errorf("%w: offset %d row %d has id %q", ErrShape, offset, i, r.ID)
@@ -358,7 +363,10 @@ func (l *lister) run(ctx context.Context, term string) error {
 			}
 			p, err := l.posting(r)
 			if err != nil {
-				return fmt.Errorf("id %s: %w", r.ID, err)
+				if ferr := l.bad.Bad(err); ferr != nil {
+					return fmt.Errorf("id %s: %w", r.ID, ferr)
+				}
+				continue
 			}
 			l.have[r.ID] = true
 			l.out = append(l.out, p)

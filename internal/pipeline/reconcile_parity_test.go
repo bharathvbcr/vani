@@ -43,6 +43,7 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 		for _, title := range titles {
 			for _, loc := range locs {
 				n++
+				req := roleReq(title, loc)
 				// Three digits or more, so the link names a posting. Boards 0 and 1
 				// share links, as do boards 2 and 4.
 				link := b
@@ -52,7 +53,7 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 				case 4:
 					link = 2
 				}
-				p := posting.Posting{Company: bd.Company, Title: title, Location: loc, URL: fmt.Sprintf("https://careers.acme.test/jobs/%d%03d", link, n)}
+				p := posting.Posting{Company: bd.Company, Title: title, Location: loc, URL: fmt.Sprintf("https://careers.acme.test/jobs/%d%03d?req_id=%s", link, n, req)}
 				var key posting.Key
 				var err error
 				switch bd.ATS {
@@ -76,7 +77,7 @@ func parityWorld(t *testing.T) ([]sources.Board, []parityPosting) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			out = append(out, parityPosting{board: b, key: fk, p: posting.Posting{Key: fk, ATS: posting.Other, Company: bd.Company, Title: "Engineer", Location: "Remote"}})
+			out = append(out, parityPosting{board: b, key: fk, p: posting.Posting{Key: fk, ATS: posting.Other, Company: bd.Company, Title: "Engineer", Location: "Remote", URL: "https://inbox.acme.test/j?req_id=" + roleReq("Engineer", "Remote")}})
 		}
 	}
 	return boards, out
@@ -106,7 +107,16 @@ func indexEqual(t *testing.T, got, want *ledgerIndex) {
 func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 	var total Summary
 	var viaURL, viaRole int // duplicates the link rule and the cross-ATS tuple rule made
+	var shortReads, unreadableReads int
+	mixedUnreadableDead := map[uint64]int{} // by seed%4: unreadable-cause deaths on the mixed quiet stretches
 	defer func() {
+		if shortReads == 0 || total.ShortDead == 0 {
+			t.Errorf("the seeds did not read short listings, or none ended in a short death: %d short reads, %+v", shortReads, total)
+		}
+		if unreadableReads == 0 || total.UnreadableDead == 0 || mixedUnreadableDead[0] == 0 || mixedUnreadableDead[2] == 0 {
+			t.Errorf("the seeds did not reach the unreadable-row cause: %d reads, %d deaths, mixed unreadable-short-clean %d, short-unreadable-clean %d",
+				unreadableReads, total.UnreadableDead, mixedUnreadableDead[0], mixedUnreadableDead[2])
+		}
 		if viaURL == 0 || viaRole == 0 {
 			t.Errorf("the seeds did not reach both identity rules: %d by link, %d by role", viaURL, viaRole)
 		}
@@ -155,8 +165,21 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 						now = now.Add(skews[rng.IntN(len(skews))])
 					}
 					var listed []posting.Posting
+					quiet := bi == empty && run >= 3 && run < 20
+					// On even seeds the quiet stretch is not empty but short: the
+					// board lists all of its postings but its first, every run.
+					shortQuiet := quiet && seed%2 == 0
+					omitted := false
 					for _, pp := range pool {
-						if pp.board != bi || rng.IntN(4) == 0 || (bi == empty && run >= 3 && run < 20) { // a quarter missing this run
+						if pp.board != bi {
+							continue
+						}
+						if shortQuiet {
+							if !omitted {
+								omitted = true
+								continue
+							}
+						} else if rng.IntN(4) == 0 || quiet { // a quarter missing this run
 							continue
 						}
 						p := pp.p
@@ -180,8 +203,52 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 						listed = append(listed, p)
 					}
 					rng.Shuffle(len(listed), func(i, j int) { listed[i], listed[j] = listed[j], listed[i] })
-					want, werr := oracleReconcile(ctx, oracle, b, listed, now)
-					got, gerr := rc.Reconcile(ctx, b, listed, now)
+					// A short listing (the board counted more rows than it listed):
+					// on even seeds the board's quiet stretch is short, so the posting
+					// it leaves out is held and dies as a short death; on odd seeds it
+					// is empty, a true mass absence. Any board-run may also be short.
+					//
+					// Skipped unreadable rows (kind 2) are a shortfall that kills
+					// nothing. Any board-run may be one, and on seeds 4k and 4k+2 the
+					// quiet stretch is mixed: unreadable, then short, then a complete
+					// listing (seeds 4k), or short, then unreadable, then a complete one
+					// (4k+2), so the cause is compared against every listing after it.
+					kind := 0
+					if shortQuiet || rng.IntN(12) == 0 {
+						kind = 1
+					}
+					if unreadDraw := rng.IntN(15) == 0; unreadDraw && !shortQuiet {
+						kind = 2
+					}
+					if shortQuiet {
+						phase := (run - 3) / 5 // runs 3-7, 8-12, 13-19
+						switch {
+						case seed%6 == 0: // plain short stretch: the short death stays quiet
+						case seed%4 == 0:
+							kind = []int{2, 1, 0}[min(phase, 2)]
+						case seed%4 == 2:
+							kind = []int{1, 2, 0}[min(phase, 2)]
+						}
+					}
+					want, werr := oracleReconcile(ctx, oracle, b, listed, now, kind)
+					var got Summary
+					var gerr error
+					switch kind {
+					case 2:
+						unreadableReads++
+						got, gerr = rc.ReconcileUnreadable(ctx, b, listed, now)
+					case 1:
+						shortReads++
+						got, gerr = rc.ReconcileShort(ctx, b, listed, now)
+					default:
+						got, gerr = rc.Reconcile(ctx, b, listed, now)
+					}
+					if shortQuiet && seed%6 != 0 && got.ShortDead > 0 && got.Absent > 0 && run >= 17 {
+						t.Fatalf("run %d board %s: a death after unreadable rows marked the posting went quiet as a short one: %+v", run, b.Token, got)
+					}
+					if shortQuiet && seed%2 == 0 { // seeds 4k and 4k+2
+						mixedUnreadableDead[seed%4] += got.UnreadableDead
+					}
 					if (werr == nil) != (gerr == nil) || got != want {
 						t.Fatalf("run %d board %s: summary %+v %v, oracle %+v %v", run, b.Token, got, gerr, want, werr)
 					}
@@ -205,6 +272,8 @@ func TestReconcilerMatchesAFreshScanPerBoard(t *testing.T) {
 					total.Deferred += got.Deferred
 					total.MassMarked += got.MassMarked
 					total.MassDead += got.MassDead
+					total.ShortDead += got.ShortDead
+					total.UnreadableDead += got.UnreadableDead
 					total.ClockBehind = total.ClockBehind || got.ClockBehind
 				}
 			}

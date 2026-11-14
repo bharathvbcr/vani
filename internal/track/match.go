@@ -56,6 +56,20 @@ const placeholder = rune(1)
 func foldString(s string) folded { return fold(s, true) }
 func foldTerm(s string) folded   { return fold(s, false) }
 
+// Blank reports whether s is empty after the matcher's fold: nothing, or only
+// spaces and characters the fold drops (zero-width and other format characters,
+// control characters, combining marks). It is the one test for "this text is
+// empty", so a summary of invisible characters is treated as unset everywhere
+// instead of as a target that says nothing.
+func Blank(s string) bool {
+	for _, r := range foldString(s).r {
+		if r != ' ' {
+			return false
+		}
+	}
+	return true
+}
+
 func fold(s string, mask bool) folded {
 	f := folded{
 		r: make([]rune, 0, len(s)), start: make([]int, 0, len(s)),

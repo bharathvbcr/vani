@@ -240,7 +240,7 @@ func kbmatchWords(cfg config.Config, stateDir string, send, allowMissing bool) (
 // `vani teacher --task kb_match` and the ranking's lookup all build it here, so
 // the digest a stored answer was asked under is the digest the lookup finds.
 func kbmatchDigest(cfg config.Config, w track.Words) (semantic.Profile, kbmatch.Digest, string, error) {
-	if strings.TrimSpace(cfg.TargetSummary) == "" {
+	if track.Blank(cfg.TargetSummary) {
 		return semantic.Profile{}, kbmatch.Digest{}, "", errors.New("kbmatch: the config has no target_summary to judge the postings against")
 	}
 	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)

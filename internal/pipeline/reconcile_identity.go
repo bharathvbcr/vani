@@ -82,10 +82,17 @@ func urlKeys(p posting.Posting) []string {
 //     record: a link two or more records claim identifies none of them.
 //  2. p is ATS-keyed and its company|title|location tuple equals that of a
 //     live record under a different ATS (the same ATS lists distinct
-//     requisitions as distinct ids, so it is not a twin). The survivor is the
+//     requisitions as distinct ids, so it is not a twin) and the two share a
+//     requisition id (reconcile_requisition.go): the same tuple alone is not
+//     proof, so without a shared id they stay two records (near-duplicate
+//     detection may still fold them on their text). The survivor is the
 //     earliest first seen, ties by key; p is the twin only when it is not it.
-//  3. p is weakly keyed (fallback or careers page) and an ATS record has its
-//     tuple.
+//     Records already folded by an earlier build stay folded: nothing here
+//     unfolds a Duplicate, and one comes back only when its survivor is gone
+//     (reviveDuplicate), judged by these rules.
+//  3. p is weakly keyed (fallback or careers page) and a live ATS record has
+//     its tuple and shares a link or requisition id with it (the tuple alone is
+//     not proof, as in rule 2).
 //
 // ok is false when p repeats nothing. It decides p alone; markCrossTwins is
 // its mirror for the record that arrives second but ranks first.
@@ -95,7 +102,7 @@ func twinOf(p posting.Posting, now time.Time, idx *ledgerIndex) (orig posting.Ke
 	}
 	if weakKey(p.Key) {
 		if fk, err := posting.FallbackKey(p.Company, p.Title, p.Location); err == nil {
-			if k, found := idx.atsFor(fk); found {
+			if k, found := idx.atsTwinSharing(p, fk); found {
 				return k, "", true
 			}
 		}
@@ -131,15 +138,22 @@ func urlTwin(p posting.Posting, idx *ledgerIndex) (posting.Key, bool) {
 	return found, found != ""
 }
 
-// crossCandidates are the live records under a different ATS with p's tuple.
+// crossCandidates are the live records under a different ATS with p's tuple
+// that also share a requisition id with p (requisitionIDs). The tuple alone is
+// not proof: a company reuses a title across requisitions, and one role opened
+// twice is two jobs. A posting with no requisition id has no candidate.
 func crossCandidates(p posting.Posting, idx *ledgerIndex) []posting.Key {
 	fk, err := posting.FallbackKey(p.Company, p.Title, p.Location)
 	if err != nil {
 		return nil
 	}
+	reqs := requisitionIDs(p.Key, p)
+	if len(reqs) == 0 {
+		return nil
+	}
 	var out []posting.Key
 	for _, k := range idx.ats[fk] {
-		if k != p.Key && k.ATS() != p.Key.ATS() && !closed(idx.info[k].status) {
+		if k != p.Key && k.ATS() != p.Key.ATS() && !closed(idx.info[k].status) && sharesRequisition(reqs, idx.info[k].reqs) {
 			out = append(out, k)
 		}
 	}

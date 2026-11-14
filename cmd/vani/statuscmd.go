@@ -85,6 +85,15 @@ type statusJSON struct {
 	// KnowledgeBase is the age of the bank file against kb.stale_after_days.
 	// Absent when no kb.bank is configured. Additive.
 	KnowledgeBase *kbFacet `json:"knowledge_base,omitempty"`
+	// UnwatchedCompanies is the companies the owner saved, applied to or had the
+	// extension ingest a posting of that no watched board covers (unwatched.go).
+	// Absent when the config or the ledger could not be read. Additive.
+	UnwatchedCompanies *unwatchedFacet `json:"unwatched_companies,omitempty"`
+	// RankWeights is which weights rank (rank_weights_file against the hand
+	// weights) and why: refused fitted shares, an unreadable file or shares used
+	// unchecked are said here, not only in a jobs listing. Absent when no
+	// rank_weights_file is configured. Additive.
+	RankWeights *rankWeightsFacet `json:"rank_weights,omitempty"`
 }
 
 // pathsJSON is config.Resolved for status --json.
@@ -95,15 +104,20 @@ type pathsJSON struct {
 	AppSettings string `json:"app_settings"`
 }
 
-// daemonFacet is daemon.json checked against this vani process. Running is
-// false when no daemon announced itself, or the recorded pid is not this
-// binary: gone, uninspectable, a different executable, or started after the
-// announcement.
+// daemonFacet is daemon.json checked against the process it names. Running is
+// true for the announced daemon of this binary and for the announced daemon of
+// another vani binary (Binary says which; Exe is that binary's path), and
+// false when no daemon announced itself, the pid is gone or uninspectable,
+// started after the announcement (a reused pid), or runs an executable that is
+// neither this one nor the one daemon.json records.
 type daemonFacet struct {
 	facet
-	Running bool      `json:"running"`
-	PID     int       `json:"pid,omitempty"`
-	Since   time.Time `json:"since,omitzero"`
+	Running bool `json:"running"`
+	// Binary is "this" or "other" while Running; absent otherwise.
+	Binary string    `json:"binary,omitempty"`
+	Exe    string    `json:"exe,omitempty"`
+	PID    int       `json:"pid,omitempty"`
+	Since  time.Time `json:"since,omitzero"`
 	// Model is whether the decision model can answer in the running daemon
 	// (daemonmodel.go): absent when the daemon did not say.
 	Model *daemonModel `json:"model,omitempty"`
@@ -148,6 +162,10 @@ type ledgerFacet struct {
 	// snapshot as ByStatus; nil when the ledger was not read. It is not part of
 	// the ledger facet's wire shape: the schedule facet reports it.
 	liveUS *int
+	// recs is the snapshot the counts came from, for the facets that read the
+	// postings themselves (unwatched.go); nil when the ledger was not read. Not
+	// part of the wire shape.
+	recs []ledger.Record
 }
 
 type lastRunFacet struct {
@@ -314,6 +332,11 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 	}
 	out.RunRequest = e.runRequestFacet(at)
 	if cfgErr == nil {
+		out.RankWeights = rankWeightsFacetOf(cfg)
+		if out.Ledger.recs != nil {
+			u := unwatchedCompaniesOf(out.Ledger.recs, cfg, e.stateDir)
+			out.UnwatchedCompanies = &u
+		}
 		bh := e.boardHealthFacet(cfg, at)
 		out.BoardHealth = &bh
 	}
@@ -329,10 +352,18 @@ func (e *env) daemonFacet() daemonFacet {
 		return daemonFacet{facet: unknown(err)}
 	}
 	since := d.StartedAt
-	if !daemonIsLive(d) {
-		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: since}
+	state, exe := classifyDaemon(d)
+	switch state {
+	case daemonThisBinary:
+		return daemonFacet{facet: facet{OK: true}, Running: true, Binary: daemonBinaryThis, PID: d.PID, Since: since, Model: d.Model}
+	case daemonOtherBinary:
+		// Running: the pid, its start time and its executable all match what
+		// the daemon announced. Only the binary asking is another build.
+		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon, pid %d, is running a different vani binary: %s", d.PID, exe)}, Running: true, Binary: daemonBinaryOther, Exe: exe, PID: d.PID, Since: since, Model: d.Model}
+	case daemonUnconfirmed:
+		return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("pid %d, recorded as the daemon, is running %s, which is neither this binary nor one daemon.json names, so it is not confirmed as the daemon", d.PID, exe)}, PID: d.PID, Since: since}
 	}
-	return daemonFacet{facet: facet{OK: true}, Running: true, PID: d.PID, Since: since, Model: d.Model}
+	return daemonFacet{facet: facet{OK: true, Reason: fmt.Sprintf("the daemon recorded as pid %d is gone (it did not exit cleanly)", d.PID)}, PID: d.PID, Since: since}
 }
 
 // runRequestFacet reads the pending and the claimed request; it removes
@@ -375,6 +406,7 @@ func (e *env) ledgerFacet() ledgerFacet {
 		f.facet, f.Exists, f.Total, f.Torn = facet{OK: true}, true, len(snap.Records), snap.Torn
 		f.ByStatus = statusCounts(snap.Records)
 		f.liveUS = new(liveInUS(snap.Records))
+		f.recs = snap.Records
 	}
 	f.PendingReopens, f.PendingReopensError = e.pendingReopens()
 	return f

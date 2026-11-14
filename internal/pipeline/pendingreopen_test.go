@@ -111,12 +111,15 @@ func TestPendingReopenExpiresWhenItsBoardNoLongerListsIt(t *testing.T) {
 	if _, err := RetriagePolicyDrops(ctx, l, t0.Add(time.Hour), pol(keptStaff), deferScope(s), false); err != nil {
 		t.Fatal(err)
 	}
-	// Listed without it, inside the window: still pending.
-	if _, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+PendingReopenExpiry-time.Minute), true, other); so.Expired != 0 || s.Len() != 1 {
-		t.Fatalf("inside the window: %+v, %d pending", so, s.Len())
+	// Daily listings without it: the first starts the count, so 14 days of read
+	// time need the read 14 days after it. Inside the window: still pending.
+	for d := 1; d <= 14; d++ {
+		if _, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+time.Duration(d)*24*time.Hour), true, other); so.Expired != 0 || s.Len() != 1 {
+			t.Fatalf("day %d, inside the window: %+v, %d pending", d, so, s.Len())
+		}
 	}
 	// Past it: cleared, counted, still dropped.
-	_, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+PendingReopenExpiry), true, other)
+	_, so := sighting(t, l, s, pol(keptStaff), t0.Add(time.Hour+15*24*time.Hour), true, other)
 	if so.Expired != 1 || s.Len() != 0 || rec(t, l, k).Status != posting.Dropped {
 		t.Fatalf("past the window: %+v, %d pending, status %s", so, s.Len(), rec(t, l, k).Status)
 	}
@@ -295,8 +298,7 @@ func TestPendingReopenSightingCancelled(t *testing.T) {
 	}
 }
 
-// The store round-trips, drops entries past twice the expiry on load (a board
-// removed or failing that long), refuses an oversized or malformed file, and
+// The store round-trips, keeps old entries on load whatever the clock, refuses an oversized or malformed file, and
 // treats a missing file as empty.
 func TestPendingReopensFile(t *testing.T) {
 	dir := t.TempDir()
@@ -310,9 +312,15 @@ func TestPendingReopensFile(t *testing.T) {
 	if err := s.Save(path, t0); err != nil {
 		t.Fatal(err)
 	}
-	back, err := LoadPendingReopens(path, t0)
-	if err != nil || back.Len() != 1 || back.Expired != 1 || back.Items["gh:acme:1"].Class != "model" {
+	// Changed 2026-11-12: nothing is cleared for age on load, whatever the clock
+	// says (a clock 28+ days ahead used to wipe the whole set, ledger-wide).
+	back, err := LoadPendingReopens(path, t0.Add(365*24*time.Hour))
+	if err != nil || back.Len() != 2 || back.Expired != 0 || back.Items["gh:acme:1"].Class != "model" {
 		t.Fatalf("round trip: %+v (%v)", back, err)
+	}
+	// A board that left the watchlist is cleared, clock-free.
+	if n := back.ClearUnwatched(func(k posting.Key) bool { return k != "gh:acme:2" }); n != 1 || back.Len() != 1 || back.Expired != 1 {
+		t.Fatalf("ClearUnwatched: %d cleared, %+v", n, back)
 	}
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)

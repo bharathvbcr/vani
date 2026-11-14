@@ -23,6 +23,9 @@ type recInfo struct {
 	urls []string
 	// last is the record's last event time (clockEvidence).
 	last time.Time
+	// reqs are the record's requisition ids (requisitionIDs): what a record
+	// under another ATS must share with it to be the same job.
+	reqs []string
 }
 
 // ledgerIndex is the ledger as reconcile reads it at the start of a board:
@@ -47,7 +50,7 @@ type ledgerIndex struct {
 }
 
 func infoOf(r ledger.Record) recInfo {
-	in := recInfo{status: r.Status, weak: weakKey(r.Key), firstSeen: r.FirstSeen, urls: urlKeys(r.Posting), last: r.LastEvent}
+	in := recInfo{status: r.Status, weak: weakKey(r.Key), firstSeen: r.FirstSeen, urls: urlKeys(r.Posting), last: r.LastEvent, reqs: requisitionIDs(r.Key, r.Posting)}
 	if r.Posting.Company != "" && r.Posting.Title != "" {
 		if fk, err := posting.FallbackKey(r.Posting.Company, r.Posting.Title, r.Posting.Location); err == nil {
 			in.tuple = fk

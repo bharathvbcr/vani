@@ -15,6 +15,7 @@ func partialBoard() sources.Board {
 
 func scraped(t *testing.T, url, title string) posting.Posting {
 	t.Helper()
+	url += "?req_id=" + roleReq(title, "Remote")
 	k, err := posting.PageKey("careers-acme-com", url)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +82,7 @@ func TestReconcilePartialMarksATSTwinsDuplicate(t *testing.T) {
 	l := openLedger(t)
 	rc := NewReconciler(l)
 	gh := posting.Posting{ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote",
-		URL: "https://boards.greenhouse.io/acme/jobs/9", SeenAt: time.Now()}
+		URL: "https://boards.greenhouse.io/acme/jobs/9?req_id=" + roleReq("Platform Engineer", "Remote"), SeenAt: time.Now()}
 	gh.Key, _ = posting.GreenhouseKey("acme", "9")
 	if _, err := rc.Reconcile(ctx, sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"}, []posting.Posting{gh}, time.Now()); err != nil {
 		t.Fatal(err)
@@ -113,7 +114,7 @@ func TestReconcilePartialRecordIsDemotedByLaterATSListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	gh := posting.Posting{ATS: posting.Greenhouse, Company: "Acme", Title: "Platform Engineer", Location: "Remote",
-		URL: "https://boards.greenhouse.io/acme/jobs/9", SeenAt: time.Now()}
+		URL: "https://boards.greenhouse.io/acme/jobs/9?req_id=" + roleReq("Platform Engineer", "Remote"), SeenAt: time.Now()}
 	gh.Key, _ = posting.GreenhouseKey("acme", "9")
 	if _, err := rc.Reconcile(ctx, sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"}, []posting.Posting{gh}, time.Now()); err != nil {
 		t.Fatal(err)

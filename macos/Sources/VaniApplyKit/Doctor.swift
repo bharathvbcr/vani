@@ -296,9 +296,6 @@ public struct DoctorReply: Decodable, Equatable, Sendable {
     public var runProblems: [String]
     public var boardsSignaled: Int
     public var recoveredFromLogs: Int
-    /// The owner's identifying-words.txt is missing: only the built-in work-authorization terms are
-    /// screened out of what is sent.
-    public var identifyingWordsBuiltinOnly: Bool
     public var runsWithUnnamedBoardsAndNoLog: Int
     public var dropsSampled: Int
     /// The drop sample's seed; passed back so the run asks what was priced.
@@ -322,7 +319,6 @@ public struct DoctorReply: Decodable, Equatable, Sendable {
         case runProblems = "run_problems"
         case boardsSignaled = "boards_signaled"
         case recoveredFromLogs = "board_reads_recovered_from_logs"
-        case identifyingWordsBuiltinOnly = "identifying_words_builtin_only"
         case runsWithUnnamedBoardsAndNoLog = "runs_with_unnamed_boards_and_no_log"
         case dropsSampled = "drops_sampled"
         case dropsLeftOut = "drops_left_out"
@@ -336,7 +332,6 @@ public struct DoctorReply: Decodable, Equatable, Sendable {
         runProblems = try c.list(.runProblems)
         boardsSignaled = try c.int(.boardsSignaled)
         recoveredFromLogs = try c.int(.recoveredFromLogs)
-        identifyingWordsBuiltinOnly = try c.decodeIfPresent(Bool.self, forKey: .identifyingWordsBuiltinOnly) ?? false
         runsWithUnnamedBoardsAndNoLog = try c.int(.runsWithUnnamedBoardsAndNoLog)
         dropsSampled = try c.int(.dropsSampled)
         seed = try c.text(.seed)
@@ -622,9 +617,6 @@ public enum DoctorPresentation {
     /// What the owner should know before paying for a review, one line each.
     public static func warnings(_ r: DoctorReply) -> [String] {
         var out: [String] = []
-        if r.identifyingWordsBuiltinOnly {
-            out.append("Your identifying-words list is missing, so only the built-in work-authorization terms are screened out of what is sent. Your name, employers and schools are not screened.")
-        }
         if !r.runProblems.isEmpty {
             out.append("\(r.runProblems.count) run record\(r.runProblems.count == 1 ? " is" : "s are") unreadable and left out.")
         }

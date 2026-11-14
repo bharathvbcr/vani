@@ -317,8 +317,15 @@ func TestDaemonIdentityConcurrentSwap(t *testing.T) {
 				cur.Store(procIdentity{})
 			}
 			on = !on
+			runtime.Gosched()
 		}
 	}()
+	// The workers must overlap the flipper, not merely start beside it: on a
+	// loaded machine 10000 calls can finish before the flipper stores its
+	// first live identity. Each worker makes its 200 calls and then goes on
+	// until both outcomes were seen, up to a deadline; only that deadline
+	// failing is a finding.
+	deadline := time.Now().Add(30 * time.Second)
 	var workers sync.WaitGroup
 	var sawLive, sawEmpty atomic.Bool
 	var panics atomic.Int32
@@ -326,7 +333,11 @@ func TestDaemonIdentityConcurrentSwap(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		go func() {
 			defer workers.Done()
-			for j := 0; j < 200; j++ {
+			for j := 0; ; j++ {
+				if j >= 200 && ((sawLive.Load() && sawEmpty.Load()) || time.Now().After(deadline)) {
+					return
+				}
+				runtime.Gosched()
 				func() {
 					defer func() {
 						if recover() != nil {

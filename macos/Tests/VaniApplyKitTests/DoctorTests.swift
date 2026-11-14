@@ -74,7 +74,6 @@ final class DoctorDecodingTests: XCTestCase {
         XCTAssertEqual(r.runProblems, ["r9.json: unreadable"])
         XCTAssertEqual(r.boardsSignaled, 3)
         XCTAssertEqual(r.recoveredFromLogs, 1578)
-        XCTAssertTrue(r.identifyingWordsBuiltinOnly)
         XCTAssertEqual(r.runsWithUnnamedBoardsAndNoLog, 1)
         XCTAssertEqual(r.dropsSampled, 3)
         XCTAssertEqual(r.seed, "2026-W46")
@@ -286,12 +285,15 @@ final class DoctorPresentationTests: XCTestCase {
         XCTAssertEqual(DoctorPresentation.orderedDrops(rep).first?.verdict, "wrong_drop")
     }
 
-    func testWarningsPutTheMissingWordListFirst() throws {
+    /// The Go side no longer sends `identifying_words_builtin_only` (a run without a words
+    /// file is refused before anything is sent), so the reply carries no word-list warning.
+    func testWarningsCarryNoWordListLineAndRunProblemsComeFirst() throws {
         let r = try JobsClient.decoder.decode(DoctorReply.self, from: goldenReply())
         let w = DoctorPresentation.warnings(r)
-        XCTAssertEqual(w.count, 4)
-        XCTAssertTrue(w[0].contains("identifying-words list is missing"))
-        XCTAssertTrue(w[3].contains("5 dropped postings are never sampled"))
+        XCTAssertEqual(w.count, 3)
+        XCTAssertFalse(w.contains { $0.contains("identifying-words") })
+        XCTAssertTrue(w[0].contains("unreadable and left out"))
+        XCTAssertTrue(w[2].contains("5 dropped postings are never sampled"))
         let clean = try JobsClient.decoder.decode(DoctorReply.self, from: Data(dryJSON.utf8))
         XCTAssertTrue(DoctorPresentation.warnings(clean).isEmpty)
     }
