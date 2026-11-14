@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -26,7 +28,22 @@ import (
 // a labelled posting are not in the pool. Vectors are read from the semantic
 // store as it stands, nothing is embedded; a store that cannot be read, or no
 // anchor with a vector, is an error, never an empty cell that looks drawn.
+//
+// A taste column that does not pass, a vector store that was never written
+// and no anchor with a vector are overlayUnavailable: the inputs do not exist
+// yet, so a default quota draws nothing and says why. A store that exists but
+// cannot be read, or a taste gate that cannot run, is a plain error.
 func (e *env) markYesNeighbours(cands []eval.AuditCandidate, done map[posting.Key]eval.Entry, snap ledger.Snapshot, seed string) error {
+	// The store is opened first, so one that exists but cannot be read is an
+	// error even for a default quota, never a taste column that "does not pass".
+	vr, err := semantic.OpenVectorReader(semanticDir(e.stateDir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return unavailable("audit --yes-neighbours: there is no vector store yet (%v); semantic scoring writes it", err)
+	}
+	if err != nil {
+		return fmt.Errorf("audit --yes-neighbours: the vector store could not be read: %w", err)
+	}
+	defer vr.Close()
 	sampled, _ := eval.WithoutSelectedOnReading(done)
 	items, err := e.judgedItems(sampled, snap, jobinsight.DefaultWeights(), nil)
 	if err != nil {
@@ -38,13 +55,8 @@ func (e *env) markYesNeighbours(cands []eval.AuditCandidate, done map[posting.Ke
 		if taste.Status == rankfit.TasteOK {
 			why = fmt.Sprintf("taste AUC %.2f does not beat the title part's %.2f", taste.AUC, taste.TitleAUC)
 		}
-		return fmt.Errorf("audit --yes-neighbours: refused, the taste column does not pass (%s: %s); see `vani relevance`", taste.Status, why)
+		return unavailable("audit --yes-neighbours: refused, the taste column does not pass (%s: %s); see `vani relevance`", taste.Status, why)
 	}
-	vr, err := semantic.OpenVectorReader(semanticDir(e.stateDir))
-	if err != nil {
-		return fmt.Errorf("audit --yes-neighbours: the vector store could not be read: %w", err)
-	}
-	defer vr.Close()
 	vectorOf := func(r ledger.Record) []float32 {
 		v, st := vr.Pooled(r.Posting.Title, r.Posting.Description)
 		if st != semantic.PoolOK {
@@ -69,7 +81,7 @@ func (e *env) markYesNeighbours(cands []eval.AuditCandidate, done map[posting.Ke
 		}
 	}
 	if len(anchors) == 0 {
-		return fmt.Errorf("audit --yes-neighbours: no yes answer from before %s has a stored vector to be near", seed)
+		return unavailable("audit --yes-neighbours: no yes answer from before %s has a stored vector to be near", seed)
 	}
 	var pool []rankfit.Vectored
 	for _, c := range cands {

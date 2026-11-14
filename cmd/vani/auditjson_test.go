@@ -62,7 +62,7 @@ func TestAuditJSONHoldsNoPostingText(t *testing.T) {
 	_, state := setup(t)
 	mustCode(t, 0, "init")
 	seedAudit(t, state, 40, 8, 8)
-	d, raw := drawJSON(t, "--seed", "w1", "--blind")
+	d, raw := drawJSON(t, withNoOverlays("--seed", "w1", "--blind")...)
 	if d.Seed != "w1" || !d.Blind || len(d.Picks) != 15 {
 		t.Fatalf("draw %+v", d)
 	}
@@ -83,7 +83,7 @@ func TestAuditJSONHoldsNoPostingText(t *testing.T) {
 		}
 	}
 	// The same draw as --list, and as stable as it is.
-	d2, _ := drawJSON(t, "--seed", "w1", "--blind")
+	d2, _ := drawJSON(t, withNoOverlays("--seed", "w1", "--blind")...)
 	b1, _ := json.Marshal(d)
 	b2, _ := json.Marshal(d2)
 	if string(b1) != string(b2) {

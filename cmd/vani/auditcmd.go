@@ -88,32 +88,122 @@ func (b *browsing) view(view, sortBy string, openOnly bool) ([]jobview.Selected,
 // maxAuditKeyBytes bounds --key of `audit answer`.
 const maxAuditKeyBytes = 512
 
+// The overlays' default quotas: every overlay is on by default (owner,
+// 2026-11-13). 5 teacher-wants picks is Fable's suggested start (second
+// review); the rest are kept small so the weekly draw stays near the owner's
+// fifteen minutes: 17 random places and at most 13 overlay places.
+const (
+	defaultDisagree        = 5
+	defaultDisagreeRejects = 2
+	defaultYesNeighbours   = 3
+	defaultEngineering     = 3
+)
+
 // disagreeFlags are the overlay flags `audit` and `audit answer` share: each
 // disagreement cell's quota and whose readings define them, the yes-neighbour
-// cell's quota and the engineering group's. 0, the default, draws none; with
-// both disagreement quotas at 0 the teacher log is never opened, and with the
+// cell's quota and the engineering group's. 0 draws none; with both
+// disagreement quotas at 0 the teacher log is never opened, and with the
 // neighbour quota at 0 the vector store is never opened.
+//
+// A quota left at its default is soft (overlaySoft): when what the overlay
+// needs does not exist yet (no teacher readings, a taste column that does not
+// pass, no vector store), or the kill rule has turned its cell off, it draws
+// nothing and the draw says why. A quota given on the command line is strict
+// and fails closed as before, unless --soft-overlays makes it soft too (the
+// Mac app's steppers: a draw that cannot fill a cell should still show the
+// cards). A store that exists but cannot be read is an error either way.
 type disagreeOpts struct {
 	wants, rejects        *int
 	neighbours, engineers *int
 	teacher               *string
+	soft                  *bool
 }
 
 func disagreeFlags(fs *flag.FlagSet) disagreeOpts {
 	return disagreeOpts{
-		wants:      fs.Int("disagree", 0, "postings drawn from the cell where the teacher wants a posting the engine dropped or ranked in the lowest three deciles (kept out of every estimate)"),
-		rejects:    fs.Int("disagree-rejects", 0, "postings drawn from the cell where the teacher rejects a top-decile posting (kept out of every estimate; off by default)"),
-		neighbours: fs.Int("yes-neighbours", 0, "postings drawn from the 50 unlabelled postings nearest the owner's yes answers (kept out of every estimate; refused unless the taste column beats the title part)"),
-		engineers:  fs.Int("engineering", 0, "postings drawn at random from the engineering-titled postings, kept and dropped (kept out of the deciles, drop recall and the weight fit)"),
+		wants:      fs.Int("disagree", defaultDisagree, "postings drawn from the cell where the teacher wants a posting the engine dropped or ranked in the lowest three deciles (kept out of every estimate)"),
+		rejects:    fs.Int("disagree-rejects", defaultDisagreeRejects, "postings drawn from the cell where the teacher rejects a top-decile posting (kept out of every estimate)"),
+		neighbours: fs.Int("yes-neighbours", defaultYesNeighbours, "postings drawn from the 50 unlabelled postings nearest the owner's yes answers (kept out of every estimate; given explicitly, refused unless the taste column beats the title part)"),
+		engineers:  fs.Int("engineering", defaultEngineering, "postings drawn at random from the engineering-titled postings, kept and dropped (kept out of the deciles, drop recall and the weight fit)"),
 		teacher:    fs.String("teacher", sonnetReader, "the teacher model whose stored role_fit readings define the disagreement cells"),
+		soft:       fs.Bool("soft-overlays", false, "treat the overlay quotas given here as the defaults are treated: one that cannot run yet is skipped and named, not an error (the Mac app's draw)"),
 	}
 }
 
-// quotas is q with the overlays' places set.
-func (d disagreeOpts) quotas(q eval.AuditQuotas) eval.AuditQuotas {
+// overlaySoft says which overlay quotas came from their defaults (see
+// disagreeOpts), and whether --teacher was given.
+type overlaySoft struct {
+	wants, rejects, neighbours, engineers bool
+	teacherGiven                          bool
+}
+
+// overlays is the draw's overlay plan: the quotas, which of them are soft,
+// whose readings define the cells, and what was cut before the draw (a
+// default quota trimmed to the cap).
+type overlays struct {
+	q       eval.AuditQuotas
+	soft    overlaySoft
+	teacher string
+	notes   []string
+}
+
+// quotas is q with the overlays' places set, read after fs is parsed. A
+// default cell quota is trimmed so the cells stay within the 2x cap (at least
+// a third of the draw random), with a note; a quota given on the command line
+// is never trimmed, and checkAuditDraw refuses one over the cap.
+func (d disagreeOpts) quotas(fs *flag.FlagSet, q eval.AuditQuotas) overlays {
+	given := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	soft := func(name string) bool { return *d.soft || !given[name] }
+	o := overlays{teacher: *d.teacher, soft: overlaySoft{
+		wants: soft("disagree"), rejects: soft("disagree-rejects"),
+		neighbours: soft("yes-neighbours"), engineers: soft("engineering"),
+		teacherGiven: given["teacher"],
+	}}
 	q.Disagree, q.DisagreeRejects = *d.wants, *d.rejects
 	q.Neighbour, q.Engineering = *d.neighbours, *d.engineers
-	return q
+	room := 2 * (q.Scored + q.Dropped)
+	for _, c := range []struct {
+		soft bool
+		n    *int
+	}{{o.soft.wants, &q.Disagree}, {o.soft.rejects, &q.DisagreeRejects}, {o.soft.neighbours, &q.Neighbour}} {
+		if !c.soft {
+			room -= *c.n
+		}
+	}
+	for _, c := range []struct {
+		soft bool
+		n    *int
+		flag string
+	}{{o.soft.wants, &q.Disagree, "--disagree"}, {o.soft.rejects, &q.DisagreeRejects, "--disagree-rejects"}, {o.soft.neighbours, &q.Neighbour, "--yes-neighbours"}} {
+		if !c.soft {
+			continue
+		}
+		if take := max(0, min(*c.n, room)); take < *c.n {
+			o.notes = append(o.notes, fmt.Sprintf("the default %s %d was cut to %d so at least a third of the draw stays random", c.flag, *c.n, take))
+			*c.n = take
+		}
+		room -= *c.n
+	}
+	o.q = q
+	return o
+}
+
+// overlayUnavailable is an overlay whose inputs do not exist yet: no teacher
+// readings, a taste column that does not pass, no vector store. A soft quota
+// draws nothing on it and the draw says why; a strict one fails with it.
+type overlayUnavailable struct{ msg string }
+
+func (u *overlayUnavailable) Error() string { return u.msg }
+
+func unavailable(format string, a ...any) error {
+	return &overlayUnavailable{msg: fmt.Sprintf(format, a...)}
+}
+
+// isUnavailable reports whether err is an overlayUnavailable.
+func isUnavailable(err error) bool {
+	var u *overlayUnavailable
+	return errors.As(err, &u)
 }
 
 // overlayEligible reports whether an overlay (a disagreement cell, the
@@ -129,14 +219,18 @@ func overlayEligible(c eval.AuditCandidate) bool {
 	return !left
 }
 
-// auditDraw is one week's draw with the state it was made from.
+// auditDraw is one week's draw with the state it was made from. q is the
+// quotas drawn with, after soft overlays that could not run were set to 0;
+// skipped says which and why, in the order they were met.
 type auditDraw struct {
-	b     *browsing
-	s     *eval.Store
-	done  map[posting.Key]eval.Entry
-	seed  string
-	plan  eval.AuditPlan
-	picks []eval.AuditPick // plan.Interleaved(seed)
+	b       *browsing
+	s       *eval.Store
+	done    map[posting.Key]eval.Entry
+	seed    string
+	q       eval.AuditQuotas
+	skipped []string
+	plan    eval.AuditPlan
+	picks   []eval.AuditPick // plan.Interleaved(seed)
 }
 
 // checkAuditDraw validates the draw flags the audit commands share.
@@ -167,8 +261,11 @@ func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 // as `label` does: a draw made without the labels could repeat a posting
 // already answered. With cell places the candidates carry teacher's
 // role_fit readings (teacherViews), and a teacher log that cannot be read is
-// an error; with none the log is never opened.
-func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*auditDraw, error) {
+// an error; with none the log is never opened. A soft overlay (one left at its
+// default) whose cell the kill rule has turned off, or whose inputs do not
+// exist yet, draws nothing and is named in skipped.
+func (e *env) drawAudit(o overlays, seed, labels string) (*auditDraw, error) {
+	q, teacher := o.q, o.teacher
 	s, err := e.openEvalStore(labels)
 	if err != nil {
 		return nil, err
@@ -192,8 +289,40 @@ func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*audi
 	if seed == "" {
 		seed = eval.WeekSeed(now())
 	}
+	skipped := slices.Clone(o.notes)
+	// The kill rule (eval.killVerdict, fixed in the second Fable review) turns
+	// a cell off at 20 judged labels with 0 or 1 yes. A default quota obeys
+	// it; a quota given on the command line is the owner overriding it.
+	for _, c := range eval.BuildYesYield(done).Cells {
+		if c.Verdict != eval.CellTurnOff {
+			continue
+		}
+		var n *int
+		var soft bool
+		var flagName string
+		switch c.Cell {
+		case eval.CellTeacherWants:
+			n, soft, flagName = &q.Disagree, o.soft.wants, "--disagree"
+		case eval.CellTeacherRejects:
+			n, soft, flagName = &q.DisagreeRejects, o.soft.rejects, "--disagree-rejects"
+		case eval.CellYesNeighbour:
+			n, soft, flagName = &q.Neighbour, o.soft.neighbours, "--yes-neighbours"
+		default:
+			continue
+		}
+		if soft && *n > 0 {
+			*n = 0
+			skipped = append(skipped, fmt.Sprintf("%s: the kill rule turned this cell off (%d judged, %d yes); pass %s N to draw it anyway", c.Cell, c.N, c.Yes, flagName))
+		}
+	}
 	if q.Disagree+q.DisagreeRejects > 0 {
-		if err := e.teacherViews(cands, teacher); err != nil {
+		err := e.teacherViews(cands, teacher, o.soft.teacherGiven)
+		cellsSoft := (q.Disagree == 0 || o.soft.wants) && (q.DisagreeRejects == 0 || o.soft.rejects)
+		switch {
+		case err != nil && cellsSoft && isUnavailable(err):
+			q.Disagree, q.DisagreeRejects = 0, 0
+			skipped = append(skipped, "disagreement cells: "+err.Error())
+		case err != nil:
 			return nil, err
 		}
 	}
@@ -204,12 +333,20 @@ func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*audi
 		}
 	}
 	if q.Neighbour > 0 {
-		if err := e.markYesNeighbours(cands, done, b.snap, seed); err != nil {
+		err := e.markYesNeighbours(cands, done, b.snap, seed)
+		switch {
+		case err != nil && o.soft.neighbours && isUnavailable(err):
+			q.Neighbour = 0
+			for i := range cands {
+				cands[i].NearYes = false
+			}
+			skipped = append(skipped, "yes-neighbour cell: "+err.Error())
+		case err != nil:
 			return nil, err
 		}
 	}
 	plan := eval.AuditDraw(cands, done, seed, q)
-	return &auditDraw{b: b, s: s, done: done, seed: seed, plan: plan, picks: plan.Interleaved(seed)}, nil
+	return &auditDraw{b: b, s: s, done: done, seed: seed, q: q, skipped: skipped, plan: plan, picks: plan.Interleaved(seed)}, nil
 }
 
 // teacherViews sets each candidate's Teacher from model's newest jd_triage
@@ -222,10 +359,19 @@ func (e *env) drawAudit(q eval.AuditQuotas, teacher, seed, labels string) (*audi
 // candidate (a misspelt --teacher): cells drawn from nothing would look like
 // cells with no disagreement. Rows that were read but disagree nowhere are a
 // clean empty draw.
-func (e *env) teacherViews(cands []eval.AuditCandidate, model string) error {
+//
+// A log that is missing or empty, and, when --teacher was not given, one with
+// no reading by the default teacher, is an overlayUnavailable: `vani teacher`
+// has not read these postings yet. With --teacher given, no row by that model
+// stays a plain error (a misspelt model).
+func (e *env) teacherViews(cands []eval.AuditCandidate, model string, teacherGiven bool) error {
 	store, status, detail := e.openTeacherLog()
 	if store == nil {
-		return fmt.Errorf("audit --disagree: the teacher readings log is not usable (%s %s); the disagreement cells need %s's role_fit readings (vani teacher)", status, strings.TrimSpace(detail), model)
+		msg := fmt.Sprintf("audit --disagree: the teacher readings log is not usable (%s %s); the disagreement cells need %s's role_fit readings (vani teacher)", status, strings.TrimSpace(detail), model)
+		if status == eval.TeacherProxyMissing || status == eval.TeacherProxyEmpty {
+			return unavailable("%s", msg)
+		}
+		return errors.New(msg)
 	}
 	rows := 0
 	for i := range cands {
@@ -240,7 +386,11 @@ func (e *env) teacherViews(cands []eval.AuditCandidate, model string) error {
 		}
 	}
 	if rows == 0 {
-		return fmt.Errorf("audit --disagree: the teacher readings log has no %s reading of any posting the audit may draw (is --teacher the model `vani teacher` ran?)", model)
+		msg := fmt.Sprintf("audit --disagree: the teacher readings log has no %s reading of any posting the audit may draw (is --teacher the model `vani teacher` ran?)", model)
+		if !teacherGiven {
+			return unavailable("%s", msg)
+		}
+		return errors.New(msg)
 	}
 	return nil
 }
@@ -345,11 +495,14 @@ func (b *browsing) recallMembers(rules []eval.DropRule) []eval.RecallMember {
 // auditJSON is `audit --json`: the draw as a screen needs it. It holds keys,
 // strata and inclusion probabilities and no posting text; a card's title,
 // company and place come from the jobs row contract (internal/jobview).
+// auditJSON is `audit --json`. Skipped names each overlay that drew less
+// than its default asked for, and why (an empty list when none did).
 type auditJSON struct {
-	Seed   string             `json:"seed"`
-	Blind  bool               `json:"blind"`
-	Picks  []auditPickJSON    `json:"picks"`
-	Strata []auditStratumJSON `json:"strata"`
+	Seed    string             `json:"seed"`
+	Blind   bool               `json:"blind"`
+	Picks   []auditPickJSON    `json:"picks"`
+	Strata  []auditStratumJSON `json:"strata"`
+	Skipped []string           `json:"skipped"`
 }
 
 type auditPickJSON struct {
@@ -389,13 +542,13 @@ func (e *env) cmdAudit(args []string) error {
 	if *list && *asJSON {
 		return usagef("audit: --list and --json are two ways to print the draw; pick one")
 	}
-	q := cells.quotas(eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed})
-	if err := checkAuditDraw(q, *seed); err != nil {
+	o := cells.quotas(fs, eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed})
+	if err := checkAuditDraw(o.q, *seed); err != nil {
 		return err
 	}
-	d, err := e.drawAudit(q, *cells.teacher, *seed, *labels)
+	d, err := e.drawAudit(o, *seed, *labels)
 	if *asJSON { // a failure is {"error"} on stdout, as every --json command reports it
-		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}}
+		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}, Skipped: []string{}}
 		if err == nil {
 			out.Seed = d.seed
 			for _, p := range d.picks {
@@ -404,16 +557,21 @@ func (e *env) cmdAudit(args []string) error {
 			for _, st := range d.plan.Strata {
 				out.Strata = append(out.Strata, auditStratumJSON{Stratum: st.Source, Pool: st.Pool, Taken: st.Taken})
 			}
+			out.Skipped = append(out.Skipped, d.skipped...)
 		}
 		return e.reply(true, out, err, nil)
 	}
 	if err != nil {
 		return err
 	}
+	for _, s := range d.skipped {
+		fmt.Fprintf(e.stdout, "overlay not drawn: %s\n", s)
+	}
 	if len(d.picks) == 0 {
 		fmt.Fprintln(e.stdout, "nothing to audit: no unlabelled postings in the scored, dropped, closed, engineering, disagreement or yes-neighbour pools")
 		return nil
 	}
+	q := d.q
 	fmt.Fprintf(e.stdout, "audit draw %s: %d postings (asked for %d: %d scored + %d dropped + %d closed + %d engineering + %d teacher-wants + %d teacher-rejects + %d yes-neighbours)\n",
 		d.seed, len(d.picks), q.Scored+q.Dropped+q.Closed+q.Engineering+q.Cells(), *scored, *dropped, *closed, q.Engineering, q.Disagree, q.DisagreeRejects, q.Neighbour)
 	if random, all := d.plan.RandomShare(); q.Cells() > 0 && 3*random < all {
@@ -497,8 +655,8 @@ func (e *env) cmdAuditAnswer(args []string) error {
 	case *shown && (given["source"] || given["seed"]):
 		return usagef("audit answer: --shown takes the stratum from the impression log; leave out --source, --p-select and --seed")
 	}
-	q := cells.quotas(eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed})
-	if err := checkAuditDraw(q, *seed); err != nil {
+	o := cells.quotas(fs, eval.AuditQuotas{Scored: *scored, Dropped: *dropped, Closed: *closed})
+	if err := checkAuditDraw(o.q, *seed); err != nil {
 		return err
 	}
 	src, prob, explicit := *source, *p, given["source"]
@@ -509,7 +667,7 @@ func (e *env) cmdAuditAnswer(args []string) error {
 		}
 		explicit = true
 	}
-	reply, err := e.answerAudit(posting.Key(*key), *verdict, *reason, src, prob, explicit, *seed, q, *cells.teacher, *labels)
+	reply, err := e.answerAudit(posting.Key(*key), *verdict, *reason, src, prob, explicit, *seed, o, *labels)
 	return e.reply(*asJSON, reply, err, func() {
 		why := ""
 		if reply.Reason != "" {
@@ -556,7 +714,7 @@ type auditAnswerJSON struct {
 // answerAudit writes one would_apply label (see cmdAuditAnswer), with its
 // reason when one is given. explicit says source and p came from the caller;
 // otherwise they are the draw's.
-func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float64, explicit bool, seed string, q eval.AuditQuotas, teacher, labels string) (auditAnswerJSON, error) {
+func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float64, explicit bool, seed string, o overlays, labels string) (auditAnswerJSON, error) {
 	var s *eval.Store
 	var snap ledger.Snapshot
 	src, prob := source, p
@@ -571,7 +729,7 @@ func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float
 		}
 		snap = b.snap
 	} else {
-		d, err := e.drawAudit(q, teacher, seed, labels)
+		d, err := e.drawAudit(o, seed, labels)
 		if err != nil {
 			return auditAnswerJSON{}, err
 		}

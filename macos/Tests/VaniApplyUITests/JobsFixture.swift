@@ -85,6 +85,7 @@ struct JobsFixture {
             for last; do :; done
             case "$last" in fx:*) exec cat "$d/show-$last.json" ;; esac ;;
         "jobs export") exec cat "$d/export.json" ;;
+        "audit answer") printf '{"key":"k","verdict":"no","stratum":"manual","p_select":1}\\n'; exit 0 ;;
         "jobs mark"|"jobs note")
             # Answers only a key setWriteReply gave a reply; any other falls through to the error.
             case "$4" in fx:*) [ -f "$d/write-$4.json" ] && exec cat "$d/write-$4.json" ;; esac ;;

@@ -90,13 +90,15 @@ and work while a run holds the ledger.
   report on the filter and the label set. `vani relevance --what-if-summary FILE` measures a
   draft target summary locally and writes nothing. Its yes-yield table is raw counts per audit
   stratum and disagreement cell, never a population estimate.
-- `vani audit --list --disagree N` shows a draw with N picks from the "teacher wants" disagreement
-  cell (the teacher's stored role_fit against the engine); `--disagree-rejects N` adds the
-  "teacher rejects" cell, off by default. It needs `teacher_readings.jsonl`, and those labels stay
-  out of every estimate. `--yes-neighbours N` draws from the 50 unlabelled postings nearest the
-  owner's yes answers (refused unless `vani relevance`'s taste column passes); `--engineering N`
-  draws at random from engineering-titled postings. Both default to 0 and leave the random draw
-  as it was. The quotas are the owner's call; do not answer for the owner.
+- `vani audit --list` shows the week's draw. Every overlay is on by default and leaves the random
+  draw as it was: `--disagree N` (default 5) picks from the "teacher wants" disagreement cell (the
+  teacher's stored role_fit against the engine) and `--disagree-rejects N` (default 2) from the
+  "teacher rejects" cell; both need `teacher_readings.jsonl`, and those labels stay out of every
+  estimate. `--yes-neighbours N` (default 3) draws from the 50 unlabelled postings nearest the
+  owner's yes answers and needs `vani relevance`'s taste column to pass; `--engineering N`
+  (default 3) draws at random from engineering-titled postings. A default overlay that cannot run
+  yet is skipped with an `overlay not drawn:` line (`skipped` in `--json`); the same flag given
+  explicitly fails instead. `=0` turns one off. Do not answer for the owner.
 - `vani version` prints the build and `vani config check` validates the config.
 - `vani track list|show`, `vani lca lookup`, `vani employer lookup`, `vani kbmatch status`
   and `vani semantic status` print smaller reports.

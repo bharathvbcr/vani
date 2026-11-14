@@ -156,7 +156,7 @@ func TestDisagreeEmptyCellsDrawNothing(t *testing.T) {
 }
 
 // Each cell is its own group: a short "wants" cell lends nothing to the
-// "rejects" cell, which draws only its own places (0 by default).
+// "rejects" cell, which draws only its own places.
 func TestDisagreeCellsHaveTheirOwnQuotas(t *testing.T) {
 	cands := disagreePool()
 	count := func(p AuditPlan) map[string]int {

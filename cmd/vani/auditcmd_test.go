@@ -125,7 +125,7 @@ func TestAuditSampleAnswersRecordAndNeverRepeat(t *testing.T) {
 	old := stdin
 	t.Cleanup(func() { stdin = old })
 	stdin = strings.NewReader(strings.Repeat("1\n", 15)) // yes to all
-	o, _ := mustCode(t, 0, "audit", "--seed", "w1")
+	o, _ := mustCode(t, 0, append([]string{"audit", "--seed", "w1"}, noOverlays...)...)
 	if !strings.Contains(o, "audited 15 of 15 drawn") {
 		t.Fatalf("session:\n%s", o)
 	}

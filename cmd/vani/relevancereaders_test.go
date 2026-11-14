@@ -23,7 +23,7 @@ func auditedState(t *testing.T) string {
 	old := stdin
 	t.Cleanup(func() { stdin = old })
 	stdin = strings.NewReader(strings.Repeat("1\n3\n2\ns\n", 4))
-	mustCode(t, 0, "audit-sample", "--seed", "w1")
+	mustCode(t, 0, append([]string{"audit-sample", "--seed", "w1"}, noOverlays...)...)
 	return state
 }
 

@@ -430,13 +430,39 @@ final class JobsModel {
     /// Keys whose answer is being written, so a double tap sends one.
     private(set) var wouldApplyInFlight: Set<String> = []
 
+    /// A maybe or a no waiting for its reason, by posting key: nothing is written until the owner
+    /// picks one, says none, or cancels, as in the Audit tab.
+    private(set) var wouldApplyPending: [String: AuditVerdict] = [:]
+
+    /// A yes is written at once; a maybe or a no first asks what kept it from a yes.
+    func chooseWouldApply(_ key: String, _ verdict: AuditVerdict) async {
+        guard wouldApply[key] == nil, !wouldApplyInFlight.contains(key) else { return }
+        if AuditReason.allowed(for: verdict) {
+            wouldApplyPending[key] = verdict
+        } else {
+            await answerWouldApply(key, verdict)
+        }
+    }
+
+    /// Writes the pending maybe or no with its reason, or with none.
+    func giveWouldApplyReason(_ key: String, _ reason: AuditReason?) async {
+        guard let verdict = wouldApplyPending[key] else { return }
+        await answerWouldApply(key, verdict, reason: reason)
+        if wouldApply[key] != nil { wouldApplyPending[key] = nil }
+    }
+
+    /// Takes the pending verdict back; nothing was written.
+    func cancelWouldApplyReason(_ key: String) {
+        wouldApplyPending[key] = nil
+    }
+
     /// Record a one-tap verdict through `vani audit answer --shown`. A failure other than
-    /// "already answered" goes to the same alert as a failed mark.
-    func answerWouldApply(_ key: String, _ verdict: AuditVerdict) async {
+    /// "already answered" goes to the same alert as a failed mark, and a pending reason stays.
+    func answerWouldApply(_ key: String, _ verdict: AuditVerdict, reason: AuditReason? = nil) async {
         guard wouldApply[key] == nil, wouldApplyInFlight.insert(key).inserted else { return }
         defer { wouldApplyInFlight.remove(key) }
         let c = AuditClient(jobs: client())
-        let result = await BlockingWork.run { try c.answerShown(key: key, verdict) }
+        let result = await BlockingWork.run { try c.answerShown(key: key, verdict, reason: reason) }
         switch result {
         case .success:
             wouldApply[key] = .answered(verdict)

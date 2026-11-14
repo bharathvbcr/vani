@@ -22,28 +22,69 @@ final class AuditModel {
     var answerError: String?
 
     /// Picks from the "teacher wants" disagreement cell, added to the next draw.
-    /// 0 (the default) draws none; the quota is the owner's call. Kept across
-    /// launches.
+    /// Every overlay is on by default: until the owner sets a stepper it shows
+    /// vani's default and sends no flag, so vani's own default applies. A value
+    /// the owner sets, 0 included (which turns it off), is kept across launches
+    /// and sent.
     var disagree: Int {
-        didSet { defaults.set(disagree, forKey: Self.disagreeKey) }
+        didSet { remember(disagree, Self.disagreeKey) }
     }
 
     /// Picks nearest the owner's yes answers, added to the next draw; vani
-    /// refuses the draw unless its taste column passes. 0 draws none. Kept
-    /// across launches; with `disagree` at most AuditClient.maxDisagree.
+    /// skips them, and says why, until its taste column passes. With
+    /// `disagree` at most AuditClient.maxDisagree.
     var neighbours: Int {
-        didSet { defaults.set(neighbours, forKey: Self.neighboursKey) }
+        didSet { remember(neighbours, Self.neighboursKey) }
     }
 
-    /// Random engineering-titled picks added to the next draw. 0 draws none.
-    /// Kept across launches.
+    /// Random engineering-titled picks added to the next draw.
     var engineering: Int {
-        didSet { defaults.set(engineering, forKey: Self.engineeringKey) }
+        didSet { remember(engineering, Self.engineeringKey) }
     }
+
+    /// The steppers the owner has set (their keys); the rest follow vani's
+    /// defaults.
+    private(set) var chosen: Set<String> = []
+
+    /// The overlays the last draw could not make, and why, as vani said.
+    private(set) var skipped: [String] = []
 
     static let disagreeKey = "audit.disagree"
     static let neighboursKey = "audit.neighbours"
     static let engineeringKey = "audit.engineering"
+
+    private var restoring = false
+
+    private func remember(_ value: Int, _ key: String) {
+        guard !restoring else { return }
+        defaults.set(value, forKey: key)
+        chosen.insert(key)
+    }
+
+    /// Back to vani's defaults: the stored values are forgotten and no overlay
+    /// flag is sent until a stepper is set again.
+    func useVaniDefaults() {
+        restoring = true
+        defer { restoring = false }
+        disagree = AuditClient.defaultDisagree
+        neighbours = AuditClient.defaultNeighbours
+        engineering = AuditClient.defaultEngineering
+        for key in [Self.disagreeKey, Self.neighboursKey, Self.engineeringKey] {
+            defaults.removeObject(forKey: key)
+        }
+        chosen = []
+    }
+
+    /// What the next draw asks for: a stepper the owner set, or one clamped
+    /// away from vani's default, is sent; any other is left to vani.
+    var overlays: AuditOverlays {
+        func send(_ value: Int, _ key: String, _ vani: Int) -> Int? {
+            chosen.contains(key) || value != vani ? value : nil
+        }
+        return AuditOverlays(disagree: send(disagree, Self.disagreeKey, AuditClient.defaultDisagree),
+                             neighbours: send(neighbours, Self.neighboursKey, AuditClient.defaultNeighbours),
+                             engineering: send(engineering, Self.engineeringKey, AuditClient.defaultEngineering))
+    }
 
     /// A maybe or a no waiting for its reason: the card stays until the owner
     /// picks one, says none, or cancels.
@@ -56,10 +97,14 @@ final class AuditModel {
     init(client: @escaping () -> AuditClient, defaults: UserDefaults = .standard) {
         self.client = client
         self.defaults = defaults
-        let d = min(max(defaults.integer(forKey: Self.disagreeKey), 0), AuditClient.maxDisagree)
+        // A key never written is vani's default, not 0: integer(forKey:) cannot tell them apart.
+        func stored(_ key: String) -> Int? { defaults.object(forKey: key) == nil ? nil : defaults.integer(forKey: key) }
+        let sd = stored(Self.disagreeKey), sn = stored(Self.neighboursKey), se = stored(Self.engineeringKey)
+        let d = min(max(sd ?? AuditClient.defaultDisagree, 0), AuditClient.maxDisagree)
         disagree = d
-        neighbours = min(max(defaults.integer(forKey: Self.neighboursKey), 0), AuditClient.maxDisagree - d)
-        engineering = min(max(defaults.integer(forKey: Self.engineeringKey), 0), AuditClient.maxEngineering)
+        neighbours = min(max(sn ?? AuditClient.defaultNeighbours, 0), AuditClient.maxDisagree - d)
+        engineering = min(max(se ?? AuditClient.defaultEngineering, 0), AuditClient.maxEngineering)
+        chosen = Set([(sd, Self.disagreeKey), (sn, Self.neighboursKey), (se, Self.engineeringKey)].compactMap { $0.0 == nil ? nil : $0.1 })
     }
 
     /// The most yes-neighbour picks the stepper allows with the disagreement
@@ -75,18 +120,20 @@ final class AuditModel {
         loading = true
         loadError = nil
         let c = client()
-        let o = AuditOverlays(disagree: disagree, neighbours: neighbours, engineering: engineering)
+        let o = overlays
         pendingVerdict = nil
         let result = await BlockingWork.run { try c.draw(o) }
         loading = false
         switch result {
         case let .success(d):
             seed = d.seed
+            skipped = d.skipped
             session = AuditSession(picks: d.picks)
             await loadCard()
         case let .failure(err):
             session = nil
             card = nil
+            skipped = []
             loadError = String(describing: err)
         }
     }

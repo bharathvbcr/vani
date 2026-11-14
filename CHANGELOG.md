@@ -9,6 +9,17 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Every audit overlay on by default** (owner, 2026-11-13). `vani audit` now draws, beside the
+  17 random places, 5 "teacher wants" and 2 "teacher rejects" disagreement picks, 3 yes-neighbour
+  picks and 3 engineering picks unless told otherwise (`--disagree=0` and the like turn one off).
+  A default overlay whose inputs do not exist yet (no teacher readings, no vector store, a taste
+  column that does not pass) or whose cell the kill rule has turned off draws nothing and is
+  named: an `overlay not drawn:` line, and `skipped` in `--json`. A default cell quota over the
+  2x cap is trimmed with a note. The same flags given explicitly still fail closed, unless
+  `--soft-overlays` makes them soft too. The random draw is unchanged. The Mac app's Audit tab
+  shows vani's defaults on its steppers until one is set (a set 0 is kept as off), sends
+  `--soft-overlays`, lists what was not drawn, and has a "Vani's Defaults" button. The Jobs tab's
+  "Would you apply?" row now asks what kept a Maybe or a No from a yes, as the Audit card does.
 - **Taste column, yes-neighbour cell, engineering group, doctor silver log** (Fable's third pass
   on the second enhancement review). `vani relevance` gains a taste column: each judged posting's
   nearness to the owner's other yes answers, from stored vectors, against the title part. `vani
@@ -19,7 +30,8 @@ were ported with notice. Source files do not carry an upstream copyright header.
   evaluation and the yes yield but stay out of the relevance strata, drop recall, the reader table
   and the weight fit (`vani rankfit` prints how many). `vani doctor` appends its drop verdicts,
   without free text, to `silver_doctor.jsonl`, which `vani relevance` compares with the owner's
-  answers once there are 10 yes and 30 no. No verdict is a label. All off by default. The Mac
+  answers once there are 10 yes and 30 no. No verdict is a label. Built off by default; the entry
+  above turned the draws on (the silver log was on whenever `vani doctor` reviews drops). The Mac
   app's Audit tab has steppers for the neighbour and engineering picks, and after a Maybe or a No
   it asks what kept the posting from a yes (level, domain, location, employer type, other; one
   key each, Return for none), sent as `audit answer --reason`.
@@ -35,15 +47,16 @@ were ported with notice. Source files do not carry an upstream copyright header.
   exclusions) are never read for a cell. `vani relevance` now shows the raw yes yield per stratum
   and cell, and names a yes-rich stratum only when its 95% lower bound clears the random strata's
   95% upper bound. A teacher log with no reading by `--teacher` of any candidate is refused (a
-  misspelt model would otherwise look like no disagreement). Off by default; the quota is the
-  owner's call.
+  misspelt model would otherwise look like no disagreement). Built off by default; the first entry
+  above turned it on.
   After Fable's second review: each cell has its own quota (`--disagree` for the "teacher wants"
-  cell, `--disagree-rejects` for the "teacher rejects" cell, which stays at 0 unless asked: the
-  teachers reject most of what they read, so it is a large slice of the top decile). The 2x cap no
+  cell, `--disagree-rejects` for the "teacher rejects" cell, which Fable kept at 0 unless asked: the
+  teachers reject most of what they read, so it is a large slice of the top decile; its default is
+  now 2). The 2x cap no
   longer counts closed places. The yes yield gains group rows (all deciles, top three deciles, all
   drop classes) and a kill rule per cell (at 20 judged: 0-1 yes turns it off, 4+ keeps it, 2-3 runs
   to 40). `vani teacher freeze` says how many exemplars came from the cells. The Mac app's Audit
-  tab gains a "Disagreement picks" stepper, 0 by default.
+  tab gains a "Disagreement picks" stepper (vani's default, 5, until set).
 - **Drops the rules no longer make, by class** (`vani retriage --policy-drops`, its `classes`).
   A drop made under a rule that has since changed was never re-examined: two Databricks Staff
   roles the owner marked "maybe" were dropped on `seniority = staff_plus` (p 0.912 and 0.917, a
@@ -73,8 +86,8 @@ were ported with notice. Source files do not carry an upstream copyright header.
   one, in the pointwise auditor's vocabulary (level, domain, location, employer_type, other), so
   the owner's reasons and the auditor's can be compared. The reason travels with the answer: a
   triage re-label keeps it, a new answer replaces it, and it is never a triage slot. A reason on a
-  yes or a skip, on its own, or outside the vocabulary is refused. The Mac app does not ask for it
-  yet.
+  yes or a skip, on its own, or outside the vocabulary is refused. The Mac app asks for it after a
+  Maybe or a No, on the Audit card and in the Jobs tab's "Would you apply?" row.
 - **One-tap would you apply** (`vani audit answer --shown`, the Mac app's job detail). A posting
   answered from a surface takes the stratum and inclusion probability of its newest impression
   that carries them, else is recorded as a manual label; an impression log that cannot be read is

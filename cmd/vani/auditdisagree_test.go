@@ -24,10 +24,13 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 	if _, e := mustCode(t, 1, "audit", "--list", "--seed", "w1", "--disagree", "3"); !strings.Contains(e, "teacher readings log is not usable") {
 		t.Errorf("stderr %q", e)
 	}
-	// With no --disagree the log is never needed, and never created.
-	mustCode(t, 0, "audit", "--list", "--seed", "w1")
+	// The default quotas are soft: with no log the cells are not drawn, the
+	// draw says so by name, and the log is never created.
+	if o, _ := mustCode(t, 0, "audit", "--list", "--seed", "w1"); !strings.Contains(o, "overlay not drawn: disagreement cells: audit --disagree: the teacher readings log is not usable") {
+		t.Errorf("a default draw without a teacher log does not say the cells were skipped:\n%s", o)
+	}
 	if _, err := os.Stat(filepath.Join(state, eval.TeacherFile)); err == nil {
-		t.Fatal("a draw without --disagree created the teacher log")
+		t.Fatal("a draw without a teacher log created it")
 	}
 
 	// The teacher wants every model-dropped posting (CellTeacherWants) and
@@ -46,14 +49,15 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 		decodeOne(t, o, &d)
 		return d
 	}
-	base := draw()
-	// Only the wants cell by default: the rejects cell draws nothing unless asked.
-	for _, p := range draw("--disagree", "4").Picks {
+	base := draw(noOverlays...)
+	// Each cell has its own quota: at --disagree-rejects 0 the rejects cell
+	// draws nothing, whatever --disagree is.
+	for _, p := range draw(withNoOverlays("--disagree", "4")...).Picks {
 		if p.Stratum == eval.CellTeacherRejects {
-			t.Fatalf("--disagree alone drew from the rejects cell: %+v", p)
+			t.Fatalf("--disagree with --disagree-rejects 0 drew from the rejects cell: %+v", p)
 		}
 	}
-	cellArgs := []string{"--disagree", "2", "--disagree-rejects", "2"}
+	cellArgs := withNoOverlays("--disagree", "2", "--disagree-rejects", "2")
 	with := draw(cellArgs...)
 	var random, cell []auditPickJSON
 	for _, p := range with.Picks {
@@ -94,8 +98,8 @@ func TestAuditDisagreeDrawsTheCellsOverTheSameRandomDraw(t *testing.T) {
 	if e := readLabels(t, state)[wantsPick.Key]; e.Source != eval.CellTeacherWants || e.PSelect != wantsPick.PSelect {
 		t.Fatalf("label %+v, want source %s p %v", e, eval.CellTeacherWants, wantsPick.PSelect)
 	}
-	// The same lookup without --disagree does not find a cell pick.
-	if _, e := mustCode(t, 1, "audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1"); !strings.Contains(e, "not in the draw") {
+	// The same lookup with the cells off does not find a cell pick.
+	if _, e := mustCode(t, 1, append([]string{"audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1"}, noOverlays...)...); !strings.Contains(e, "not in the draw") {
 		t.Errorf("stderr %q", e)
 	}
 	mustCode(t, 0, append([]string{"audit", "answer", "--key", string(rejectsPick.Key), "--verdict", "no", "--seed", "w1"}, cellArgs...)...)
@@ -173,7 +177,7 @@ func TestTeacherViewsSkipLeftOutStrata(t *testing.T) {
 		{Key: "gh:a:none", Score: 3, Teacher: eval.TeacherWants}, // stale view, no row: reset
 	}
 	e := &env{stateDir: state}
-	if err := e.teacherViews(cands, sonnetReader); err != nil {
+	if err := e.teacherViews(cands, sonnetReader, false); err != nil {
 		t.Fatal(err)
 	}
 	want := []eval.TeacherView{eval.TeacherUnread, eval.TeacherUnread, eval.TeacherUnread, eval.TeacherUnread,
@@ -185,8 +189,14 @@ func TestTeacherViewsSkipLeftOutStrata(t *testing.T) {
 	}
 	// A model with no row for any candidate (a misspelt --teacher) is an
 	// error, not cells with no disagreement, and leaves every view unread.
-	if err := e.teacherViews(cands, "some-other-model"); err == nil || !strings.Contains(err.Error(), "no some-other-model reading") {
-		t.Fatalf("err %v", err)
+	// Given on the command line it is a plain error; as the default teacher
+	// it is an overlayUnavailable, which a default quota skips by name.
+	err := e.teacherViews(cands, "some-other-model", true)
+	if err == nil || !strings.Contains(err.Error(), "no some-other-model reading") || isUnavailable(err) {
+		t.Fatalf("given --teacher: err %v", err)
+	}
+	if err := e.teacherViews(cands, "some-other-model", false); err == nil || !isUnavailable(err) {
+		t.Fatalf("default teacher: err %v, want an overlayUnavailable", err)
 	}
 	for _, c := range cands {
 		if c.Teacher != eval.TeacherUnread {

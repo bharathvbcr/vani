@@ -1907,17 +1907,20 @@ private struct JobDetailContent: View {
     }
 
     /// "Would you apply?" with Yes / Maybe / No. One answer per posting: after it the buttons are
-    /// disabled and the reply (or the "already answered" notice) shows in their place.
+    /// disabled and the reply (or the "already answered" notice) shows in their place. A Maybe or
+    /// a No first asks what kept it from a yes, as the Audit tab does; "No reason" writes it bare.
+    @ViewBuilder
     private var wouldApplyRow: some View {
         let state = jobs.wouldApply[job.key]
         let busy = jobs.wouldApplyInFlight.contains(job.key)
-        return HStack(spacing: 8) {
+        let pending = jobs.wouldApplyPending[job.key]
+        HStack(spacing: 8) {
             Text("Would you apply?").font(.callout).foregroundStyle(.secondary)
             ForEach([AuditVerdict.yes, .maybe, .no], id: \.self) { v in
-                Button(v.title) { Task { await jobs.answerWouldApply(job.key, v) } }
+                Button(v.title) { Task { await jobs.chooseWouldApply(job.key, v) } }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(state != nil || busy)
+                    .disabled(state != nil || busy || pending != nil)
             }
             switch state {
             case let .answered(v):
@@ -1932,6 +1935,24 @@ private struct JobDetailContent: View {
             Spacer(minLength: 0)
         }
         .help("Record whether you would apply to this posting, for the weekly audit")
+        if let pending, state == nil {
+            // No keyboard shortcuts here: bare digits would fire while typing in the search field.
+            HStack(spacing: 6) {
+                Text("\(pending.title): what kept it from a yes?").font(.callout).foregroundStyle(.secondary)
+                ForEach(AuditReason.allCases, id: \.self) { r in
+                    Button(r.title) { Task { await jobs.giveWouldApplyReason(job.key, r) } }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                Button("No reason") { Task { await jobs.giveWouldApplyReason(job.key, nil) } }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Button("Cancel", role: .cancel) { jobs.cancelWouldApplyReason(job.key) }
+                    .controlSize(.small)
+                Spacer(minLength: 0)
+            }
+            .disabled(busy)
+        }
     }
 
     private func applyButton(_ apply: URL) -> some View {

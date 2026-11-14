@@ -39,7 +39,7 @@ func TestRelevanceReportsLabelsFromAnAudit(t *testing.T) {
 	t.Cleanup(func() { stdin = old })
 	// 15 drawn: answer yes, no, maybe, skip in turn.
 	stdin = strings.NewReader(strings.Repeat("1\n3\n2\ns\n", 4))
-	mustCode(t, 0, "audit-sample", "--seed", "w1")
+	mustCode(t, 0, append([]string{"audit-sample", "--seed", "w1"}, noOverlays...)...)
 
 	o, _ := mustCode(t, 0, "relevance", "-k", "5,10")
 	for _, frag := range []string{

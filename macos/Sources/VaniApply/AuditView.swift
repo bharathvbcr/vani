@@ -19,6 +19,21 @@ struct AuditView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
             }
+            if !model.skipped.isEmpty {
+                // What vani could not draw this week, in its own words: a skipped
+                // overlay is not an empty one.
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(model.skipped.prefix(6).enumerated()), id: \.offset) { _, line in
+                        Text(verbatim: "Not drawn: " + String(line.prefix(300)))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+            }
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -26,18 +41,23 @@ struct AuditView: View {
         .toolbar {
             ToolbarItem {
                 Stepper("Disagreement picks: \(model.disagree)", value: $model.disagree, in: 0...model.maxDisagree)
-                    .help("Postings a teacher model wants that the engine dropped or ranked low, added to the next draw. Their answers stay out of every estimate.")
+                    .help("Postings a teacher model wants that the engine dropped or ranked low, added to the next draw. Vani skips them, and says why, until the teacher has read the postings. Their answers stay out of every estimate.")
                     .disabled(model.loading)
             }
             ToolbarItem {
                 Stepper("Near your yeses: \(model.neighbours)", value: $model.neighbours, in: 0...model.maxNeighbours)
-                    .help("Postings nearest the ones you answered yes, added to the next draw. Vani refuses them until nearness orders your answers better than titles do. With the disagreement picks, at most \(AuditClient.maxDisagree). Their answers stay out of every estimate.")
+                    .help("Postings nearest the ones you answered yes, added to the next draw. Vani skips them, and says why, until nearness orders your answers better than titles do. With the disagreement picks, at most \(AuditClient.maxDisagree). Their answers stay out of every estimate.")
                     .disabled(model.loading)
             }
             ToolbarItem {
-                Stepper("Engineering picks: \(model.engineering)", value: $model.engineering, in: 0...AuditClient.maxEngineering, step: 5)
+                Stepper("Engineering picks: \(model.engineering)", value: $model.engineering, in: 0...AuditClient.maxEngineering)
                     .help("Random engineering-titled postings, kept and dropped, added to the next draw. Their answers score the auditor but stay out of the ranking estimates and the weight fit.")
                     .disabled(model.loading)
+            }
+            ToolbarItem {
+                Button("Vani's Defaults") { model.useVaniDefaults() }
+                    .help("Forget the picks set here and use vani's own defaults: \(AuditClient.defaultDisagree) disagreement, \(AuditClient.defaultNeighbours) near your yeses, \(AuditClient.defaultEngineering) engineering. Every one is on by default.")
+                    .disabled(model.loading || model.chosen.isEmpty)
             }
         }
         .task { if model.session == nil, !model.loading { await model.start() } }

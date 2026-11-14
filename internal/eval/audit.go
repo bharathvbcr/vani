@@ -24,11 +24,12 @@ const (
 // AuditQuotas are the places of one draw per group. A group's places are
 // never lent to another (that would change the inclusion probabilities).
 // Disagree is CellTeacherWants' places and DisagreeRejects CellTeacherRejects';
-// each cell is a group of its own, so a short cell lends nothing. At 0, the
-// default for both, the cells are not drawn. The rejects cell stays at 0
+// each cell is a group of its own, so a short cell lends nothing. At 0 a cell
+// is not drawn. Fable's second review (2026-11-13) kept the rejects cell at 0
 // unless asked for: a teacher that rejects most of what it reads makes it a
 // large slice of the top decile rather than a rare disagreement, and its
-// labels are kept out of every estimate (second Fable review, 2026-11-13).
+// labels are kept out of every estimate. The owner turned every overlay on by
+// default (2026-11-13), so `vani audit` gives it a small default of its own.
 //
 // Neighbour is CellYesNeighbour's places. Engineering is the engineering
 // group's (EngineeringPrefix): a random draw from the engineering-titled
@@ -38,8 +39,11 @@ type AuditQuotas struct {
 	Scored, Dropped, Closed, Disagree, DisagreeRejects, Neighbour, Engineering int
 }
 
-// DefaultAuditQuotas are the weekly draw's quotas. The disagreement cells are
-// off by default: their quota is the owner's call.
+// DefaultAuditQuotas are the weekly draw's random quotas. The overlays are on
+// by default too, but their defaults live with `vani audit`
+// (cmd/vani/auditcmd.go): whether an overlay can run depends on state the
+// command reads (a teacher log, a vector store, the kill rule), so a default
+// overlay is skipped by name there when it cannot.
 var DefaultAuditQuotas = AuditQuotas{Scored: AuditScored, Dropped: AuditDropped, Closed: AuditClosed}
 
 // Cells is the places drawn because of a model's reading or a posting's

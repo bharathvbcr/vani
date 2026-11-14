@@ -60,40 +60,40 @@ final class AuditTests: XCTestCase {
     func testDrawIsFetchedBlindAndDecoded() throws {
         let f = try fakeAuditVani(self, draw: drawReply)
         let d = try client(f).draw()
-        XCTAssertEqual(f.calls, ["audit --json --blind"])
+        XCTAssertEqual(f.calls, ["audit --json --blind --soft-overlays"], "no overlay flag: vani's defaults, which are on")
         XCTAssertEqual(d.seed, "2026-W43")
         XCTAssertTrue(d.blind)
         XCTAssertEqual(d.picks, [AuditPick(key: "gh:acme:1", stratum: "decile:10", pSelect: 0.25),
                                  AuditPick(key: "gh:acme:2", stratum: "dropped:title:role_fit", pSelect: 0.5)])
+        XCTAssertEqual(d.skipped, [], "a draw without the field decodes as nothing skipped")
     }
 
-    func testDisagreementPicksAreAskedForOnlyWhenWantedAndBounded() throws {
-        let f = try fakeAuditVani(self, draw: drawReply)
-        _ = try client(f).draw(disagree: 5)
-        _ = try client(f).draw(disagree: 0)
-        XCTAssertEqual(f.calls, ["audit --json --blind --disagree=5", "audit --json --blind"])
-        for bad in [-1, AuditClient.maxDisagree + 1] {
-            XCTAssertThrowsError(try client(f).draw(disagree: bad))
-        }
-        XCTAssertEqual(f.calls.count, 2, "an out-of-range quota must not reach vani")
+    func testSkippedOverlaysAreDecoded() throws {
+        let reply = #"{"seed":"s","blind":true,"picks":[],"strata":[],"skipped":["yes-neighbour cell: refused, the taste column does not pass"]}"#
+        let d = try client(try fakeAuditVani(self, draw: reply)).draw()
+        XCTAssertEqual(d.skipped, ["yes-neighbour cell: refused, the taste column does not pass"])
     }
 
-    func testOverlayPicksAreSentOnlyWhenWantedAndBounded() throws {
+    func testOverlayPicksAreSentWhenSetAndBounded() throws {
         let f = try fakeAuditVani(self, draw: drawReply)
         _ = try client(f).draw(AuditOverlays(disagree: 3, neighbours: 4, engineering: 10))
         _ = try client(f).draw(AuditOverlays(neighbours: 2))
         _ = try client(f).draw(AuditOverlays(engineering: AuditClient.maxEngineering))
+        _ = try client(f).draw(AuditOverlays(disagree: 0, neighbours: 0, engineering: 0))
         _ = try client(f).draw(AuditOverlays())
-        XCTAssertEqual(f.calls, ["audit --json --blind --disagree=3 --yes-neighbours=4 --engineering=10",
-                                 "audit --json --blind --yes-neighbours=2",
-                                 "audit --json --blind --engineering=\(AuditClient.maxEngineering)",
-                                 "audit --json --blind"])
-        for bad in [AuditOverlays(neighbours: -1), AuditOverlays(neighbours: AuditClient.maxNeighbours + 1),
+        XCTAssertEqual(f.calls, ["audit --json --blind --soft-overlays --disagree=3 --yes-neighbours=4 --engineering=10",
+                                 "audit --json --blind --soft-overlays --yes-neighbours=2",
+                                 "audit --json --blind --soft-overlays --engineering=\(AuditClient.maxEngineering)",
+                                 "audit --json --blind --soft-overlays --disagree=0 --yes-neighbours=0 --engineering=0",
+                                 "audit --json --blind --soft-overlays"])
+        for bad in [AuditOverlays(disagree: -1), AuditOverlays(disagree: AuditClient.maxDisagree + 1),
+                    AuditOverlays(neighbours: -1), AuditOverlays(neighbours: AuditClient.maxNeighbours + 1),
                     AuditOverlays(disagree: 20, neighbours: 11), // the two share vani's cap
+                    AuditOverlays(disagree: AuditClient.maxDisagree), // with the default neighbours, over the cap
                     AuditOverlays(engineering: -1), AuditOverlays(engineering: AuditClient.maxEngineering + 1)] {
             XCTAssertThrowsError(try client(f).draw(bad), "\(bad)")
         }
-        XCTAssertEqual(f.calls.count, 4, "an out-of-range quota must not reach vani")
+        XCTAssertEqual(f.calls.count, 5, "an out-of-range quota must not reach vani")
     }
 
     func testAReasonGoesOnlyWithMaybeOrNo() throws {
@@ -149,6 +149,16 @@ final class AuditTests: XCTestCase {
         let dash = try AuditClient.shownAnswerArguments(key: "--verdict=yes", verdict: .no)
         XCTAssertEqual(dash[3...], ["--shown", "--key=--verdict=yes", "--verdict=no"])
         for a in dash { XCTAssertFalse(a.hasPrefix("--source") || a.hasPrefix("--p-select") || a.hasPrefix("--seed"), a) }
+    }
+
+    func testAShownMaybeOrNoMayCarryItsReason() throws {
+        XCTAssertEqual(try AuditClient.shownAnswerArguments(key: "gh:acme:1", verdict: .no, reason: .location),
+                       ["audit", "answer", "--json", "--shown", "--key=gh:acme:1", "--verdict=no", "--reason=location"])
+        XCTAssertEqual(try AuditClient.shownAnswerArguments(key: "gh:acme:1", verdict: .maybe, reason: .employerType).last,
+                       "--reason=employer_type")
+        for v in [AuditVerdict.yes, .skip] {
+            XCTAssertThrowsError(try AuditClient.shownAnswerArguments(key: "gh:acme:1", verdict: v, reason: .level), "\(v)")
+        }
     }
 
     func testShownAnswerRefusesUnusableKeys() {

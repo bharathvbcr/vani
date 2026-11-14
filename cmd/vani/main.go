@@ -132,13 +132,16 @@ commands:
                              --blind hides the model's readings while you answer;
                              [--disagree N] [--disagree-rejects N] [--teacher M] add picks from the
                              disagreement cells (teacher M's role_fit against the engine: wants but
-                             dropped or low; rejects but top decile, off by default), over an
+                             dropped or low, default 5; rejects but top decile, default 2), over an
                              unchanged random draw; those labels stay out of every estimate
                              (together at most 2x --scored + --dropped);
                              [--yes-neighbours N] adds picks from the 50 postings nearest the
-                             owner's yes answers (refused unless the taste column passes; counts
+                             owner's yes answers (default 3; needs the taste column to pass; counts
                              in the cap); [--engineering N] adds random engineering-titled picks
-                             (kept out of the strata, drop recall and the weight fit; no cap)
+                             (default 3; kept out of the strata, drop recall and the weight fit;
+                             no cap). A default overlay that cannot run (no teacher readings, no
+                             vector store, taste not passing, cell turned off by the kill rule)
+                             is skipped and named; one given explicitly fails instead
                              (audit-sample is the old name)
   audit answer --key K --verdict yes|maybe|no|skip [--reason R] [--source S --p-select P]
                              record one would-I-apply answer; the stratum and p_select come from

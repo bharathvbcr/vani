@@ -90,11 +90,27 @@ public struct AuditDraw: Decodable, Equatable, Sendable {
     public var seed: String
     public var blind: Bool
     public var picks: [AuditPick]
+    /// Each overlay vani could not draw this week, and why (no teacher
+    /// readings yet, a taste column that does not pass, a cell the kill rule
+    /// turned off). Empty when every overlay ran; a vani too old to send it
+    /// decodes as empty.
+    public var skipped: [String]
 
-    public init(seed: String, blind: Bool, picks: [AuditPick]) {
+    public init(seed: String, blind: Bool, picks: [AuditPick], skipped: [String] = []) {
         self.seed = seed
         self.blind = blind
         self.picks = picks
+        self.skipped = skipped
+    }
+
+    private enum CodingKeys: String, CodingKey { case seed, blind, picks, skipped }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        seed = try c.decode(String.self, forKey: .seed)
+        blind = try c.decode(Bool.self, forKey: .blind)
+        picks = try c.decode([AuditPick].self, forKey: .picks)
+        skipped = try c.decodeIfPresent([String].self, forKey: .skipped) ?? []
     }
 }
 
@@ -112,19 +128,22 @@ public struct AuditAnswered: Decodable, Equatable, Sendable {
     }
 }
 
-/// The overlay picks added to a draw: each 0 by default, which draws none.
-/// The random draw is the same whatever they are; their answers are counted
-/// apart (cmd/vani/auditcmd.go).
+/// The overlay picks added to a draw. Every overlay is on in vani by default;
+/// nil leaves one at vani's own default, and a number (0 included, which
+/// turns it off) is sent. The random draw is the same whatever they are; their
+/// answers are counted apart (cmd/vani/auditcmd.go). The app sends
+/// `--soft-overlays`, so an overlay vani cannot run yet is skipped and named in
+/// the draw's `skipped`, never an error that hides the cards.
 public struct AuditOverlays: Equatable, Sendable {
     /// "Teacher wants" disagreement picks (`--disagree`).
-    public var disagree: Int
+    public var disagree: Int?
     /// Postings nearest the owner's yes answers (`--yes-neighbours`); vani
-    /// refuses them unless its taste column passes.
-    public var neighbours: Int
+    /// draws them only once its taste column passes.
+    public var neighbours: Int?
     /// Random engineering-titled postings (`--engineering`).
-    public var engineering: Int
+    public var engineering: Int?
 
-    public init(disagree: Int = 0, neighbours: Int = 0, engineering: Int = 0) {
+    public init(disagree: Int? = nil, neighbours: Int? = nil, engineering: Int? = nil) {
         self.disagree = disagree
         self.neighbours = neighbours
         self.engineering = engineering
@@ -214,16 +233,16 @@ public struct AuditClient: Sendable {
     /// neither side of the cap.
     public static let maxEngineering = 100
 
-    /// This week's draw, with the model's readings left out of it (`--blind`).
-    /// `disagree` adds that many picks from the cell where a teacher model wants
-    /// a posting the engine dropped or ranked low (`vani audit --disagree`); their
-    /// labels stay out of every estimate. 0 draws none.
-    public func draw(disagree: Int = 0) throws -> AuditDraw {
-        try draw(AuditOverlays(disagree: disagree))
-    }
+    /// vani's own default overlay quotas (cmd/vani/auditcmd.go: defaultDisagree,
+    /// defaultYesNeighbours, defaultEngineering), shown on a stepper the owner
+    /// has not set. The app sends no flag for those, so vani's default applies.
+    public static let defaultDisagree = 5
+    public static let defaultNeighbours = 3
+    public static let defaultEngineering = 3
 
-    /// This week's draw with the given overlay picks.
-    public func draw(_ overlays: AuditOverlays) throws -> AuditDraw {
+    /// This week's draw, with the model's readings left out of it (`--blind`)
+    /// and the given overlay picks; with none given, vani's defaults.
+    public func draw(_ overlays: AuditOverlays = AuditOverlays()) throws -> AuditDraw {
         let d: AuditDraw = try call(try Self.drawArguments(overlays))
         guard d.picks.count <= Self.maxPicks else { throw BankError("vani audit drew \(d.picks.count) postings; this app shows at most \(Self.maxPicks)") }
         for p in d.picks { _ = try Self.answerArguments(p, .skip) } // a malformed pick fails here, not mid-session
@@ -244,9 +263,10 @@ public struct AuditClient: Sendable {
 
     /// One-tap "Would you apply?" on a posting the owner is looking at: vani takes the stratum
     /// and p_select from the posting's newest sampled impression, else records the label as manual.
+    /// A maybe or a no may carry what kept it from a yes, as in the Audit tab.
     @discardableResult
-    public func answerShown(key: String, _ verdict: AuditVerdict) throws -> AuditAnswered {
-        try call(try Self.shownAnswerArguments(key: key, verdict: verdict))
+    public func answerShown(key: String, _ verdict: AuditVerdict, reason: AuditReason? = nil) throws -> AuditAnswered {
+        try call(try Self.shownAnswerArguments(key: key, verdict: verdict, reason: reason))
     }
 
     /// vani refuses a second answer for a key with this phrase in its error.
@@ -255,36 +275,41 @@ public struct AuditClient: Sendable {
     }
 
     /// `--shown` takes the stratum and p_select itself, so --source, --p-select and --seed are never sent.
-    static func shownAnswerArguments(key: String, verdict: AuditVerdict) throws -> [String] {
+    static func shownAnswerArguments(key: String, verdict: AuditVerdict, reason: AuditReason? = nil) throws -> [String] {
         guard !key.isEmpty, key.utf8.count <= maxKeyBytes, !key.contains("\0") else {
             throw BankError("this posting has no usable key")
         }
-        return ["audit", "answer", "--json", "--shown", "--key=\(key)", "--verdict=\(verdict.rawValue)"]
+        var args = ["audit", "answer", "--json", "--shown", "--key=\(key)", "--verdict=\(verdict.rawValue)"]
+        if let reason {
+            guard AuditReason.allowed(for: verdict) else {
+                throw BankError("a reason goes with a maybe or a no, not with \(verdict.title)")
+            }
+            args.append("--reason=\(reason.rawValue)")
+        }
+        return args
     }
 
-    static func drawArguments(disagree: Int) throws -> [String] {
-        try drawArguments(AuditOverlays(disagree: disagree))
-    }
-
-    /// Each overlay flag is sent only when its quota is above 0, so a draw with
-    /// none is the plain blind draw.
+    /// `--soft-overlays` always, then each overlay the owner set, 0 included;
+    /// one left nil is not sent, so vani's default applies.
     static func drawArguments(_ o: AuditOverlays) throws -> [String] {
-        guard (0...maxDisagree).contains(o.disagree) else {
-            throw BankError("the disagreement picks must be within 0 to \(maxDisagree), got \(o.disagree)")
+        let disagree = o.disagree ?? defaultDisagree, neighbours = o.neighbours ?? defaultNeighbours
+        let engineering = o.engineering ?? defaultEngineering
+        guard (0...maxDisagree).contains(disagree) else {
+            throw BankError("the disagreement picks must be within 0 to \(maxDisagree), got \(disagree)")
         }
-        guard (0...maxNeighbours).contains(o.neighbours) else {
-            throw BankError("the yes-neighbour picks must be within 0 to \(maxNeighbours), got \(o.neighbours)")
+        guard (0...maxNeighbours).contains(neighbours) else {
+            throw BankError("the yes-neighbour picks must be within 0 to \(maxNeighbours), got \(neighbours)")
         }
-        guard o.disagree + o.neighbours <= maxDisagree else {
-            throw BankError("the disagreement and yes-neighbour picks together must be at most \(maxDisagree), got \(o.disagree + o.neighbours)")
+        guard disagree + neighbours <= maxDisagree else {
+            throw BankError("the disagreement and yes-neighbour picks together must be at most \(maxDisagree), got \(disagree + neighbours)")
         }
-        guard (0...maxEngineering).contains(o.engineering) else {
-            throw BankError("the engineering picks must be within 0 to \(maxEngineering), got \(o.engineering)")
+        guard (0...maxEngineering).contains(engineering) else {
+            throw BankError("the engineering picks must be within 0 to \(maxEngineering), got \(engineering)")
         }
-        var args = ["audit", "--json", "--blind"]
-        if o.disagree > 0 { args.append("--disagree=\(o.disagree)") }
-        if o.neighbours > 0 { args.append("--yes-neighbours=\(o.neighbours)") }
-        if o.engineering > 0 { args.append("--engineering=\(o.engineering)") }
+        var args = ["audit", "--json", "--blind", "--soft-overlays"]
+        if let n = o.disagree { args.append("--disagree=\(n)") }
+        if let n = o.neighbours { args.append("--yes-neighbours=\(n)") }
+        if let n = o.engineering { args.append("--engineering=\(n)") }
         return args
     }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -97,6 +98,15 @@ func overlayState(t *testing.T, warm bool) string {
 		}
 	}
 	return state
+}
+
+// noOverlays turns every overlay off, for a test about the random draw alone:
+// each overlay is on by default.
+var noOverlays = []string{"--disagree=0", "--disagree-rejects=0", "--yes-neighbours=0", "--engineering=0"}
+
+// withNoOverlays is args with every overlay off; a later flag in args wins.
+func withNoOverlays(args ...string) []string {
+	return append(slices.Clone(noOverlays), args...)
 }
 
 func overlayDraw(t *testing.T, args ...string) auditJSON {
@@ -216,16 +226,49 @@ func TestAuditYesNeighboursAnchorBeforeTheWeek(t *testing.T) {
 	}
 }
 
-// The cell is refused unless the taste column passes: here no vector was
-// ever stored, so there is no column to pass, and the draw says why.
+// The cell is refused unless the taste column passes, and needs a vector
+// store. Asked for explicitly, either missing is an error; at its default
+// quota the cell is skipped by name and the rest of the draw goes ahead.
 func TestAuditYesNeighboursRefusedWithoutTheTasteGate(t *testing.T) {
-	overlayState(t, false)
+	state := overlayState(t, false)
 	_, e := mustCode(t, 1, "audit", "--list", "--seed", overlaySeed, "--yes-neighbours", "5")
-	if !strings.Contains(e, "taste column does not pass") {
-		t.Fatalf("stderr %q", e)
+	if !strings.Contains(e, "there is no vector store yet") {
+		t.Fatalf("no store, explicit: stderr %q", e)
 	}
-	// Without the flag the vector store is never needed.
-	mustCode(t, 0, "audit", "--list", "--seed", overlaySeed)
+	if o, _ := mustCode(t, 0, "audit", "--list", "--seed", overlaySeed); !strings.Contains(o, "overlay not drawn: yes-neighbour cell: audit --yes-neighbours: there is no vector store yet") {
+		t.Fatalf("no store, default: %s", o)
+	}
+	// With the overlays off the vector store is never needed.
+	mustCode(t, 0, append([]string{"audit", "--list", "--seed", overlaySeed}, noOverlays...)...)
+
+	// Vectors in place, but four yes answers: the taste column is
+	// insufficient below five, so it does not pass.
+	state = overlayState(t, true)
+	labelsDir, textDir := filepath.Join(state, "eval", "labels"), filepath.Join(state, "eval", "text")
+	if err := os.RemoveAll(labelsDir); err != nil {
+		t.Fatal(err)
+	}
+	s, err := eval.NewStore(labelsDir, textDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 6; i++ {
+		for _, x := range []struct{ prefix, v string }{{"gh:y", "yes"}, {"gh:n", "no"}} {
+			if x.v == "yes" && i >= 4 {
+				continue
+			}
+			k := posting.Key(fmt.Sprintf("%s:%03d", x.prefix, i))
+			if err := s.Put(eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: x.v}, Source: "decile:5", PSelect: 0.5, LabeledAt: overlayLabelledAt}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, e := mustCode(t, 1, "audit", "--list", "--seed", overlaySeed, "--yes-neighbours", "5"); !strings.Contains(e, "taste column does not pass") {
+		t.Fatalf("four yes, explicit: stderr %q", e)
+	}
+	if o, _ := mustCode(t, 0, "audit", "--list", "--seed", overlaySeed); !strings.Contains(o, "overlay not drawn: yes-neighbour cell: audit --yes-neighbours: refused, the taste column does not pass") {
+		t.Fatalf("four yes, default: %s", o)
+	}
 }
 
 // --engineering draws at random from the engineering-titled postings, over the
@@ -235,8 +278,8 @@ func TestAuditEngineeringDrawsEngineeringTitles(t *testing.T) {
 	if !eval.TitleIsEngineering("Software Engineer k0") || eval.TitleIsEngineering("Role k1") {
 		t.Fatal("fixture titles do not split on eval.TitleIsEngineering")
 	}
-	base := overlayDraw(t, "--scored", "10", "--dropped", "0", "--closed", "0")
-	with := overlayDraw(t, "--scored", "10", "--dropped", "0", "--closed", "0", "--engineering", "100")
+	base := overlayDraw(t, withNoOverlays("--scored", "10", "--dropped", "0", "--closed", "0")...)
+	with := overlayDraw(t, withNoOverlays("--scored", "10", "--dropped", "0", "--closed", "0", "--engineering", "100")...)
 	if !slices.Equal(randomOf(with), randomOf(base)) {
 		t.Fatalf("the random picks changed with --engineering:\n got %v\nwant %v", randomOf(with), randomOf(base))
 	}

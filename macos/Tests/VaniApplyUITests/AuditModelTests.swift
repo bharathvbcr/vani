@@ -52,32 +52,70 @@ final class AuditModelTests: XCTestCase {
         AuditModel(client: { AuditClient(jobs: JobsClient(vaniBinary: f.vani, timeout: 10)) }, defaults: defaults ?? freshDefaults())
     }
 
+    func testTheOverlaysAreOnByDefaultAndLeftToVani() async throws {
+        let f = try fake()
+        let m = model(f)
+        XCTAssertEqual([m.disagree, m.neighbours, m.engineering],
+                       [AuditClient.defaultDisagree, AuditClient.defaultNeighbours, AuditClient.defaultEngineering], "vani's defaults until the owner sets one")
+        XCTAssertTrue(m.chosen.isEmpty)
+        await m.start()
+        XCTAssertEqual(f.calls.first, "audit --json --blind --soft-overlays", "an unset stepper sends no flag: vani's own default applies")
+    }
+
     func testTheDisagreementQuotaReachesTheDrawAndIsKept() async throws {
         let f = try fake()
         let d = freshDefaults()
         let m = model(f, defaults: d)
-        XCTAssertEqual(m.disagree, 0, "off until the owner sets it")
         m.disagree = 4
         await m.start()
-        XCTAssertEqual(f.calls.first, "audit --json --blind --disagree=4")
+        XCTAssertEqual(f.calls.first, "audit --json --blind --soft-overlays --disagree=4")
         XCTAssertEqual(model(f, defaults: d).disagree, 4, "the quota is kept across launches")
         d.set(999, forKey: AuditModel.disagreeKey)
         XCTAssertEqual(model(f, defaults: d).disagree, AuditClient.maxDisagree, "a stored value out of range is clamped")
+    }
+
+    func testZeroIsKeptAndSentNotTakenForUnset() async throws {
+        let f = try fake()
+        let d = freshDefaults()
+        let m = model(f, defaults: d)
+        m.disagree = 0
+        m.neighbours = 0
+        m.engineering = 0
+        let again = model(f, defaults: d)
+        XCTAssertEqual([again.disagree, again.neighbours, again.engineering], [0, 0, 0], "a stored 0 is the owner's off, not vani's default")
+        await again.start()
+        XCTAssertEqual(f.calls.first, "audit --json --blind --soft-overlays --disagree=0 --yes-neighbours=0 --engineering=0")
+    }
+
+    func testUseVaniDefaultsForgetsTheSteppers() async throws {
+        let f = try fake()
+        let d = freshDefaults()
+        let m = model(f, defaults: d)
+        m.disagree = 0
+        m.engineering = 12
+        XCTAssertEqual(m.chosen, [AuditModel.disagreeKey, AuditModel.engineeringKey])
+        m.useVaniDefaults()
+        XCTAssertTrue(m.chosen.isEmpty)
+        XCTAssertEqual([m.disagree, m.neighbours, m.engineering],
+                       [AuditClient.defaultDisagree, AuditClient.defaultNeighbours, AuditClient.defaultEngineering])
+        XCTAssertNil(d.object(forKey: AuditModel.disagreeKey))
+        XCTAssertNil(d.object(forKey: AuditModel.engineeringKey))
+        await m.start()
+        XCTAssertEqual(f.calls.first, "audit --json --blind --soft-overlays")
+        XCTAssertTrue(model(f, defaults: d).chosen.isEmpty, "the next launch follows vani's defaults too")
     }
 
     func testTheOverlayQuotasReachTheDrawAndAreKept() async throws {
         let f = try fake()
         let d = freshDefaults()
         let m = model(f, defaults: d)
-        XCTAssertEqual(m.neighbours, 0, "off until the owner sets it")
-        XCTAssertEqual(m.engineering, 0, "off until the owner sets it")
         m.disagree = 10
         XCTAssertEqual(m.maxNeighbours, AuditClient.maxDisagree - 10, "the neighbour picks share the disagreement picks' cap")
         m.neighbours = 5
         m.engineering = 20
         XCTAssertEqual(m.maxDisagree, AuditClient.maxDisagree - 5)
         await m.start()
-        XCTAssertEqual(f.calls.first, "audit --json --blind --disagree=10 --yes-neighbours=5 --engineering=20")
+        XCTAssertEqual(f.calls.first, "audit --json --blind --soft-overlays --disagree=10 --yes-neighbours=5 --engineering=20")
         let again = model(f, defaults: d)
         XCTAssertEqual([again.disagree, again.neighbours, again.engineering], [10, 5, 20], "kept across launches")
         d.set(25, forKey: AuditModel.disagreeKey)
@@ -86,6 +124,17 @@ final class AuditModelTests: XCTestCase {
         let clamped = model(f, defaults: d)
         XCTAssertEqual([clamped.disagree, clamped.neighbours, clamped.engineering],
                        [25, AuditClient.maxDisagree - 25, AuditClient.maxEngineering], "stored values out of range are clamped")
+    }
+
+    func testANeighbourDefaultClampedByTheCapIsSent() async throws {
+        let f = try fake()
+        let d = freshDefaults()
+        d.set(AuditClient.maxDisagree, forKey: AuditModel.disagreeKey)
+        let m = model(f, defaults: d)
+        XCTAssertEqual(m.neighbours, 0, "no room left under the shared cap")
+        await m.start()
+        XCTAssertEqual(f.calls.first, "audit --json --blind --soft-overlays --disagree=\(AuditClient.maxDisagree) --yes-neighbours=0",
+                       "left unsent, vani's default would put the two over the cap")
     }
 
     func testAMaybeWaitsForItsReasonThenWritesIt() async throws {
@@ -143,7 +192,7 @@ final class AuditModelTests: XCTestCase {
         XCTAssertEqual(m.seed, "2026-W43")
         XCTAssertEqual(m.session?.picks.count, 2)
         XCTAssertEqual(m.card?.title, "Title gh:a:1")
-        XCTAssertEqual(f.calls, ["audit --json --blind", "jobs show --json gh:a:1",
+        XCTAssertEqual(f.calls, ["audit --json --blind --soft-overlays", "jobs show --json gh:a:1",
                                  "impressions log --json --surface audit --slate 2026-w43 --section decile:1"])
         XCTAssertNil(m.impressionsError)
     }
