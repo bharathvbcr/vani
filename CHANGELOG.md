@@ -9,6 +9,25 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Ledger group commit** (2026-11-14, the owner's "batch the ledger appends", design decided by
+  Fable). A board's listing events are one `ledger.File.Group`: written and folded at once (the
+  reconcile loop reads its own writes as before) and made durable by one fsync when the board is
+  done, more only past `MaxBatchEvents` or `MaxBatchBytes`. A crash mid-board leaves a whole-line
+  prefix that the next listing completes (`TestReconcileCrashPrefixConverges`); a failed fsync
+  breaks the ledger, cuts the file to the last synced line and rebuilds memory to it, the board's
+  summary is zero, and the run keeps the pending-reopen set unsaved so the next run applies it
+  again. Runner stage events (between paid model calls) and the retriage loops keep one fsync per
+  event: the retriage `reopen` contract reports only written keys, which a group's failed final
+  sync would break. Measured with the real fsync, 5 interleaved rounds: a board of 500 changed
+  postings 2.92 s -> 0.17 s (min; median 3.19 s -> 0.39 s); a 20k-record run with nothing
+  changed 429 -> 398 ms (min; within noise). One fsync costs a median 7.9 ms on the owner's Mac.
+- **Tests no longer wait on fsync or retry backoff.** Every production fsync goes through
+  `atomicfile.Sync`/`SyncDir`; tests count, fail or skip them through test-only setters
+  (`internal/atomicfile/synctest`, `atomicfile.RunWithoutSync`, kept real under `-test.bench`),
+  and each store keeps a sync-count test and one real-fsync round trip. Source adapters' tests
+  answer `srcutil`'s retry waits at once (`srcutil.RunWithoutWaits`). The full suite went from
+  13 min 13 s to 3 min 14 s; `cmd/vani` from 765 s (over `go test`'s default 10-minute timeout)
+  to 156 s, and goneparity from 647 s to 4 s.
 - **Round-2 measurements** (2026-11-14, decided by Fable). `vani relevance` adds a part-coverage
   table over the open pool: how often each Score part is evidence, how much of the match it
   decides (weight x confidence), its distinct values, and whether it is known nowhere or constant.

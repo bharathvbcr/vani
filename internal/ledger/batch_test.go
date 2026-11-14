@@ -298,8 +298,11 @@ func TestAppendAndAppendBatchConcurrent(t *testing.T) {
 	}
 }
 
-// BenchmarkAppendBatch1000 against BenchmarkAppend1000: the batch does one
-// fsync where the loop does 1000 (inferred from the code, not counted).
+// BenchmarkAppendBatch1000 against BenchmarkAppend1000 and BenchmarkGroup1000:
+// the batch and the group each do one fsync where the loop does 1000
+// (TestAppendAndBatchSyncTheFileOnceEach and TestGroupSyncsOnceAtTheEnd count
+// them). Benchmarks run with the real fsync (atomicfile.RunWithoutSync keeps it
+// under -test.bench).
 func BenchmarkAppendBatch1000(b *testing.B) {
 	ctx := context.Background()
 	evs := batchOf(1000, "bench")
@@ -311,6 +314,33 @@ func BenchmarkAppendBatch1000(b *testing.B) {
 		}
 		b.StartTimer()
 		if err := f.AppendBatch(ctx, evs); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		f.Close()
+		b.StartTimer()
+	}
+}
+
+// BenchmarkGroup1000 is BenchmarkAppend1000's loop inside one Group.
+func BenchmarkGroup1000(b *testing.B) {
+	ctx := context.Background()
+	evs := batchOf(1000, "bench")
+	for b.Loop() {
+		b.StopTimer()
+		f, err := Open(b.TempDir())
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.StartTimer()
+		if err := f.Group(ctx, func(g Ledger) error {
+			for _, e := range evs {
+				if err := g.Append(ctx, e); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			b.Fatal(err)
 		}
 		b.StopTimer()

@@ -182,11 +182,35 @@ func (rc *Reconciler) ReconcilePartial(ctx context.Context, b sources.Board, lis
 
 // reconcile is the listing loop both entry points share; full says the listing
 // is the board's whole, so records it lacks are aged.
+//
+// The board's events are one ledger group (ledger.InGroup): written and folded
+// as they come, so the loop reads its own writes, and made durable by one
+// fsync when the board is done (more only past ledger.MaxBatchEvents) rather
+// than one per event. A crash mid-board leaves a whole-line prefix of the
+// board's events; the next listing writes the rest again. If the group's fsync
+// fails the ledger is broken and none of the board's events stand, so the
+// summary is zero.
 func (rc *Reconciler) reconcile(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time, full bool, short shortKind) (Summary, error) {
+	var s Summary
+	var fnErr error
+	err := ledger.InGroup(ctx, rc.l, func(g ledger.Ledger) error {
+		s, fnErr = rc.reconcileIn(ctx, g, b, listed, now, full, short)
+		return fnErr
+	})
+	// Group returns fn's error itself when its sync succeeded, so any other
+	// error means the sync failed.
+	if err != nil && err != fnErr {
+		return Summary{}, err
+	}
+	return s, err
+}
+
+// reconcileIn is reconcile's body on the group's ledger.
+func (rc *Reconciler) reconcileIn(ctx context.Context, g ledger.Ledger, b sources.Board, listed []posting.Posting, now time.Time, full bool, short shortKind) (Summary, error) {
 	var s Summary
 	prefix := b.KeyPrefix()
 	idx := rc.index()
-	l := touching{Ledger: rc.l, touched: idx.touched}
+	l := touching{Ledger: g, touched: idx.touched}
 
 	// Company|title|location tuples, for cross-source dedupe (see
 	// ledgerIndex). A weakly keyed posting (fallback or careers page) that

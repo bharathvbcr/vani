@@ -68,11 +68,21 @@ type File struct {
 	goodSize int64                 // end of the last intact line
 	closed   bool
 	broken   error // set when the file past goodSize is unknown; every later Append returns it
+
+	// Group commit (group.go). synced is the end of the last line known to be
+	// durable: goodSize outside a group, at most goodSize inside one. groups
+	// counts the open groups; pendingEvents and pendingBytes what they wrote
+	// since the last sync.
+	synced        int64
+	groups        int
+	pendingEvents int
+	pendingBytes  int64
 }
 
 // errBroken is a ledger whose events file can no longer be trusted past the
 // last line it acknowledged. Get and All still answer from memory, which holds
-// only acknowledged events; Close and a fresh Open recover.
+// only acknowledged events (a failed group sync rebuilds it to the synced
+// lines); Close and a fresh Open recover.
 var errBroken = errors.New("ledger: events file is in an unknown state after a failed write; reopen the ledger")
 
 var _ Ledger = (*File)(nil)
@@ -148,7 +158,7 @@ func readLine(r *bufio.Reader) (line []byte, raw int, hadNL bool, err error) {
 
 func (f *File) replay() error {
 	off, torn, err := replay(f.events, f.recs, f.events)
-	f.goodSize, f.Recovered = off, torn
+	f.goodSize, f.Recovered, f.synced = off, torn, off
 	if err == nil {
 		packBodies(f.recs)
 	}
@@ -434,6 +444,11 @@ func wireForm(e Event, line []byte) (Event, error) {
 
 // Append validates e, writes it durably, then folds it into memory.
 func (f *File) Append(ctx context.Context, e Event) error {
+	return f.appendOne(ctx, e, false)
+}
+
+// appendOne is Append; deferSync leaves the fsync to the open group (group.go).
+func (f *File) appendOne(ctx context.Context, e Event, deferSync bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -463,6 +478,15 @@ func (f *File) Append(ctx context.Context, e Event) error {
 	if err != nil {
 		return err
 	}
+	return f.writeLocked(line, []Event{e}, []int{len(line)}, pre, deferSync)
+}
+
+// writeLocked writes buf (the lines of evs, lens long each) after goodSize and
+// folds evs. Without deferSync it fsyncs before folding, so memory holds only
+// durable events. With it (a group) it folds at once and leaves the fsync to the
+// group's end, or to the next sync once MaxBatchEvents events or MaxBatchBytes
+// bytes are pending. Caller holds f.mu and has checked closed and broken.
+func (f *File) writeLocked(buf []byte, evs []Event, lens []int, pre map[posting.Key]string, deferSync bool) error {
 	if f.Recovered {
 		// Cut the torn tail so the new line starts on a clean boundary.
 		if err := f.events.Truncate(f.goodSize); err != nil {
@@ -470,30 +494,74 @@ func (f *File) Append(ctx context.Context, e Event) error {
 		}
 		f.Recovered = false
 	}
-	if _, err := f.events.WriteAt(line, f.goodSize); err != nil {
-		// Do not leave a partial line behind. If it cannot be cut, the file
+	if _, err := f.events.WriteAt(buf, f.goodSize); err != nil {
+		// Do not leave a partial write behind. If it cannot be cut, the file
 		// past goodSize is unknown: a later, shorter line written over it
 		// would leave the old line's tail as a complete garbage line, and the
 		// next Open would refuse the whole file.
 		if terr := f.events.Truncate(f.goodSize); terr != nil {
-			f.broken = fmt.Errorf("%w: write failed (%v) and its partial line could not be cut: %v", errBroken, err, terr)
+			f.broken = fmt.Errorf("%w: write failed (%v) and its partial write could not be cut: %v", errBroken, err, terr)
 			return f.broken
 		}
 		return fmt.Errorf("ledger: write: %w", err)
 	}
-	if err := atomicfile.Sync(f.events); err != nil {
-		// After a failed fsync the kernel may already have dropped the dirty
-		// pages, so a retried fsync can report success for lost data. The file
-		// is no longer known; the next Open replays what it really holds.
-		f.broken = fmt.Errorf("%w: fsync failed: %v", errBroken, err)
-		if terr := f.events.Truncate(f.goodSize); terr != nil {
-			f.broken = fmt.Errorf("%w; cutting the line failed too: %v", f.broken, terr)
+	end := f.goodSize + int64(len(buf))
+	if !deferSync {
+		if err := f.syncTo(end); err != nil {
+			return err
 		}
+	}
+	offs := make([]int64, len(evs))
+	at := f.goodSize
+	for i, n := range lens {
+		offs[i], at = at, at+int64(n)
+	}
+	f.goodSize = end
+	f.commit(evs, offs, lens, pre)
+	if deferSync {
+		f.pendingEvents += len(evs)
+		f.pendingBytes += int64(len(buf))
+		if f.pendingEvents >= MaxBatchEvents || f.pendingBytes >= MaxBatchBytes {
+			return f.syncTo(f.goodSize)
+		}
+	}
+	return nil
+}
+
+// syncTo fsyncs the events file, making everything up to end durable. After a
+// failed fsync the kernel may already have dropped the dirty pages, so a
+// retried fsync can report success for lost data: the ledger is broken, the
+// file is cut back to the last synced line, and if memory folded lines past it
+// (a group's) memory is rebuilt from the file, so nothing that is not durable
+// is answered. The next Open replays what the file really holds.
+func (f *File) syncTo(end int64) error {
+	if err := atomicfile.Sync(f.events); err != nil {
+		f.broken = fmt.Errorf("%w: fsync failed: %v", errBroken, err)
+		if terr := f.events.Truncate(f.synced); terr != nil {
+			f.broken = fmt.Errorf("%w; cutting the unsynced lines failed too: %v", f.broken, terr)
+		}
+		if f.goodSize > f.synced {
+			if rerr := f.rebuildLocked(); rerr != nil {
+				f.broken = fmt.Errorf("%w; memory could not be rebuilt and is unverified until the ledger is reopened: %v", f.broken, rerr)
+			}
+		}
+		f.pendingEvents, f.pendingBytes = 0, 0
 		return f.broken
 	}
-	off := f.goodSize
-	f.goodSize += int64(len(line))
-	f.commit([]Event{e}, []int64{off}, []int{len(line)}, pre)
+	f.synced = end
+	f.pendingEvents, f.pendingBytes = 0, 0
+	return nil
+}
+
+// rebuildLocked folds memory again from the synced lines alone.
+func (f *File) rebuildLocked() error {
+	recs := map[posting.Key]*slot{}
+	good, torn, err := replay(io.NewSectionReader(f.events, 0, f.synced), recs, f.events)
+	if err != nil {
+		return err
+	}
+	packBodies(recs)
+	f.recs, f.goodSize, f.Recovered = recs, good, torn
 	return nil
 }
 
@@ -508,6 +576,11 @@ func (f *File) Append(ctx context.Context, e Event) error {
 // errors, not against a crash, so callers batch only events that are each
 // valid on their own.
 func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
+	return f.appendMany(ctx, evs, false)
+}
+
+// appendMany is AppendBatch; deferSync leaves the fsync to the open group.
+func (f *File) appendMany(ctx context.Context, evs []Event, deferSync bool) error {
 	if len(evs) == 0 {
 		return nil
 	}
@@ -553,34 +626,7 @@ func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
 	if err != nil {
 		return err
 	}
-	if f.Recovered {
-		if err := f.events.Truncate(f.goodSize); err != nil {
-			return fmt.Errorf("ledger: truncate torn tail: %w", err)
-		}
-		f.Recovered = false
-	}
-	if _, err := f.events.WriteAt(buf.Bytes(), f.goodSize); err != nil {
-		if terr := f.events.Truncate(f.goodSize); terr != nil {
-			f.broken = fmt.Errorf("%w: write failed (%v) and its partial batch could not be cut: %v", errBroken, err, terr)
-			return f.broken
-		}
-		return fmt.Errorf("ledger: write: %w", err)
-	}
-	if err := atomicfile.Sync(f.events); err != nil {
-		f.broken = fmt.Errorf("%w: fsync failed: %v", errBroken, err)
-		if terr := f.events.Truncate(f.goodSize); terr != nil {
-			f.broken = fmt.Errorf("%w; cutting the batch failed too: %v", f.broken, terr)
-		}
-		return f.broken
-	}
-	offs := make([]int64, len(evs))
-	at := f.goodSize
-	for i, n := range lens {
-		offs[i], at = at, at+int64(n)
-	}
-	f.goodSize = at
-	f.commit(evs, offs, lens, pre)
-	return nil
+	return f.writeLocked(buf.Bytes(), evs, lens, pre, deferSync)
 }
 
 // Broken returns the error that poisoned this ledger, or nil. A broken ledger
@@ -646,8 +692,13 @@ func (f *File) Close() error {
 	if f.closed {
 		return nil
 	}
-	f.closed = true
 	var errs []error
+	// A group still open on another goroutine has written lines it has not
+	// synced: close makes them durable rather than leave them to the cache.
+	if f.events != nil && f.broken == nil && f.goodSize > f.synced {
+		errs = append(errs, f.syncTo(f.goodSize))
+	}
+	f.closed = true
 	if f.events != nil {
 		errs = append(errs, f.events.Close())
 	}

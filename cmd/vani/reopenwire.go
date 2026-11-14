@@ -38,6 +38,15 @@ func (w *wired) reopenOnSighting(rec *pipeline.Reconciler, at time.Time) (finish
 	so := &pipeline.SightingReopen{Policy: dropPolicy(w.cfg, w.cfg.Decide.OpenRouterName()), Scope: reopenScope(w.cfg), Pending: pending}
 	rec.ReopenOnSighting(so)
 	return func() {
+		// A board's events become durable together at the end of the board
+		// (pipeline.Reconciler, ledger.Group), and the set forgets a reopen when
+		// the board writes it. If the ledger broke, the board's reopens may never
+		// have reached the disk: keep the set as it was, so the next run applies
+		// them again (one already durable is named again and cleared then).
+		if err := ledgerBroken(w.led); err != nil {
+			w.warnf("pending reopens: not saved, the ledger failed during the listing: %v", err)
+			return
+		}
 		if so.Changed() || pending.Expired > 0 {
 			if err := pending.Save(path, time.Now()); err != nil {
 				w.warnf("pending reopens: %v (the ones applied are applied; the set may name them again, and the next run clears them)", err)

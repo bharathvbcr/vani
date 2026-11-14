@@ -1,6 +1,7 @@
 package atomicfile
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,8 +149,29 @@ func resolveExisting(dir string) string {
 // cache (pipeline's TestDeathRuleBoundsFuzz 158.8 s, 15.0 s without the ledger's
 // syncs). The packages' sync-count tests still see every sync through
 // ObserveSyncForTest; one real round trip per store keeps the real path tested.
+//
+// A run with -test.bench set keeps every real fsync: a benchmark measures what
+// a run pays, and the committed ledger and reconcile benchmarks include the
+// syncs.
 func RunWithoutSync(m interface{ Run() int }) int {
+	if benchmarking() {
+		return m.Run()
+	}
 	restore := SetSyncForTest(func(string, bool) error { return nil })
 	defer restore()
 	return m.Run()
+}
+
+// benchmarking reports whether this test binary was asked to run benchmarks.
+// TestMain runs before the testing flags are parsed, so it parses them (as
+// TestMain may) when nothing has yet.
+func benchmarking() bool {
+	f := flag.Lookup("test.bench")
+	if f == nil {
+		return false
+	}
+	if !flag.Parsed() {
+		flag.Parse()
+	}
+	return f.Value.String() != ""
 }
