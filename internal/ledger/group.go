@@ -50,13 +50,9 @@ var errCloseInGroup = errors.New("ledger: Close inside a group; close the File a
 // median of 7.9 ms, and a board listing writes one event per new, changed or
 // reappeared posting, up to about 22,000 on the burst day of 2026-11-07.
 func (f *File) Group(ctx context.Context, fn func(Ledger) error) (err error) {
-	f.mu.Lock()
-	f.groups++
-	f.mu.Unlock()
 	defer func() {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.groups--
 		var serr error
 		switch {
 		case f.closed:

@@ -300,7 +300,7 @@ func TestAppendAndAppendBatchConcurrent(t *testing.T) {
 
 // BenchmarkAppendBatch1000 against BenchmarkAppend1000 and BenchmarkGroup1000:
 // the batch and the group each do one fsync where the loop does 1000
-// (TestAppendAndBatchSyncTheFileOnceEach and TestGroupSyncsOnceAtTheEnd count
+// (TestAppendAndBatchSyncTheFileOnceEach and TestGroupSyncsOnceAtTheEndAndReadsItsOwnWrites count
 // them). Benchmarks run with the real fsync (atomicfile.RunWithoutSync keeps it
 // under -test.bench).
 func BenchmarkAppendBatch1000(b *testing.B) {

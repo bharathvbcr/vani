@@ -180,17 +180,27 @@ func TestRealFsyncRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	synctest.Real(t, dir)
 	f := mustOpen(t, dir)
-	evs := batchOf(4, "real")
+	evs := batchOf(7, "real")
 	if err := f.Append(t.Context(), evs[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.AppendBatch(t.Context(), evs[1:]); err != nil {
+	if err := f.AppendBatch(t.Context(), evs[1:4]); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Group(t.Context(), func(g Ledger) error {
+		for _, e := range evs[4:] {
+			if err := g.Append(t.Context(), e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	f.Close()
 	g := mustOpen(t, dir)
 	defer g.Close()
-	if n := len(g.All()); n != 4 {
-		t.Fatalf("reopened: %d records, want 4", n)
+	if n := len(g.All()); n != 7 {
+		t.Fatalf("reopened: %d records, want 7", n)
 	}
 }

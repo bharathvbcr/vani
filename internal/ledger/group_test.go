@@ -133,6 +133,50 @@ func TestGroupFailedSyncRestoresMemoryToTheSyncedLines(t *testing.T) {
 	}
 }
 
+// The lock-free Reader can fold a group's lines before they are synced (it
+// reads the file, not the File). When the group's sync fails and the file is
+// cut back by many lines, the Reader's next Advance sees the file shrank and
+// folds it again: it ends with what the File holds, not the lost lines.
+func TestReaderRefoldsAfterAGroupSizedRollback(t *testing.T) {
+	dir := t.TempDir()
+	f := mustOpen(t, dir)
+	defer f.Close()
+	if err := f.AppendBatch(t.Context(), batchOf(3, "kept")); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(dir, ReaderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	log := synctest.Record(t, dir)
+	err = f.Group(t.Context(), func(g Ledger) error {
+		for _, e := range batchOf(200, "lost") {
+			if err := g.Append(t.Context(), e); err != nil {
+				return err
+			}
+		}
+		if _, err := r.Advance(); err != nil {
+			return err
+		}
+		if n := len(r.Snapshot().Records); n != 203 {
+			t.Errorf("the Reader folded %d records mid-group, want 203 (it reads unsynced lines)", n)
+		}
+		failFileSyncs(log, errors.New("fsync: boom"))
+		return nil
+	})
+	if !errors.Is(err, errBroken) {
+		t.Fatalf("group: %v, want errBroken", err)
+	}
+	changed, err := r.Advance()
+	if err != nil || !changed {
+		t.Fatalf("Advance after the rollback: changed %v, %v", changed, err)
+	}
+	if got := r.Snapshot().Records; len(got) != 3 || len(f.All()) != 3 {
+		t.Fatalf("Reader %d records, File %d; want both at the 3 durable", len(got), len(f.All()))
+	}
+}
+
 // The sync at the bound can fail too, mid-group: the group's later appends are
 // refused and memory is cut back as at the end.
 func TestGroupFailedSyncAtTheBound(t *testing.T) {

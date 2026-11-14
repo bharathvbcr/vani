@@ -70,11 +70,9 @@ type File struct {
 	broken   error // set when the file past goodSize is unknown; every later Append returns it
 
 	// Group commit (group.go). synced is the end of the last line known to be
-	// durable: goodSize outside a group, at most goodSize inside one. groups
-	// counts the open groups; pendingEvents and pendingBytes what they wrote
-	// since the last sync.
+	// durable: goodSize outside a group, at most goodSize inside one.
+	// pendingEvents and pendingBytes are what groups wrote since the last sync.
 	synced        int64
-	groups        int
 	pendingEvents int
 	pendingBytes  int64
 }

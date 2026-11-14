@@ -23,8 +23,12 @@ were ported with notice. Source files do not carry an upstream copyright header.
   changed 429 -> 398 ms (min; within noise). One fsync costs a median 7.9 ms on the owner's Mac.
 - **Tests no longer wait on fsync or retry backoff.** Every production fsync goes through
   `atomicfile.Sync`/`SyncDir`; tests count, fail or skip them through test-only setters
-  (`internal/atomicfile/synctest`, `atomicfile.RunWithoutSync`, kept real under `-test.bench`),
-  and each store keeps a sync-count test and one real-fsync round trip. Source adapters' tests
+  (`internal/atomicfile/synctest`, `atomicfile.RunWithoutSync`, kept real under `-test.bench`).
+  Every package whose tests skip syncs (ledger, pipeline, marks, eval, inbox, rkbresume,
+  resumestore, cmd/vani) is covered by sync-count tests and a real-fsync round trip, in its
+  own package (ledger, marks, eval) or in the store it writes through (atomicfile.Write,
+  ledger); manualtriage and the vector log gained sync-count tests. feedback, doctor and digest
+  still sync for real in their tests and have no count test. Source adapters' tests
   answer `srcutil`'s retry waits at once (`srcutil.RunWithoutWaits`). The full suite went from
   13 min 13 s to 3 min 14 s; `cmd/vani` from 765 s (over `go test`'s default 10-minute timeout)
   to 156 s, and goneparity from 647 s to 4 s.
