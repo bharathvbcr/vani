@@ -211,6 +211,12 @@ func (w *wired) runOnce(ctx context.Context) error {
 // configured board through them. The careers-page browser and its proxy live
 // for this listing only. The board report is kept for the run record.
 func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipeline.DropPolicy, protect func(posting.Key) bool) (pipeline.BoardCounts, error) {
+	// A board taken off the watchlist is never listed again, so its open
+	// postings close here, before the ledger is snapshotted for the listing.
+	removed, err := w.closeRemovedBoards(ctx, now())
+	if err != nil {
+		return pipeline.BoardCounts{}, err // the warn lines name what closed
+	}
 	// Snapshot the sorted ledger once so concurrent detail-fetching boards
 	// (Workday, SmartRecruiters, Oracle HCM, Rippling, TalentBrew, Avature)
 	// binary-search their prefix in O(log N) instead of cloning and sorting
@@ -427,6 +433,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	if l := massHeldLine(boards.MassHeld, boards.MassHeldCount, boards.MassHeldPostings); l != "" {
 		w.warnf("%s", l)
 	}
+	boards.Removed = removed
 	w.mu.Lock()
 	w.applyFetchesLocked(&boards)
 	applyBacklogLocked(&boards, health)
@@ -477,10 +484,12 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 		w.warnf("exclusions: pending reopens not kept this run: %v", perr)
 		pending = pipeline.NewPendingReopens()
 	}
-	if perr == nil && len(w.cfg.Watchlist) > 0 {
-		pending.ClearUnwatched(pipeline.WatchedBy(w.cfg.Watchlist))
+	whole := w.wholeWatchlist() // a run limited to some boards still watches the rest
+	if perr == nil && len(whole) > 0 {
+		pending.ClearUnwatched(pipeline.WatchedBy(whole))
 	}
 	sc := reopenScope(w.cfg)
+	sc.Watched = pipeline.WatchedBy(whole)
 	sc.Defer, sc.Pending = sc.Watched, pending
 	goneBefore := pending.GoneLen()
 	ch, err := pipeline.ApplyExclusions(ctx, w.led, now, p, protect, fo, &sc)

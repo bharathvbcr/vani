@@ -40,8 +40,11 @@ type App struct {
 	Reload func(cfg config.Config)
 	// Watch hands the app the config's whole watchlist before a run that is
 	// limited to some boards gets its cut through Reload (board health judges
-	// and prunes against the whole list). Nil means the app needs none.
-	Watch func(watchlist []sources.Board)
+	// and prunes against the whole list), and when the file was read: zero
+	// when the file could not be read and the list is the last one a run
+	// applied (a removed board's tombstone is judged against a list read
+	// after it, pipeline.CloseRemovedBoards). Nil means the app needs none.
+	Watch func(watchlist []sources.Board, read time.Time)
 	// PollInbox folds the jobs the extension spooled (internal/inbox) and
 	// advances the new ones. The daemon calls it between daily runs, never
 	// while a run is going. Nil means no polling.
@@ -375,6 +378,7 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		}
 		return prev, nil
 	}
+	read := time.Now() // before the read: a removal saved during it is not in what it returns
 	fresh, old, err := config.LoadWithDeprecations(e.configPath)
 	e.warnDeprecated(old)
 	if err == nil {
@@ -388,7 +392,7 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		if len(only) == 0 {
 			return prev, stale
 		}
-		fresh = prev
+		fresh, read = prev, time.Time{}
 	}
 	restart := false
 	for _, p := range processPinned {
@@ -400,7 +404,7 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 	}
 	e.setApplied(fresh)
 	if app.Watch != nil {
-		app.Watch(fresh.Watchlist) // before the cut below
+		app.Watch(fresh.Watchlist, read) // before the cut below
 	}
 	if len(only) > 0 {
 		if fresh.Watchlist, err = selectBoards(fresh.Watchlist, only); err != nil {

@@ -672,6 +672,12 @@ func (e *env) runReportOf(ref runRef, at time.Time, detail bool) runReport {
 				detailLines = append(detailLines, fmt.Sprintf("(%d more such board(s); vani status names them)", hidden))
 			}
 		}
+		if len(r.Boards.Removed) > 0 {
+			detailLines = append(detailLines, fmt.Sprintf("Boards removed from the watchlist (%d):", len(r.Boards.Removed)))
+			for _, rb := range r.Boards.Removed {
+				detailLines = append(detailLines, b.clean(removedBoardLine(rb)))
+			}
+		}
 	}
 	if r.Boards == nil && state == outcomeRunning {
 		// A run's record is saved when it starts and when it finishes, so a

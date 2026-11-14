@@ -58,7 +58,10 @@ commands:
                    [--host H --search S] (workday, oc) [--host H --url U] (av)
                    [--url U --link-pattern RE] (pg)
                    [--domain HOST [--icon URL]] [--allow-host]
-  watchlist remove [--json] --ats A --token T
+  watchlist remove [--json] --ats A --token T [--keep-postings | --close-postings]
+                             the next run closes the board's open postings (adding it back
+                             reopens them); --keep-postings leaves them open; --close-postings
+                             closes them for a board already off the watchlist
   watchlist domain [--json] --ats A --token T --domain HOST [--allow-host]
                              the company's website host its icon is fetched from ("" clears it)
   watchlist icon [--json] --ats A --token T --url URL [--allow-host]

@@ -217,9 +217,10 @@ func TestWatchlistWritesJSON(t *testing.T) {
 	}
 	o, _ = mustCode(t, 0, "--json", "watchlist", "remove", "--ats", "gh", "--token", "acme")
 	var rm struct {
-		Removed watchlistJSON `json:"removed"`
+		Removed  watchlistJSON `json:"removed"`
+		Postings string        `json:"postings"`
 	}
-	if decodeOne(t, o, &rm); rm.Removed.ATS != "gh" || rm.Removed.Token != "acme" {
+	if decodeOne(t, o, &rm); rm.Removed.ATS != "gh" || rm.Removed.Token != "acme" || rm.Postings != "close" {
 		t.Fatalf("remove %+v", rm)
 	}
 	o, _ = mustCode(t, 1, "--json", "watchlist", "remove", "--ats", "gh", "--token", "acme")

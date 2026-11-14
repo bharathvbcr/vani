@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
+	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
@@ -210,28 +212,88 @@ func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
 	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, bz, tm, hv, hb or pg")
 	token := fs.String("token", "", "board token")
-	asJSON := e.jsonFlag(fs, `{"removed":{"ats","token"}} on stdout`)
+	keep := fs.Bool("keep-postings", false, "leave the board's open postings open (by default the next run closes them, and adding the board back reopens them)")
+	closeAbsent := fs.Bool("close-postings", false, "close the board's open postings at the next run even when it is no longer on the watchlist (a board removed before removal closed them)")
+	asJSON := e.jsonFlag(fs, `{"removed":{"ats","token"},"postings":"close"|"keep"} on stdout ("removed" is absent when --close-postings found the board already off the watchlist)`)
 	if err := parse(fs, args); err != nil {
 		return err
 	}
 	if *ats == "" || *token == "" {
 		return usagef("watchlist remove: --ats and --token are required")
 	}
+	if *keep && *closeAbsent {
+		return usagef("watchlist remove: --keep-postings and --close-postings contradict each other")
+	}
 	target := sources.Board{ATS: posting.ATS(*ats), Token: *token}
-	if err := e.updateConfig(func(c *config.Config) error {
+	var rb pipeline.RemovedBoard
+	if !*keep {
+		var err error
+		if rb, err = pipeline.RemovedBoardFor(target, time.Now()); err != nil {
+			return usagef("watchlist remove: %v (--keep-postings removes it without closing its postings)", err)
+		}
+	}
+	// The tombstone is written under the config lock, before the config is
+	// saved: a crash between the two leaves a tombstone of a board still
+	// watched, which no run acts on, never a removal no run hears of. A save
+	// that fails takes the tombstone back.
+	var tomb string
+	removed := false
+	err := e.updateConfig(func(c *config.Config) error {
 		n := len(c.Watchlist)
 		c.Watchlist = slices.DeleteFunc(c.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
-		if len(c.Watchlist) == n {
-			return fmt.Errorf("board %s/%s is not on the watchlist", *ats, *token)
+		removed = len(c.Watchlist) < n
+		if !removed && !*closeAbsent {
+			return fmt.Errorf("board %s/%s is not on the watchlist (--close-postings closes the open postings of a board already removed)", *ats, *token)
+		}
+		if !*keep {
+			path, err := pipeline.WriteRemovedBoard(e.stateDir, rb)
+			if err != nil {
+				return fmt.Errorf("%w (--keep-postings removes it without closing its postings)", err)
+			}
+			tomb = path
+		}
+		if !removed {
+			return errWatchlistUnchanged
 		}
 		return nil
-	}); err != nil {
+	})
+	if errors.Is(err, errWatchlistUnchanged) {
+		err = nil
+	}
+	if err != nil {
+		if tomb != "" {
+			if rmErr := os.Remove(tomb); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				fmt.Fprintf(e.stderr, "vani: watchlist remove: the config was not saved and the removal record %s could not be taken back: %v\n", tomb, rmErr)
+			}
+		}
 		return err
 	}
-	return e.reply(*asJSON, struct {
-		Removed watchlistJSON `json:"removed"`
-	}{watchlistJSON{ATS: target.ATS, Token: target.Token}}, nil, func() { fmt.Fprintf(e.stdout, "removed %s/%s\n", *ats, *token) })
+	postings := "close"
+	if *keep {
+		postings = "keep"
+	}
+	reply := struct {
+		Removed  *watchlistJSON `json:"removed,omitempty"`
+		Postings string         `json:"postings"`
+	}{Postings: postings}
+	if removed {
+		reply.Removed = &watchlistJSON{ATS: target.ATS, Token: target.Token}
+	}
+	return e.reply(*asJSON, reply, nil, func() {
+		switch {
+		case !removed:
+			fmt.Fprintf(e.stdout, "%s/%s is not on the watchlist; the next run closes its open postings\n", *ats, *token)
+		case *keep:
+			fmt.Fprintf(e.stdout, "removed %s/%s; its open postings stay open\n", *ats, *token)
+		default:
+			fmt.Fprintf(e.stdout, "removed %s/%s; the next run closes its open postings (adding it back reopens them)\n", *ats, *token)
+		}
+	})
 }
+
+// errWatchlistUnchanged ends a config update that changed nothing, so the
+// file is not rewritten.
+var errWatchlistUnchanged = errors.New("watchlist unchanged")
 
 // boardReply is what `watchlist add|domain|icon --json` say: the board as saved.
 type boardReply struct {

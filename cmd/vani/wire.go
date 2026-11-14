@@ -107,11 +107,12 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 
 // watch keeps the config file's whole watchlist (App.Watch), which board
 // health judges and prunes against: w.cfg holds a run's cut of it when the run
-// is limited to some boards.
-func (w *wired) watch(watchlist []sources.Board) {
+// is limited to some boards. read is when the file was read, zero when the
+// list is the last one applied because the file could not be read.
+func (w *wired) watch(watchlist []sources.Board, read time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.watched = slices.Clone(watchlist)
+	w.watched, w.watchedRead = slices.Clone(watchlist), read
 }
 
 // watchedBoards is the last whole watchlist watch kept.
@@ -119,6 +120,20 @@ func (w *wired) watchedBoards() []sources.Board {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return slices.Clone(w.watched)
+}
+
+// wholeWatchlist is the config's whole watchlist: the one watch kept, or
+// w.cfg's when no run has handed one over (a run that reloads nothing, a
+// test), which is then never a cut. What a key's board is judged against
+// (still watched, or removed) must be this, never w.cfg.Watchlist, which a run
+// limited to some boards cuts.
+func (w *wired) wholeWatchlist() []sources.Board {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.watched != nil {
+		return slices.Clone(w.watched)
+	}
+	return slices.Clone(w.cfg.Watchlist)
 }
 
 // reload replaces the config the next run, inbox poll or rescore reads
@@ -142,11 +157,14 @@ type wired struct {
 	cfg config.Config
 	// watched is the config file's whole watchlist (watch); cfg.Watchlist may
 	// be a run's cut of it. Read under mu.
-	watched  []sources.Board
-	stateDir string
-	led      *ledger.File
-	warn     io.Writer
-	warnMu   sync.Mutex // serialises writes to warn
+	watched []sources.Board
+	// watchedRead is when the config file watched came from was read; zero
+	// until a run reads it (a removed board's tombstone waits until then).
+	watchedRead time.Time
+	stateDir    string
+	led         *ledger.File
+	warn        io.Writer
+	warnMu      sync.Mutex // serialises writes to warn
 
 	mu     sync.Mutex
 	scorer *lazyScorer

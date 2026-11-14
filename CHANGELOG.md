@@ -9,6 +9,15 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Removing a board closes its postings** (2026-11-14, the owner's "yes, build it"; design
+  decided by Fable). A board's postings closed only when its own listing left them out, and a
+  removed board is never listed again, so they stayed open for good. `vani watchlist remove` now
+  writes a tombstone (`<state>/watchlist/removed/`) and the next run closes the board's open
+  postings (Dead, `died_from` their status); adding the board back revives them through its
+  listing. `--keep-postings` opts out, and `--close-postings` closes a board already off the
+  watchlist. Postings a still-watched board covers and ones first seen after the removal (ingested)
+  stay open; a tombstone written after the run read its config waits for the next run. The run
+  record names each board (`boards.removed`), and the closings are not counted as deaths.
 - **Ledger group commit** (2026-11-14, the owner's "batch the ledger appends", design decided by
   Fable). A board's listing events are one `ledger.File.Group`: written and folded at once (the
   reconcile loop reads its own writes as before) and made durable by one fsync when the board is
@@ -349,6 +358,12 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **A run limited to some boards no longer throws away the other boards' pending reopens**
+  (`--board`). The run cleared the pending reopens of every board outside its cut as if those
+  boards had left the watchlist, and saved the set, so dropped postings `vani retriage` had let
+  back on them stayed dropped. Its exclusion pass also left their loosened exclusion drops
+  dropped. Both now judge against the config's whole watchlist
+  (`TestRunCutKeepsOtherBoardsPendingReopens`, which fails on either old site).
 - **The weight fit reads the scores the owner saw, not an empty record** (`internal/rankfit`,
   `Targets`). Audit cards and Mac app Jobs rows are logged without Score's parts. `Targets` took
   each posting's newest impression as its scores, and for an audited posting that is the

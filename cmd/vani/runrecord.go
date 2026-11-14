@@ -443,6 +443,10 @@ type boardsReport struct {
 	// not from board health. Additive.
 	Empty      []emptyBoard `json:"empty,omitempty"`
 	EmptyCount int          `json:"empty_count,omitempty"`
+	// Removed names the boards taken off the watchlist whose open postings
+	// this run closed (removedwire.go), at most pipeline.MaxRemovedBoards.
+	// Those closings are not deaths: no absence total counts them. Additive.
+	Removed []removedBoardRun `json:"removed,omitempty"`
 
 	// all is every tried board, uncut, for this process (board health and the
 	// empty list). Never written.
