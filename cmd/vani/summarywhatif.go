@@ -440,7 +440,7 @@ func (s summaryWhatIf) Markdown() string {
 		base = "live summary rescored here"
 	}
 	for _, v := range s.Variants {
-		b.WriteString(v.Markdown(base))
+		b.WriteString(v.Markdown(base, "Relevance"))
 	}
 	return b.String()
 }

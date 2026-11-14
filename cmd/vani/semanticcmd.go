@@ -108,6 +108,10 @@ type semanticStatus struct {
 	Vectors    *semanticVectors       `json:"vectors,omitempty"`
 	Idle       *idleState             `json:"idle,omitempty"`
 	IdleError  string                 `json:"idle_error,omitempty"`
+	// Health is on how many open postings the similarity is evidence, and why
+	// not when it is low; HealthError says why it is absent (ledger unread).
+	Health      *semanticHealth `json:"health,omitempty"`
+	HealthError string          `json:"health_error,omitempty"`
 }
 
 type semanticProfileStatus struct {
@@ -175,6 +179,11 @@ func (e *env) cmdSemanticStatus(args []string) error {
 		} else if idle.Kind != "" {
 			st.Idle = &idle
 		}
+		if recs, err := e.ledgerRecords(); err != nil {
+			st.HealthError = oneLine(err.Error(), 200)
+		} else {
+			st.Health = e.semanticHealthOf(cfg, recs)
+		}
 	}
 	return e.reply(*asJSON, st, nil, func() { e.printSemanticStatus(e.stdout, st) })
 }
@@ -225,6 +234,12 @@ func (e *env) printSemanticStatus(w io.Writer, st semanticStatus) {
 	// The vector log and the idle warm do not depend on the profile: they are
 	// shown whichever way the profile and the score cache read below.
 	defer func() {
+		switch {
+		case st.Health != nil:
+			fmt.Fprintln(w, st.Health.Line())
+		case st.HealthError != "":
+			fmt.Fprintf(w, "semantic similarity: unknown, the ledger could not be read: %s\n", st.HealthError)
+		}
 		printVectors(w, *st.Vectors)
 		for _, l := range idleLines(e.stateDir, now()) {
 			fmt.Fprintln(w, l)

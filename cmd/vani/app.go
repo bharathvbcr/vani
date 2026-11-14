@@ -860,6 +860,9 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 		fmt.Fprintln(e.stdout, l)
 	}
 	if cfg.SemanticOn() {
+		if h := e.semanticHealthOf(cfg, recs); h != nil {
+			fmt.Fprintln(e.stdout, h.Line())
+		}
 		for _, l := range idleLines(e.stateDir, at) {
 			fmt.Fprintln(e.stdout, l)
 		}

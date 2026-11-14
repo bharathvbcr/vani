@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -92,6 +93,46 @@ func TestAuditJSONHoldsNoPostingText(t *testing.T) {
 	// --json asks nothing and writes nothing.
 	if len(readLabels(t, state)) != 0 {
 		t.Fatal("--json wrote labels")
+	}
+}
+
+// A draw reports how long each phase took, in order, so a draw near the app's
+// timeout says where the time went; a failed draw reports none.
+func TestAuditJSONReportsPhaseTimings(t *testing.T) {
+	_, state := setup(t)
+	mustCode(t, 0, "init")
+	seedAudit(t, state, 12, 4, 4)
+	o, _ := mustCode(t, 0, "audit", "--json", "--seed", "w1")
+	var d auditJSON
+	if err := json.Unmarshal([]byte(o), &d); err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, p := range d.Timings {
+		if p.MS < 0 {
+			t.Errorf("phase %s took %d ms", p.Phase, p.MS)
+		}
+		names = append(names, p.Phase)
+	}
+	if want := []string{"labels", "ledger", "candidates", "overlays", "prefilter", "draw"}; !slices.Equal(names, want) {
+		t.Fatalf("phases %v, want %v", names, want)
+	}
+	// A failed draw (an unreadable label store) is {"error"} alone: no
+	// timings, never a partial list.
+	lf := filepath.Join(state, "eval", "labels", eval.LabelsFile)
+	if err := os.RemoveAll(lf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(lf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	o, _ = mustCode(t, 1, "audit", "--json")
+	var f struct {
+		auditJSON
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(o), &f); err != nil || f.Error == "" || len(f.Timings) != 0 {
+		t.Fatalf("failed draw: %v %s", err, o)
 	}
 }
 

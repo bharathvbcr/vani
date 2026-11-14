@@ -93,56 +93,83 @@ func open(st posting.Status) bool {
 
 // buildSeniorityShadow scores the open pool and the judged postings under the
 // live weights and each variant. A source that cannot be read is an error.
-func (e *env) buildSeniorityShadow(done map[posting.Key]eval.Entry, snap ledger.Snapshot) seniorityShadow {
+// s and err are newShadowSetup's, shared with the weight shadow.
+func buildSeniorityShadow(done map[posting.Key]eval.Entry, s shadowSetup, err error) seniorityShadow {
 	var out seniorityShadow
-	cfg, err := e.loadConfig()
-	if err != nil {
-		out.Error = "config: " + err.Error()
-		return out
-	}
-	live, used, warn := rankWeights(cfg)
-	out.Weights = used
-	if warn != "" {
-		out.Weights += " (" + warn + ")"
-	}
-	base := jobinsight.DefaultWeights()
-	if live != nil {
-		base = *live
-	}
-	me, err := marks.Read(marks.Dir(e.stateDir))
-	if err != nil {
-		out.Error = "read marks: " + err.Error()
-		return out
-	}
-	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, me)
+	out.Weights = s.used
 	if err != nil {
 		out.Error = err.Error()
 		return out
 	}
-	recs := uniqueRecords(snap)
-	inputs := make([]jobinsight.Inputs, len(recs))
-	for i, r := range recs {
-		inputs[i] = jobinsight.InputsFor(r, in.rc)
-	}
-	relevance := func(w jobinsight.Weights) []float64 {
-		v := make([]float64, len(recs))
-		for i := range recs {
-			v[i] = jobinsight.ScoreWith(inputs[i], w).Relevance
-		}
-		return v
-	}
-	baseRel := relevance(base)
-	out.Pool = openCount(recs)
-	eng := engineeringOf(snap)
+	relevance := func(w jobinsight.Weights) []float64 { return s.scores(w, resultRelevance) }
+	baseRel := relevance(s.base)
+	out.Pool = openCount(s.recs)
 	for _, v := range spareVariants {
-		w := base
+		w := s.base
 		w.SpareSeniorityMismatch = slices.Clone(v.levels)
-		sv := compareArms(v.name, recs, done, eng, baseRel, relevance(w))
+		sv := compareArms(v.name, s.recs, done, s.eng, baseRel, relevance(w))
 		sv.Spared = v.levels
 		out.Variants = append(out.Variants, sv)
 	}
 	return out
 }
+
+// shadowSetup is what every ranking shadow scores from: one record per key,
+// each one's Score inputs, the live weights the variants start from and which
+// those are (used: "hand" or "fitted <date>", with any warning).
+type shadowSetup struct {
+	recs   []ledger.Record
+	inputs []jobinsight.Inputs
+	base   jobinsight.Weights
+	used   string
+	eng    func(posting.Key) bool
+}
+
+// newShadowSetup reads the config, the live rank weights and the marks. A
+// source that cannot be read is an error (used is set when the weights were).
+func (e *env) newShadowSetup(snap ledger.Snapshot) (shadowSetup, error) {
+	var s shadowSetup
+	cfg, err := e.loadConfig()
+	if err != nil {
+		return s, fmt.Errorf("config: %w", err)
+	}
+	live, used, warn := rankWeights(cfg)
+	s.used = used
+	if warn != "" {
+		s.used += " (" + warn + ")"
+	}
+	s.base = jobinsight.DefaultWeights()
+	if live != nil {
+		s.base = *live
+	}
+	me, err := marks.Read(marks.Dir(e.stateDir))
+	if err != nil {
+		return s, fmt.Errorf("read marks: %w", err)
+	}
+	in, err := e.newInsight(jobinsight.DefaultScoreHalfLifeDays, snap, me)
+	if err != nil {
+		return s, err
+	}
+	s.recs = uniqueRecords(snap)
+	s.inputs = make([]jobinsight.Inputs, len(s.recs))
+	for i, r := range s.recs {
+		s.inputs[i] = jobinsight.InputsFor(r, in.rc)
+	}
+	s.eng = engineeringOf(snap)
+	return s, nil
+}
+
+// scores is f of every record's Score under w, indexed like s.recs.
+func (s shadowSetup) scores(w jobinsight.Weights, f func(jobinsight.Result) float64) []float64 {
+	v := make([]float64, len(s.recs))
+	for i := range s.recs {
+		v[i] = f(jobinsight.ScoreWith(s.inputs[i], w))
+	}
+	return v
+}
+
+// resultRelevance is the displayed, age-free Relevance.
+func resultRelevance(r jobinsight.Result) float64 { return r.Relevance }
 
 // uniqueRecords is one record per key, the first, as the other reports read
 // the ledger.
@@ -261,16 +288,17 @@ func (s seniorityShadow) Markdown() string {
 	}
 	fmt.Fprintf(&b, "- weights the variants start from: %s\n- open postings (percentiles are over these): %d\n", s.Weights, s.Pool)
 	for _, v := range s.Variants {
-		b.WriteString(v.Markdown("live"))
+		b.WriteString(v.Markdown("live", "Relevance"))
 	}
 	return b.String()
 }
 
-// Markdown renders one variant against its base arm, named base.
-func (v shadowVariant) Markdown(base string) string {
+// Markdown renders one variant against its base arm, named base; measure
+// names the score both arms are compared on.
+func (v shadowVariant) Markdown(base, measure string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n### %s\n\n- judged postings it moves: %d; open postings it moves: %d\n\n", v.Name, v.Changed, v.PoolChanged)
-	fmt.Fprintf(&b, "| mode | wanted / unwanted | AUC of Relevance, %s (95%%; exact p) | with the variant (95%%; exact p) |\n|---|---|---|---|\n", base)
+	fmt.Fprintf(&b, "| mode | wanted / unwanted | AUC of %s, %s (95%%; exact p) | with the variant (95%%; exact p) |\n|---|---|---|---|\n", measure, base)
 	for _, a := range v.AUC {
 		if !a.OK {
 			fmt.Fprintf(&b, "| %s | %d / %d | insufficient | insufficient |\n", a.Mode, a.Pos, a.Neg)

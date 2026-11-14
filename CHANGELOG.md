@@ -9,6 +9,21 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Round-2 measurements** (2026-11-14, decided by Fable). `vani relevance` adds a part-coverage
+  table over the open pool: how often each Score part is evidence, how much of the match it
+  decides (weight x confidence), its distinct values, and whether it is known nowhere or constant.
+  It also adds a weight shadow: four alternative weightings (fit 0, coverage 0, a rebalanced
+  split, match shrink 0.10) on the judged postings still open, measured on the age-free ranked
+  score with a paired bootstrap of the AUC difference (`rankfit.PairedAUCDiff`) at a family-wise
+  level. The rule that would refute a change is stated in the report: a variant is better only
+  with every computable mode's interval above 0, and nothing changes a weight under 150 judged
+  open postings. The shadow measures the ranked score, not Relevance, because Relevance keeps a
+  fixed shrink that a MatchShrink variant cannot move. `vani status` and `vani semantic status`
+  print a semantic-health line: on how many open postings the similarity is evidence (ok at 80%
+  or more, warn at 50%, bad below), and why it is low, naming a profile change with the stored
+  vectors a warm rescores from before the warm budget. `audit --json` reports each draw phase's
+  wall time. The Mac app now gives a draw 60 seconds: its 30-second audit timeout was never used,
+  so the draw ran on the jobs client's 30 seconds.
 - **Audit benchmark fixes** (2026-11-14, decided by Fable after a benchmark on a copy of live
   state). The kill rule for the yes-seeking cells is reworked before any cell label exists: the
   old rule kept a cell at 4 yes anywhere from 20 to 39 judged, so a cell no better than random was

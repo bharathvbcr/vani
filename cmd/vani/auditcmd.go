@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/eval"
@@ -237,6 +238,30 @@ type auditDraw struct {
 	// pfWeek and pfSeen are the current week's sample size and how many
 	// listing-time drops the week's runs reported, for the draw's header.
 	pfWeek, pfSeen int
+	// timings is how long each phase of the draw took, in order.
+	timings []auditPhaseJSON
+}
+
+// auditPhaseJSON is one phase of a draw and its wall time.
+type auditPhaseJSON struct {
+	Phase string `json:"phase"`
+	MS    int64  `json:"ms"`
+}
+
+// phaseClock times consecutive phases on the monotonic clock (not now(),
+// which tests pin).
+type phaseClock struct {
+	last   time.Time
+	phases []auditPhaseJSON
+}
+
+func newPhaseClock() *phaseClock { return &phaseClock{last: time.Now()} }
+
+// mark ends the phase named name.
+func (c *phaseClock) mark(name string) {
+	t := time.Now()
+	c.phases = append(c.phases, auditPhaseJSON{Phase: name, MS: t.Sub(c.last).Milliseconds()})
+	c.last = t
 }
 
 // recordOf is the record a pick's card shows: the ledger's, or for a sampled
@@ -281,6 +306,7 @@ func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 // exist yet, draws nothing and is named in skipped.
 func (e *env) drawAudit(o overlays, seed, labels string) (*auditDraw, error) {
 	q, teacher := o.q, o.teacher
+	clock := newPhaseClock()
 	s, err := e.openEvalStore(labels)
 	if err != nil {
 		return nil, err
@@ -292,15 +318,18 @@ func (e *env) drawAudit(o overlays, seed, labels string) (*auditDraw, error) {
 	if bad > 0 {
 		fmt.Fprintf(e.stderr, "vani: %d malformed label lines skipped\n", bad)
 	}
+	clock.mark("labels")
 	b, err := e.browse()
 	if err != nil {
 		return nil, err
 	}
+	clock.mark("ledger")
 	cands, err := b.auditCandidates(e.dropRules(), true)
 	if err != nil {
 		return nil, err
 	}
 	cands = b.withoutInherited(cands)
+	clock.mark("candidates")
 	if seed == "" {
 		seed = eval.WeekSeed(now())
 	}
@@ -363,6 +392,7 @@ func (e *env) drawAudit(o overlays, seed, labels string) (*auditDraw, error) {
 			return nil, err
 		}
 	}
+	clock.mark("overlays")
 	// The listing-time drops never reached the ledger, so the sample the run
 	// kept stands in for them: each row is a dropped candidate of its own class.
 	// They join after the inherited filter: a sampled row is no ledger record
@@ -375,11 +405,14 @@ func (e *env) drawAudit(o overlays, seed, labels string) (*auditDraw, error) {
 		}
 		cands = append(cands, eval.AuditCandidate{Key: r.Key, Dropped: true, Class: r.Class()})
 	}
+	clock.mark("prefilter")
 	plan := eval.AuditDraw(cands, done, seed, q)
 	skipped = append(skipped, shortCells(plan.Picks, q)...)
 	held, seen := sample.Week(eval.WeekSeed(now()))
-	return &auditDraw{b: b, s: s, done: done, seed: seed, q: q, skipped: skipped, plan: plan, picks: plan.Interleaved(seed),
-		prefilter: rows, pfWeek: len(held), pfSeen: seen}, nil
+	picks := plan.Interleaved(seed)
+	clock.mark("draw")
+	return &auditDraw{b: b, s: s, done: done, seed: seed, q: q, skipped: skipped, plan: plan, picks: picks,
+		prefilter: rows, pfWeek: len(held), pfSeen: seen, timings: clock.phases}, nil
 }
 
 // shortCells names each cell that drew fewer picks than its quota: its pool
@@ -558,6 +591,10 @@ type auditJSON struct {
 	Picks   []auditPickJSON    `json:"picks"`
 	Strata  []auditStratumJSON `json:"strata"`
 	Skipped []string           `json:"skipped"`
+	// Timings is each phase of the draw (labels, ledger, candidates, overlays,
+	// prefilter, draw) and its wall time: a draw near the app's timeout says
+	// where the time went. A failed draw replies {"error"} alone.
+	Timings []auditPhaseJSON `json:"timings"`
 }
 
 type auditPickJSON struct {
@@ -615,9 +652,10 @@ func (e *env) cmdAudit(args []string) error {
 	}
 	d, err := e.drawAudit(o, *seed, *labels)
 	if *asJSON { // a failure is {"error"} on stdout, as every --json command reports it
-		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}, Skipped: []string{}}
+		out := auditJSON{Seed: *seed, Blind: *blind, Picks: []auditPickJSON{}, Strata: []auditStratumJSON{}, Skipped: []string{}, Timings: []auditPhaseJSON{}}
 		if err == nil {
 			out.Seed = d.seed
+			out.Timings = append(out.Timings, d.timings...)
 			for _, p := range d.picks {
 				pj := auditPickJSON{Key: p.Key, Stratum: p.Source, PSelect: p.PSelect}
 				if r, ok := d.prefilter[p.Key]; ok {

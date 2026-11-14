@@ -212,7 +212,11 @@ public struct AuditSession: Equatable, Sendable {
 }
 
 public struct AuditClient: Sendable {
-    public static let timeout: TimeInterval = 30
+    /// The least time a draw is given. `vani audit` reads the whole ledger and
+    /// scores the open pool before it draws: 14-18 s on a 31k-posting ledger
+    /// (2026-11-14), too near the jobs client's 30 s. A client given a longer
+    /// timeout keeps it; an answer keeps the jobs client's own.
+    public static let drawTimeout: TimeInterval = 60
     static let maxOutputBytes = 1 << 20
     /// Bounds a draw: `vani audit` allows 100 + 100; more is not a draw.
     public static let maxPicks = 200
@@ -243,7 +247,7 @@ public struct AuditClient: Sendable {
     /// This week's draw, with the model's readings left out of it (`--blind`)
     /// and the given overlay picks; with none given, vani's defaults.
     public func draw(_ overlays: AuditOverlays = AuditOverlays()) throws -> AuditDraw {
-        let d: AuditDraw = try call(try Self.drawArguments(overlays))
+        let d: AuditDraw = try call(try Self.drawArguments(overlays), timeout: Self.drawTimeout(jobs.timeout))
         guard d.picks.count <= Self.maxPicks else { throw BankError("vani audit drew \(d.picks.count) postings; this app shows at most \(Self.maxPicks)") }
         for p in d.picks { _ = try Self.answerArguments(p, .skip) } // a malformed pick fails here, not mid-session
         return d
@@ -340,9 +344,12 @@ public struct AuditClient: Sendable {
                 "--source=\(pick.stratum)", "--p-select=\(pick.pSelect)"]
     }
 
-    private func call<T: Decodable>(_ args: [String]) throws -> T {
+    /// The draw's timeout for a jobs client given `jobs`: never below drawTimeout.
+    static func drawTimeout(_ jobs: TimeInterval) -> TimeInterval { max(jobs, drawTimeout) }
+
+    private func call<T: Decodable>(_ args: [String], timeout: TimeInterval? = nil) throws -> T {
         try VaniProcess.call(jobs.vaniBinary, args, configPath: jobs.configPath, stateDir: jobs.stateDir,
-                             timeout: jobs.timeout, maxOutputBytes: Self.maxOutputBytes,
+                             timeout: timeout ?? jobs.timeout, maxOutputBytes: Self.maxOutputBytes,
                              tooOld: "this vani is too old for the Audit; rebuild the app")
     }
 }

@@ -68,6 +68,15 @@ final class AuditTests: XCTestCase {
         XCTAssertEqual(d.skipped, [], "a draw without the field decodes as nothing skipped")
     }
 
+    /// A draw scores the whole open pool first (14-18 s on a 31k ledger): it gets at
+    /// least drawTimeout whatever the jobs client's own timeout, and never less than that.
+    func testTheDrawGetsAtLeastItsOwnTimeout() {
+        XCTAssertEqual(AuditClient.drawTimeout, 60)
+        XCTAssertEqual(AuditClient.drawTimeout(JobsClient.timeout), 60, "the jobs client's 30 s is too near a real draw")
+        XCTAssertEqual(AuditClient.drawTimeout(10), 60)
+        XCTAssertEqual(AuditClient.drawTimeout(120), 120, "a longer client timeout is kept")
+    }
+
     func testSkippedOverlaysAreDecoded() throws {
         let reply = #"{"seed":"s","blind":true,"picks":[],"strata":[],"skipped":["yes-neighbour cell: refused, the taste column does not pass"]}"#
         let d = try client(try fakeAuditVani(self, draw: reply)).draw()

@@ -148,8 +148,12 @@ func (e *env) cmdRelevance(args []string) error {
 	eng := engineeringOf(b.snap)
 	sens := buildSensitivity(sampled, b.snap.Records, store, status, names, items, itemsErr, base, eng)
 	out.Sensitivity = &sens
-	shadow := e.buildSeniorityShadow(sampled, b.snap)
+	// One setup (the open pool's Score inputs under the live weights) for both shadows.
+	setup, setupErr := e.newShadowSetup(b.snap)
+	shadow := buildSeniorityShadow(sampled, setup, setupErr)
 	out.SeniorityShadow = &shadow
+	weights := buildWeightShadow(sampled, setup, setupErr)
+	out.WeightShadow = &weights
 	if *whatIf != "" {
 		ctx, stop := signalContext()
 		w := e.buildSummaryWhatIf(ctx, sampled, b.snap, *whatIf)
@@ -180,6 +184,7 @@ func (e *env) cmdRelevance(args []string) error {
 		}
 		fmt.Fprint(e.stdout, sens.Markdown())
 		fmt.Fprint(e.stdout, shadow.Markdown())
+		fmt.Fprint(e.stdout, weights.Markdown())
 		if out.SummaryWhatIf != nil {
 			fmt.Fprint(e.stdout, out.SummaryWhatIf.Markdown())
 		}
@@ -285,6 +290,10 @@ type relevanceReply struct {
 	// SeniorityShadow is what sparing mismatch_seniority at some levels would
 	// do to the judged postings' order (measurement only).
 	SeniorityShadow *seniorityShadow `json:"seniority_shadow,omitempty"`
+	// WeightShadow is what other additive weights or match shrink would do to
+	// the judged open postings' order, with the open pool's part coverage
+	// (measurement only).
+	WeightShadow *weightShadow `json:"weight_shadow,omitempty"`
 	// SummaryWhatIf is present with --what-if-summary only.
 	SummaryWhatIf *summaryWhatIf `json:"summary_what_if,omitempty"`
 }
