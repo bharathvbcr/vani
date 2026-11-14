@@ -16,3 +16,16 @@ func SetWaitForTest(wait func(ctx context.Context, d time.Duration) error) (rest
 	sleep = wait
 	return func() { sleep = old }
 }
+
+// RunWithoutWaits runs a test binary (a *testing.M) with every retry and
+// cool wait answered at once, unless ctx is already done, and returns
+// m.Run's exit code for os.Exit. It is for the TestMain of a package whose
+// tests send an adapter 429s and 5xx: with the real wait (backoffBase
+// doubling to maxBackoff) each such test sleeps for tens of seconds, which
+// pushed packages past go test's default 10-minute timeout. A test that needs
+// to see the waits still installs its own with SetWaitForTest.
+func RunWithoutWaits(m interface{ Run() int }) int {
+	restore := SetWaitForTest(func(ctx context.Context, _ time.Duration) error { return ctx.Err() })
+	defer restore()
+	return m.Run()
+}
