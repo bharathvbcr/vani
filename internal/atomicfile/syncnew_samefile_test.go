@@ -21,7 +21,8 @@ func TestSyncNewLeavesAReplacedEmptyFile(t *testing.T) {
 	if err := os.WriteFile(p, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := SyncNew(p, func(string) error { return os.ErrInvalid }); err == nil {
+	failDirSyncs(t, filepath.Dir(p), os.ErrInvalid)
+	if err := SyncNew(p); err == nil {
 		t.Fatal("want the sync error")
 	}
 	if _, err := os.Stat(p); err != nil {

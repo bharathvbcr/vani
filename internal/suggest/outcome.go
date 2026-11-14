@@ -258,7 +258,7 @@ func openOutcomeLog(live string) (*os.File, bool, error) {
 		return nil, false, fmt.Errorf("suggest: outcome log: %w", err)
 	}
 	if created {
-		if err := atomicfile.SyncNew(live, atomicfile.SyncDir); err != nil {
+		if err := atomicfile.SyncNew(live); err != nil {
 			_ = f.Close()
 			return nil, false, fmt.Errorf("suggest: outcome log: %w", err)
 		}

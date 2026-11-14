@@ -333,7 +333,7 @@ func AppendImpressions(ctx context.Context, stateDir string, rows []Impression) 
 		_ = f.Close()
 		return 0, err
 	}
-	if err := f.Sync(); err != nil {
+	if err := atomicfile.Sync(f); err != nil {
 		_ = f.Close()
 		return 0, fmt.Errorf("feedback: sync %s: %w", ImpressionsFile, err)
 	}
@@ -352,7 +352,7 @@ func openImpression(live string) (*os.File, bool, error) {
 		return nil, false, fmt.Errorf("feedback: %w", err)
 	}
 	if created {
-		if err := atomicfile.SyncNew(live, atomicfile.SyncDir); err != nil {
+		if err := atomicfile.SyncNew(live); err != nil {
 			_ = f.Close()
 			return nil, false, fmt.Errorf("feedback: %w", err)
 		}

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile/synctest"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -20,13 +21,13 @@ func TestFailedCreateSyncNeverLosesAnAcknowledgedMark(t *testing.T) {
 	for round := range 20 {
 		dir := Dir(t.TempDir())
 		var calls atomic.Int32
-		old := syncDir
-		syncDir = func(string) error {
-			if calls.Add(1) <= 2 { // the first two creations fail
+		log := synctest.Record(t, string(dir))
+		log.Fail(func(_ string, d bool) error {
+			if d && calls.Add(1) <= 2 { // the first two creations fail
 				return errors.New("injected dir sync failure")
 			}
 			return nil
-		}
+		})
 		const n = 16
 		var mu sync.Mutex
 		acked := map[posting.Key]bool{}
@@ -44,7 +45,7 @@ func TestFailedCreateSyncNeverLosesAnAcknowledgedMark(t *testing.T) {
 			}()
 		}
 		wg.Wait()
-		syncDir = old
+		log.Fail(nil)
 		m, err := ReadMarks(dir)
 		if err != nil {
 			t.Fatalf("round %d: %v", round, err)
@@ -62,19 +63,23 @@ func TestFailedCreateSyncNeverLosesAnAcknowledgedMark(t *testing.T) {
 
 func TestFailedCreateSyncLeavesNoFileAndNextWriteRetriesTheSync(t *testing.T) {
 	dir := Dir(t.TempDir())
-	old := syncDir
-	t.Cleanup(func() { syncDir = old })
-	syncDir = func(string) error { return errors.New("boom") }
+	log := synctest.Record(t, string(dir))
+	log.Fail(func(_ string, d bool) error {
+		if d {
+			return errors.New("boom")
+		}
+		return nil
+	})
 	if _, err := SetMark(dir, k1, Saved, t0); err == nil {
 		t.Fatal("want the sync failure")
 	}
 	if _, err := os.Stat(filepath.Join(dir, fileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("new file must be removed: %v", err)
 	}
-	var calls int
-	syncDir = func(string) error { calls++; return nil }
-	if _, err := SetMark(dir, k1, Saved, t0); err != nil || calls != 1 {
-		t.Fatalf("retry: err=%v syncs=%d, want a fresh sync", err, calls)
+	log.Fail(nil)
+	log.Reset()
+	if _, err := SetMark(dir, k1, Saved, t0); err != nil || len(log.Dirs()) != 1 {
+		t.Fatalf("retry: err=%v syncs=%v, want a fresh sync", err, log.Dirs())
 	}
 }
 

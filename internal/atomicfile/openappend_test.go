@@ -65,7 +65,8 @@ func TestSyncNewRemovesFileWhenSyncFails(t *testing.T) {
 	}
 	f.Close()
 	boom := errors.New("boom")
-	if err := SyncNew(p, func(string) error { return boom }); !errors.Is(err, boom) {
+	failDirSyncs(t, filepath.Dir(p), boom)
+	if err := SyncNew(p); !errors.Is(err, boom) {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := os.Stat(p); !errors.Is(err, os.ErrNotExist) {

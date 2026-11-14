@@ -401,7 +401,7 @@ func (s *Store) update(key posting.Key, fn func(prev Entry, exists bool) (Entry,
 		f.Close()
 		return fmt.Errorf("eval: write label: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := atomicfile.Sync(f); err != nil {
 		f.Close()
 		return fmt.Errorf("eval: sync labels: %w", err)
 	}

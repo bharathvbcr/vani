@@ -175,7 +175,7 @@ func (s *SilverStore) Append(rows []SilverRow) (int, error) {
 	}
 	defer f.Close()
 	if created {
-		if err := atomicfile.SyncNew(s.path, atomicfile.SyncDir); err != nil {
+		if err := atomicfile.SyncNew(s.path); err != nil {
 			return 0, fmt.Errorf("doctor silver: %w", err)
 		}
 	}
@@ -189,7 +189,7 @@ func (s *SilverStore) Append(rows []SilverRow) (int, error) {
 	if _, err := f.Write(buf); err != nil {
 		return 0, fmt.Errorf("doctor silver: write: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := atomicfile.Sync(f); err != nil {
 		return 0, fmt.Errorf("doctor silver: sync: %w", err)
 	}
 	for _, r := range add {

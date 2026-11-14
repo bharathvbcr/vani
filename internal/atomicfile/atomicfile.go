@@ -17,9 +17,6 @@ import (
 // an append cannot, so it refuses rather than discard the history behind it.
 var ErrLinkedLeaf = errors.New("atomicfile: leaf is a symbolic link")
 
-// syncDir is SyncDir; a variable only so tests can see that Write reached it.
-var syncDir = SyncDir
-
 // Write replaces path with data, mode 0600, creating the parent directory
 // (0700) if it is missing. The temp file is fsynced before the rename and the
 // directory after it, so once Write returns nil the new contents survive a
@@ -60,7 +57,7 @@ func Write(path string, data []byte) (err error) {
 	if _, err = tmp.Write(data); err != nil {
 		return fmt.Errorf("atomic write %s: write temp file: %w", name, err)
 	}
-	if err = tmp.Sync(); err != nil {
+	if err = Sync(tmp); err != nil {
 		return fmt.Errorf("atomic write %s: sync temp file: %w", name, err)
 	}
 	if err = tmp.Close(); err != nil {
@@ -69,7 +66,7 @@ func Write(path string, data []byte) (err error) {
 	if err = os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("atomic write %s: replace file: %w", name, err)
 	}
-	if serr := syncDir(dir); serr != nil {
+	if serr := SyncDir(dir); serr != nil {
 		return fmt.Errorf("atomic write %s: replaced, but syncing the directory failed: %w", name, serr)
 	}
 	return nil
@@ -149,16 +146,16 @@ var newFiles sync.Map // path -> os.FileInfo
 // still empty. If another opener has appended to it, or the path was replaced,
 // the file is left alone and the sync error is returned. That narrows the race
 // but does not close it (check and remove are two steps), so callers must still
-// hold their lock across OpenAppend..SyncNew. syncFn is the caller's seam
-// (SyncDir in production).
-func SyncNew(path string, syncFn func(dir string) error) error {
+// hold their lock across OpenAppend..SyncNew. The sync is SyncDir's, so a test
+// sees it through ObserveSyncForTest.
+func SyncNew(path string) error {
 	name := filepath.Base(path)
 	path, err := ResolveLeaf(path)
 	if err != nil {
 		return fmt.Errorf("syncing the directory of new %s: %w", name, err)
 	}
 	want, _ := newFiles.LoadAndDelete(path)
-	err = syncFn(filepath.Dir(path))
+	err = SyncDir(filepath.Dir(path))
 	if err == nil {
 		return nil
 	}

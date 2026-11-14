@@ -210,7 +210,7 @@ func (s *PairStore) Append(r PairRow) error {
 	}
 	defer f.Close()
 	if created {
-		if err := atomicfile.SyncNew(s.path, atomicfile.SyncDir); err != nil {
+		if err := atomicfile.SyncNew(s.path); err != nil {
 			return fmt.Errorf("silver: %w", err)
 		}
 	}
@@ -225,7 +225,7 @@ func (s *PairStore) Append(r PairRow) error {
 	if _, err := f.Write(line); err != nil {
 		return fmt.Errorf("silver: write pair row: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := atomicfile.Sync(f); err != nil {
 		return fmt.Errorf("silver: sync pair log: %w", err)
 	}
 	s.seen[r.ident().key(r.KeyA, r.KeyB, r.RenderSHA256)] = struct{}{}

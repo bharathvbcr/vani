@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
@@ -39,7 +40,10 @@ func TestMain(m *testing.M) {
 	// No test asks the on-device model: a named helper that is not there is the
 	// only candidate (fmbackend), so it answers unavailable and the chain moves on.
 	_ = os.Setenv("VANI_FM_BINARY", "/nonexistent/vani-fm")
-	os.Exit(m.Run())
+	// No test waits on the drive cache: every fsync is skipped
+	// (atomicfile.RunWithoutSync) unless a test asks for the real one; the
+	// stores' own packages count their syncs and run the real path.
+	os.Exit(atomicfile.RunWithoutSync(m))
 }
 
 func fakeLlama() {

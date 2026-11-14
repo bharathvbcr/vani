@@ -11,16 +11,25 @@ import (
 func countSyncs(t *testing.T, fail error) *[]string {
 	t.Helper()
 	var dirs []string
-	old := syncDir
-	syncDir = func(d string) error {
-		dirs = append(dirs, d)
-		if fail != nil {
-			return fail
+	t.Cleanup(ObserveSyncForTest("/", false, func(p string, dir bool) error {
+		if !dir {
+			return nil
 		}
-		return old(d)
-	}
-	t.Cleanup(func() { syncDir = old })
+		dirs = append(dirs, p)
+		return fail
+	}))
 	return &dirs
+}
+
+// failDirSyncs makes every directory sync under dir return err until the test ends.
+func failDirSyncs(t *testing.T, dir string, err error) {
+	t.Helper()
+	t.Cleanup(ObserveSyncForTest(dir, false, func(_ string, d bool) error {
+		if d {
+			return err
+		}
+		return nil
+	}))
 }
 
 func TestWriteReplacesAndSyncsTheDirectory(t *testing.T) {

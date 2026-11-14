@@ -267,9 +267,6 @@ func cutBack(f *os.File, good int64, cause error) error {
 	return cause
 }
 
-// syncDir is atomicfile.SyncDir; a variable only so a test can count its calls.
-var syncDir = atomicfile.SyncDir
-
 // afterCompact runs after a compacted replace and before the file is reopened.
 // Production passes the path through. A test plants a symlink in that window.
 var afterCompact = func(string) {}
@@ -549,7 +546,7 @@ func write(dir string, e event) (Entry, error) {
 	defer func() { f.Close() }()
 	if created {
 		// The line's fsync below does not cover the entry that names the file.
-		if err := atomicfile.SyncNew(path, syncDir); err != nil {
+		if err := atomicfile.SyncNew(path); err != nil {
 			return Entry{}, fmt.Errorf("marks: %w", err)
 		}
 	}
@@ -623,7 +620,7 @@ func write(dir string, e event) (Entry, error) {
 	if _, err := f.WriteAt(line, good); err != nil {
 		return Entry{}, cutBack(f, good, fmt.Errorf("marks: write: %w", err))
 	}
-	if err := f.Sync(); err != nil {
+	if err := atomicfile.Sync(f); err != nil {
 		return Entry{}, cutBack(f, good, fmt.Errorf("marks: fsync: %w", err))
 	}
 	fold(r.m, e)
@@ -724,7 +721,7 @@ func reopenCompacted(path string) (*os.File, error) {
 		return nil, err
 	}
 	if created {
-		if err := atomicfile.SyncNew(path, syncDir); err != nil {
+		if err := atomicfile.SyncNew(path); err != nil {
 			_ = f.Close()
 			return nil, err
 		}

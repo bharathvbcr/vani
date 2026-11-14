@@ -77,9 +77,6 @@ var errBroken = errors.New("ledger: events file is in an unknown state after a f
 
 var _ Ledger = (*File)(nil)
 
-// syncDir is atomicfile.SyncDir; a variable only so a test can count its calls.
-var syncDir = atomicfile.SyncDir
-
 // Open locks dir, creating it (0700) if needed, and replays dir/events.jsonl.
 func Open(dir string) (*File, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -104,7 +101,7 @@ func Open(dir string) (*File, error) {
 	}
 	if created {
 		// Appends fsync the file, not the directory entry that names it.
-		if err := atomicfile.SyncNew(evPath, syncDir); err != nil {
+		if err := atomicfile.SyncNew(evPath); err != nil {
 			ev.Close()
 			lock.Close()
 			return nil, fmt.Errorf("ledger: %w", err)
@@ -484,7 +481,7 @@ func (f *File) Append(ctx context.Context, e Event) error {
 		}
 		return fmt.Errorf("ledger: write: %w", err)
 	}
-	if err := f.events.Sync(); err != nil {
+	if err := atomicfile.Sync(f.events); err != nil {
 		// After a failed fsync the kernel may already have dropped the dirty
 		// pages, so a retried fsync can report success for lost data. The file
 		// is no longer known; the next Open replays what it really holds.
@@ -569,7 +566,7 @@ func (f *File) AppendBatch(ctx context.Context, evs []Event) error {
 		}
 		return fmt.Errorf("ledger: write: %w", err)
 	}
-	if err := f.events.Sync(); err != nil {
+	if err := atomicfile.Sync(f.events); err != nil {
 		f.broken = fmt.Errorf("%w: fsync failed: %v", errBroken, err)
 		if terr := f.events.Truncate(f.goodSize); terr != nil {
 			f.broken = fmt.Errorf("%w; cutting the batch failed too: %v", f.broken, terr)

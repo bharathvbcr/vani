@@ -856,7 +856,7 @@ func writeFile(dir, stem, md string, keys []posting.Key) (string, []posting.Key,
 		_ = os.Remove(name)
 		return "", nil, fmt.Errorf("digest: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := atomicfile.Sync(tmp); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(name)
 		return "", nil, fmt.Errorf("digest: %w", err)

@@ -235,7 +235,13 @@ func TestSyncNewSurfacesSyncError(t *testing.T) {
 	}
 	_ = f.Close()
 	boom := errors.New("boom")
-	if err := atomicfile.SyncNew(p, func(string) error { return boom }); !errors.Is(err, boom) {
+	t.Cleanup(atomicfile.ObserveSyncForTest(root, false, func(_ string, dir bool) error {
+		if dir {
+			return boom
+		}
+		return nil
+	}))
+	if err := atomicfile.SyncNew(p); !errors.Is(err, boom) {
 		t.Fatalf("sync error swallowed: %v", err)
 	}
 }

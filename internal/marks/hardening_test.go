@@ -11,27 +11,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile/synctest"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-func countSyncDir(t *testing.T) *[]string {
+// countSyncDir records the syncs under dir (synctest.Record).
+func countSyncDir(t *testing.T, dir string) *synctest.Log {
 	t.Helper()
-	var mu sync.Mutex
-	var dirs []string
-	old := syncDir
-	syncDir = func(d string) error {
-		mu.Lock()
-		defer mu.Unlock()
-		dirs = append(dirs, d)
-		return nil
-	}
-	t.Cleanup(func() { syncDir = old })
-	return &dirs
+	return synctest.Record(t, dir)
 }
 
 func TestFirstWriteSyncsParentDirOnceThenNever(t *testing.T) {
 	dir := Dir(t.TempDir())
-	dirs := countSyncDir(t)
+	dirs := countSyncDir(t, dir)
 	if _, err := SetMark(dir, k1, Saved, t0); err != nil {
 		t.Fatal(err)
 	}
@@ -40,16 +32,23 @@ func TestFirstWriteSyncsParentDirOnceThenNever(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(*dirs) != 1 || (*dirs)[0] != want {
-		t.Fatalf("first creation of marks.jsonl: want exactly one SyncDir(%s), got %v", want, *dirs)
+	if got := dirs.Dirs(); len(got) != 1 || got[0] != want {
+		t.Fatalf("first creation of marks.jsonl: want exactly one SyncDir(%s), got %v", want, got)
+	}
+	// Each write syncs the store file once.
+	if got := dirs.Files(); len(got) != 1 {
+		t.Fatalf("one mark: %d file syncs, want 1", len(got))
 	}
 	for i := range 3 {
 		if _, err := SetNote(dir, k1, fmt.Sprint("n", i), t0.Add(time.Duration(i+1)*time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(*dirs) != 1 {
-		t.Fatalf("later writes must not sync the directory: %v", *dirs)
+	if got := dirs.Dirs(); len(got) != 1 {
+		t.Fatalf("later writes must not sync the directory: %v", got)
+	}
+	if got := dirs.Files(); len(got) != 4 {
+		t.Fatalf("four writes: %d file syncs, want 4", len(got))
 	}
 }
 
@@ -61,18 +60,18 @@ func TestExistingEmptyStoreFileIsNotACreation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, fileName), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	dirs := countSyncDir(t)
+	dirs := countSyncDir(t, dir)
 	if _, err := SetMark(dir, k1, Saved, t0); err != nil {
 		t.Fatal(err)
 	}
-	if len(*dirs) != 0 {
-		t.Fatalf("a pre-existing empty file is not a creation: %v", *dirs)
+	if got := dirs.Dirs(); len(got) != 0 {
+		t.Fatalf("a pre-existing empty file is not a creation: %v", got)
 	}
 }
 
 func TestConcurrentFirstWritersSyncAtLeastOnceAndLoseNothing(t *testing.T) {
 	dir := Dir(t.TempDir())
-	dirs := countSyncDir(t)
+	dirs := countSyncDir(t, dir)
 	const n = 8
 	var wg sync.WaitGroup
 	for i := range n {
@@ -86,7 +85,7 @@ func TestConcurrentFirstWritersSyncAtLeastOnceAndLoseNothing(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if len(*dirs) < 1 {
+	if len(dirs.Dirs()) < 1 {
 		t.Fatal("racing first writers: zero directory syncs is not allowed")
 	}
 	if m, err := ReadMarks(dir); err != nil || len(m) != n {

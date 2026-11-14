@@ -315,7 +315,7 @@ func (s *TeacherStore) Append(r TeacherRow) error {
 	}
 	defer f.Close()
 	if created {
-		if err := atomicfile.SyncNew(s.path, atomicfile.SyncDir); err != nil {
+		if err := atomicfile.SyncNew(s.path); err != nil {
 			return fmt.Errorf("teacher: %w", err)
 		}
 	}
@@ -330,7 +330,7 @@ func (s *TeacherStore) Append(r TeacherRow) error {
 	if _, err := f.Write(line); err != nil {
 		return fmt.Errorf("teacher: write reading: %w", err)
 	}
-	if err := f.Sync(); err != nil {
+	if err := atomicfile.Sync(f); err != nil {
 		return fmt.Errorf("teacher: sync readings: %w", err)
 	}
 	s.seen[r.ident().key(r.Key)] = struct{}{}

@@ -26,7 +26,8 @@ func TestSyncNewDoesNotDeleteAnotherOpenersData(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = b.Sync()
-	_ = SyncNew(p, func(string) error { return os.ErrInvalid })
+	failDirSyncs(t, filepath.Dir(p), os.ErrInvalid)
+	_ = SyncNew(p)
 	if got, err := os.ReadFile(p); err != nil || string(got) != "B-row\n" {
 		t.Fatalf("B's synced row was deleted by A's failed SyncNew: %q %v", got, err)
 	}

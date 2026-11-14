@@ -335,7 +335,7 @@ func appendStage(dir string, line []byte, m map[posting.Key]Entry) error {
 	}
 	defer func() { f.Close() }()
 	if created {
-		if err := atomicfile.SyncNew(path, syncDir); err != nil {
+		if err := atomicfile.SyncNew(path); err != nil {
 			return fmt.Errorf("marks: %w", err)
 		}
 	}
@@ -376,7 +376,7 @@ func appendStage(dir string, line []byte, m map[posting.Key]Entry) error {
 	if _, err := f.WriteAt(line, good); err != nil {
 		return cutBack(f, good, fmt.Errorf("marks: write: %w", err))
 	}
-	if err := f.Sync(); err != nil {
+	if err := atomicfile.Sync(f); err != nil {
 		return cutBack(f, good, fmt.Errorf("marks: fsync: %w", err))
 	}
 	return nil

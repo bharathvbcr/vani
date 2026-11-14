@@ -472,10 +472,10 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 		if _, err = f.Write(encodeVecHeader(s.model, nextGeneration(s.gen))); err != nil {
 			return ev, fmt.Errorf("%w: write header: %v", ErrCache, err)
 		}
-		if err = f.Sync(); err != nil {
+		if err = atomicfile.Sync(f); err != nil {
 			return ev, fmt.Errorf("%w: sync header: %v", ErrCache, err)
 		}
-		if err = atomicfile.SyncNew(s.path, atomicfile.SyncDir); err != nil {
+		if err = atomicfile.SyncNew(s.path); err != nil {
 			return ev, fmt.Errorf("%w: %v", ErrCache, err)
 		}
 	}
@@ -513,7 +513,7 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 		if err = f.Truncate(end); err != nil {
 			return ev, fmt.Errorf("%w: truncate torn tail: %v", ErrCache, err)
 		}
-		if err = f.Sync(); err != nil {
+		if err = atomicfile.Sync(f); err != nil {
 			return ev, fmt.Errorf("%w: sync after truncate: %v", ErrCache, err)
 		}
 		ev.TornBytes = torn
@@ -620,7 +620,7 @@ func (s *chunkStore) rewrite(keep []vecKeep) (dropped int, err error) {
 		err = fmt.Errorf("%w: compaction write: %v", ErrCache, err)
 		return dropped, err
 	}
-	if err = tmp.Sync(); err != nil {
+	if err = atomicfile.Sync(tmp); err != nil {
 		err = fmt.Errorf("%w: compaction sync: %v", ErrCache, err)
 		return dropped, err
 	}
@@ -868,13 +868,13 @@ func (s *chunkStore) append(recs []vecRec) (appended int, ev vecEvent, err error
 	}
 	var werr error
 	if _, werr = s.f.Write(buf); werr == nil {
-		werr = s.f.Sync()
+		werr = atomicfile.Sync(s.f)
 	}
 	if werr != nil {
 		if terr := s.f.Truncate(s.end); terr != nil {
 			s.broken = true
 		} else {
-			_ = s.f.Sync()
+			_ = atomicfile.Sync(s.f)
 		}
 		ev.Refused = refused + fit
 		return 0, ev, fmt.Errorf("%w: append: %v", ErrCache, werr)
