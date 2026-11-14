@@ -531,7 +531,7 @@ func warmSemanticWith(ctx context.Context, cfg config.Config, stateDir string, d
 	if err != nil {
 		return notRun(rep, "the score cache could not be opened", err)
 	}
-	m.SetVectorPriority(ranks)
+	m.SetVectorPriority(pinLabelled(ranks, stateDir))
 	r, werr := m.Warm(wctx, docs, max)
 	rep.Ran = true
 	rep.fromWarm(r)

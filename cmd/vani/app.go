@@ -524,8 +524,10 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		if app.RunReport != nil {
 			limit = postAdvanceBudget(limit, app.RunReport().SemanticPre)
 		}
+		// The marked closed postings' text read back, for the warm and for the
+		// live set the labelled step names.
+		recs := withMarkedText(app.Ledger, app.Ledger.All(), mk)
 		if limit > 0 {
-			recs := withMarkedText(app.Ledger, app.Ledger.All(), mk)
 			rep := warmSemanticRun(ctx, cfg, e.stateDir, recs, mk, limit)
 			rep.noteUnreadable(unreadableMarked(recs, mk))
 			rec.Semantic = &rep
@@ -540,7 +542,7 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 		// vectors. Outside warm_per_run: at most maxLabelEmbed, and only those
 		// without a current vector.
 		if ctx.Err() == nil {
-			e.embedLabelledNow(ctx, cfg, app.Ledger.All(), mk, func(r ledger.Record) (string, error) {
+			e.embedLabelledNow(ctx, cfg, recs, mk, func(r ledger.Record) (string, error) {
 				full := ledger.Full(app.Ledger, r)
 				if full.BodyEvicted {
 					return "", ledger.ErrBodyUnavailable

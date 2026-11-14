@@ -171,7 +171,9 @@ Semantic state under `<state dir>/semantic/`: `semantic-scores.json` and `semant
 bounded at 512 MiB (about 7,600 postings at ~69 KB each), compacted evicting closed postings
 first, then the lowest `jobinsight.Score` (the order a warm embeds in), then the oldest written; at
 the bound a posting that ranks below everything stored is not stored (`vectors_refused`) and its
-score is still saved; rebuilt by the next warm when unreadable), `semantic.lock` (held by a warm), and `semantic-idle.json` (what the daemon's idle
+score is still saved; rebuilt by the next warm when unreadable; the owner's judged postings, listed
+in `labelled-texts.json` and embedded by the daily run and `vani semantic warm` whether or not they
+are still open, rank above every Score, so a compaction keeps them), `semantic.lock` (held by a warm), and `semantic-idle.json` (what the daemon's idle
 warm last did, its backoff and next eligible time). The daemon's idle warm is documented in
 README.md ("Idle warm"); `VANI_NO_IDLE_WARM=1` turns it off, and `vani status` and `vani
 semantic status` print its state.

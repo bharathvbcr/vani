@@ -573,7 +573,7 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 	if err != nil {
 		return w.stopped(ctx, wctx, st, "the score cache could not be opened: "+oneLine(err.Error(), 200))
 	}
-	m.SetVectorPriority(ranks)
+	m.SetVectorPriority(pinLabelled(ranks, w.stateDir))
 	fmt.Fprintf(w.stderr, "vani: idle warm: %d posting(s) without a current score; warming in chunks of %d\n", len(docs), idleChunkDocs)
 
 	var win idleCounts

@@ -22,7 +22,9 @@ were ported with notice. Source files do not carry an upstream copyright header.
   decides. A cell that draws fewer than its quota is named (its pool is running out). The daily
   run and `vani semantic warm` now embed the owner's judged postings that have no vector (at most
   200 a run, outside `warm_per_run`), since the warm only reaches kept and marked postings; on the
-  copy, 31 of 32 judged postings had none, and the taste column now reads all 32. The taste column
+  copy, 31 of 32 judged postings had none, and the taste column now reads all 32. Their texts are
+  pinned (`semantic/labelled-texts.json`) above every Score in each warm's live set, so a vector
+  log compaction never evicts them first. The taste column
   says why each judged posting lacks a vector, and dropped postings' evicted descriptions are read
   back before their vectors are looked up (one lookup, `cmd/vani/postingvectors.go`, also used by
   the cluster study). `vani relevance` prints an exact one-sided chance p (rank sums, ties as
