@@ -30,7 +30,9 @@ were ported with notice. Source files do not carry an upstream copyright header.
   ledger); manualtriage and the vector log gained sync-count tests. feedback, doctor and digest
   still sync for real in their tests and have no count test. Source adapters' tests
   answer `srcutil`'s retry waits at once (`srcutil.RunWithoutWaits`). Measured as one back-to-back pair
-  on a quiet machine (2026-11-14, `go test ./... -count=1`, 0 failures in either): the full suite
+  (n=1, 2026-11-14, `go test ./... -count=1`, 0 failures in either; other work was running on
+  the machine, and earlier unpaired runs put the before at 13 to 16 min and the after at 3 min 14 s
+  to 3 min 44 s, so the direction is firm and the ratio is soft): the full suite
   went from 16 min 24 s to 3 min 44 s wall; `cmd/vani` from 961 s (over `go test`'s default
   10-minute timeout) to 205 s, goneparity from 649 s to 3 s, pipeline from 560 s to 68 s and
   ledger from 393 s to 80 s.
