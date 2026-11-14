@@ -35,7 +35,7 @@ func doctorGoldenReply() doctorPlanJSON {
 			{Board: "gh:graphite", Verdict: doctor.VerdictTrulyEmpty, Confidence: "medium", Evidence: "0 every run, API agrees", NextStep: "none"},
 		},
 		NotExamined: []string{"gh:canva"},
-		Drops: doctor.Part{Asked: 3, Answered: 2, Error: "doctor: a key was not sent", Raw: `{"drops":[{"key":"zz"}]}`, Patterns: []doctor.Pattern{{Title: "Staff titles dropped", Detail: "staff_plus no longer excluded", Refs: []string{"gh:acme:1"}, Fix: "vani jobs retriage --title-drops"}}},
+		Drops:       doctor.Part{Asked: 3, Answered: 2, Error: "doctor: a key was not sent", Raw: `{"drops":[{"key":"zz"}]}`, Patterns: []doctor.Pattern{{Title: "Staff titles dropped", Detail: "staff_plus no longer excluded", Refs: []string{"gh:acme:1"}, Fix: "vani jobs retriage --title-drops"}}},
 		DropFinds: []doctor.DropFinding{
 			{Key: "gh:acme:1", Verdict: doctor.DropWrong, Cause: "title_rule_too_broad", Why: "a staff role the target wants"},
 			{Key: "lv:beta:2", Verdict: doctor.DropCorrect, Cause: "none", Why: "a sales role"},

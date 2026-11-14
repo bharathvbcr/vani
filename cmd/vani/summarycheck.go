@@ -106,10 +106,10 @@ func (e *env) targetSummaryFacetOf(cfg config.Config, cfgErr error) targetSummar
 // real edit reads as fresh.
 type kbFacet struct {
 	facet
-	Modified      time.Time `json:"modified,omitzero"`
-	AgeDays       *int      `json:"age_days,omitempty"`
+	Modified       time.Time `json:"modified,omitzero"`
+	AgeDays        *int      `json:"age_days,omitempty"`
 	StaleAfterDays int       `json:"stale_after_days,omitempty"`
-	Stale         bool      `json:"stale,omitempty"`
+	Stale          bool      `json:"stale,omitempty"`
 }
 
 // kbFacetOf is nil when no bank is configured: there is nothing to be stale.
