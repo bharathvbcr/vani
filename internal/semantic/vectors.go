@@ -42,14 +42,19 @@ const (
 	vectorLogFileName = "vectors.log"
 
 	// MaxVectorBytes caps the chunk-vector log (its own bound, not MaxCacheBytes).
-	// A posting stores ~69 KB (about 22 chunks of 768 float32), so 512 MiB holds
-	// ~7,600 postings: the owner's ~6,150 browsable ones (~430 MB). The cost of the
-	// size is open time and memory, both per record: a Warm scans two small reads
-	// per record (never the vectors) and the index is ~50 bytes a record.
-	// Appends stop at the bound and the log is compacted, dropping postings
-	// outside the live set, then the lowest priority (SetVectorPriority), then the
-	// oldest written, before anything is refused.
-	MaxVectorBytes = 512 << 20
+	// A posting stores ~69 KB (about 22 chunks of 768 float32), so 2.5 GiB holds
+	// ~38,000 postings: above the owner's ~30,900 open ones (~2.1 GB). (512 MiB held
+	// ~7,600, a quarter of them, so most rescores after a profile change had to
+	// embed.) The log stays f32: an int8 form (scale = max|x|/127) was measured
+	// against these vectors on 7,604 stored postings and missed the parity bar
+	// (TestRealQuantizedVectorParity: score difference up to 0.055, the top
+	// evidence chunk changed for 9%). The cost of the size is open time and
+	// memory, both per record: a Warm scans two small reads per record (never the
+	// vectors) and the index is ~50 bytes a record. Appends stop at the bound and
+	// the log is compacted, dropping postings outside the live set, then the
+	// lowest priority (SetVectorPriority), then the oldest written, before
+	// anything is refused.
+	MaxVectorBytes = 2560 << 20
 
 	vecMagic      = "VANIVEC\x00"
 	vecFormat     = 1

@@ -180,7 +180,7 @@ the whole bank:
 
 Semantic state under `<state dir>/semantic/`: `semantic-scores.json` and `semantic-profile.json`
 (the caches), `vectors.log` (the append-only chunk vectors a rescore reads instead of the model;
-bounded at 512 MiB (about 7,600 postings at ~69 KB each), compacted evicting closed postings
+bounded at 2.5 GiB (about 38,000 postings at ~69 KB each, f32), compacted evicting closed postings
 first, then the lowest `jobinsight.Score` (the order a warm embeds in), then the oldest written; at
 the bound a posting that ranks below everything stored is not stored (`vectors_refused`) and its
 score is still saved; rebuilt by the next warm when unreadable; the owner's judged postings, listed

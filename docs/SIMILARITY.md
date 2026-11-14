@@ -3,7 +3,8 @@
 One embedder serves both: `internal/semantic` (Tessl EmbeddingGemma 2, in-process on Metal, behind
 `-tags tessl`; no sidecar). Both ask it for `KindSimilarity` (the snapshot's STS prompt) and share
 one vector cache, `<state dir>/semantic/semantic-vectors.json` (key: model id + kind + sha256 of the
-text; versioned, 10,000 entries and 64 MiB at most, oldest evicted, written atomically).
+text; versioned, 10,000 entries and `semantic.MaxCacheBytes` (256 MiB) at most, oldest evicted,
+written atomically).
 
 An embedding only **annotates** (Rule 7). Nothing here merges an answer or drops a posting.
 
