@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/egress"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -86,6 +88,20 @@ func TestWatchlistRemoveLeavesATombstone(t *testing.T) {
 		t.Error("--close-postings on an absent board rewrote the config")
 	}
 
+	// --keep-postings cancels an earlier removal the runs have not acted on:
+	// re-added, removed again with --keep-postings, nothing closes.
+	mustCode(t, 0, "watchlist", "add", "--ats", "gh", "--token", "Acme", "--company", "Acme", "--allow-host")
+	mustCode(t, 0, "watchlist", "remove", "--ats", "gh", "--token", "Acme", "--keep-postings")
+	if _, ok := removedTombs(t, stateDir)["gh:acme:"]; ok {
+		t.Error("--keep-postings left an earlier removal's tombstone, so the next run would close what it said stays open")
+	}
+	// And for a board already off the watchlist.
+	o, _ = mustCode(t, 0, "watchlist", "remove", "--ats", "ab", "--token", "tavily", "--keep-postings")
+	if _, ok := removedTombs(t, stateDir)["ab:tavily:"]; ok || !strings.Contains(o, "stay open") {
+		t.Errorf("--keep-postings on a removed board: %q, tombstone kept %v", o, ok)
+	}
+	mustCode(t, 1, "watchlist", "remove", "--ats", "ab", "--token", "tavily", "--keep-postings") // nothing left to cancel
+
 	mustCode(t, 2, "watchlist", "remove", "--ats", "gh", "--token", "x", "--keep-postings", "--close-postings")
 	mustCode(t, 2, "watchlist", "remove", "--ats", "wd", "--token", "intel", "--close-postings") // no site: names no single board
 
@@ -99,6 +115,39 @@ func TestWatchlistRemoveLeavesATombstone(t *testing.T) {
 	if _, ok := removedTombs(t, stateDir)["gh:initech:"]; ok {
 		t.Error("a failed remove left a tombstone")
 	}
+	// One that was there before is put back as it was, not deleted.
+	old, err := pipeline.RemovedBoardFor(sources.Board{ATS: posting.Greenhouse, Token: "initech"}, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := pipeline.WriteRemovedBoard(stateDir, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, _ := os.ReadFile(path)
+	// The save fails after the tombstone is written: the config reads, but its
+	// directory takes no new file (the state dir is its own, writable).
+	if err := os.WriteFile(cfgPath, cfgBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mustCode(t, 0, "watchlist", "add", "--ats", "gh", "--token", "initech", "--company", "Initech", "--allow-host")
+	cfgDir := filepath.Dir(cfgPath)
+	if err := os.Chmod(cfgDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cfgDir, 0o700) })
+	mustCode(t, 1, "watchlist", "remove", "--ats", "gh", "--token", "initech")
+	if now, err := os.ReadFile(path); err != nil || !bytes.Equal(now, prior) {
+		t.Errorf("a failed save did not put back the earlier tombstone: %q (%v)", now, err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	mustCode(t, 1, "watchlist", "remove", "--ats", "gh", "--token", "initech")
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a failed save left the tombstone it wrote: %v", err)
+	}
+	_ = os.Chmod(cfgDir, 0o700)
 }
 
 // removedFixture is a wired run whose whole watchlist is gh/keep, over a
@@ -252,5 +301,51 @@ func TestRunCutKeepsOtherBoardsPendingReopens(t *testing.T) {
 	}
 	if pend := loadPending(t, w2.stateDir); pend.Items[watched].Class != "exclusion" {
 		t.Fatalf("a cut run left the watched board's loosened drop out: %+v", pend.Items)
+	}
+}
+
+// TestRunRecordNamesARemovedBoardNotAsDeaths: through the production board
+// read, the closings reach the run record and the runs report as removed
+// boards, and count in no death total nor fail the run.
+func TestRunRecordNamesARemovedBoardNotAsDeaths(t *testing.T) {
+	w, _, _, gone := removedFixture(t)
+	w.live = &liveNote{}
+	w.watch(w.cfg.Watchlist, time.Now())
+	w.cfg.Watchlist = nil // a cut that lists nothing: no request leaves the process
+	d, err := egress.New(egress.Config{AllowedHosts: []string{"boards.example.com"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.readBoards(context.Background(), d, pipeline.DropPolicy{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if r := mustGet(t, w.led, gone); r.Status != posting.Dead {
+		t.Fatalf("the removed board's posting is %s", r.Status)
+	}
+	b := w.boards
+	if b == nil || len(b.Removed) != 1 || b.Removed[0] != (removedBoardRun{Board: "gh/gone", Closed: 2}) {
+		t.Fatalf("boards report %+v", b)
+	}
+	dead := b.MassDead + b.ShortDead
+	for _, it := range b.Items {
+		if it.Reconcile != nil {
+			dead += it.Reconcile.Dead
+		}
+	}
+	if dead != 0 {
+		t.Fatalf("the closings counted as %d death(s)", dead)
+	}
+	rec := histRec(1, outcomeOK)
+	rec.Boards = b
+	if runHasFailures(rec, time.Now()) {
+		t.Fatal("closing a removed board's postings failed the run")
+	}
+	text := (&env{stateDir: t.TempDir(), stderr: &bytes.Buffer{}}).runReportOf(runRef{ID: runID(rec), Rec: rec}, time.Now(), true)
+	if !strings.Contains(text.Text, "Boards removed from the watchlist (1):") || !strings.Contains(text.Text, "removed board gh/gone: closed 2 open posting(s)") {
+		t.Fatalf("report:\n%s", text.Text)
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil || !strings.Contains(string(raw), `"removed":[{"board":"gh/gone","closed":2}]`) {
+		t.Fatalf("record json: %s (%v)", raw, err)
 	}
 }

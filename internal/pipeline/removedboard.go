@@ -106,8 +106,9 @@ func validRemovedPrefix(p string) error {
 	return nil
 }
 
-// removedBoardPath is where rb's tombstone lives under stateDir.
-func removedBoardPath(stateDir, prefix string) string {
+// RemovedBoardPath is where the tombstone of the board with this key prefix
+// lives under stateDir.
+func RemovedBoardPath(stateDir, prefix string) string {
 	sum := sha256.Sum256([]byte(prefix))
 	ats := posting.Key(prefix).ATS()
 	return filepath.Join(stateDir, RemovedBoardDir, string(ats)+"-"+hex.EncodeToString(sum[:8])+".json")
@@ -126,7 +127,7 @@ func WriteRemovedBoard(stateDir string, rb RemovedBoard) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("removed board %s: %w", rb.Board, err)
 	}
-	path := removedBoardPath(stateDir, rb.Prefix)
+	path := RemovedBoardPath(stateDir, rb.Prefix)
 	if err := atomicfile.Write(path, data); err != nil {
 		return "", fmt.Errorf("removed board %s: %w", rb.Board, err)
 	}

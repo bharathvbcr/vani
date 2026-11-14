@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/daemon"
 	"github.com/bharathvbcr/Vani/internal/pipeline"
@@ -235,22 +236,26 @@ func (e *env) watchlistRemove(args []string) error {
 	// The tombstone is written under the config lock, before the config is
 	// saved: a crash between the two leaves a tombstone of a board still
 	// watched, which no run acts on, never a removal no run hears of. A save
-	// that fails takes the tombstone back.
-	var tomb string
+	// that fails puts back what was there: no tombstone, or the earlier one.
+	// --keep-postings deletes an earlier removal's tombstone the runs have not
+	// acted on yet, so its postings stay open as it says.
+	tombPath := pipeline.RemovedBoardPath(e.stateDir, target.KeyPrefix())
+	prior, priorErr := os.ReadFile(tombPath)
+	hadTomb := priorErr == nil
+	wrote := false
 	removed := false
 	err := e.updateConfig(func(c *config.Config) error {
 		n := len(c.Watchlist)
 		c.Watchlist = slices.DeleteFunc(c.Watchlist, func(x sources.Board) bool { return sameBoard(x, target) })
 		removed = len(c.Watchlist) < n
-		if !removed && !*closeAbsent {
+		if !removed && !*closeAbsent && !(*keep && hadTomb) {
 			return fmt.Errorf("board %s/%s is not on the watchlist (--close-postings closes the open postings of a board already removed)", *ats, *token)
 		}
 		if !*keep {
-			path, err := pipeline.WriteRemovedBoard(e.stateDir, rb)
-			if err != nil {
+			if _, err := pipeline.WriteRemovedBoard(e.stateDir, rb); err != nil {
 				return fmt.Errorf("%w (--keep-postings removes it without closing its postings)", err)
 			}
-			tomb = path
+			wrote = true
 		}
 		if !removed {
 			return errWatchlistUnchanged
@@ -261,12 +266,23 @@ func (e *env) watchlistRemove(args []string) error {
 		err = nil
 	}
 	if err != nil {
-		if tomb != "" {
-			if rmErr := os.Remove(tomb); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-				fmt.Fprintf(e.stderr, "vani: watchlist remove: the config was not saved and the removal record %s could not be taken back: %v\n", tomb, rmErr)
+		if wrote {
+			var back error
+			if hadTomb {
+				back = atomicfile.Write(tombPath, prior)
+			} else if rmErr := os.Remove(tombPath); !errors.Is(rmErr, os.ErrNotExist) {
+				back = rmErr
+			}
+			if back != nil {
+				fmt.Fprintf(e.stderr, "vani: watchlist remove: the config was not saved and the removal record %s could not be put back: %v\n", tombPath, back)
 			}
 		}
 		return err
+	}
+	if *keep && hadTomb {
+		if rmErr := os.Remove(tombPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+			return fmt.Errorf("removed %s/%s, but an earlier removal's record %s could not be deleted, so the next run would still close its postings: %w", *ats, *token, tombPath, rmErr)
+		}
 	}
 	postings := "close"
 	if *keep {
@@ -281,6 +297,8 @@ func (e *env) watchlistRemove(args []string) error {
 	}
 	return e.reply(*asJSON, reply, nil, func() {
 		switch {
+		case !removed && *keep:
+			fmt.Fprintf(e.stdout, "%s/%s is not on the watchlist; its open postings stay open\n", *ats, *token)
 		case !removed:
 			fmt.Fprintf(e.stdout, "%s/%s is not on the watchlist; the next run closes its open postings\n", *ats, *token)
 		case *keep:
