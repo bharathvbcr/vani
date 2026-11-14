@@ -46,7 +46,7 @@ workspace. `go list -m` from this checkout on 2026-10-25 resolved them to
 `go.work` and `go.work.sum` are gitignored. The `go.work` in this checkout is:
 
 ```
-go 1.26.6
+go 1.27.4
 
 use (
 	.

@@ -1,6 +1,6 @@
 module github.com/bharathvbcr/Vani
 
-go 1.26.6
+go 1.27.4
 
 require (
 	github.com/bharathvbcr/Manvi/manvi v0.0.0

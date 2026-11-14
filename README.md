@@ -1215,7 +1215,7 @@ with sibling checkouts, and Go only applies those replaces inside a workspace. O
 create it as:
 
 ```
-go 1.26.6
+go 1.27.4
 
 use (
 	.
