@@ -175,6 +175,25 @@ func TestAuditDefaultNeighboursFailOnAnUnreadableStore(t *testing.T) {
 	}
 }
 
+// A cell that drew fewer picks than its quota is named: its pool is running
+// out, and one that empties before the kill rule's second look leaves the
+// cell to the owner. A full cell, a cell at 0 and the engineering group are
+// not named.
+func TestShortCellsAreNamed(t *testing.T) {
+	picks := []eval.AuditPick{
+		{Key: "a", Source: eval.CellTeacherWants}, {Key: "b", Source: eval.CellTeacherWants},
+		{Key: "c", Source: eval.CellTeacherRejects}, {Key: "d", Source: eval.CellTeacherRejects},
+		{Key: "e", Source: eval.EngineeringKept}, {Key: "f", Source: "decile:3"},
+	}
+	got := shortCells(picks, eval.AuditQuotas{Disagree: 5, DisagreeRejects: 2, Neighbour: 0, Engineering: 3})
+	if len(got) != 1 || !strings.Contains(got[0], eval.CellTeacherWants+": drew 2 of 5") || !strings.Contains(got[0], "owner's call") {
+		t.Fatalf("short cells %q, want only the wants cell named", got)
+	}
+	if got := shortCells(nil, eval.AuditQuotas{Neighbour: 3}); len(got) != 1 || !strings.Contains(got[0], eval.CellYesNeighbour+": drew 0 of 3") {
+		t.Fatalf("empty neighbour cell %q", got)
+	}
+}
+
 func overlayDrawSeed(t *testing.T, seed string, args ...string) auditJSON {
 	t.Helper()
 	o, _ := mustCode(t, 0, append([]string{"--json", "audit", "--seed", seed}, args...)...)

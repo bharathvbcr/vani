@@ -9,6 +9,24 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Audit benchmark fixes** (2026-11-14, decided by Fable after a benchmark on a copy of live
+  state). The kill rule for the yes-seeking cells is reworked before any cell label exists: the
+  old rule kept a cell at 4 yes anywhere from 20 to 39 judged, so a cell no better than random was
+  kept about 39% of the time. Now a cell is turned off at its first 20 answers with 0 or 1 yes,
+  and at its first 40 kept only with 5 or more yes and at least twice its comparator's yes rate
+  (the random strata for the wants cell, the score deciles for the yes-neighbour cell, frozen at
+  the 40th answer); a comparator with no answers cannot decide. Exact operating characteristics
+  are pinned in `internal/eval/killrule_oc_test.go`: at a 9% base rate a cell equal to random is
+  kept 8.0% of the time and one three times as good 85.3%. The teacher-rejects cell leaves the
+  yes rule: at 20 answers its no rate is shown beside the top three deciles' and the owner
+  decides. A cell that draws fewer than its quota is named (its pool is running out). The daily
+  run and `vani semantic warm` now embed the owner's judged postings that have no vector (at most
+  200 a run, outside `warm_per_run`), since the warm only reaches kept and marked postings; on the
+  copy, 31 of 32 judged postings had none, and the taste column now reads all 32. The taste column
+  says why each judged posting lacks a vector, and dropped postings' evicted descriptions are read
+  back before their vectors are looked up (one lookup, `cmd/vani/postingvectors.go`, also used by
+  the cluster study). `vani relevance` prints an exact one-sided chance p (rank sums, ties as
+  midranks) beside each part AUC and each seniority-shadow AUC, and how many rows were tested.
 - **Every audit overlay on by default** (owner, 2026-11-13). `vani audit` now draws, beside the
   17 random places, 5 "teacher wants" and 2 "teacher rejects" disagreement picks, 3 yes-neighbour
   picks and 3 engineering picks unless told otherwise (`--disagree=0` and the like turn one off).
@@ -55,7 +73,7 @@ were ported with notice. Source files do not carry an upstream copyright header.
   now 2). The 2x cap no
   longer counts closed places. The yes yield gains group rows (all deciles, top three deciles, all
   drop classes) and a kill rule per cell (at 20 judged: 0-1 yes turns it off, 4+ keeps it, 2-3 runs
-  to 40). `vani teacher freeze` says how many exemplars came from the cells. The Mac app's Audit
+  to 40; reworked on 2026-11-14, see "Audit benchmark fixes"). `vani teacher freeze` says how many exemplars came from the cells. The Mac app's Audit
   tab gains a "Disagreement picks" stepper (vani's default, 5, until set).
 - **Drops the rules no longer make, by class** (`vani retriage --policy-drops`, its `classes`).
   A drop made under a rule that has since changed was never re-examined: two Databricks Staff

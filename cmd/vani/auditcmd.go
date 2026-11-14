@@ -290,9 +290,12 @@ func (e *env) drawAudit(o overlays, seed, labels string) (*auditDraw, error) {
 		seed = eval.WeekSeed(now())
 	}
 	skipped := slices.Clone(o.notes)
-	// The kill rule (eval.killVerdict, fixed in the second Fable review) turns
-	// a cell off at 20 judged labels with 0 or 1 yes. A default quota obeys
-	// it; a quota given on the command line is the owner overriding it.
+	// The kill rule (internal/eval/yesyield.go, reworked 2026-11-14) turns a
+	// yes-seeking cell off at its first look (0 or 1 yes in its first 20
+	// answers) or its second (at 40, under 5 yes or under twice its
+	// comparator's rate). The rejects cell is never turned off by it. A default
+	// quota obeys it; a quota given on the command line is the owner overriding
+	// it.
 	for _, c := range eval.BuildYesYield(done).Cells {
 		if c.Verdict != eval.CellTurnOff {
 			continue
@@ -346,7 +349,30 @@ func (e *env) drawAudit(o overlays, seed, labels string) (*auditDraw, error) {
 		}
 	}
 	plan := eval.AuditDraw(cands, done, seed, q)
+	skipped = append(skipped, shortCells(plan.Picks, q)...)
 	return &auditDraw{b: b, s: s, done: done, seed: seed, q: q, skipped: skipped, plan: plan, picks: plan.Interleaved(seed)}, nil
+}
+
+// shortCells names each cell that drew fewer picks than its quota: its pool
+// of unlabelled postings is running out. The kill rule's second look needs 40
+// answers; a cell whose pool empties before then cannot reach it, and keeping
+// the cell is the owner's call on its counts (Fable, 2026-11-14).
+func shortCells(picks []eval.AuditPick, q eval.AuditQuotas) []string {
+	drawn := map[string]int{}
+	for _, p := range picks {
+		drawn[p.Source]++
+	}
+	var out []string
+	for _, c := range []struct {
+		cell  string
+		quota int
+	}{{eval.CellTeacherWants, q.Disagree}, {eval.CellTeacherRejects, q.DisagreeRejects}, {eval.CellYesNeighbour, q.Neighbour}} {
+		if c.quota > 0 && drawn[c.cell] < c.quota {
+			out = append(out, fmt.Sprintf("%s: drew %d of %d; its pool of unlabelled postings is running out, and if it empties before %d answers the kill rule cannot reach its second look: keeping the cell is the owner's call on its counts (vani relevance)",
+				c.cell, drawn[c.cell], c.quota, eval.KillSecondLook))
+		}
+	}
+	return out
 }
 
 // teacherViews sets each candidate's Teacher from model's newest jd_triage

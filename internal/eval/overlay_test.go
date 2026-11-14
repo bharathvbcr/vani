@@ -190,12 +190,28 @@ func TestEngineeringLabelsCountedApart(t *testing.T) {
 	}
 }
 
-// The yes-neighbour cell is under the kill rule like the disagreement cells.
+// The yes-neighbour cell is under the kill rule like the wants cell, held
+// against the score deciles rather than every random stratum: its pool is
+// mostly kept postings.
 func TestYesNeighbourKillRule(t *testing.T) {
 	labels := map[posting.Key]Entry{}
-	judge(labels, "gh:n", CellYesNeighbour, 0, 20, 5, 0, 0.5)
+	judge(labels, "gh:n", CellYesNeighbour, 0, 40, 6, 0, 0.5)
+	judge(labels, "gh:d", "decile:5", 0, 20, 1, 0, 0.5)
+	judge(labels, "gh:x", "dropped:title:role_fit", 0, 30, 0, 0, 0.5) // would halve the comparator's rate if counted
 	y := BuildYesYield(labels)
-	if !slices.Equal(y.Cells, []CellVerdict{{CellYesNeighbour, 20, 5, CellKeep}}) {
+	if len(y.Cells) != 1 {
 		t.Fatalf("cells %+v", y.Cells)
+	}
+	c := y.Cells[0]
+	if c.Cell != CellYesNeighbour || c.Verdict != CellKeep || c.Comparator != GroupDeciles || c.CompN != 20 || c.CompYes != 1 {
+		t.Fatalf("neighbour verdict %+v, want keep against the deciles' 1 of 20", c)
+	}
+
+	// The same cell with no decile answers cannot decide, and is not kept.
+	labels = map[posting.Key]Entry{}
+	judge(labels, "gh:n", CellYesNeighbour, 0, 40, 6, 0, 0.5)
+	judge(labels, "gh:x", "dropped:title:role_fit", 0, 30, 0, 0, 0.5)
+	if c := BuildYesYield(labels).Cells[0]; c.Verdict != CellCannotDecide {
+		t.Fatalf("no comparator: %+v, want %s", c, CellCannotDecide)
 	}
 }

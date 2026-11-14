@@ -131,35 +131,35 @@ func (e *env) exportPooledVectors(outDir string, maxRows int) (pooledExportReply
 	var keys []string
 	var rows [][]float32
 	texts := map[string]struct{}{}
+	// postingVectors reads a dropped, dead or duplicate record's description
+	// back (it is cut out of the fold), through this reader.
+	pv := e.newPostingVectors(vr, rd)
 	for _, r := range snap.Records {
-		desc := r.Posting.Description
-		if r.BodyEvicted {
-			// A dropped, dead or duplicate record has its description cut out of
-			// the fold; hashing its title alone would miss a vector that exists.
-			if desc, err = rd.Body(r.Key); err != nil {
-				rep.TextUnavailable++
-				continue
-			}
-		}
-		v, st := vr.Pooled(r.Posting.Title, desc)
-		switch st {
-		case semantic.PoolNoText:
+		v, cause := pv.of(r)
+		switch cause {
+		case vecTextUnreadable:
+			rep.TextUnavailable++
+		case vecNoText:
 			rep.NoText++
-		case semantic.PoolNoRecord:
+		case vecNeverEmbedded:
 			rep.NoRecord++
-		case semantic.PoolStale:
+		case vecStaleChunking:
 			rep.Stale++
-		case semantic.PoolCorrupt:
+		case vecCorrupt:
 			rep.Corrupt++
-		case semantic.PoolDegenerate:
+		case vecDegenerate:
 			rep.Degenerate++
-		case semantic.PoolOK:
+		case "":
 			if len(rows) >= maxRows {
 				return rep, fmt.Errorf("export pooled-vectors: more than --max %d postings have vectors; raise --max (bound %d) rather than export a sample", maxRows, clusterstudy.MaxRows)
 			}
+			h, ok := pv.textHash(r)
+			if !ok {
+				return rep, fmt.Errorf("export pooled-vectors: %s: the text read back a moment ago could not be read again", r.Key)
+			}
 			keys = append(keys, string(r.Key))
 			rows = append(rows, v)
-			texts[semantic.TextHash(r.Posting.Title, desc)] = struct{}{}
+			texts[h] = struct{}{}
 		}
 	}
 	if len(rows) == 0 {

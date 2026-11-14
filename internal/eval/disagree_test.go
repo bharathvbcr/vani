@@ -383,29 +383,121 @@ func TestYesYieldGroupsCanBeNamed(t *testing.T) {
 	}
 }
 
-// The kill rule, fixed before any cell label exists.
-func TestYesYieldKillRule(t *testing.T) {
-	for _, c := range []struct {
-		n, yes int
-		want   string
-	}{
-		{0, 0, CellCollecting}, {19, 0, CellCollecting}, {19, 19, CellCollecting},
-		{20, 0, CellTurnOff}, {20, 1, CellTurnOff}, {20, 2, CellRunOn}, {20, 3, CellRunOn}, {20, 4, CellKeep},
-		{39, 1, CellTurnOff}, {39, 3, CellRunOn}, {40, 3, CellOwnerCall}, {60, 20, CellOwnerCall},
-	} {
-		if got := killVerdict(c.n, c.yes); got != c.want {
-			t.Errorf("%d yes of %d: %s, want %s", c.yes, c.n, got, c.want)
+// The kill rule's two looks on counts (reworked 2026-11-14, before any cell
+// label exists).
+func TestYesYieldKillRuleLooks(t *testing.T) {
+	for yes, off := range []bool{true, true, false, false} {
+		if firstLook(yes) != off {
+			t.Errorf("first look, %d yes in 20: off %v, want %v", yes, !off, off)
 		}
 	}
+	for _, c := range []struct {
+		yes, compN, compYes int
+		want                string
+	}{
+		{20, 0, 0, CellCannotDecide}, // no comparator: never a keep
+		{4, 100, 0, CellTurnOff},     // under the floor of 5 yes, whatever the comparator
+		{5, 100, 0, CellKeep},        // a comparator with no yes: the floor decides
+		{5, 80, 5, CellKeep},         // 5/40 = 12.5% against 6.25%: exactly 2x
+		{5, 80, 6, CellTurnOff},      // 12.5% against 7.5%: under 2x
+		{12, 120, 18, CellKeep},      // 30% against 15%: 2x
+		{11, 120, 18, CellTurnOff},   // 27.5% against 15%
+		{40, 1, 1, CellTurnOff},      // 100% against 100%
+	} {
+		if got := secondLook(c.yes, c.compN, c.compYes); got != c.want {
+			t.Errorf("second look, %d yes of 40 against %d of %d: %s, want %s", c.yes, c.compYes, c.compN, got, c.want)
+		}
+	}
+}
+
+// The looks are latched on the first answers by time: yeses that come after
+// the first 20 cannot undo a first-look turn-off, and the comparator is
+// frozen at the cell's 40th answer.
+func TestYesYieldKillRuleIsLatchedByAnswerTime(t *testing.T) {
+	t0 := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	put := func(labels map[posting.Key]Entry, key, src, v string, at time.Time) {
+		labels[posting.Key(key)] = Entry{Labels: map[string]string{WouldApply: v}, Source: src, PSelect: 0.5, LabeledAt: at}
+	}
+	labels := map[posting.Key]Entry{}
+	for i := range 30 {
+		v := "no"
+		if i >= 20 { // ten yeses, all after the first look
+			v = "yes"
+		}
+		// Keys sort against time, so an ordering by key would see the yeses first.
+		put(labels, fmt.Sprintf("gh:w:%03d", 99-i), CellTeacherWants, v, t0.Add(time.Duration(i)*time.Hour))
+	}
+	c := BuildYesYield(labels).Cells[0]
+	if c.Verdict != CellTurnOff || c.Yes != 10 || !strings.Contains(c.Why, "first look: 0 yes") {
+		t.Fatalf("late yeses undid the first look: %+v", c)
+	}
+
+	// Second look: 8 yes in the first 40 (yes among the first 20 too). The
+	// comparator has 2 of 40 by the 40th answer (5%: 20% is 4x, a keep) and
+	// 38 more yeses after it, which must not count.
+	labels = map[posting.Key]Entry{}
+	for i := range 40 {
+		v := "no"
+		if i%5 == 0 {
+			v = "yes"
+		}
+		put(labels, fmt.Sprintf("gh:w:%03d", i), CellTeacherWants, v, t0.Add(time.Duration(i)*time.Hour))
+	}
+	for i := range 40 {
+		v := "no"
+		if i < 2 {
+			v = "yes"
+		}
+		put(labels, fmt.Sprintf("gh:r:%03d", i), "decile:4", v, t0.Add(time.Duration(i)*time.Hour-time.Minute))
+	}
+	for i := range 38 {
+		put(labels, fmt.Sprintf("gh:s:%03d", i), "decile:6", "yes", t0.Add(time.Duration(41+i)*time.Hour))
+	}
+	c = BuildYesYield(labels).Cells[0]
+	if c.Verdict != CellKeep || c.CompN != 40 || c.CompYes != 2 {
+		t.Fatalf("second look %+v, want keep against the comparator's 2 of 40 frozen at the 40th answer", c)
+	}
+}
+
+// The rejects cell has no yes rule: at 20 answers its no rate is set beside
+// the top three deciles' and the owner decides. A cell of all no's, which
+// the old rule turned off, is the cell working.
+func TestYesYieldRejectsCellIsTheOwnersCall(t *testing.T) {
+	labels := map[posting.Key]Entry{}
+	judge(labels, "gh:j", CellTeacherRejects, 0, 19, 0, 0, 0.5)
+	judge(labels, "gh:t", "decile:9", 0, 10, 4, 2, 0.5)
+	if c := BuildYesYield(labels).Cells[0]; c.Verdict != CellCollecting {
+		t.Fatalf("19 judged: %+v", c)
+	}
+	judge(labels, "gh:j", CellTeacherRejects, 19, 1, 0, 0, 0.5)
+	y := BuildYesYield(labels)
+	c := y.Cells[0]
+	if c.Cell != CellTeacherRejects || c.Verdict != CellOwnerCall || c.No != 20 || c.Comparator != GroupTopDeciles || c.CompN != 10 || c.CompNo != 4 {
+		t.Fatalf("20 judged, all no: %+v", c)
+	}
+	if !strings.Contains(y.Markdown(), "no in 20 of 20 answers, against 4 of 10 in "+GroupTopDeciles) {
+		t.Errorf("markdown lacks the no rates:\n%s", y.Markdown())
+	}
+}
+
+// The verdicts reach the report, and the wants cell is held against the
+// random strata pooled.
+func TestYesYieldKillRule(t *testing.T) {
 	labels := map[posting.Key]Entry{}
 	judge(labels, "gh:w", CellTeacherWants, 0, 20, 1, 5, 0.5)
 	judge(labels, "gh:j", CellTeacherRejects, 0, 7, 0, 0, 0.5)
+	judge(labels, "gh:r", "dropped:model:role_fit", 0, 12, 0, 0, 0.5)
 	y := BuildYesYield(labels)
-	want := []CellVerdict{{CellTeacherWants, 20, 1, CellTurnOff}, {CellTeacherRejects, 7, 0, CellCollecting}}
-	if !slices.Equal(y.Cells, want) {
-		t.Fatalf("cells %+v, want %+v", y.Cells, want)
+	if len(y.Cells) != 2 {
+		t.Fatalf("cells %+v", y.Cells)
 	}
-	if !strings.Contains(y.Markdown(), "Kill rule, "+CellTeacherWants+": 1 yes of 20 judged: turn_off") {
+	if w := y.Cells[0]; w.Cell != CellTeacherWants || w.Verdict != CellTurnOff || w.N != 20 || w.Yes != 1 || w.Comparator != "random strata" || w.CompN != 12 {
+		t.Fatalf("wants %+v", w)
+	}
+	if r := y.Cells[1]; r.Cell != CellTeacherRejects || r.Verdict != CellCollecting || r.N != 7 {
+		t.Fatalf("rejects %+v", r)
+	}
+	if !strings.Contains(y.Markdown(), "Kill rule, "+CellTeacherWants+": 1 yes of 20 judged: turn_off (first look: 1 yes in its first 20 answers") {
 		t.Errorf("markdown lacks the verdict:\n%s", y.Markdown())
 	}
 }

@@ -70,6 +70,10 @@ type shadowAUC struct {
 	Spare   float64        `json:"spare"`
 	SpareLo float64        `json:"spare_lo"`
 	SpareHi float64        `json:"spare_hi"`
+	// BaseP and SpareP are each AUC's one-sided chance p (rankfit.AUCPValue),
+	// set with OK.
+	BaseP  float64 `json:"base_p"`
+	SpareP float64 `json:"spare_p"`
 }
 
 type shadowMoved struct {
@@ -228,6 +232,10 @@ func compareArms(name string, recs []ledger.Record, done map[posting.Key]eval.En
 		a.Base, a.BaseLo, a.BaseHi, okB = rankfit.AUCWithInterval(bp, bn, rankfit.DefaultPartAUCResamples, 1)
 		a.Spare, a.SpareLo, a.SpareHi, okS = rankfit.AUCWithInterval(sp, sn, rankfit.DefaultPartAUCResamples, 1)
 		a.OK = okB && okS
+		if a.OK {
+			a.BaseP, _ = rankfit.AUCPValue(bp, bn)
+			a.SpareP, _ = rankfit.AUCPValue(sp, sn)
+		}
 		sv.AUC = append(sv.AUC, a)
 	}
 	return sv
@@ -262,13 +270,13 @@ func (s seniorityShadow) Markdown() string {
 func (v shadowVariant) Markdown(base string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n### %s\n\n- judged postings it moves: %d; open postings it moves: %d\n\n", v.Name, v.Changed, v.PoolChanged)
-	fmt.Fprintf(&b, "| mode | wanted / unwanted | AUC of Relevance, %s (95%%) | with the variant (95%%) |\n|---|---|---|---|\n", base)
+	fmt.Fprintf(&b, "| mode | wanted / unwanted | AUC of Relevance, %s (95%%; exact p) | with the variant (95%%; exact p) |\n|---|---|---|---|\n", base)
 	for _, a := range v.AUC {
 		if !a.OK {
 			fmt.Fprintf(&b, "| %s | %d / %d | insufficient | insufficient |\n", a.Mode, a.Pos, a.Neg)
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %d / %d | %.2f (%.2f-%.2f) | %.2f (%.2f-%.2f) |\n", a.Mode, a.Pos, a.Neg, a.Base, a.BaseLo, a.BaseHi, a.Spare, a.SpareLo, a.SpareHi)
+		fmt.Fprintf(&b, "| %s | %d / %d | %.2f (%.2f-%.2f; p %.3f) | %.2f (%.2f-%.2f; p %.3f) |\n", a.Mode, a.Pos, a.Neg, a.Base, a.BaseLo, a.BaseHi, a.BaseP, a.Spare, a.SpareLo, a.SpareHi, a.SpareP)
 	}
 	rows := func(head string, ms []shadowMoved) {
 		if len(ms) == 0 {

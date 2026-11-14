@@ -19,10 +19,10 @@ const (
 // tasteOf is the taste column over items (the judged items of the sampled
 // labels: cell labels were drawn on a reading or for their nearness, so they
 // are not in it). Each posting's pooled vector is read from the semantic store
-// as it stands; nothing is embedded here, so a posting the store holds no
-// current vector for counts as without one. A store that cannot be opened is
-// a "no vectors" column, said so, never an error that hides the rest of a
-// report.
+// as it stands (postingVectors: an evicted description is read back first);
+// nothing is embedded here, so a posting the store holds no current vector for
+// counts as without one, by cause. A store that cannot be opened is a "no
+// vectors" column, said so, never an error that hides the rest of a report.
 func (e *env) tasteOf(items []rankfit.Item, snap ledger.Snapshot) rankfit.Taste {
 	vr, err := semantic.OpenVectorReader(semanticDir(e.stateDir))
 	if err != nil {
@@ -35,7 +35,15 @@ func (e *env) tasteOf(items []rankfit.Item, snap ledger.Snapshot) rankfit.Taste 
 		return t
 	}
 	defer vr.Close()
+	pv := e.newPostingVectors(vr, nil)
+	defer pv.Close()
+	return e.tasteWith(pv, items, snap)
+}
+
+// tasteWith is tasteOf over an open vector lookup.
+func (e *env) tasteWith(pv *postingVectors, items []rankfit.Item, snap ledger.Snapshot) rankfit.Taste {
 	in := make([]rankfit.TasteItem, 0, len(items))
+	why := map[string]int{}
 	for i := range items {
 		it := &items[i]
 		if !it.Judged {
@@ -44,11 +52,22 @@ func (e *env) tasteOf(items []rankfit.Item, snap ledger.Snapshot) rankfit.Taste 
 		k := posting.Key(it.Key)
 		ti := rankfit.TasteItem{Key: k, Grade: it.Grade, Title: it.Value[rankfit.PartTitle]}
 		if r, ok := findRecord(snap, k); ok {
-			if v, st := vr.Pooled(r.Posting.Title, r.Posting.Description); st == semantic.PoolOK {
-				ti.Vector = v
+			v, cause := pv.of(r)
+			ti.Vector = v
+			if v == nil {
+				why[cause]++
 			}
+		} else {
+			why[vecNotInLedger]++
 		}
 		in = append(in, ti)
 	}
-	return rankfit.BuildTaste(in, tasteResamples, tasteSeed)
+	t := rankfit.BuildTaste(in, tasteResamples, tasteSeed)
+	if len(why) > 0 {
+		t.WithoutVector = why
+	}
+	if pv.openErr != nil {
+		t.VectorNote = fmt.Sprintf("evicted descriptions could not be read back (%v), so those postings count as text_unreadable", pv.openErr)
+	}
+	return t
 }

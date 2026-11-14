@@ -44,12 +44,19 @@ func (e *env) markYesNeighbours(cands []eval.AuditCandidate, done map[posting.Ke
 		return fmt.Errorf("audit --yes-neighbours: the vector store could not be read: %w", err)
 	}
 	defer vr.Close()
+	// Dropped candidates and anchors keep their description out of the
+	// snapshot; postingVectors reads it back, or their vectors are never found.
+	pv := e.newPostingVectors(vr, nil)
+	defer pv.Close()
 	sampled, _ := eval.WithoutSelectedOnReading(done)
 	items, err := e.judgedItems(sampled, snap, jobinsight.DefaultWeights(), nil)
 	if err != nil {
 		return fmt.Errorf("audit --yes-neighbours: the taste gate could not run: %w", err)
 	}
-	taste := e.tasteOf(items, snap)
+	taste := e.tasteWith(pv, items, snap)
+	if pv.openErr != nil {
+		return fmt.Errorf("audit --yes-neighbours: %s", taste.VectorNote)
+	}
 	if !taste.Passes {
 		why := taste.Reason
 		if taste.Status == rankfit.TasteOK {
@@ -58,10 +65,7 @@ func (e *env) markYesNeighbours(cands []eval.AuditCandidate, done map[posting.Ke
 		return unavailable("audit --yes-neighbours: refused, the taste column does not pass (%s: %s); see `vani relevance`", taste.Status, why)
 	}
 	vectorOf := func(r ledger.Record) []float32 {
-		v, st := vr.Pooled(r.Posting.Title, r.Posting.Description)
-		if st != semantic.PoolOK {
-			return nil
-		}
+		v, _ := pv.of(r)
 		return v
 	}
 	cutoff, weekly := eval.WeekStart(seed)

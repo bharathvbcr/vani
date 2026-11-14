@@ -535,6 +535,19 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 			e.logSemantic(*rec.Semantic)
 		}
 		noteMarks(rec.Semantic, marksErr)
+		// The owner's judged postings, which the warm (kept and marked only) may
+		// never reach: the taste column and the yes-neighbour cell read their
+		// vectors. Outside warm_per_run: at most maxLabelEmbed, and only those
+		// without a current vector.
+		if ctx.Err() == nil {
+			e.embedLabelledNow(ctx, cfg, app.Ledger.All(), mk, func(r ledger.Record) (string, error) {
+				full := ledger.Full(app.Ledger, r)
+				if full.BodyEvicted {
+					return "", ledger.ErrBodyUnavailable
+				}
+				return full.Posting.Description, nil
+			})
+		}
 	}
 	dopts, warning := digestOptions(cfg, e.stateDir)
 	if warning != "" {

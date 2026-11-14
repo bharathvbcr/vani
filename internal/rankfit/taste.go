@@ -2,7 +2,9 @@ package rankfit
 
 import (
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
@@ -55,6 +57,12 @@ type Taste struct {
 	TitleLo  float64 `json:"title_lo"`
 	TitleHi  float64 `json:"title_hi"`
 	Passes   bool    `json:"passes"`
+	// WithoutVector counts the judged postings without a vector by cause (the
+	// caller's: never embedded, stale chunking, text unreadable, ...), so a
+	// missing vector can be told from a lookup that could not run.
+	WithoutVector map[string]int `json:"without_vector_by_cause,omitempty"`
+	// VectorNote says what kept the causes from being read, when something did.
+	VectorNote string `json:"vector_note,omitempty"`
 }
 
 // BuildTaste computes the column over items (judged postings only; the caller
@@ -141,6 +149,16 @@ func (t Taste) Markdown() string {
 		}
 	default:
 		fmt.Fprintf(&b, "%s: %s (%d judged without a vector). The yes-neighbour cell stays closed.\n", t.Status, t.Reason, t.NoVector)
+	}
+	if len(t.WithoutVector) > 0 {
+		b.WriteString("\nJudged postings without a vector, by cause:")
+		for _, c := range slices.Sorted(maps.Keys(t.WithoutVector)) {
+			fmt.Fprintf(&b, " %s %d;", c, t.WithoutVector[c])
+		}
+		b.WriteString(" (never_embedded: the semantic warm embeds kept and marked postings only, so a posting dropped before it was reached has none)\n")
+	}
+	if t.VectorNote != "" {
+		fmt.Fprintf(&b, "\n%s\n", t.VectorNote)
 	}
 	return b.String()
 }

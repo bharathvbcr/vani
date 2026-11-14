@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
@@ -57,49 +58,169 @@ const (
 	GroupDrops      = "group:all_drop_classes"
 )
 
-// The disagreement cells' kill rule, fixed before any cell label exists
-// (second Fable review): at KillFirstLook judged labels a cell with at most
-// KillOffYes yes is turned off and one with at least KillKeepYes is kept;
-// between, it runs to KillSecondLook judged, where the owner decides on the
-// counts.
+// The kill rule for the yes-seeking cells (teacher wants, yes-neighbour),
+// reworked 2026-11-14 before any cell label exists (Fable, after the audit
+// benchmark): the old rule kept a cell at 4 yes anywhere from 20 to 39 judged,
+// and kept a cell no better than random 39% of the time.
+//
+// Two looks, each on the cell's first labels by answer time, latched:
+//   - at KillFirstLook judged, KillOffYes or fewer yes turns the cell off; there
+//     is no early keep, since a kept cell and an undecided one both keep drawing;
+//   - at KillSecondLook judged, the cell is kept when it has at least
+//     KillKeepYes yes and its yes rate is at least KillKeepRatio times its
+//     comparator's (the comparator's counts frozen at the cell's
+//     KillSecondLook-th answer); otherwise it is turned off. A comparator with
+//     no labels cannot decide, and that is never a keep.
+//
+// The wants cell's comparator is the random strata pooled; the yes-neighbour
+// cell's is GroupDeciles, since its pool is mostly kept postings.
+//
+// The teacher-rejects cell is not under this rule. A no there is the engine
+// error it exists to find, so "few yes turns it off" would kill it when it
+// works, and at two picks a week no yes rule has power. At RejectsLook judged
+// its no rate is set beside the top three deciles' and the owner decides.
 const (
 	KillFirstLook  = 20
 	KillSecondLook = 40
 	KillOffYes     = 1
-	KillKeepYes    = 4
+	KillKeepYes    = 5
+	KillKeepRatio  = 2
+	RejectsLook    = 20
 )
 
 // The kill rule's verdicts.
 const (
-	CellCollecting = "collecting"
-	CellTurnOff    = "turn_off"
-	CellKeep       = "keep"
-	CellRunOn      = "run_to_40"
-	CellOwnerCall  = "owner_call"
+	CellCollecting   = "collecting"
+	CellTurnOff      = "turn_off"
+	CellKeep         = "keep"
+	CellRunOn        = "run_to_40"
+	CellOwnerCall    = "owner_call"
+	CellCannotDecide = "cannot_decide"
 )
 
-// CellVerdict is the kill rule applied to one disagreement cell's judged
-// labels.
+// CellVerdict is the kill rule applied to one cell's judged labels. N, Yes and
+// No are the cell's counts now; Why gives the counts the verdict was taken on
+// (the looks are latched on the first answers). Comparator and its counts are
+// what the cell was held against: frozen at the second look once it is reached,
+// the comparator's counts now before then.
 type CellVerdict struct {
-	Cell    string `json:"cell"`
-	N       int    `json:"judged"`
-	Yes     int    `json:"yes"`
-	Verdict string `json:"verdict"`
+	Cell       string `json:"cell"`
+	N          int    `json:"judged"`
+	Yes        int    `json:"yes"`
+	No         int    `json:"no"`
+	Verdict    string `json:"verdict"`
+	Comparator string `json:"comparator,omitempty"`
+	CompN      int    `json:"comparator_judged"`
+	CompYes    int    `json:"comparator_yes"`
+	CompNo     int    `json:"comparator_no"`
+	Why        string `json:"why"`
 }
 
-// killVerdict is the kill rule on n judged labels with yes of them yes.
-func killVerdict(n, yes int) string {
+// firstLook is the kill rule's first look: yes of the cell's first
+// KillFirstLook answers. It reports whether the cell is turned off.
+func firstLook(yes int) bool { return yes <= KillOffYes }
+
+// secondLook is the kill rule's second look on yes of the cell's first
+// KillSecondLook answers against compYes of compN comparator answers.
+func secondLook(yes, compN, compYes int) string {
 	switch {
-	case n < KillFirstLook:
-		return CellCollecting
-	case n < KillSecondLook && yes <= KillOffYes:
-		return CellTurnOff
-	case n < KillSecondLook && yes >= KillKeepYes:
+	case compN == 0:
+		return CellCannotDecide
+	case yes >= KillKeepYes && yes*compN >= KillKeepRatio*KillSecondLook*compYes:
 		return CellKeep
-	case n < KillSecondLook:
-		return CellRunOn
 	}
-	return CellOwnerCall
+	return CellTurnOff
+}
+
+// answer is one judged label with its answer time, for the latched looks.
+type answer struct {
+	at  time.Time
+	key posting.Key
+	v   string
+}
+
+// byAnswerTime orders answers by time, then key, so equal times stay stable.
+func byAnswerTime(xs []answer) {
+	slices.SortFunc(xs, func(a, b answer) int {
+		if c := a.at.Compare(b.at); c != 0 {
+			return c
+		}
+		return strings.Compare(string(a.key), string(b.key))
+	})
+}
+
+// tally counts xs: judged, yes and no.
+func tally(xs []answer) (n, yes, no int) {
+	for _, x := range xs {
+		n++
+		switch x.v {
+		case "yes":
+			yes++
+		case "no":
+			no++
+		}
+	}
+	return n, yes, no
+}
+
+// until is the answers in xs (ordered) given at or before t.
+func until(xs []answer, t time.Time) []answer {
+	i := 0
+	for i < len(xs) && !xs[i].at.After(t) {
+		i++
+	}
+	return xs[:i]
+}
+
+// yesCellVerdict is the kill rule on a yes-seeking cell's answers against its
+// comparator's, both ordered by answer time.
+func yesCellVerdict(cell string, xs []answer, compName string, comp []answer) CellVerdict {
+	n, yes, no := tally(xs)
+	cn, cy, cno := tally(comp)
+	v := CellVerdict{Cell: cell, N: n, Yes: yes, No: no, Comparator: compName, CompN: cn, CompYes: cy, CompNo: cno}
+	if n < KillFirstLook {
+		v.Verdict = CellCollecting
+		v.Why = fmt.Sprintf("%d of %d judged before the first look", n, KillFirstLook)
+		return v
+	}
+	_, y20, _ := tally(xs[:KillFirstLook])
+	if firstLook(y20) {
+		v.Verdict = CellTurnOff
+		v.Why = fmt.Sprintf("first look: %d yes in its first %d answers (%d or fewer turns it off)", y20, KillFirstLook, KillOffYes)
+		return v
+	}
+	if n < KillSecondLook {
+		v.Verdict = CellRunOn
+		v.Why = fmt.Sprintf("first look passed (%d yes in %d); %d of %d judged before the second look", y20, KillFirstLook, n, KillSecondLook)
+		return v
+	}
+	_, y40, _ := tally(xs[:KillSecondLook])
+	v.CompN, v.CompYes, v.CompNo = tally(until(comp, xs[KillSecondLook-1].at))
+	v.Verdict = secondLook(y40, v.CompN, v.CompYes)
+	switch v.Verdict {
+	case CellCannotDecide:
+		v.Why = fmt.Sprintf("second look: %d yes in its first %d answers, but %s had no answers by then", y40, KillSecondLook, compName)
+	default:
+		v.Why = fmt.Sprintf("second look: %d yes in its first %d answers against %s's %d of %d (keep needs %d or more yes and at least %dx the comparator's rate)",
+			y40, KillSecondLook, compName, v.CompYes, v.CompN, KillKeepYes, KillKeepRatio)
+	}
+	return v
+}
+
+// rejectsCellVerdict sets the teacher-rejects cell's no rate beside the top
+// three deciles' once it has RejectsLook answers; the owner decides.
+func rejectsCellVerdict(xs []answer, top []answer) CellVerdict {
+	n, yes, no := tally(xs)
+	cn, cy, cno := tally(top)
+	v := CellVerdict{Cell: CellTeacherRejects, N: n, Yes: yes, No: no, Comparator: GroupTopDeciles, CompN: cn, CompYes: cy, CompNo: cno}
+	if n < RejectsLook {
+		v.Verdict = CellCollecting
+		v.Why = fmt.Sprintf("%d of %d judged before its no rate is shown", n, RejectsLook)
+		return v
+	}
+	v.Verdict = CellOwnerCall
+	v.Why = fmt.Sprintf("no in %d of %d answers, against %d of %d in %s; no yes rule applies here (a no is the engine error the cell looks for), so keeping it is the owner's call", no, n, cno, cn, GroupTopDeciles)
+	return v
 }
 
 // groupsOf are the groups source counts in.
@@ -123,7 +244,10 @@ func groupsOf(source string) []string {
 func BuildYesYield(labels map[posting.Key]Entry) YesYield {
 	rows, groups := map[string]*YieldRow{}, map[string]*YieldRow{}
 	out := YesYield{Rows: []YieldRow{}, Groups: []YieldRow{}, Random: YieldRow{Source: "random strata"}, Cells: []CellVerdict{}}
-	for _, e := range labels {
+	// answers keeps each cell's and comparator's answers with their times for
+	// the kill rule's latched looks.
+	answers := map[string][]answer{}
+	for k, e := range labels {
 		v, ok := e.Labels[WouldApply]
 		if !ok {
 			continue
@@ -141,15 +265,22 @@ func BuildYesYield(labels map[posting.Key]Entry) YesYield {
 			rows[e.Source] = r
 		}
 		r.add(v)
+		a := answer{at: e.LabeledAt, key: k, v: v}
+		answers[e.Source] = append(answers[e.Source], a)
 		if random {
 			out.Random.add(v)
+			answers[out.Random.Source] = append(answers[out.Random.Source], a)
 		}
 		for _, g := range groupsOf(e.Source) {
 			if groups[g] == nil {
 				groups[g] = &YieldRow{Source: g}
 			}
 			groups[g].add(v)
+			answers[g] = append(answers[g], a)
 		}
+	}
+	for _, xs := range answers {
+		byAnswerTime(xs)
 	}
 	for _, src := range slices.Sorted(maps.Keys(rows)) {
 		r := *rows[src]
@@ -163,10 +294,14 @@ func BuildYesYield(labels map[posting.Key]Entry) YesYield {
 		}
 	}
 	out.Random.Lo, out.Random.Hi, _ = Wilson(out.Random.Yes, out.Random.N)
-	for _, cell := range []string{CellTeacherWants, CellTeacherRejects, CellYesNeighbour} {
-		if r := rows[cell]; r != nil {
-			out.Cells = append(out.Cells, CellVerdict{Cell: cell, N: r.N, Yes: r.Yes, Verdict: killVerdict(r.N, r.Yes)})
-		}
+	if xs := answers[CellTeacherWants]; len(xs) > 0 {
+		out.Cells = append(out.Cells, yesCellVerdict(CellTeacherWants, xs, out.Random.Source, answers[out.Random.Source]))
+	}
+	if xs := answers[CellTeacherRejects]; len(xs) > 0 {
+		out.Cells = append(out.Cells, rejectsCellVerdict(xs, answers[GroupTopDeciles]))
+	}
+	if xs := answers[CellYesNeighbour]; len(xs) > 0 {
+		out.Cells = append(out.Cells, yesCellVerdict(CellYesNeighbour, xs, GroupDeciles, answers[GroupDeciles]))
 	}
 
 	best, bestLo := "", -1.0
@@ -218,8 +353,7 @@ func (y YesYield) Markdown() string {
 	}
 	fmt.Fprintf(&b, "\n%s\n", y.Advice)
 	for _, c := range y.Cells {
-		fmt.Fprintf(&b, "\nKill rule, %s: %d yes of %d judged: %s (at %d judged, %d or fewer yes turns it off, %d or more keeps it, between runs to %d).\n",
-			c.Cell, c.Yes, c.N, c.Verdict, KillFirstLook, KillOffYes, KillKeepYes, KillSecondLook)
+		fmt.Fprintf(&b, "\nKill rule, %s: %d yes of %d judged: %s (%s).\n", c.Cell, c.Yes, c.N, c.Verdict, c.Why)
 	}
 	return b.String()
 }

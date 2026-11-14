@@ -90,10 +90,10 @@ public struct AuditDraw: Decodable, Equatable, Sendable {
     public var seed: String
     public var blind: Bool
     public var picks: [AuditPick]
-    /// Each overlay vani could not draw this week, and why (no teacher
+    /// Each overlay vani could not draw in full this week, and why (no teacher
     /// readings yet, a taste column that does not pass, a cell the kill rule
-    /// turned off). Empty when every overlay ran; a vani too old to send it
-    /// decodes as empty.
+    /// turned off, a cell whose pool is running out). Empty when every overlay
+    /// ran; a vani too old to send it decodes as empty.
     public var skipped: [String]
 
     public init(seed: String, blind: Bool, picks: [AuditPick], skipped: [String] = []) {

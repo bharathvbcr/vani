@@ -60,6 +60,12 @@ func (e *env) cmdSemanticWarm(args []string) error {
 	ctx, stop := signalContext()
 	defer stop()
 	rep := warmSemantic(ctx, cfg, e.stateDir, recs, mk, limit)
+	if ctx.Err() == nil {
+		// The owner's judged postings, which the warm may never reach (labelvectors.go).
+		pv := e.newPostingVectors(nil, nil)
+		e.embedLabelledNow(ctx, cfg, recs, mk, pv.text)
+		pv.Close()
+	}
 	if *asJSON {
 		var err error
 		if rep.Note != "" {

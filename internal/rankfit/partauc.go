@@ -57,6 +57,10 @@ type PartAUCRow struct {
 	KnownLo  float64 `json:"known_lo"`
 	KnownHi  float64 `json:"known_hi"`
 	KnownOK  bool    `json:"known_ok"`
+	// KnownP is AUCPValue on the known-only AUC, set with KnownOK (0 without
+	// it); KnownPExact is false when it is the normal approximation.
+	KnownP      float64 `json:"known_p"`
+	KnownPExact bool    `json:"known_p_exact"`
 }
 
 // PartAUC is the report for one scope of judged postings.
@@ -141,6 +145,9 @@ func BuildPartAUC(items []Item, base jobinsight.Weights, scope string, keep func
 			row.KnownAUC = auc(kp, kn)
 			row.KnownLo, row.KnownHi = bootstrapAUC(kp, kn, resamples, rand.New(rand.NewPCG(seed, 2*uint64(ci)+2)))
 			row.KnownOK = !math.IsNaN(row.KnownAUC)
+			if row.KnownOK {
+				row.KnownP, row.KnownPExact = AUCPValue(kp, kn)
+			}
 		}
 		out.Rows = append(out.Rows, row)
 	}
@@ -185,6 +192,110 @@ func auc(pos, neg []float64) float64 {
 	return s / float64(len(pos)*len(neg))
 }
 
+// MaxExactPItems bounds AUCPValue's exact count: above this many pooled
+// values it takes the normal approximation, tie-corrected, and says so.
+const MaxExactPItems = 100
+
+// AUCPValue is the one-sided chance that labels carrying no information give
+// pos an AUC over neg at least as high as this one: of every way to choose
+// which len(pos) of the pooled values are the wanted ones, the share whose
+// rank sum is at least pos's. Ties take midranks (doubled, so the count is in
+// integers), so a tied part is not credited for its ties. A bootstrap interval
+// on three positives is not to be trusted; this is exact and deterministic. It
+// is NaN when a class is empty; exact is false when the pool is over
+// MaxExactPItems and the normal approximation was used.
+func AUCPValue(pos, neg []float64) (p float64, exact bool) {
+	n1, n0 := len(pos), len(neg)
+	if n1 == 0 || n0 == 0 {
+		return math.NaN(), true
+	}
+	type v struct {
+		x   float64
+		pos bool
+	}
+	all := make([]v, 0, n1+n0)
+	for _, x := range pos {
+		all = append(all, v{x, true})
+	}
+	for _, x := range neg {
+		all = append(all, v{x, false})
+	}
+	slices.SortFunc(all, func(a, b v) int { return cmpFloat(a.x, b.x) })
+	n := len(all)
+	r2 := make([]int, n) // doubled midranks
+	tieTerm := 0.0
+	for i := 0; i < n; {
+		j := i
+		for j+1 < n && all[j+1].x == all[i].x {
+			j++
+		}
+		for k := i; k <= j; k++ {
+			r2[k] = (i + 1) + (j + 1)
+		}
+		t := float64(j - i + 1)
+		tieTerm += t*t*t - t
+		i = j + 1
+	}
+	obs, total := 0, 0
+	for i, a := range all {
+		total += r2[i]
+		if a.pos {
+			obs += r2[i]
+		}
+	}
+	if n > MaxExactPItems {
+		// U from the rank sum, tie-corrected variance, continuity correction.
+		u := float64(obs)/2 - float64(n1*(n1+1))/2
+		mean := float64(n1*n0) / 2
+		sd := math.Sqrt(float64(n1*n0) / 12 * (float64(n+1) - tieTerm/float64(n*(n-1))))
+		if sd == 0 {
+			return 1, false
+		}
+		z := (u - mean - 0.5) / sd
+		return 0.5 * math.Erfc(z/math.Sqrt2), false
+	}
+	// Count over the smaller class: pos's sum >= obs is the other class's sum
+	// <= total-obs.
+	k, want, atLeast := n1, obs, true
+	if n0 < n1 {
+		k, want, atLeast = n0, total-obs, false
+	}
+	maxS := 2 * n * k
+	ways := make([][]float64, k+1)
+	for j := range ways {
+		ways[j] = make([]float64, maxS+1)
+	}
+	ways[0][0] = 1
+	for i := range n {
+		for j := min(i+1, k); j >= 1; j-- {
+			from, to := ways[j-1], ways[j]
+			for s := maxS - r2[i]; s >= 0; s-- {
+				if from[s] != 0 {
+					to[s+r2[i]] += from[s]
+				}
+			}
+		}
+	}
+	var hit, all2 float64
+	for s, w := range ways[k] {
+		all2 += w
+		if (atLeast && s >= want) || (!atLeast && s <= want) {
+			hit += w
+		}
+	}
+	return hit / all2, true
+}
+
+func cmpFloat(a, b float64) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
+}
+
 // bootstrapAUC is the 95% percentile interval of the AUC over resamples drawn
 // with replacement within each class (the class sizes are the design's).
 func bootstrapAUC(pos, neg []float64, resamples int, r *rand.Rand) (lo, hi float64) {
@@ -217,11 +328,19 @@ func (r PartAUC) Markdown() string {
 		return b.String()
 	}
 	fmt.Fprintf(&b, "%d wanted, %d unwanted. AUC: the chance a wanted posting's value is above an unwanted one's (ties half); 0.5 is no better than chance. 95%% intervals from %d stratified resamples (seed %d). \"known\" counts postings where the part was evidence rather than the prior. The all-postings AUC mixes how the value orders with whether the part was known at all, so only the known-only AUC gives a reading, and only with at least %d known in each class.\n\n", r.Pos, r.Neg, r.Resamples, r.Seed, MinPartAUCClass)
-	b.WriteString("| part | AUC, all (95%) | known (wanted / unwanted) | AUC, known only (95%) | reading |\n|---|---|---|---|---|\n")
+	b.WriteString("| part | AUC, all (95%) | known (wanted / unwanted) | AUC, known only (95%) | p, known only | reading |\n|---|---|---|---|---|---|\n")
+	tested := 0
 	for _, x := range r.Rows {
-		all, known := "no data", "too few known"
+		all, known, pv := "no data", "too few known", "-"
 		if x.OK {
 			all = fmt.Sprintf("%.2f (%.2f-%.2f)", x.AUC, x.Lo, x.Hi)
+		}
+		if x.KnownOK {
+			tested++
+			pv = fmt.Sprintf("%.3f", x.KnownP)
+			if !x.KnownPExact {
+				pv += " (normal approx.)"
+			}
 		}
 		reading := "too few known to read"
 		if x.KnownOK {
@@ -235,7 +354,10 @@ func (r PartAUC) Markdown() string {
 				reading = "unclear"
 			}
 		}
-		fmt.Fprintf(&b, "| %s | %s | %d / %d | %s | %s |\n", x.Part, all, x.KnownPos, x.KnownNeg, known, reading)
+		fmt.Fprintf(&b, "| %s | %s | %d / %d | %s | %s | %s |\n", x.Part, all, x.KnownPos, x.KnownNeg, known, pv, reading)
+	}
+	if tested > 0 {
+		fmt.Fprintf(&b, "\np: the exact one-sided chance that labels carrying no information score the part at least this well (rank sums over every way to choose the wanted postings, ties as midranks). %d rows tested here, so about %.1f would fall under 0.05 by chance alone.\n", tested, 0.05*float64(tested))
 	}
 	return b.String()
 }
