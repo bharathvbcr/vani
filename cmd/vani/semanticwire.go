@@ -194,7 +194,12 @@ type semanticReport struct {
 	VectorsCount     int    `json:"vectors_count,omitempty"`
 	VectorsBytes     int64  `json:"vectors_bytes,omitempty"`
 	VectorsErr       string `json:"vectors_error,omitempty"`
-	Note             string `json:"note,omitempty"`
+	// The score cache: entries evicted to stay within its bounds, and how many of
+	// those were still browsable (the cache is smaller than the live set).
+	ScoresEvicted     int `json:"scores_evicted,omitempty"`
+	ScoresEvictedLive int `json:"scores_evicted_live,omitempty"`
+
+	Note string `json:"note,omitempty"`
 }
 
 // fromWarm copies a semantic.Report's counts into the report.
@@ -204,6 +209,7 @@ func (s *semanticReport) fromWarm(r semantic.Report) {
 	s.VectorsRebuilt, s.VectorsStale, s.VectorsCorrupt, s.VectorsTornBytes = r.VectorsRebuilt, r.VectorsStale, r.VectorsCorrupt, r.VectorsTornBytes
 	s.VectorsAppended, s.VectorsRefused, s.VectorsEvicted, s.VectorsCompacted = r.VectorsAppended, r.VectorsRefused, r.VectorsEvicted, r.VectorsCompacted
 	s.VectorsCount, s.VectorsBytes, s.VectorsErr = r.VectorsCount, r.VectorsBytes, oneLine(r.VectorsErr, 200)
+	s.ScoresEvicted, s.ScoresEvictedLive = r.ScoresEvicted, r.ScoresEvictedLive
 }
 
 // countsLine is the warm's counts as one line. Rescored is shown only when
@@ -212,6 +218,12 @@ func (s *semanticReport) countsLine() string {
 	line := fmt.Sprintf("scored %d, cached %d, failed %d, skipped %d", s.Scored, s.Cached, s.Failed, s.Skipped)
 	if s.Rescored > 0 {
 		line += fmt.Sprintf(", rescored %d from stored vectors", s.Rescored)
+	}
+	if s.ScoresEvicted > 0 {
+		line += fmt.Sprintf(", evicted %d cached score(s)", s.ScoresEvicted)
+		if s.ScoresEvictedLive > 0 {
+			line += fmt.Sprintf(" (%d still browsable: the score cache is smaller than the live set, and they will be scored again)", s.ScoresEvictedLive)
+		}
 	}
 	return line
 }

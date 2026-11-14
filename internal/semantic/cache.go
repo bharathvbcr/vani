@@ -206,48 +206,92 @@ func loadScores(path, hash, model string) (*scoreFile, error) {
 	return &sf, nil
 }
 
-// evict drops the oldest entries until at most max remain.
-func (sf *scoreFile) evict(max int) {
+// keepRule is what eviction keeps, the same rule the chunk-vector log follows
+// (SetVectorPriority): live ranks the postings still browsable by TextHash (nil
+// names no live set, and only age decides); mine holds the TextHashes this Warm
+// scored, which count as the highest rank unless live ranks them.
+type keepRule struct {
+	live map[string]float64
+	mine map[string]bool
+}
+
+// rank says whether a text is in the live set and how long it is kept.
+func (k keepRule) rank(textHash string) (live bool, r float64) {
+	if r, ok := k.live[textHash]; ok {
+		return true, r
+	}
+	if k.live != nil && k.mine[textHash] {
+		return true, math.Inf(1)
+	}
+	return false, 0
+}
+
+// evict drops entries until at most max remain: those outside the live set
+// first, then the lowest rank, then the oldest written. It returns how many it
+// dropped and how many of those were live: a live eviction means the cache is
+// too small for the live set, and that posting will be scored again.
+func (sf *scoreFile) evict(max int, keep keepRule) (evicted, evictedLive int) {
 	if max < 0 {
 		max = 0
 	}
 	if len(sf.Entries) <= max {
-		return
+		return 0, 0
 	}
-	keys := make([]string, 0, len(sf.Entries))
-	for k := range sf.Entries {
-		keys = append(keys, k)
+	type cand struct {
+		key  string
+		e    *entry
+		live bool
+		rank float64
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := sf.Entries[keys[i]], sf.Entries[keys[j]]
-		if a.Seq != b.Seq {
-			return a.Seq < b.Seq
+	cs := make([]cand, 0, len(sf.Entries))
+	for k, e := range sf.Entries {
+		live, r := keep.rank(e.TextHash)
+		cs = append(cs, cand{k, e, live, r})
+	}
+	sort.Slice(cs, func(i, j int) bool {
+		a, b := cs[i], cs[j]
+		switch {
+		case a.live != b.live:
+			return !a.live
+		case a.rank != b.rank:
+			return a.rank < b.rank
+		case a.e.Seq != b.e.Seq:
+			return a.e.Seq < b.e.Seq
 		}
-		return keys[i] < keys[j]
+		return a.key < b.key
 	})
-	for _, k := range keys[:len(keys)-max] {
-		delete(sf.Entries, k)
+	for _, c := range cs[:len(cs)-max] {
+		delete(sf.Entries, c.key)
+		evicted++
+		if c.live {
+			evictedLive++
+		}
 	}
+	return evicted, evictedLive
 }
 
 // saveScores evicts down to max entries and writes the file, evicting more if
-// the encoding would pass MaxCacheBytes.
-func saveScores(path string, sf *scoreFile, max int) error {
-	sf.evict(max)
+// the encoding would pass maxBytes: in proportion to the excess (with a little
+// headroom), so one byte over does not cost half the cache.
+func saveScores(path string, sf *scoreFile, max, maxBytes int, keep keepRule) (evicted, evictedLive int, err error) {
+	evicted, evictedLive = sf.evict(max, keep)
 	for {
 		raw, err := json.Marshal(sf)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrCache, err)
+			return evicted, evictedLive, fmt.Errorf("%w: %v", ErrCache, err)
 		}
-		if len(raw) <= MaxCacheBytes {
+		if len(raw) <= maxBytes {
 			if err := atomicfile.Write(path, raw); err != nil {
-				return fmt.Errorf("%w: %v", ErrCache, err)
+				return evicted, evictedLive, fmt.Errorf("%w: %v", ErrCache, err)
 			}
-			return nil
+			return evicted, evictedLive, nil
 		}
-		if len(sf.Entries) == 0 {
-			return fmt.Errorf("%w: scores cache cannot fit in %d bytes", ErrCache, MaxCacheBytes)
+		n := len(sf.Entries)
+		if n == 0 {
+			return evicted, evictedLive, fmt.Errorf("%w: scores cache cannot fit in %d bytes", ErrCache, maxBytes)
 		}
-		sf.evict(len(sf.Entries) / 2)
+		target := int(int64(n) * int64(maxBytes) / int64(len(raw)) * 15 / 16)
+		e, l := sf.evict(min(target, n-1), keep)
+		evicted, evictedLive = evicted+e, evictedLive+l
 	}
 }
