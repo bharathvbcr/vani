@@ -29,9 +29,11 @@ were ported with notice. Source files do not carry an upstream copyright header.
   own package (ledger, marks, eval) or in the store it writes through (atomicfile.Write,
   ledger); manualtriage and the vector log gained sync-count tests. feedback, doctor and digest
   still sync for real in their tests and have no count test. Source adapters' tests
-  answer `srcutil`'s retry waits at once (`srcutil.RunWithoutWaits`). The full suite went from
-  13 min 13 s to 3 min 14 s; `cmd/vani` from 765 s (over `go test`'s default 10-minute timeout)
-  to 156 s, and goneparity from 647 s to 4 s.
+  answer `srcutil`'s retry waits at once (`srcutil.RunWithoutWaits`). Measured as one back-to-back pair
+  on a quiet machine (2026-11-14, `go test ./... -count=1`, 0 failures in either): the full suite
+  went from 16 min 24 s to 3 min 44 s wall; `cmd/vani` from 961 s (over `go test`'s default
+  10-minute timeout) to 205 s, goneparity from 649 s to 3 s, pipeline from 560 s to 68 s and
+  ledger from 393 s to 80 s.
 - **Round-2 measurements** (2026-11-14, decided by Fable). `vani relevance` adds a part-coverage
   table over the open pool: how often each Score part is evidence, how much of the match it
   decides (weight x confidence), its distinct values, and whether it is known nowhere or constant.
