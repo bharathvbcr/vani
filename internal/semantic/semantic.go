@@ -109,11 +109,14 @@ const (
 	// (Matcher.SetVectorPriority) are evicted first, then the lowest ranked, then
 	// the oldest. It sits above the browsable postings the owner's boards hold
 	// (about 29,000 on 2026-11-12; at 20,000 the warmers re-scored the overflow
-	// forever) and below what MaxCacheBytes holds (about 100,000 at the ~640
-	// bytes an entry encodes to).
+	// forever) and below what MaxCacheBytes holds: an entry encodes to ~620 bytes
+	// on the owner's state (12.3 MB for 20,000 entries on 2026-11-13) but to about
+	// 3 KB at worst (three 120-rune snippets that all JSON-escape), and 80,000 of
+	// those are about 256 MiB.
 	DefaultMaxEntries = 80000
-	// MaxCacheBytes caps a cache file, on read and on write.
-	MaxCacheBytes = 64 << 20
+	// MaxCacheBytes caps a cache file, on read and on write (the score cache, the
+	// profile cache and the vector cache each).
+	MaxCacheBytes = 256 << 20
 
 	topChunks    = 8   // m: chunk maxima averaged into the raw score
 	evidenceN    = 3   // evidence items kept
