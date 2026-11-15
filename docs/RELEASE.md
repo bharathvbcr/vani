@@ -32,7 +32,8 @@ of the app is not cut until this check is deliberately changed.
    /Users/bharath/Code/apps/Vani/scripts/release.sh v0.1.0 --dry-run
    ```
 
-3. Publish. This runs `go test ./...` and `swift test --package-path macos`, builds, verifies with
+3. Publish. This runs `scripts/test.sh --fresh` (Go, Swift, the extension's Bun tests and its type-check,
+   uncached), builds, verifies with
    `codesign --verify --deep --strict`, creates an annotated tag, pushes only that tag, and runs
    `gh release create`:
 
@@ -42,8 +43,10 @@ of the app is not cut until this check is deliberately changed.
 
 Refusals, each named in the message: `version-format`, `version-mismatch`, `repo-not-private`,
 `dirty-tree`, `not-on-main`, `head-not-origin-main`, `tag-exists-locally`, `tag-exists-on-origin`,
-`go-tests-failed`, `swift-tests-failed`, `codesign-verify-failed`. `--skip-tests` skips both test runs
-and says so in the release notes. In `--dry-run` the git-state refusals are reported, not enforced.
+`go-tests-failed`, `swift-tests-failed`, `extension-tests-failed`, `typecheck-failed`,
+`codesign-verify-failed`. `--skip-tests` skips every test run and says so in the release notes. Swift tests
+that skipped rather than ran (no Go `vani` built, runner not trusted for accessibility) do not refuse the
+release, but the notes name how many. In `--dry-run` the git-state refusals are reported, not enforced.
 
 ## Install
 

@@ -54,6 +54,7 @@ IS_PRIVATE="$("$GH" repo view "$REPO" --json isPrivate --jq .isPrivate 2>/dev/nu
 
 # Preconditions on git state: refuse for a real release, report in a dry run.
 NOTES=()
+SWIFT_SKIPPED=""
 problem() {
   if [ "$DRY" = 1 ]; then
     echo "release.sh: dry-run would refuse: $*" >&2
@@ -83,8 +84,21 @@ if [ "$SKIP_TESTS" = 1 ]; then
   echo "release.sh: WARNING tests skipped (--skip-tests); the release notes will say so" >&2
   NOTES+=("tests-skipped")
 else
-  go -C "$ROOT" test ./... || die "go-tests-failed"
-  swift test --package-path "$ROOT/macos" || die "swift-tests-failed"
+  # One runner for every gate (scripts/test.sh): Go, Swift, the extension's Bun tests and its type-check run
+  # concurrently, uncached (--fresh), and each suite's exit code is left in the run directory.
+  RUNDIR="$ROOT/tmp/test-runs"
+  if ! "$ROOT/scripts/test.sh" --fresh; then
+    LAST="$RUNDIR/latest"
+    [ "$(cat "$LAST/go.rc" 2>/dev/null || echo 1)" = 0 ] || die "go-tests-failed: see $LAST/go.log"
+    [ "$(cat "$LAST/swift.rc" 2>/dev/null || echo 1)" = 0 ] || die "swift-tests-failed: see $LAST/swift.log and swift-serial.log"
+    [ "$(cat "$LAST/bun.rc" 2>/dev/null || echo 1)" = 0 ] || die "extension-tests-failed: see $LAST/bun.log"
+    die "typecheck-failed: see $LAST/types.log"
+  fi
+  # A Swift test that skipped (no Go vani built, runner not trusted for accessibility) is not a test that ran.
+  if [ -f "$RUNDIR/latest/swift.skipped" ]; then
+    SWIFT_SKIPPED="$(cat "$RUNDIR/latest/swift.skipped")"
+    echo "release.sh: WARNING $(cat "$RUNDIR/latest/swift.skipped") Swift tests skipped (reasons: $RUNDIR/latest/swift-skips.txt); the release notes say so" >&2
+  fi
 fi
 
 # Build: bundle.sh signs inside-out and stamps the embedded vani with VANI_VERSION.
@@ -123,6 +137,7 @@ NOTES_FILE="$DIST/.release-notes.md"
   case " ${NOTES[*]:-} " in
     *tests-skipped*) echo "- **TESTS WERE SKIPPED for this release (--skip-tests).**" ;;
   esac
+  [ -z "$SWIFT_SKIPPED" ] || echo "- **$SWIFT_SKIPPED Swift tests skipped, not run** (no Go vani built, or the runner not trusted for accessibility)."
   echo
   echo "## First open"
   echo "Gatekeeper will not recognise the signature. Right-click the app, choose Open, then Open again."

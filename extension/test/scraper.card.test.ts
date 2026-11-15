@@ -324,7 +324,8 @@ describe("a one-page listing with many job links", () => {
     const r = scrape(listingPage(Array.from({ length: 669 }, (_, i) => listingCard(i))), "www.anthropic.com");
     expect(r.jobs).toHaveLength(669);
     expect(new Set(r.jobs.map(j => j.url)).size).toBe(669);
-  });
+    // ~7 s on its own: the test DOM walks a subtree per query, so a loaded machine ran it past Bun's 5 s default.
+  }, 30_000);
 
   test("a posting linked twice is one job, and the second link does not use up the bound", () => {
     const cards = Array.from({ length: 150 }, (_, i) => listingCard(i) + listingCard(i));

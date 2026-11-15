@@ -272,16 +272,19 @@ final class ResumeStoreTests: XCTestCase {
         XCTAssertNil(ResumeStore.checkedName("Resume_\u{202E}fdp.pdf"))
         XCTAssertNil(ResumeStore.checkedName("a\u{200B}b.pdf"))
         XCTAssertEqual(ResumeStore.checkedName("résumé.PDF"), "résumé.PDF")
-        let url = try ResumeStore.previewCopy(name: "../Resume_Secret.pdf", data: bytes)
+        // A private root: the system temporary folder is shared with every other test process (and the app), so a
+        // count of the copies in it raced with their writes under `swift test --parallel` (9 where the cap is 8).
+        let temp = try tempDir(self)
+        let url = try ResumeStore.previewCopy(name: "../Resume_Secret.pdf", data: bytes, in: temp)
         XCTAssertEqual(url.lastPathComponent, "Resume.pdf")
-        let disguised = try ResumeStore.previewCopy(name: "Resume_\u{202E}fdp.pdf", data: bytes)
+        let disguised = try ResumeStore.previewCopy(name: "Resume_\u{202E}fdp.pdf", data: bytes, in: temp)
         XCTAssertEqual(disguised.lastPathComponent, "Resume.pdf")
         XCTAssertFalse(url.pathComponents.contains(".."))
         XCTAssertEqual(url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, ResumeStore.previewRootName)
         XCTAssertEqual(try Data(contentsOf: url), bytes)
         var last = url
         for _ in 0..<12 {
-            last = try ResumeStore.previewCopy(name: "Resume_Acme.pdf", data: bytes)
+            last = try ResumeStore.previewCopy(name: "Resume_Acme.pdf", data: bytes, in: temp)
         }
         let root = last.deletingLastPathComponent().deletingLastPathComponent()
         let keys: Set<URLResourceKey> = [.isDirectoryKey]

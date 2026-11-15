@@ -61,6 +61,7 @@ private final class HostController {
     let window: NSWindow
     /// The window `unkey` makes key in place of the Jobs window.
     private var helper: NSWindow?
+    private var activationObserver: NSObjectProtocol?
     private var buffer = Data()
 
     init(vani: URL) {
@@ -87,6 +88,17 @@ private final class HostController {
         window.isReleasedWhenClosed = false
         window.contentView = view
         window.setContentSize(NSSize(width: 1200, height: 820))
+        Self.makeInvisible(window)
+        if ProcessInfo.processInfo.environment["VANI_UI_HOST_VISIBLE"] != "1" {
+            // macOS lets a process launched by the frontmost app take activation (seen: 2 of 5 runs from a
+            // frontmost parent), and an active host holds the keyboard even with every window transparent.
+            // Whenever the host is made active it gives that back at once; the tests do not need it (a click
+            // reaches a window that is not key, and one test forces the non-key state anyway).
+            activationObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+                    NSApplication.shared.deactivate()
+            }
+        }
         window.orderFrontRegardless()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { print("READY \(getpid())") }
     }
@@ -109,6 +121,8 @@ private final class HostController {
             print("STATE " + stateJSON())
         case "key":
             print("KEY \(window.isKeyWindow)")
+        case "visibility":
+            print("VISIBILITY " + visibilityJSON())
         case "unkey":
             // Another window of this host takes key, as another app's would: the Jobs window is then
             // not key, and AppKit spends a click on it on bringing it forward.
@@ -116,6 +130,7 @@ private final class HostController {
                                            styleMask: [.titled], backing: .buffered, defer: false)
             other.isReleasedWhenClosed = false
             helper = other
+            Self.makeInvisible(other)
             other.orderFrontRegardless()
             other.makeKey()
             print("KEY \(window.isKeyWindow)")
@@ -156,6 +171,33 @@ private final class HostController {
         default:
             print("ERROR unknown command: \(line.prefix(80))")
         }
+    }
+
+    /// The host's windows are for the accessibility API and AppKit, never for the person at the machine:
+    /// fully transparent, shadowless, out of window cycling and Spaces switching, and (with the
+    /// `.accessory` policy and no activation) never frontmost. `VANI_UI_HOST_VISIBLE=1` shows them,
+    /// to watch a run.
+    static func makeInvisible(_ w: NSWindow) {
+        if ProcessInfo.processInfo.environment["VANI_UI_HOST_VISIBLE"] == "1" { return }
+        w.alphaValue = 0
+        w.hasShadow = false
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.collectionBehavior = [.stationary, .ignoresCycle, .transient, .fullScreenAuxiliary]
+        w.isExcludedFromWindowsMenu = true
+    }
+
+    private func visibilityJSON() -> String {
+        let s: [String: Any] = [
+            "alpha": window.alphaValue,
+            "helperAlpha": helper?.alphaValue ?? NSNull(),
+            "appActive": NSApplication.shared.isActive,
+            "policy": NSApplication.shared.activationPolicy().rawValue,
+            "onScreen": window.isVisible,
+            "frontmostIsHost": NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid(),
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: s, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self)
     }
 
     private func stateJSON() -> String {

@@ -373,9 +373,16 @@ reply   {"reading":"answered","value":"same"}                       // or "diffe
 ## Build
 
 ```bash
-swift test --package-path /Users/bharath/Code/apps/Vani/macos
+swift test --package-path /Users/bharath/Code/apps/Vani/macos     # or scripts/test.sh --suite swift (parallel)
 /Users/bharath/Code/apps/Vani/macos/scripts/bundle.sh
 ```
+
+The Jobs tab UI tests drive a second process (`JobsTabHost`) through the accessibility API. Its windows are
+fully transparent, shadowless, kept out of window cycling and Spaces, and its app is never made active, so a
+run never shows a window or takes the keyboard (`JobsTabInvisibleTests` checks this without accessibility
+trust). `VANI_UI_HOST_VISIBLE=1` shows them, to watch a run. Without accessibility trust for the terminal the
+window tests skip and say so. `swift test --parallel` prints a skipped test like a passed one, so
+`scripts/test.sh` runs every class that can skip serially.
 
 `bundle.sh` writes `macos/build/Vani Apply.app` and installs nothing. Build the bundled `vani`
 (`Contents/Helpers/vani`) at commit `>= 4451350` (so it carries the 2.5 GiB vector-log cap rather than

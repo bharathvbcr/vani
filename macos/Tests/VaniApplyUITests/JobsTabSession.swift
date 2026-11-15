@@ -36,11 +36,11 @@ final class JobsTabSession {
 
     /// Starts the host, or skips when this runner may not use the
     /// accessibility API (a skip, never a pass).
-    init(fixture: JobsFixture) throws {
+    init(fixture: JobsFixture, requireAccessibility: Bool = true) throws {
         guard #available(macOS 15, *) else {
             throw XCTSkip("the host needs macOS 15 for allowsWindowActivationEvents, so a click reaches a window that is not key")
         }
-        guard AXIsProcessTrusted() else {
+        guard !requireAccessibility || AXIsProcessTrusted() else {
             throw XCTSkip("the test runner is not trusted for accessibility (System Settings › Privacy & Security › Accessibility), so the Jobs tab's controls cannot be driven")
         }
         self.fixture = fixture
@@ -72,6 +72,29 @@ final class JobsTabSession {
         while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
         if process.isRunning { process.terminate() }
     }
+
+    // MARK: Visibility
+
+    struct Visibility: Decodable, Equatable {
+        var alpha: Double
+        var helperAlpha: Double?
+        var appActive: Bool
+        var policy: Int
+        var onScreen: Bool
+        var frontmostIsHost: Bool
+    }
+
+    /// How the host's windows present themselves to the person at the machine.
+    func visibility() throws -> Visibility {
+        send("visibility")
+        guard let line = lines.next(prefix: "VISIBILITY ", timeout: Self.waitTimeout) else {
+            throw Failure(description: "the host did not report its visibility")
+        }
+        return try JSONDecoder().decode(Visibility.self, from: Data(line.dropFirst("VISIBILITY ".count).utf8))
+    }
+
+    /// The pid of the host process, for a check that it never became the frontmost app.
+    var hostPID: pid_t { process.processIdentifier }
 
     // MARK: Model
 

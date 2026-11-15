@@ -178,15 +178,17 @@ public final class ResumeStore: @unchecked Sendable {
 
     /// A copy Preview can open, named for the owner, under a private temporary directory.
     /// The job's URL is not part of the path. A name that is not a safe file name is `Resume.pdf`.
-    /// At most `maxPreviewCopies` copies are kept.
-    public static func previewCopy(name: String, data: Data) throws -> URL {
+    /// At most `maxPreviewCopies` copies are kept. `tempRoot` is where the private folder is made (the system
+    /// temporary directory when nil); a test that counts the copies gives its own, because the system one is
+    /// shared with every other process that opens a preview, and a count taken there is not its own.
+    public static func previewCopy(name: String, data: Data, in tempRoot: URL? = nil) throws -> URL {
         guard !data.isEmpty, data.count <= maxBytes, isPDF(data) else {
             throw Failure(data.count > maxBytes ? "too_large" : "bad_request",
                           data.count > maxBytes ? "the resume is over \(maxBytes / 1024) KB" : "the resume is not a PDF")
         }
         let display = checkedName(name) ?? "Resume.pdf"
         let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent(previewRootName, isDirectory: true)
+        let root = (tempRoot ?? fm.temporaryDirectory).appendingPathComponent(previewRootName, isDirectory: true)
         do {
             try fm.createDirectory(at: root, withIntermediateDirectories: true)
             try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)

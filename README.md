@@ -123,10 +123,14 @@ Run `vani --help` for full usage or `vani --json help` for the structured automa
 
 ```sh
 VANI_NO_KEYCHAIN=1 go -C $CODE_ROOT/apps/Vani vet ./...
-VANI_NO_KEYCHAIN=1 go -C $CODE_ROOT/apps/Vani test -race ./...
-swift test --package-path $CODE_ROOT/apps/Vani/macos
-bun test $CODE_ROOT/apps/Vani/extension/test
+$CODE_ROOT/apps/Vani/scripts/test.sh          # every gate at once: Go, Swift, Bun, type-check
+$CODE_ROOT/apps/Vani/scripts/test.sh --bg     # the same, detached and throttled, off your screen
 ```
+
+`scripts/test.sh` is the one entry point (and what `scripts/release.sh` calls): it runs the suites concurrently,
+shards the 1,800-test `cmd/vani` package, runs the Swift and Bun suites in parallel, and prints pass, fail or
+**skipped** per suite. The Swift window tests' host is transparent and never frontmost ([macos/README.md](macos/README.md#build)).
+The underlying commands (`go test`, `swift test`, `bun test`) still work on their own.
 
 ## Acknowledgements & Releasing
 

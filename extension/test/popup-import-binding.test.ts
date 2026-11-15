@@ -97,7 +97,7 @@ describe("import picker binding", () => {
     expect(noBinding).not.toContain('$("#import-btn").onclick');
     expect(ts).toContain('$("#import-btn").onclick');
 
-    const exportAt = ts.indexOf('$("#export").onclick = () => {');
+    const exportAt = ts.indexOf('$("#export").onclick = async () => {');
     expect(exportAt).toBeGreaterThan(-1);
     expect(ts.indexOf('$("#export").onclick', exportAt + 1)).toBe(-1);
     const exportBody = ts.slice(exportAt, ts.indexOf('$("#import-btn").onclick', exportAt));

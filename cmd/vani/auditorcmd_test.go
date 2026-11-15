@@ -480,7 +480,11 @@ func TestNothingButTheAuditorReadsItsLog(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == ".claude" || d.Name() == "tmp") {
+		// Go builds nothing from a dot or underscore directory, and the dot ones (.devcouncil, .state, .cursor,
+		// .claude, macos/.build) hold live agent and tool state that changes during a run: walking them made
+		// this test's `go test` cache key churn, so cmd/vani's shard holding it never replayed from cache.
+		if d.IsDir() && path != root && (strings.HasPrefix(d.Name(), ".") || strings.HasPrefix(d.Name(), "_") ||
+			d.Name() == "node_modules" || d.Name() == "tmp") {
 			return filepath.SkipDir
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
