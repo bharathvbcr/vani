@@ -45,6 +45,27 @@ flowchart LR
 - Never fills unknown or blank fields with guesses; missing profile details stay blank.
 - Never sends your identifying words (`identifying_words_file`) or raw private answer bank to decision models; models see only your redacted `target_summary` and job-relevant eligible bullet text.
 
+## Platform support & optional tools
+
+The Go CLI (`cmd/vani`) has macOS, Linux and Windows code paths; the desktop pieces are macOS-only.
+
+| Piece | Platforms | Notes |
+|---|---|---|
+| `vani` CLI (pipeline, digests, exports) | macOS, Linux, Windows | Off macOS there is no Keychain: put the key in the variable named by `decide.openrouter_key_env` (default `OPENROUTER_API_KEY`). Config and state follow XDG on Linux (`~/.config/vani`, `~/.local/state/vani`) and `%AppData%\Vani` on Windows. `rekey` refuses on Windows ([FOLLOWUPS A2-7](docs/FOLLOWUPS.md)). |
+| Scheduling (`vani launchd plist`) | macOS | Elsewhere, run `vani daemon` or `vani run-once` under your own scheduler. |
+| Vani Apply app, `vani-fm` | macOS 14+ (Foundation Models: macOS 26 with Apple Intelligence) | SwiftPM, no Xcode project ([macos/README.md](macos/README.md)). |
+| Metal embeddings (`-tags tessl`) | macOS on Apple Silicon | cgo + Rust (`cargo`) to build the engine ([SETUP.md](docs/SETUP.md)). |
+| Browser extension | Chrome/Chromium; Safari via the Mac app | Built with [Bun](https://bun.sh) ([extension/README.md](extension/README.md)). |
+
+Optional external tools, and what happens without them:
+
+| Tool | Used for | Without it |
+|---|---|---|
+| [DevPrism](https://github.com/bharathvbcr/DevPrism) (`devprism.binary`) | KB gap ranking, `kb sync`, `rescore` | Jobs are ranked without KB coverage |
+| `rkb` (`kb.rkb`) | KB claims, `kbmatch`, `draft`, `resume` (contract in [KNOWLEDGE_BASE_GUIDE.md](docs/KNOWLEDGE_BASE_GUIDE.md)) | KB features are off |
+| [Lightpanda](https://github.com/lightpanda-io/browser) (`lightpanda_binary`) | `pg` careers-page boards | Use the ATS adapters, `fd` feeds or the extension crawler |
+| Chrome + `pdftotext` (poppler) | `vani resume` page fitting | `resume` reports a `render` error |
+
 ## Quick start
 
 Vani requires **Go 1.27.4** ([go.mod](go.mod)) and sibling local checkouts (`../../devtools/decide`, `../../research/tessl/go`, plus Manvi and optional DevPrism). Because `/go.work` is gitignored, create it once at the repo root:
