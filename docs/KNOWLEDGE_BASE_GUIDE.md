@@ -199,7 +199,7 @@ A bullet in an active selection is eligible (`kbsync.Eligible`) only when **all 
    - Compute `RKBPlain(text)` (substitute claims, replace `[label](url)` with `label`, strip `**bold**` and `*italic*`) and take the **first 12 lowercase hex characters of its SHA-1** (`kbsync.WordingHash`).
    - The latest `"round": 2` entry matching that `text_hash` must have `"verdict": "pass"`.
    - There must also be a second pass: any `"round": 1` `"pass"` (on any wording; its `text_hash` is not checked), or a different `"round": 2` `"pass"` whose `by` differs from the matching round-2 entry's `by` (`readerPassed`, `internal/kbsync/eligible.go`). Only the round-2 entry must match the current hash.
-   - The round-2 `by` must be non-empty, not `"drafter"`, and not equal to `bullet.author`; and the HR reviewer must not equal the HM reviewer.
+   - The round-2 `by` must be non-empty, not `"drafter"`, and not equal to `bullet.author`; and the HR reviewer must not equal the HM reviewer. (`by` names the review pass or reader persona — e.g. `"hr-r1"` / `"hr-r2"` and `"hm-r1"` / `"hm-r2"` in `internal/kbsync/eligible_test.go` — so a solo user or agentic workflow records separate HR-perspective and HM-perspective review passes rather than needing three human reviewers, while preventing the drafting pass from rubber-stamping its own wording.)
 
 Inspect which bullets pass or why each is withheld without touching DevPrism:
 
