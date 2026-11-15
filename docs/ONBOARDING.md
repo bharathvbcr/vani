@@ -3,20 +3,20 @@
 How to set up Vani on a fresh machine without pre-existing local tools, and adopt optional modules one layer at a time. Checked against current code (`go.mod`, `internal/config`, `cmd/vani`).
 
 > [!NOTE]
-> If you already have local checkouts of `Manvi`, `decide`, `tessl`, `rkb`, and `DevPrism` on `/Users/bharath/Code/...`, follow [SETUP.md](SETUP.md) for the exact step-by-step bring-up of that full stack.
+> If you already have local checkouts of `Manvi`, `decide`, `tessl`, `rkb`, and `DevPrism` on `$CODE_ROOT/...`, follow [SETUP.md](SETUP.md) for the exact step-by-step bring-up of that full stack.
 
 ---
 
 ## 1. Choose what you need first
 
-Vani is modular. You only need Go and an OpenRouter API key to discover, filter, triage, and digest jobs. Every other external tool adds a specific optional capability:
+Vani is modular. The core pipeline needs Go, an OpenRouter API key, and the sibling `Manvi` and `decide` checkouts (`decide` is currently private, so a build outside the author's machine is not yet possible; see [#1](https://github.com/bharathvbcr/vani/issues/1)). Every other external tool adds a specific optional capability:
 
 | Layer | Capability | External requirement | What runs without it |
 |---|---|---|---|
 | **Core pipeline (Minimal)** | Watchlists, exclusions, triage, daily Markdown digests | Go 1.27.4 + OpenRouter key (or local `llm`) + sibling `Manvi` & `decide` checkouts (`go.mod`) | Everything except resume tailoring, gap ranking, Metal embeddings, and Chrome-rendered careers pages |
 | **Desktop & browser** | Autofill job forms, crawl career pages into inbox, Submit -> Applied tracking | Chromium or Safari + [macos/README.md](../macos/README.md) app | CLI-only discovery, triage, and digest workflow |
 | **Knowledge base** | Grounded drafts (`draft`/`suggest`), tailored PDFs (`resume`), resume gap ranking | `rkb` CLI + `bank.json` + DevPrism (`--mcp`) + Anthropic/Gemini key via Manvi | Jobs still fetch, triage, filter, and appear in digests (ranked by fit without KB coverage) |
-| **Semantic ordering** | Embedding similarity against your approved bullets | `tessl/go` Metal archive + Hugging Face `google/embeddinggemma-2` snapshot | Pure-Go build skips embeddings (`-tags tessl` omitted) |
+| **Semantic ordering** | Embedding similarity against your approved bullets | `tessl/go` Metal archive + Hugging Face `google/embeddinggemma-2` snapshot | Pure-Go build skips embeddings (`-tags tessl` omitted). The `tessl` checkout itself is still needed at build time, because Manvi's `credentials` package imports `tessl/go` |
 | **Employer badges** | H-1B LCA history & cap-exempt/non-profit badges | Public DOL OFLC `.xlsx`/CSV, IRS EO BMF, IPEDS `HDyyyy.csv` ([LCA.md](LCA.md), [EMPLOYER.md](EMPLOYER.md)) | Postings omit badges; ranking/dropping unaffected |
 | **Careers-page crawler** | Scrape JS-rendered company career pages (`pg` boards) | `lightpanda` binary (`lightpanda_binary`) ([PHASE0-lightpanda.md](PHASE0-lightpanda.md)) | Use the 28 built-in ATS adapters, XML feeds (`fd`), or the extension's **Crawl all pages → Vani** |
 
@@ -24,7 +24,7 @@ Vani is modular. You only need Go and an OpenRouter API key to discover, filter,
 
 ## 2. Clone dependencies & build (portable `go.work`)
 
-Vani's [`go.mod`](../go.mod) resolves three sibling repositories relative to the repo root (`../../devtools/decide`, `../../research/tessl/go`, plus `Manvi` via `go.work`). Clone those sibling repositories into matching paths or create an untracked `go.work` at the Vani repo root pointing to where you checked them out:
+Vani's [`go.mod`](../go.mod) resolves three sibling repositories relative to the repo root (`../../devtools/decide`, `../../research/tessl/go`, plus `Manvi` via `go.work`). The expected directory layout and a ready-to-copy workspace file are in [`go.work.example`](../go.work.example). Clone those sibling repositories into matching paths or create an untracked `go.work` at the Vani repo root pointing to where you checked them out:
 
 ```
 go 1.27.4

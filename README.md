@@ -68,24 +68,19 @@ Optional external tools, and what happens without them:
 
 ## Quick start
 
-Vani requires **Go 1.27.4** ([go.mod](go.mod)) and sibling local checkouts (`../../devtools/decide`, `../../research/tessl/go`, plus Manvi and optional DevPrism). Because `/go.work` is gitignored, create it once at the repo root:
+> [!WARNING]
+> **Private dependencies.** The default build imports `github.com/bharathvbcr/decide`, which is not publicly available, and the knowledge-base layer shells out to `rkb`, which is also private. A fresh clone cannot currently build `cmd/vani` without access to them. `internal/kbsync` and its tests build with only the public Manvi checkout. See [#1](https://github.com/bharathvbcr/vani/issues/1).
+
+Vani requires **Go 1.27.4** ([go.mod](go.mod); with an older Go, `GOTOOLCHAIN=auto` downloads it) and sibling local checkouts laid out as described in [`go.work.example`](go.work.example). In the commands below, `$CODE_ROOT` is the directory that holds `apps/Vani` and `devtools/…`. Because `/go.work` is gitignored, create it once at the repo root:
 
 ```sh
-cat > go.work <<'EOF'
-go 1.27.4
-
-use (
-    .
-    ../../devtools/decide
-    ../../research/tessl/go
-)
-EOF
+cp go.work.example go.work
 ```
 
 Build, initialize config/state, watch a board, and run once:
 
 ```sh
-go -C /Users/bharath/Code/apps/Vani build -o vani ./cmd/vani
+go -C $CODE_ROOT/apps/Vani build -o vani ./cmd/vani
 ./vani init
 ./vani watchlist add --ats gh --token stripe --company Stripe --allow-host
 # Add your redacted target summary and OpenRouter key (OPENROUTER_API_KEY), then:
@@ -127,10 +122,10 @@ Run `vani --help` for full usage or `vani --json help` for the structured automa
 ## Build and test
 
 ```sh
-VANI_NO_KEYCHAIN=1 go -C /Users/bharath/Code/apps/Vani vet ./...
-VANI_NO_KEYCHAIN=1 go -C /Users/bharath/Code/apps/Vani test -race ./...
-swift test --package-path /Users/bharath/Code/apps/Vani/macos
-bun test /Users/bharath/Code/apps/Vani/extension/test
+VANI_NO_KEYCHAIN=1 go -C $CODE_ROOT/apps/Vani vet ./...
+VANI_NO_KEYCHAIN=1 go -C $CODE_ROOT/apps/Vani test -race ./...
+swift test --package-path $CODE_ROOT/apps/Vani/macos
+bun test $CODE_ROOT/apps/Vani/extension/test
 ```
 
 ## Acknowledgements & Releasing
