@@ -55,9 +55,10 @@ import (
 type advanceKind int
 
 const (
-	kindRun     advanceKind = iota // the daily run (runOnce)
-	kindInbox                      // the daemon's between-runs inbox poll (pollInbox)
-	kindRescore                    // `vani rescore` (rescoreWith)
+	kindRun             advanceKind = iota // the daily run (runOnce)
+	kindInbox                              // the daemon's between-runs inbox poll (pollInbox)
+	kindRescore                            // `vani rescore` (rescoreWith)
+	kindRescoreCoverage                    // `vani rescore --coverage-unknown` (rescoreCoverageWith)
 )
 
 // baseAdvancePlan is the plan every caller starts from: the cap and
@@ -67,6 +68,8 @@ const (
 //     warn when a check could not run; the run keeps them in its record.
 //   - kindRescore advances exactly the rescorable records and never prints the
 //     advance_per_run cap line (its cap is --limit).
+//   - kindRescoreCoverage is kindRescore over the coverage-unknown records a
+//     newer DevPrism may measure (pipeline.CoverageRescorable).
 func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...any)) pipeline.AdvancePlan {
 	p := pipeline.AdvancePlan{
 		Limit: limit, Workers: workers, Warn: warn,
@@ -77,6 +80,8 @@ func baseAdvancePlan(kind advanceKind, limit, workers int, warn func(string, ...
 		p.FillFunnel = true
 	case kindRescore:
 		p.Select, p.QuietCap = rescorable, true
+	case kindRescoreCoverage:
+		p.Select, p.QuietCap = pipeline.CoverageRescorable, true
 	}
 	return p
 }

@@ -146,6 +146,84 @@ func rescoreWith(ctx context.Context, l ledger.Ledger, limit, workers int, resco
 	return rep, err
 }
 
+// coverageRescoreReport is what one `vani rescore --coverage-unknown` did. The
+// counts come from the ledger after each answer, never from attempts.
+type coverageRescoreReport struct {
+	// Eligible are the postings planCoverage counted when the pass started.
+	Eligible int `json:"eligible"`
+	// Asked are the postings DevPrism answered about: Measured now carry a
+	// coverage, StillUnknown were answered with no must-have again and keep the
+	// marker (nothing was written for them).
+	Asked        int `json:"asked"`
+	Measured     int `json:"measured"`
+	StillUnknown int `json:"still_unknown"`
+	// Failed hit a DevPrism error and are unchanged; NotReached were eligible
+	// and not attempted (the --limit, or a stop). Both stay eligible.
+	Failed     int                    `json:"failed"`
+	NotReached int                    `json:"not_reached"`
+	Advance    pipeline.AdvanceReport `json:"-"`
+}
+
+// planCoverage counts the postings `vani rescore --coverage-unknown` would ask
+// DevPrism about again (pipeline.CoverageRescorable).
+func planCoverage(recs []ledger.Record) int {
+	n := 0
+	for _, r := range recs {
+		if pipeline.CoverageRescorable(r) {
+			n++
+		}
+	}
+	return n
+}
+
+// rescoreCoverage asks DevPrism again about up to limit postings it found no
+// must-have in (pipeline.Runner.RescoreUnknown), through the same
+// pipeline.Advance as the daily run, so its concurrency, cancellation and stop
+// rules hold. It does not run the 0-of-0 repair (the default mode's).
+func (w *wired) rescoreCoverage(ctx context.Context, limit int) (coverageRescoreReport, error) {
+	if w.cfg.DevPrism.Binary == "" {
+		return coverageRescoreReport{}, errScoringOff
+	}
+	r := &pipeline.Runner{Ledger: w.led}
+	if err := w.scoring(r); err != nil {
+		return coverageRescoreReport{}, err
+	}
+	return rescoreCoverageWith(ctx, w.led, limit, w.cfg.AdvanceWorkers(), r.RescoreUnknown, w.warnf)
+}
+
+// rescoreCoverageWith is rescoreCoverage over any ledger and pass function, for
+// tests. A posting DevPrism still finds no must-have in stays eligible, so a
+// later pass with a small --limit asks the freshest ones again first: the
+// report's NotReached says how many a pass did not get to.
+func rescoreCoverageWith(ctx context.Context, l ledger.Ledger, limit, workers int, ask func(context.Context, posting.Key) (bool, error), warnf func(string, ...any)) (coverageRescoreReport, error) {
+	recs := l.All()
+	rep := coverageRescoreReport{Eligible: planCoverage(recs)}
+	var mu sync.Mutex
+	counted := func(ctx context.Context, k posting.Key) error {
+		wrote, err := ask(ctx, k)
+		if err != nil {
+			return err
+		}
+		measured := false
+		if r, ok := l.Get(k); ok && wrote && !ledger.CoverageUnknown(r) && r.Annotations[ledger.AnnCoverage] != "" {
+			measured = true
+		}
+		mu.Lock()
+		rep.Asked++
+		if measured {
+			rep.Measured++
+		}
+		mu.Unlock()
+		return nil
+	}
+	adv, err := pipeline.Advance(ctx, baseAdvancePlan(kindRescoreCoverage, limit, workers, warnf), pipeline.AdvanceDeps{Records: recs, Advance: counted})
+	rep.Advance = adv
+	rep.StillUnknown = rep.Asked - rep.Measured
+	rep.Failed = adv.Failed
+	rep.NotReached = max(0, rep.Eligible-adv.Attempted)
+	return rep, err
+}
+
 // cmdRescore scores postings that went past the scoring stage while
 // devprism.binary was empty. They keep their status and explanation; only the
 // score annotations are added. It calls DevPrism, never a model, and spends
@@ -154,6 +232,9 @@ func (e *env) cmdRescore(args []string) error {
 	flags := e.newFlags("rescore")
 	dry := flags.Bool("dry-run", false, "count what would be scored; read the ledger only, change nothing")
 	limit := flags.Int("limit", 0, "score at most N postings this time (default advance_per_run)")
+	coverage := flags.Bool("coverage-unknown", false, "ask DevPrism again about shown postings it found no must-have in "+
+		"(scored, explained or digested, with the coverage-unknown marker): after a DevPrism upgrade, the ones it now reads "+
+		"get a measured coverage in place; status, explanation and drops are kept. No 0-of-0 repair")
 	asJSON := e.jsonFlag(flags, "one JSON object on stdout")
 	if err := parse(flags, args); err != nil {
 		return err
@@ -177,6 +258,17 @@ func (e *env) cmdRescore(args []string) error {
 		if snap.Torn {
 			fmt.Fprintln(e.stderr, "vani: rescore: the ledger ends in a torn line; it was left out")
 		}
+		if *coverage {
+			c := coverageRescoreReport{Eligible: planCoverage(snap.Records)}
+			if *asJSON {
+				return e.reply(true, rescoreReply{DryRun: true, Limit: n, Coverage: &c, ScoringOff: cfg.DevPrism.Binary == ""}, nil, nil)
+			}
+			fmt.Fprintf(e.stdout, "%d posting(s) with unknown coverage would be asked again (at most %d this time)\n", c.Eligible, n)
+			if cfg.DevPrism.Binary == "" {
+				fmt.Fprintf(e.stdout, "devprism.binary is empty: a real rescore would refuse\n")
+			}
+			return nil
+		}
 		p := planRescore(snap.Records)
 		if *asJSON {
 			return e.reply(true, rescoreReply{DryRun: true, Limit: n, Plan: p, ScoringOff: cfg.DevPrism.Binary == ""}, nil, nil)
@@ -199,6 +291,21 @@ func (e *env) cmdRescore(args []string) error {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
+	if *coverage {
+		if app.RescoreCoverage == nil {
+			return errors.New("rescore --coverage-unknown is not available in this build")
+		}
+		c, err := app.RescoreCoverage(ctx, n)
+		if *asJSON {
+			return e.reply(true, &rescoreReply{Limit: n, Coverage: &c, ScoringOff: cfg.DevPrism.Binary == ""}, err, nil)
+		}
+		fmt.Fprintf(e.stdout, "%d posting(s) with unknown coverage asked again: %d measured, %d still unknown (left as they were)\n",
+			c.Asked, c.Measured, c.StillUnknown)
+		if c.Failed > 0 || c.NotReached > 0 {
+			fmt.Fprintf(e.stdout, "%d failed and %d not reached of %d eligible: they stay unknown; run it again\n", c.Failed, c.NotReached, c.Eligible)
+		}
+		return err
+	}
 	rep, err := app.Rescore(ctx, n)
 	if *asJSON {
 		return e.reply(true, &rescoreReply{Limit: n, Plan: rep.Plan, Rescored: rep.Rescored, StillUnscored: rep.Plan.Eligible - rep.Rescored,
@@ -222,6 +329,8 @@ type rescoreReply struct {
 	Rescored      int         `json:"rescored"`
 	StillUnscored int         `json:"still_unscored"`
 	Repaired      int         `json:"repaired"`
+	// Coverage is what --coverage-unknown planned or did; absent otherwise.
+	Coverage *coverageRescoreReport `json:"coverage,omitempty"`
 	failure
 }
 

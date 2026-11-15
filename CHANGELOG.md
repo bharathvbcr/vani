@@ -9,6 +9,19 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **`vani rescore --coverage-unknown`** (2026-11-15, the owner's "yes, do both"). A posting DevPrism
+  found no must-have in keeps the `gap.coverage_unknown` marker and is ranked on the unknown-coverage
+  prior, and plain `rescore` never asks about it again (it takes only Scored and Explained postings
+  with no score). After a DevPrism upgrade reads more JDs (its heuristic parser learned `REQUIRED`,
+  `What You Bring` and similar headings, and closes benefits and privacy footers), this mode asks
+  DevPrism again about every scored, explained or digested posting with the marker and a description
+  (`pipeline.CoverageRescorable`). One that now has must-haves gets the annotations a first score
+  writes, in one event that keeps its status and explanation (reason `coverage_rescored`); one still
+  read as having none is left as it was, with nothing written. Dropped, dead and duplicate postings
+  are never asked (Rule 7). The counts come from the ledger: asked, measured, still unknown, failed
+  and not reached (the `--limit`). It skips the default mode's 0-of-0 repair. Like plain `rescore`,
+  it takes the ledger lock, so it is refused while the daemon runs.
+
 - **Removing a board closes its postings** (2026-11-14, the owner's "yes, build it"; design
   decided by Fable). A board's postings closed only when its own listing left them out, and a
   removed board is never listed again, so they stayed open for good. `vani watchlist remove` now

@@ -94,8 +94,10 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		Watch:     w.watch,
 		PollInbox: w.pollInbox,
 		Rescore:   w.rescore,
-		Tune:      w.tune,
-		ModelKey:  w.openRouterKey,
+		// The coverage pass shares the ledger and scoring stage of the default one.
+		RescoreCoverage: w.rescoreCoverage,
+		Tune:            w.tune,
+		ModelKey:        w.openRouterKey,
 		// The Vani Apply app posts run notices itself while it runs. When it
 		// does not, the daemon launches it to announce the run, and posts
 		// through osascript only if the app cannot take over.

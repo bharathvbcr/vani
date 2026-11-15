@@ -79,6 +79,59 @@ func (r *Runner) RepairUnknownCoverage(ctx context.Context, key posting.Key) (bo
 	return err == nil, err
 }
 
+// coverageRescorable are the statuses CoverageRescorable takes: the ones the
+// ranking shows. A dropped, dead or duplicate record is left alone (a drop
+// stays a drop, Rule 7), and an earlier status has its score still to come.
+var coverageRescorable = map[posting.Status]bool{posting.Scored: true, posting.Explained: true, posting.Digested: true}
+
+// CoverageRescorable reports whether r carries the coverage-unknown marker (a
+// DevPrism that found no must-have in its JD) on a shown status, with text to
+// read: a DevPrism that has since learned to read more of a JD can measure it.
+// Unlike Unscored it takes Digested records: the score only orders (Rule 7),
+// so measuring one already shown changes its place in the list, not its status.
+func CoverageRescorable(r ledger.Record) bool {
+	return coverageRescorable[r.Status] && ledger.CoverageUnknown(r) && Described(r)
+}
+
+// RescoreUnknown asks DevPrism again about a CoverageRescorable record. When it
+// now finds must-haves, it writes the annotations Advance's scoring stage
+// writes (scoreAnnotations: rank, coverage, missing, blocks, the marker
+// cleared) in one event that keeps the status, with reason
+// "coverage_rescored", and reports true. The explanation is kept, so it was
+// written without the measured coverage.
+//
+// An answer that still finds no must-have writes nothing (the ledger is
+// append-only, and the marker it would write is the one there) and reports
+// false; so does a record that is not CoverageRescorable, without asking
+// DevPrism. A DevPrism failure, a timeout or a cancelled ctx writes nothing and
+// returns the error.
+func (r *Runner) RescoreUnknown(ctx context.Context, key posting.Key) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if r.SkipScoring {
+		return false, ErrScoringDisabled
+	}
+	rec, ok := r.Ledger.Get(key)
+	if !ok {
+		return false, fmt.Errorf("pipeline: unknown key %q", key)
+	}
+	if !CoverageRescorable(rec) {
+		return false, nil
+	}
+	ann, err := r.scoreAnnotations(ctx, rec)
+	if err != nil {
+		return false, err
+	}
+	if ann[ledger.AnnCoverageUnknown] != "" {
+		return false, nil
+	}
+	if err := r.emit(ctx, key, rec.Status, "coverage_rescored", ann); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Described reports whether r has a description to score.
 func Described(r ledger.Record) bool {
 	return strings.TrimSpace(r.Posting.Description) != ""

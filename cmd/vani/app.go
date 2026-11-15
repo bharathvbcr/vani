@@ -52,6 +52,10 @@ type App struct {
 	// Rescore scores up to limit postings that went past the scoring stage
 	// without a score (vani rescore). Nil means not available.
 	Rescore func(ctx context.Context, limit int) (rescoreReport, error)
+	// RescoreCoverage asks DevPrism again about up to limit shown postings it
+	// found no must-have in (vani rescore --coverage-unknown). Nil means not
+	// available.
+	RescoreCoverage func(ctx context.Context, limit int) (coverageRescoreReport, error)
 	// Tune sets what the next RunOnce does in its advance phase from the run's
 	// options: Advance caps it (0 keeps advance_per_run), ListOnly skips it and
 	// USFirst orders US postings first. Every run sets it, so a manual run's
