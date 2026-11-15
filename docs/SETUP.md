@@ -1,9 +1,6 @@
 # Setup
 
-First-time setup for this checkout, then the commands used day to day. Checked on 2026-10-26
-against the code named below. Config, state and which process holds which key are in
-[`RUNTIME.md`](RUNTIME.md). Pipeline behaviour, the watchlist flags and the digest are in the
-[README](../README.md). This page is the order to do them in.
+First-time setup for a local `/Users/bharath/Code/...` checkout, then day-to-day commands. For a **portable new-user setup** (fresh machine, minimal config without `rkb`/`DevPrism`/`Tessl`), start with [`ONBOARDING.md`](ONBOARDING.md). Config, state and key ownership live in [`RUNTIME.md`](RUNTIME.md), and the overview is in the [README](../README.md).
 
 Two audiences: the owner at a terminal, and an agent shell. An agent shell sets
 `VANI_NO_KEYCHAIN=1` before any `vani` that looks up the OpenRouter key. That variable is any
@@ -29,7 +26,7 @@ the config, the launchd plist, a doc or a command that prints it.
 
 ### 1. Checkouts and `go.work`
 
-Go 1.26.6 (`go.mod`). Vani builds against three local checkouts, not published modules:
+Go 1.27.4 (`go.mod`). Vani builds against three local checkouts, not published modules:
 
 | Module | Resolved directory (this checkout, 2026-10-25) |
 |---|---|
@@ -83,8 +80,8 @@ go -C /Users/bharath/Code/apps/Vani vet ./...
 go -C /Users/bharath/Code/apps/Vani test ./...
 ```
 
-`test -race ./...` is the stricter form in the README. Embeddings need the Tessl build in step 6.
-`vani` below means `/Users/bharath/Code/apps/Vani/build/vani`.
+Run the full race suite with `VANI_NO_KEYCHAIN=1 go -C /Users/bharath/Code/apps/Vani test -race ./...`.
+Embeddings need the Tessl build in step 6. `vani` below means `/Users/bharath/Code/apps/Vani/build/vani`.
 
 ### 3. Config and state
 
@@ -127,57 +124,24 @@ While the model is set, `allowed_hosts` must include `openrouter.ai`. `vani init
 
 ### 4. OpenRouter
 
-The decision model is Liquid. `vani init` writes `liquid/d1-ultra`. The client is
-`decide/jev` (`/Users/bharath/Code/devtools/decide/jev`). Vani always passes
-`decide.openrouter_model`; it does not send jev's own default `typesafe/jev-1.13`. The model
-answers under the name derived from the id (`liquid/d1-ultra` → `d1-ultra`) in routing, the
-ledger, drop reasons and `vani eval`.
+`vani init` defaults `decide.openrouter_model` to `liquid/d1-ultra` (`allowed_hosts` already includes
+`openrouter.ai`), answered under the short name `d1-ultra`. Spend is logged to `<state dir>/budget/jev.json`
+against `decide.daily_usd.openrouter`, and notes spend to `budget/jev-notes.json` against
+`funnel.notes_daily_usd` (default `0.15`). Leave `decide.openrouter_model` empty only when turning off
+OpenRouter triage (`llm` or `--list-only` must carry the run). Full retry/timeout/key resolution rules live in [`RUNTIME.md`](RUNTIME.md).
 
-The call is `POST https://openrouter.ai/api/alpha/decisions` with `Content-Type: application/json`
-and `Authorization: Bearer <key>`. The body is the Decisions shape: `model`, `questions` (each
-`type: choice`, with `instructions` and `criteria`) and `state`. A 401, 402 or 403 comes back as
-`decide: backend credentials rejected: HTTP 401` (same shape for 402 and 403) and disables that
-client for the rest of the run. The next run builds a new one. Retries cover transport errors,
-429 and 5xx. Vani does not set jev's timeout or attempt count, so the defaults apply: 3 attempts,
-20s for the whole call. The day's triage spend is appended to `<state dir>/budget/jev.json` under
-the spend key `jev`. That file name is kept on purpose: a rename would let a still-running process
-start the day at zero. The cap is `decide.daily_usd.openrouter`. Notes spend is a second file,
-`<state dir>/budget/jev-notes.json`, same spend key, capped by `funnel.notes_daily_usd` (default
-0.15). Past either cap that call is not made.
+**Key lookup (`OPENROUTER_API_KEY` / `decide.openrouter_key_env`):**
+1. A non-empty env var wins (Keychain is skipped).
+2. On macOS (unless `VANI_NO_KEYCHAIN=1`), `vani` reads login Keychain service `openrouter-api-key` for your short user name once per run (`security find-generic-password`). The Mac app reads the same item and passes `OPENROUTER_API_KEY` + `VANI_NO_KEYCHAIN=1` to child processes.
 
-**Where the key comes from.** `decide.openrouter_key_env` (default `OPENROUTER_API_KEY`):
-
-1. A non-empty environment variable wins. The Keychain is not read.
-2. Otherwise, on macOS, `vani` runs `security find-generic-password -s openrouter-api-key -a <login name> -w`. The account is `user.Current().Username`, the same short name the Mac app passes (`NSUserName()`, what `id -un` prints). One read waits at most 60 seconds. A success is kept for the life of the process. A failure is kept for that run only and is read again on the next run (`startRun` bumps the run counter). It is not read twice in one run.
-3. `VANI_NO_KEYCHAIN` set to any value skips step 2. The phrase is `the Keychain was not read because VANI_NO_KEYCHAIN is set`.
-4. Off macOS there is no Keychain and no warning.
-
-The Mac app reads the same item and puts it in the environment of the `vani` processes it starts,
-with `VANI_NO_KEYCHAIN=1` so `vani` does not prompt a second time. The app does not write the
-item. A plist from `vani launchd plist` pins only `VANI_CONFIG` and `VANI_STATE_DIR`; that daemon
-reads the Keychain itself at start.
-
-Create or replace the item without putting the secret on the command line (`-w` last makes
-`security` prompt). `LOGINNAME` is the short user name. `-T` names the `vani` binary allowed to
-read the item; repeat it for each binary. An unsigned rebuild is a different binary and prompts
-again ([`RUNTIME.md`](RUNTIME.md)). Do not pass `-A`.
+Create or check the Keychain item without putting the secret in shell history (`-T` grants a specific binary; do not pass `-A`):
 
 ```bash
 security add-generic-password -U -a LOGINNAME -s openrouter-api-key -T /Users/bharath/Code/apps/Vani/build/vani -w
+security find-generic-password -s openrouter-api-key -a LOGINNAME >/dev/null  # exit 44 if absent
 ```
 
-Check that the item exists without printing it. `find-generic-password` without a redirect writes
-the item, secret included, to stdout. Exit 44 means there is no such item.
-
-```bash
-security find-generic-password -s openrouter-api-key -a LOGINNAME >/dev/null
-```
-
-**When the key is missing.** `jev.New` returns `jev: no API key for the OpenRouter endpoint: environment variable OPENROUTER_API_KEY is not set` (the variable name, never the value). The run warns `openrouter (liquid/d1-ultra) disabled:` plus that error. A run that advances and has no other backend (no `llm` either) stops before it lists a board, with `no decision backend is available (configure decide.openrouter_model or llm)`. `run-once --list-only` still builds the client, so the disabled warning can appear, then lists and reconciles. A daemon still starts. On stderr: `vani: daemon: ` plus `OPENROUTER_API_KEY is not set in the daemon's environment and <why the Keychain gave none>, so the decision model (liquid/d1-ultra) is disabled and the daemon triages no posting`. It keeps the schedule. Text `vani status` prints `daemon: model disabled:` and `fix: add the key to the login Keychain (service openrouter-api-key) …`. `vani status --json` has `daemon.model.enabled` and, when this daemon read the item itself, `daemon.model.source` of `keychain`. `enabled: true` means a key was present. It does not mean OpenRouter accepted it.
-
-Leave `decide.openrouter_model` empty only when you mean to turn the decision model off. The
-config then does not require a key, a positive OpenRouter cap, or `openrouter.ai` in
-`allowed_hosts`. Something else (`llm`, or a list-only run) has to carry triage.
+If the key is missing, `run-once` stops before listing when no `llm` fallback is configured, while `daemon` starts with the decision model disabled (`vani status --json` sets `daemon.model.enabled: false`).
 
 ### 5. Knowledge base
 
@@ -197,154 +161,63 @@ step ([`RUNTIME.md`](RUNTIME.md), "Building a resume") and is not required to ra
 | `kb.base_selection` | one of `kb.selections`. Required for `vani resume`, not for sync or embeddings. |
 | `kb.vm_report` | optional absolute path of the rkb validator report. Resume builds only. |
 
-`kb sync` runs `rkb claims export --out <temp>/claims.json` with an environment of `PATH`,
-`HOME`, `TMPDIR` and, when `kb.code_root` is set, `RKB_CODE_ROOT`. On Windows it also passes
-`SystemRoot`, `TEMP`, `TMP` and `USERPROFILE`. No API key is passed. The process waits at most 60 seconds (`rkbexec`
-clamps a longer timeout to 5 minutes; 60 seconds is under that). Each of stdout and stderr is
-kept up to 64 KiB. The claims file itself is refused above 4 MiB. A missing binary, a non-zero
-exit, no claims file, a file with no claims, or a claim with an empty value fails the command.
-Nothing is guessed.
-
-A bullet leaves the bank only when `kbsync.Eligible` passes (`internal/kbsync/eligible.go`): a
-listed selection contains it, every `{{clm…}}` token resolves, no CAUTION claim lacks
-`caution_ok`, and both the HR and hiring-manager readers passed that exact wording. Round 2
-cannot be the bullet's author or the reviewer id `drafter`, and the two readers cannot be the
-same person. The dry run prints what is withheld and why.
+`kb sync` runs `rkb claims export` and copies only `kbsync.Eligible` bullets into DevPrism's
+`career.db` (hash state in `<state dir>/kbsync/state.json`; eligibility rules live in
+[`RUNTIME.md`](RUNTIME.md)).
 
 ```bash
+# Preview eligible bullets and what is withheld (no DevPrism writes)
 /Users/bharath/Code/apps/Vani/build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/code
-```
 
-`--bank`, `--rkb` and `--code-root` override the config for that run. There is no flag for
-`kb.selections`. `--dry-run` without `--replace` still runs `rkb claims export`. It reads no
-DevPrism state and sends nothing. It plans against an empty DevPrism, so a block that would be
-sent shows as an add; a variant or a blocked block is still reported as that. It prints
-`note: planned against an empty DevPrism; live DevPrism state was not read`. It still needs
-`kb.selections` in the config.
-
-Then, once `devprism.binary` is set (step 7):
-
-```bash
+# Apply upserts once devprism.binary is set (step 7)
 /Users/bharath/Code/apps/Vani/build/vani kb sync
 ```
 
-A real sync reads DevPrism's blocks, upserts the approved pool, and does not delete. An overwrite
-that would drop bullets or facts, or rewrite a locked bullet, is reported as needing confirmation
-and skipped. `--confirm` prints each dropped or rewritten bullet and fact, then confirms those
-blocks for that run. There is no prompt; the flag is the consent. With `--dry-run` it exits 2:
-`kb sync: --confirm cannot be used with --dry-run, which sends nothing`.
+- `--bank`, `--rkb`, `--code-root` override config per run (`kb.selections` has no flag).
+- `--confirm` consents to overwriting locked bullets or dropping bullets/facts (cannot combine with `--dry-run`).
+- `--replace` backs up `career.db` via `sqlite3 .backup` to `<state dir>/kbsync/backups/career-YYYYMMDD-HHMMSS.db` (keeps newest 10) and deletes non-pool `work`/`experience`/`project`/`education` blocks (unless the pool is empty). Accepts `--keep ID,ID` (must be orphans), `--delete-all-kinds`, `--max-delete N` (1..500, default 100), and `--career-db PATH`.
 
-`--replace` also deletes DevPrism blocks the pool does not produce (`work`, `experience`,
-`project`, `education`; other kinds stay unless `--delete-all-kinds`). It first copies
-`career.db` with SQLite's online backup (`sqlite3 .backup`). The binary is the first executable
-among `/usr/bin/sqlite3`, `/opt/homebrew/bin/sqlite3` and `/usr/local/bin/sqlite3`. The copy is
-`<state dir>/kbsync/backups/career-YYYYMMDD-HHMMSS.db` (UTC; newest 10 kept). Then it syncs the
-pool and deletes only if every pool block landed. No `sqlite3` stops the replace before DevPrism
-starts: `kbsync: career.db backup: no sqlite3 binary found`. It refuses to delete while the approved pool has no block to sync
-(`the approved pool has no block to sync, so replace would only delete`). `--replace --dry-run`
-reads the block list and prints what it would delete; it makes no copy. `--career-db` overrides
-the default, which on macOS is `~/Library/Application Support/DevPrism/career.db`
-(`os.UserConfigDir`). `--keep ID,ID` spares named blocks. Each id has to be an orphan DevPrism
-holds and the pool does not, or the replace is refused:
-`kbsync: replace refused: --keep "<id>" is not an orphan in DevPrism (no such block, or the approved pool owns it)`.
-`--keep`, `--delete-all-kinds`, `--max-delete` and `--career-db` are accepted only with
-`--replace`. Without it the command exits 2: `kb sync: --<name> needs --replace`. With
-`--replace`, `--max-delete` is 1..500 (default 100); outside that,
-`kb sync: --max-delete <n> is outside 1..500`. `--career-db` must be an absolute path.
-
-Hash state is `<state dir>/kbsync/state.json`. A second sync of an unchanged pool sends nothing.
-
-This repo does not choose where rkb itself is built, and it does not name a checkout that builds
-it. `KBSYNC_REAL_BANK=1` is the opt-in test that runs `claims export` against a real bank and logs
-counts only (`internal/kbsync/realbank_test.go`). It requires `KBSYNC_BANK` and `KBSYNC_RKB`.
-`KBSYNC_CODE_ROOT` is passed through and may be empty. It is not a setup step.
+(`KBSYNC_REAL_BANK=1` with `KBSYNC_BANK`/`KBSYNC_RKB` runs the opt-in `internal/kbsync/realbank_test.go` check.)
 
 ### 6. Embeddings
 
-Semantic matching orders postings against the eligible profile. It never drops one. It is on only
-when both `kb.bank` and `semantic.snapshot` are set. The snapshot is the absolute path of a
-Hugging Face snapshot directory of `google/embeddinggemma-2`: the `snapshots/<revision>` folder,
-not the repository root. The model id Vani records looks like
-`tessl/embeddinggemma-2@<revision>/f32/d<width>`. This repo does not contain a download command
-for that snapshot. The tests that load a real model read `VANI_TESSL_SNAPSHOT`, or, in one test,
-`~/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/*`.
+Semantic matching orders postings against the eligible profile without dropping any. It runs only
+when both `kb.bank` and `semantic.snapshot` (the `snapshots/<revision>` directory of a
+`google/embeddinggemma-2` Hugging Face snapshot, not the repo root) are set; Vani has no download
+command (`VANI_TESSL_SNAPSHOT` sets the snapshot for tests, or `~/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/*`). Recorded ids look like `tessl/embeddinggemma-2@<revision>/f32/d<width>`.
 
-`target_summary` is the calibration ceiling. Write several concrete sentences (what you build,
-with what, at what scale), at most 1,024 bytes after whitespace is collapsed to single spaces.
-No name, contact, location, work authorization, or names of people, employers or schools. The
-config loader does not scan the main file for those terms. `vani track` checks a track file's
-summary against a built-in list of contact and work-authorization terms, plus
-`identifying-words.txt` in the tracks directory. An empty summary (or one of invisible characters
-alone) is valid JSON and a coarser ceiling.
+- **`target_summary`, `identifying-words.txt`, `motivation_notes`, drop floors:** Keep
+  `target_summary` under 1,024 collapsed-whitespace bytes with no names, contact details,
+  employers, schools, or work-authorization terms. `vani run` and `vani daemon` refuse when
+  `target_summary` is set and `<state dir>/tracks/identifying-words.txt` is missing, empty, or
+  matches the summary (`vani teacher` / `vani kbmatch run` take `--allow-missing-identifying-words`).
+  `motivation_notes` (`vani config motivation --set`) refuses `@`/handles, `linkedin`, `github`, and
+  visa/citizenship wording. Drop floors: `min_openrouter_prob` is `0` or `>= 0.9`; `min_lappi_score`
+  is `0` or `>= 0.8`. See
+  [`RUNTIME.md#the-identifying-words-file-gates-target_summary`](RUNTIME.md#the-identifying-words-file-gates-target_summary).
+- **Tessl Metal embedder (`darwin/arm64`, cgo, Xcode CLT, `-tags tessl`):** Links
+  `/Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a` (`cargo build --release --locked`
+  via `tessl/go/Makefile`):
 
-`vani run`, `vani daemon` and the other commands that put `target_summary` in a model prompt refuse
-while it is set and `identifying-words.txt` is missing or has no terms. The expected file is
-`<state dir>/tracks/identifying-words.txt` (the refusal and `vani status` print the full path): one
-term per line, `#` starts a comment, at least one term. The terms are your name, employers, schools
-and anything else that must not reach a model; project names stay out of it if drafts should keep
-them. `run` and `daemon` have no flag to skip the check (only `vani teacher` and `vani kbmatch run`
-take `--allow-missing-identifying-words`), so create the file first. A daemon that is already
-running re-checks before each run and refuses a run, recording a failure that names `target_summary`,
-when the list is emptied or deleted or gains a term the summary holds.
+  ```bash
+  make -C /Users/bharath/Code/research/tessl/go engine
+  CGO_CFLAGS="-DTESSL_ENGINE_SHA=$(shasum -a 256 /Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a | cut -c1-16)" \
+    go -C /Users/bharath/Code/apps/Vani build -tags tessl -trimpath -o /Users/bharath/Code/apps/Vani/build/vani ./cmd/vani
+  /Users/bharath/Code/apps/Vani/build/vani semantic status
+  ```
 
-`motivation_notes` goes to the drafter's model. It is checked against the built-in list only (the
-owner's list is not applied): an `@` address or handle, linkedin, github and work-authorization
-wording (visa, h-1b, opt, sponsorship, citizen, nonprofit, cap-exempt) are refused by
-`vani config motivation --set`, at config load and before a draft. The error names the field, not
-the term; a note that uses one of those words innocently has to be reworded.
-
-A drop rule's `min_openrouter_prob` is `0` (never drops on the model's reading) or at least `0.9`;
-`min_lappi_score` is `0` or at least `0.8` (Lappi's score is a top-two probability margin, so `0.8`
-is the same floor as `p >= 0.9` on the top label). A track's drop rules are held to the same floor
-when the track is applied.
-
-The embedder is in-process on Metal, darwin/arm64, cgo on, Xcode command line tools, build tag
-`tessl`. The binding links
-`/Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a`. That archive was not
-present on this Mac on 2026-10-25. The `engine` target runs `cargo build --release --locked` in
-`tessl/go/engine`. This repo does not install Rust. Build the archive, then build `vani`:
-
-```bash
-make -C /Users/bharath/Code/research/tessl/go engine
-go -C /Users/bharath/Code/apps/Vani build -tags tessl -trimpath -o /Users/bharath/Code/apps/Vani/build/vani ./cmd/vani
-/Users/bharath/Code/apps/Vani/build/vani semantic status
-```
-
-`semantic status` prints `this binary has the Tessl engine: yes` or `no`. `no` means the binary
-was not built with `-tags tessl` on darwin/arm64 (the stub build is everything else). A snapshot
-that will not load (missing files, no `query` or `document` prompt, engine archive that does not
-match the binding) is `semantic: embedding model unavailable`. The daily run still writes the
-digest; the run record says `semantic matching not run: <reason>`. That is a skipped check, not
-a success.
-
-Go's build cache keys the cgo package on the flag text, not the archive bytes. After rebuilding
-the archive, prefix the `go build` the way `tessl/go/Makefile` does (`CGO_CFLAGS` with
-`-DTESSL_ENGINE_SHA=` and the first 16 hex digits of `shasum -a 256` of `libgusset.a`). The
-README has the full line. `ld: warning` lines about a duplicate `-lgusset` are harmless.
-
-`semantic.warm_per_run` defaults to 1000 and is at most 5000. Scores land in
-`<state dir>/semantic/`. The first backlog:
-
-```bash
-/Users/bharath/Code/apps/Vani/build/vani semantic warm --max 5000
-```
-
-`--max` omitted, or `--max 0`, uses `semantic.warm_per_run`. A negative value or one above 5000
-exits 2: `semantic warm: --max must be 1-5000`. The command reads the ledger without its lock, so
-it runs while the daemon is up. It embeds postings. The profile those scores are compared with
-is eligible bullets only. With no selections, no rkb, or an rkb that fails, status prints
-`profile: unavailable:` and a warm exits with `semantic matching not run: the knowledge base profile could not be built:`.
-The command prints counts, paths and reasons, not bank text or posting text.
-
-`vani jobs` and the digest read cached scores and do not load the embedding model. They still
-build the eligible profile, which runs `rkb claims export` when semantic matching is configured.
-A changed bank, selection set, target summary or
-snapshot makes the cache stale; `semantic status` says so and tells you to warm again. The
-daemon's idle warm, between runs, is in the README. `VANI_NO_IDLE_WARM=1` turns it off. There is
-no config key for that.
-
-Near-duplicate postings and `vani answers similar` use the same binary and snapshot
-([`SIMILARITY.md`](SIMILARITY.md)).
+  `CGO_CFLAGS` forces Go to re-link when `libgusset.a` changes (`ld: warning` about duplicate
+  `-lgusset` is harmless). `semantic status` reports `this binary has the Tessl engine: yes|no`; if
+  the snapshot or archive fails to load (`semantic: embedding model unavailable`), runs still write
+  the digest with `semantic matching not run: <reason>`.
+- **Warming (`semantic.warm_per_run`, default 1000, max 5000):** Run `/Users/bharath/Code/apps/Vani/build/vani semantic warm --max 5000`
+  (reads the ledger without locking, safe while `daemon` runs; `--max 0`/omitted uses config;
+  negative or `> 5000` exits 2). Scores cache under `<state dir>/semantic/`; `vani jobs` and digests
+  read the cache without loading the model, though they still run `rkb claims export` to build the
+  eligible profile (`semantic warm` exits with `semantic matching not run: the knowledge base profile could not be built:` if selections or `rkb` fail). Changing the bank, selections, summary, or
+  snapshot invalidates the cache. Between runs, `daemon` warms idle capacity
+  ([`RUNTIME.md#idle-warm`](RUNTIME.md#idle-warm); set `VANI_NO_IDLE_WARM=1` to disable). See
+  [`SIMILARITY.md`](SIMILARITY.md) for near-duplicate postings and `vani answers similar`.
 
 ### 7. DevPrism, so ranking and `kb sync` have somewhere to write
 
@@ -379,12 +252,19 @@ Digested postings are left alone. A posting with no description is left unscored
 start DevPrism. `--dry-run` without `--replace` is the plan that needs no binary.
 `--replace --dry-run` needs the binary because it reads the block list.
 
-### 8. Watchlist, summary, first run
+### 8. Watchlist, exclusions, summary, first run
 
-Add boards with `watchlist add`. The README's Use section has flags for all 30 supported board kinds
-(Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe, Gem, SmartRecruiters, IBM,
-Avature, D. E. Shaw, Atlassian, Oracle HCM, Rippling, Workable, Recruitee, Pinpoint, BambooHR,
-Personio, Breezy HR, Teamtailor, HireHive, HiBob, TikTok, Radancy TalentBrew, XML feeds, and custom Pages). One board:
+Add boards with `vani watchlist add --ats CODE --token T --company 'Name' --allow-host` (`vani watchlist remove --ats CODE --token T` writes a tombstone in `<state>/watchlist/removed/` so the next run closes open postings; pass `--keep-postings` to keep them open or `--close-postings` for an already-removed board):
+
+| Code(s) | Source | Key flags & notes |
+|---|---|---|
+| `gh`, `lv`, `ab`, `gm` | Greenhouse, Lever, Ashby, Gem | `--token` board slug; `lv` takes optional `--region eu`; `ab` takes optional `--board-name` when literal name differs from slug |
+| `wd`, `oc` | Workday, Oracle HCM | `--token tenant/site` (`jpmc/CX_1001`), `--host` board host (`acme.wd5.myworkdayjobs.com` / `wd1.myworkdaysite.com` or `jpmc.fa.oraclecloud.com`), optional repeatable `--search` |
+| `az`, `gg`, `ap`, `ib`, `tt` | Amazon, Google, Apple, IBM, TikTok | `ib` accepts `--token ibm` or `confluent`; `tt` requires `--token tiktok`; all take optional `--search`; `az`/`gg`/`ap`/`tt` take repeatable `--filter key=value` |
+| `ef`, `jb`, `av`, `tb` | Eightfold, Jibe, Avature, TalentBrew | Require `--host`; `ef` token is company domain + optional `--search`/`--filter`; `jb` token is client code + optional `--search`/`--filter`; `av` also requires `--url` portal listing URL |
+| `sr`, `ds`, `at`, `rp`, `wk` | SmartRecruiters, D. E. Shaw, Atlassian, Rippling, Workable | Slug `--token`; `sr` accepts repeatable `--filter country=us` (2-letter ISO code) |
+| `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb` | Recruitee, Pinpoint, BambooHR, Personio, Breezy HR, Teamtailor, HireHive, HiBob | Lower-case subdomain `--token` (e.g. `acme` for `acme.recruitee.com`) |
+| `fd`, `pg` | XML feed, generic careers page | Short slug `--token` + `--url`; `pg` also requires `--link-pattern RE` |
 
 ```bash
 /Users/bharath/Code/apps/Vani/build/vani watchlist add --ats gh --token BOARD --company 'Name' --allow-host
@@ -432,13 +312,21 @@ While the daemon holds the ledger, `vani run-request` takes the same flags and t
 the run (a request that advances spends; see the audience note above). `run-once` while the
 daemon holds the ledger fails with `ledger: directory is locked by another process`.
 
-`exclude` drops on the posting's own fields and spends nothing. `vani config exclude` prints the
+#### Exclusions
+
+`exclude` drops on the posting's own fields before triage and spends nothing. `vani config exclude` prints the
 lists as one JSON object. `--set` replaces them from one JSON object on stdin, keys `titles`,
 `title_unless`, `companies`, `locations`, `only_locations` and `descriptions`. An unknown key or
 trailing data is refused. Each list holds at most 128 entries, `descriptions` at most 32, and each
 entry at most 100 bytes. Input over 256 KiB is refused:
 `config exclude: input larger than 262144 bytes`. Saving leaves stored postings unchanged; the
-next run applies the lists. What each list matches is in the README.
+next run applies the lists (`vani prefilter` previews what drops or reopens):
+- `titles`: whole-word case-insensitive phrase match against posting title (whitespace collapsed; list singular/plural forms explicitly).
+- `title_unless`: exempts a title matched by `titles` from the title exclusion only.
+- `companies`: exact company name match (case- and whitespace-folded).
+- `locations`: drops only when *every* location/remote option listed on the posting matches an entry (`"TX"`, `"Texas"`, `"US"`/`"USA"`/`"United States"`, `"remote"`, or area/region words).
+- `only_locations`: keeps only if *at least one* listed location option matches an entry (empty/unscoped remote postings stay kept).
+- `descriptions`: whole-word phrase match against posting description (ledger records only that descriptions matched, never the phrase).
 
 ### 9. Optional: Claude, notes, schedule, badges
 
@@ -459,8 +347,15 @@ The daily daemon is the Mac app's Pipeline ▸ Run on schedule
 `launchctl bootstrap`. The plist installs nothing by itself. `launchd` without `plist` exits 2:
 `launchd: expected subcommand "plist"`. `--binary` must be absolute (the default is this
 executable). A relative config or state path is refused, because launchd starts the agent from
-`/`. The label defaults to `dev.vani.daemon`. The README's Use section has KeepAlive, the
-5-minute throttle, and the `launchctl bootout` / `launchctl bootstrap` lines.
+`/`, and the generated plist pins `VANI_CONFIG` and `VANI_STATE_DIR` in `EnvironmentVariables`.
+The label defaults to `dev.vani.daemon`. It sets `KeepAlive` (`SuccessfulExit: false`) and
+`ThrottleInterval` `300` (5 minutes), so failed exits restart after backoff while clean stops stay
+down. Reload a changed plist at `~/Library/LaunchAgents/<label>.plist` with:
+
+```bash
+launchctl bootout gui/$UID ~/Library/LaunchAgents/<label>.plist
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/<label>.plist
+```
 
 `vani lca import` and `vani employer import` add badges. They never filter
 ([`LCA.md`](LCA.md), [`EMPLOYER.md`](EMPLOYER.md)). `vani track use` swaps the target summary and
@@ -532,9 +427,13 @@ not a clean bill.
 | Topic | Doc |
 |---|---|
 | Which process has the OpenRouter key, the Anthropic key, the live paths | [`RUNTIME.md`](RUNTIME.md) |
-| Boards, triage, digest, rescore, `kbmatch`, launchd | [README](../README.md) |
+| CLI overview and command cheat sheet | [README](../README.md) |
+| Cloud shadow, idle warm, semantic matching, `jobs export`, `doctor` | [`RUNTIME.md`](RUNTIME.md) |
 | DevPrism `--mcp` and `career.db` | [`PHASE0-devprism.md`](PHASE0-devprism.md) |
 | Similar wordings | [`SIMILARITY.md`](SIMILARITY.md) |
 | Tailored PDF and Resume Studio | [`RUNTIME.md`](RUNTIME.md), "Building a resume" and "Resume Studio" |
 | Mac app and the schedule switch | [`macos/README.md`](../macos/README.md) |
+| New-user progressive setup (`go.work` + minimal layers) | [`ONBOARDING.md`](ONBOARDING.md) |
+| Agent guide: building a new ATS adapter | [`ADAPTER_GUIDE.md`](ADAPTER_GUIDE.md) |
+| Agent guide: building/wiring a knowledge base (`bank.json`, `rkb`, `Eligible`) | [`KNOWLEDGE_BASE_GUIDE.md`](KNOWLEDGE_BASE_GUIDE.md) |
 | Open questions | [`FOLLOWUPS.md`](FOLLOWUPS.md) |

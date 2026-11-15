@@ -11,8 +11,8 @@ sample.
 
 ## 2026-11-07, this machine
 
-Apple M5 Pro, 64 GB, macOS 27.2, `go1.27.3 darwin/arm64`. `go.mod` still says
-`go 1.26.6`. Each row is `go test -run '^$' -benchmem -count=5` with the
+Apple M5 Pro, 64 GB, macOS 27.2, `go1.27.3 darwin/arm64` (`go.mod` said
+`go 1.26.6` when these runs executed; updated to `go 1.27.4` in commit `4bfed85`). Each row is `go test -run '^$' -benchmem -count=5` with the
 default one-second bench time, and `VANI_NO_KEYCHAIN=1`. The figure is the
 minimum of the five `ns/op` results. The range is the other four.
 

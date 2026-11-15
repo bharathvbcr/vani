@@ -5,7 +5,7 @@ ATS boards, filters them without spending tokens, ranks them with DevPrism's det
 tools, and writes a daily digest. Manvi (imported as a library) is the LLM orchestrator for
 Claude; the decision model is Liquid (`liquid/d1-ultra` over OpenRouter); embeddings run through
 Tessl (`-tags tessl`). `docs/RUNTIME.md` maps each entry point to its config, state and keys. First-time setup is
-`docs/SETUP.md`. The plan is `/Users/bharath/Code/vani-plan.md`; follow-ups are in `docs/FOLLOWUPS.md`.
+`docs/SETUP.md`. Historical design plan: `docs/PLAN.md`; current ranking work and follow-ups are in `docs/RANKING_PLAN.md` and `docs/FOLLOWUPS.md`.
 
 ## Build
 

@@ -47,7 +47,7 @@ flowchart TD
 
 ## Profile discovery and the 15,000 cap (2026-11-11): what is left
 
-`watchlist discover --profile` (README, "Finding boards from your profile") and the shared posting
+`watchlist discover --profile` ([`SETUP.md`](SETUP.md) / `cmd/vani/discoverprofile.go`) and the shared posting
 cap raised from 5,000 to 15,000 (`srcutil.MaxPostings`, `sources.MaxPostingsCeiling`).
 
 - **First live run (read-only, 14 searches, no `--country`):** 1,084 distinct on-profile postings
@@ -208,7 +208,7 @@ The ranking and filtering audit and its status per finding are in
   `vani audit` has produced them (about 150 a month at the planned cadence). Both must refuse below
   their threshold with a "could not run" result, never a quiet fit.
 - **Owner config, not code:** a location `exclude` (RANKING_PLAN F3), `advance_per_run` 750 (the
-  default stays 300), the cloud shadow (README, "Cloud shadow"), and the Engineering Manager
+  default stays 300), the cloud shadow ([`RUNTIME.md#cloud-shadow`](RUNTIME.md#cloud-shadow)), and the Engineering Manager
   question (TRACKS.md).
 - **DevPrism upstream:** report `coveragePercentage: null` for a JD with no must-have skills
   (`jd.rs:559`, `gap.rs:246` under `/Users/bharath/Code/devtools/DevPrism`). Vani already reads
@@ -873,7 +873,7 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     Studio". Still open: the pool is about the base resume until rkb round-2 review runs (`vani kb
     sync --dry-run`: 17 entries / 36 slots; the career/ session's handoff); the Swift app has the
     client, model, card, bind-and-log and the Studio window (macos/README.md, "Resume Studio"; what
-    only the running app can confirm is under its "Not verified here"), and the extension's keyed path, the
+    only the running app can confirm is under its "Verification & known limits"), and the extension's keyed path, the
     agent's `resumeJob` and header removal step 2 are done; the Studio's preview cannot select a
     bullet by clicking it (that needs scripts in the page, which stay off); a build
     that falls back to base is kept but never current over a real version; marks' sent version and
@@ -1180,7 +1180,7 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
   - What it does: `vani rescore` scores `scored`/`explained` records that have no `rank`, in place.
     The record keeps its status and explanation. It goes through the run's `pipeline.Advance` (`baseAdvancePlan(kindRescore, …)`), so the cap,
     concurrency, cancellation and 20-failure streak are the run's. It calls DevPrism only, never a
-    model. `--dry-run` reads a snapshot without the lock. See README "Use".
+    model. `--dry-run` reads a snapshot without the lock. See [`RUNTIME.md`](RUNTIME.md).
   - Why a missing `rank` stands in for the reason: the folded record keeps no event reasons. Every
     real score writes `rank`, and a copy of the live ledger showed the two agree.
   - Dry run on a copy of the live ledger, taken 2026-10-19: **1,631 would be rescored** (1,581

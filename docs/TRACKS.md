@@ -74,7 +74,7 @@ the repo's ignored `drafts/deciders/`, which `tracks_dir` can point at directly.
 - `motivation_notes` is left alone: it is about the seeker, not the track.
 - `exclude` is left alone too: the owner's hard filter (titles, companies, locations,
   descriptions) holds whatever track is active. Unlike `title_signals.exclude`, which only orders
-  triage, it drops; see the README's Exclusions entry.
+  triage, it drops; see [`SETUP.md#exclusions`](SETUP.md#exclusions).
 
 The new config is validated before it is saved. A track that fails any check is not applied and
 the config is left byte-for-byte unchanged.

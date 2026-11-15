@@ -460,183 +460,40 @@ flowchart LR
 
 ## Limits
 
-- Widgets: native controls, ARIA combobox / listbox / radio / checkbox / switch, button dropdowns
-  (`aria-haspopup=listbox`) and contenteditable editors are read, and filled by opening the widget,
-  clicking the option that matches the saved answer and checking the widget shows it. A widget that
-  does not open or does not show the choice is reported "manual", never "filled".
-  - Multi-select (`<select multiple>`, a listbox or combobox that is `aria-multiselectable`, a
-    react-select / MUI style chip picker): every selected value is read and saved as one answer.
-    Filling clicks each saved value's existing option (each through the same option matching as any
-    choice) and checks the chip or selection appears. It only adds: chips already there are kept and
-    none is removed, and "overwrite typed values" on a `<select multiple>` makes the selection
-    exactly the saved one. A saved value with no option is skipped and the field is outlined yellow.
-    A picker with no option list to click (a free-text tag box) stays "manual". A chip box whose
-    input has no `combobox` role is read as a plain text field, so its chips are not read (reading
-    them would mean inspecting the surroundings of every text input on every scan).
-  - Search-as-you-type fields (a list that appears only after typing): typing into them can make
-    the site send its own search request, so Fill types into one only when "type into search fields"
-    is ticked in the popup. Off, the field is reported "manual" and untouched. On, it types the saved
-    answer once, picks the option, and clears the text again if nothing matched (at most one typed
-    query and one clear).
-  - Dates: `<input type=date|month>` get the saved date as ISO (`YYYY-MM-DD` / `YYYY-MM`, from
-    ISO or US-order text) through the native setter plus input and change events, and are read back;
-    a month with no day is never guessed onto a date input. `type=week`, read-only inputs that open a
-    picker and `aria-haspopup=dialog|grid` pickers stay "manual". ARIA date-grid pickers are not
-    driven: libraries label their day cells differently and nothing here could be checked against a
-    real one, so a guessed click could fill the wrong day.
-  - Only open shadow roots and same-origin iframes are entered. A cross-origin iframe on a host the
-    manifest does not match (a company page embedding an unlisted ATS) is entered only when you open
-    the popup on that page (it then injects into every frame, which `activeTab` is meant to cover; not
-    tried against a live cross-origin frame). Scan, Fill and Save from the popup (and the Fill
-    shortcut) ask each frame that runs Vani on its own and add the answers up, so a form inside a
-    frame is counted even when the top frame has no fields; the scan shows a per-frame list. Each
-    frame's content script tells the background worker it is there when it starts (kept per tab in
-    `chrome.storage.session`, memory only where that is missing), because the popup cannot list a
-    cross-origin frame it may not script: Chrome lists only the page activeTab grants, not a
-    Greenhouse iframe the manifest runs in (checked in Chrome 155, `test/live.ts`). A frame that
-    errors or gives no answer within 20 s is reported as not answering and its fields are not
-    counted; a listed frame that has since gone away is skipped.
-- Character limits: a browser holds `maxlength` against typing only, so a script's `.value =` can
-  write past it, and some ATSs (Greenhouse noted) then drop or cut the answer on submit without a
-  word. Fill therefore compares the answer with the field's limit when it fills (an `<input>` of a
-  type `maxlength` applies to, or a `<textarea>`; read live, so a limit the page changes after
-  render counts) and, when the answer is longer, writes nothing: the outcome is `too_long`, the field
-  is outlined yellow, and its tooltip and the Fill message say "The answer is N characters and this
-  field allows M. Vani left it empty rather than cut it: shorten it by hand here, or edit the saved
-  answer." The saved answer is never changed. Length is counted in UTF-16 code units as the browser
-  counts it (an emoji is 2, a letter plus a combining mark is 2), with a textarea's line break as 1 and
-  a single-line input's dropped. The same rule covers an inserted draft and the pieces of a split
-  date or phone (those are left for review or unfilled, not cut). A contenteditable has no limit.
-  Text you already typed is still left alone. The pre-submit audit also lists every field whose
-  current value is over its limit ("holds N characters but allows M"), whoever wrote it, and changes
-  nothing. Not covered: the query Fill types into a search-as-you-type box when you tick "type into
-  search fields" (it is cleared again), and a limit the site enforces only on its server.
-- Repeated sections (work history, education): the 2nd, 3rd... occurrence of a question is saved as
-  "<question> (vani section n)" and filled from the same entry number; entry 1 keeps its plain key.
-  The marker is namespaced so a genuine label ending in "section 2" is not read as entry 2. Keys
-  saved by earlier versions ("<question> section n") are still read: they match entry n exactly
-  (just below a key saved with the new marker) and as wording variants, and are never rewritten or
-  deleted. One case cannot be told apart: an old key that really was a question ending in
-  "section n" is also treated as entry n of the shorter question for fuzzy matching only. An entry
-  with no saved counterpart is left blank. Dates split into month/day/year and phone numbers
-  split into country code + number are one saved answer each; a bare `+15550100` is split only
-  when it is unambiguous.
-- Capture does not need the Submit click: committed values (change / focus-out / choosing an
-  option) are held for the page and saved on submit, Next/Continue/Save, Enter, a route change,
-  pagehide and the tab being hidden. Saving the same page twice changes nothing: the page keeps
-  what each field last sent, so the same value for the same field is not sent again even if the
-  saved answers have not caught up (a refused save is not remembered, so it is retried). Only a
-  page that has shown at least 3 questions is saved on its own; on a smaller page (a search page
-  the popup ran Vani on) only **Save answers** saves, so a search query pressed with Enter is never
-  kept as an answer.
-- Why-this-company questions ("Why Anthropic?", "Why do you want to work here?", "What excites you
-  about this role?") are never filled from saved answers, even word for word: such an answer is
-  written for one posting, and every Greenhouse company shares one host, so a saved one cannot tell
-  which company it was for. Fill lists them as new questions, for **Draft** or **Suggest** to write
-  from the posting on the page; the panel's "Use: …" buttons still offer an earlier answer on a click.
-- Not questions, so never read, saved or filled: search boxes (`type=search`, `role=searchbox`,
-  anything inside `role=search` or `<search>`), and a text box hidden from assistive technology and
-  out of the tab order (`aria-hidden=true`, negative `tabindex`). React-Select keeps one beside each
-  required dropdown on job-boards.greenhouse.io until a value is chosen; counting it doubled every
-  dropdown. A hidden select, checkbox or radio is still read: custom widgets keep their value there.
-- A choice is matched with a trailing dialling code set aside: "United States" picks
-  job-boards.greenhouse.io's "United States +1", and an answer saved as "United States +1" fills a
-  plain "United States". That Country box shows only "+1" once a country is chosen, so a bare
-  dialling code never replaces a saved answer that names more, and is saved at all only for a
-  question about a code or a phone (a "Country code" question); a "Country" that reads "+1" saves
-  nothing. When Fill chooses a country there and the box then shows only "+1", which several
-  countries share, it checks the flag beside it: the chosen option's flag is a confident fill, a
-  different flag is not a fill, and a box with no flag is filled yellow, to check.
-- Matching a full form against a full bank (2,000 answers, 25 fields) took about 260 ms per
-  rescan before the question reading and saved-wording tokens were cached, and about 9 ms after
-  (min of 7, `bun`, Apple silicon; the timing script is not committed). Both caches are bounded
-  (8,192 entries) and cleared when full.
-- Coverage: the panel and popup show, for the page, fields found / ready / new / manual / skipped,
-  and list the questions with no saved answer. A scan reads at most 500 fields and 40,000 nodes;
-  when it stops early the report says how many controls it did not read.
-- Not verified against live sites (none were visited): Workday's real markup for button dropdowns
-  and date parts, and `pagehide` delivery from a content script, were built from the public
-  patterns and a fixture page only.
-- Labels come from ARIA, `<label>`, fieldset legends and question containers. A form with no
-  readable label for a field falls back to the field's name.
-- Connected to Vani only for drafts, Suggest and marking a job Applied (above): no Greenhouse
-  question-schema prefetch, and no application packet from the digest (plan §9).
+- **Widgets & multi-select:** Native inputs, ARIA combobox/listbox/radio/checkbox/switch, button dropdowns (`aria-haspopup=listbox`), and `contenteditable` editors are read and filled by opening the widget, clicking the matching option, and verifying the widget shows it (unconfirmed fills report `"manual"`). Multi-select (`<select multiple>`, `aria-multiselectable`, react-select/MUI chip pickers) adds saved chips without clearing existing selections except under "overwrite typed values" on `<select multiple>`; unrecognised chip inputs stay `"manual"`.
+- **Search-as-you-type & dates:** Autocomplete fields are typed only when "type into search fields" is enabled in the popup (one query, cleared if nothing matches; otherwise `"manual"`). `<input type=date|month>` set ISO strings via the native setter + input/change events (never guessing a missing day); `type=week`, read-only pickers, and `aria-haspopup=dialog|grid` stay `"manual"`.
+- **Shadow roots & frames:** Scans enter open shadow roots and same-origin iframes (cross-origin unlisted embeds only when the popup grants `activeTab`). Each frame's content script registers in `chrome.storage.session`; frame scans time out after 20 s. Per-page scans cap at 500 fields / 40,000 nodes.
+- **Character limits (`maxlength`):** Before writing `.value`, Fill checks live UTF-16 length (newline = 1 in `<textarea>`, 0 in single-line inputs) and refuses over-limit answers (`too_long`, yellow outline) rather than silently truncating; pre-submit audit flags any over-limit values already on the form. Server-side limits and cleared search queries are not covered.
+- **Repeated sections & compound fields:** Entry 2+ of repeating sections saves/fills as `<question> (vani section n)` while still reading legacy `<question> section n` keys. Split dates (month/day/year) and split phones (country code + number) map to one saved answer each.
+- **Auto-capture & exclusions:** Answers commit on submit/Next/Enter/route-change/`pagehide`/`visibilitychange` once a page shows `>= 3` questions (smaller pages require **Save answers**; identical values are deduplicated). Search controls (`type=search`, `role=search`, `<search>`) and hidden non-tabbable React-Select helpers (`aria-hidden=true` + negative `tabindex`) are skipped. Why-this-company prompts never autofill from saved answers (Draft/Suggest only, though panel history buttons can still paste an earlier answer manually). Country dropdowns ignore trailing dial codes (`United States +1`) unless the question asks specifically for a dialing/country code, and verify flag icons when only `+1` remains visible.
+- **Performance & labels:** Question matching uses bounded 8,192-entry caches. Labels derive from ARIA, `<label>`, legends, and containers (falling back to field `name`). Workday button dropdowns, Workday date parts, and `pagehide` content-script delivery rely on fixture coverage (`test/dom.html`), not live site scraping. Not coupled to digest application packets.
 
 ## Develop
 
 ```bash
-bun test --cwd /Users/bharath/Code/apps/Vani/extension       # core: normalize, classify, bank, match
-bun run /Users/bharath/Code/apps/Vani/extension/build.ts     # dist-chrome/, dist-safari/, dist-test/
-bun run /Users/bharath/Code/apps/Vani/extension/test/serve.ts  # then open http://127.0.0.1:4789/test/dom.html
+bun test --cwd /Users/bharath/Code/apps/Vani/extension         # unit, store, and shared vector suites
+bun run /Users/bharath/Code/apps/Vani/extension/build.ts       # builds dist-chrome/, dist-safari/, dist-test/
+bun run /Users/bharath/Code/apps/Vani/extension/test/serve.ts  # local fixture harness at http://127.0.0.1:4789/test/dom.html
+bun run /Users/bharath/Code/apps/Vani/extension/test/live.ts   # headless Chrome integration suite (isolated profile)
 ```
 
-```bash
-bun run /Users/bharath/Code/apps/Vani/extension/test/live.ts  # real Chrome, headless, throwaway profile
-```
+`test/live.ts` drives headless Chrome over the DevTools pipe (no `key` or `nativeMessaging`, using `http://127.0.0.1` permission in place of `activeTab`) to verify cross-origin iframe aggregation, frame survival across worker restarts, `test/dom.html`, and real open-shadow-root timing (`< 150 ms` after options render).
 
-`test/live.ts` loads the built extension into a headless Chrome (over the DevTools pipe; no
-dependency) with a throwaway profile, and checks what the fake `chrome` in `bun test` cannot:
-Save, Fill and Scan count a form in a cross-origin Greenhouse iframe on a company page; with a
-content script in both frames both are asked; a removed frame is skipped; the frame list survives
-the worker being stopped; the import input takes the same file again; and `test/dom.html` passes.
-Its copy of the extension has no `key` and no `nativeMessaging`, so it never reaches the Mac app
-or your saved answers, and a host permission for `http://127.0.0.1` stands in for the activeTab
-grant the popup gets (automation cannot grant activeTab). It needs Google Chrome (or `--chrome
-PATH`) and `openssl`.
-
-`test/dom.html` runs the DOM tests in a real browser. It captures a hand-filled Greenhouse-style
-form, then fills a reworded Lever-style form, and checks what must and must not be filled. The page
-title reads `PASS n/n`.
+`bun test` covers `test/bankindex.test.ts` (2,000-answer parity), `test/fillwait.test.ts` (MutationObserver waits/teardown across up to 64 shadow roots), `test/bankcache.test.ts` (memo invalidation), `test/rounds.test.ts` (3-round / 6 s cascading dropdown waits), `test/concept.test.ts`, and shared fixtures `test/vectors/classify.json` and `test/vectors/concept.json` (shared with Mac Swift tests—do not edit by hand).
 
 ### Type-check gate
 
-`bun test` does not type-check. The gate is one command, run from `extension/`:
+`bun test` does not type-check. From `extension/`, run:
 
 ```bash
 sh scripts/typecheck.sh        # or: bun run typecheck
 ```
 
-It runs `bun install --frozen-lockfile` (the compiler is `typescript`, an exact-pinned devDependency
-in `package.json`, locked in `bun.lock`; `node_modules/` is git-ignored and never shipped, since
-`build.ts` bundles `src/` and copies `static/` only), then the installed
-`./node_modules/.bin/tsc -p tsconfig.json --noEmit` against `src/` (`src/chrome.d.ts` declares the
-Chrome API surface used). Before it runs, `tsc --version` must name exactly the version pinned in
-`package.json`. A missing, empty or foreign compiler exits non-zero and says to run the install step; the
-script never prints `typecheck: ok` unless the pinned `tsc` ran and exited zero, and it has no
-environment overrides (its tests run a copy in a scratch directory with a stub `bun`). It never uses `bunx` or `npx`,
-which download a missing package. Bumping the compiler is a reviewed change to `package.json` and
-`bun.lock`.
-
-`bun test` also covers the store (fake native host and fake `chrome.storage`) and replays
-`test/vectors/classify.json`, the classifier vectors shared with the Mac app's Swift tests; do not
-edit that file by hand.
-
-Also under `bun test`:
-
-- `test/bankindex.test.ts`: the indexed `matchField` equals the old full scan of the bank (seeded
-  random banks, a 2000-answer bank), and one bank is indexed once.
-- `test/fillwait.test.ts`: fill waits on the page, not a clock (a fake DOM and MutationObserver):
-  `waitFor` resolves on the first mutation batch, gives up at its ceiling, releases every observer
-  and timer on every exit (also when the condition throws), and observes each root it is given (up
-  to 64), so a change inside an open shadow root is seen.
-- `test/bankcache.test.ts`: the bank memo (`createBankMemo`): reads inside the freshness window share
-  one request, `invalidate` and writes in flight, failures, and a clock that goes backwards.
-- `test/rounds.test.ts`: fill rounds (a state list that appears after the country is filled in
-  round 2; the 3-round and 6 s limits; a field the user cleared is not refilled), `carryMatches`,
-  and `waitForQuiet` / `observeRoots` over the document and open shadow roots, with every observer
-  disconnected after quiet, after the cap and after a failure.
-- `test/concept.test.ts`: one concept, one bank row (`conceptKey`, `findOwner`, `mergeCapture`,
-  `pendingDiff`), the label cap, intent sync and lookup cost, replaying `test/vectors/concept.json`, which is shared with
-  the Mac app's Swift `ConceptKeyTests`; do not edit that file by hand.
+`scripts/typecheck.sh` verifies `bun install --frozen-lockfile`, checks the pinned `tsc --version` from `package.json`, and runs `./node_modules/.bin/tsc -p tsconfig.json --noEmit` against `src/`.
 
 ### Native Messaging & Reliability Hardening
 
-- **Single-port native caching:** Native messaging caches a single port per runtime and dynamically detects when `chrome.runtime.connectNative` appears after initial import, preventing duplicate connections or fallback mismatches.
-- **Probe timeout isolation:** Frame probe timeouts are spliced out upon expiration, preventing an expired probe timer from poisoning subsequent native communications.
-- **Bank cache generation invalidation:** `fresh()` increments bank generation counters and invalidates in-flight fetches so stale memoized banks cannot be stored.
-- **Manifest V3 answer import:** Answer import file pickers are bound strictly from script listeners, avoiding inline `onclick` handlers that violate MV3 CSP.
-
-`test/dom.html` includes real open-shadow-root cases (`shadow+frames`, and a dependent field that
-appears inside a shadow root mid-fill). Its fill-waits check, run by `test/live.ts`, measures how
-soon the fill acts after the widget renders its options (under 150 ms), not the total time:
-headless Chrome throttles page timers by hundreds of ms, and by a different amount per timer.
+- **Single-port native caching:** Caches one native port per runtime and picks up `chrome.runtime.connectNative` after initial import.
+- **Probe timeout isolation:** Splices expired frame probe timeouts cleanly so stale probes do not break active channels.
+- **Bank cache generation invalidation:** `fresh()` bumps generation counters and discards stale in-flight fetches.
+- **Manifest V3 CSP compliance:** Answer import file pickers attach via script listeners (no inline `onclick`).

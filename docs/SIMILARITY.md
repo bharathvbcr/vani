@@ -91,7 +91,7 @@ option from `nearDupSimilarity` (`cmd/vani/semanticwire.go`), and the option is
 cache once and closes the model, whatever the stage returned.
 
 The cosine runs only when `semantic.snapshot` and `kb.bank` are both set (`SemanticOn`) and the
-binary is built with `-tags tessl` (see README, "Knowledge-base matching"). Otherwise the option is
+binary is built with `-tags tessl` (see [`RUNTIME.md#semantic-matching`](RUNTIME.md#semantic-matching)). Otherwise the option is
 nil. The stage then runs on shingles alone: `SimilarityConfigured:false` appears in the
 `near-duplicates:` warning line, and no `dup.cosine` is written. A model that fails to load within
 `nearDupLoadTimeout` (2 min) gets a `near-duplicate cosine off, shingles only` warning and nil as

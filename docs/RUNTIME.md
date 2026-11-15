@@ -186,8 +186,8 @@ the bound a posting that ranks below everything stored is not stored (`vectors_r
 score is still saved; rebuilt by the next warm when unreadable; the owner's judged postings, listed
 in `labelled-texts.json` and embedded by the daily run and `vani semantic warm` whether or not they
 are still open, rank above every Score, so a compaction keeps them), `semantic.lock` (held by a warm), and `semantic-idle.json` (what the daemon's idle
-warm last did, its backoff and next eligible time). The daemon's idle warm is documented in
-README.md ("Idle warm"); `VANI_NO_IDLE_WARM=1` turns it off, and `vani status` and `vani
+warm last did, its backoff and next eligible time). The daemon's idle warm is documented below
+([Idle warm](#idle-warm)); `VANI_NO_IDLE_WARM=1` turns it off, and `vani status` and `vani
 semantic status` print its state.
 
 An entry with no eligible bullet contributes no title and no stack terms to the profile.
@@ -619,6 +619,12 @@ to an `.xlsx` workbook using `internal/xlsx` (standard library `archive/zip` + X
 
 ## The Jobs tab's read path (`vani jobs list|stats|gaps|show`, `vani jobs serve`)
 
+**Ranked `role_fit` display (`aa55f56`):** `jobview.FitRanker` asks the ranker for the reading that
+ranking actually uses (`RankContext.SlotFor`, preferring manual `jobs retriage` and the escalation
+tier's reading of an unsure primary over the raw primary), and `jobview.FitOf` feeds the row's fit
+chip, `--fit`, `jobs stats`, and `jobs export` (`jobs serve` reads `Blend.FitReading` without a second
+pass). Ledger annotations and the jobs JSON `triage` map remain unchanged.
+
 The Jobs views read the ledger without its lock, through a `ledger.Reader` that starts from
 `<state>/readmodel/ledger.ckpt` and folds only the lines appended since. `list`, `stats` and
 `gaps` then load a description only for a posting whose stored text facts
@@ -869,6 +875,46 @@ Manual runs (`vani run-once` and `vani run-request`) can scope triage, scoring a
 - `--or-remote`: When combined with `--state` or `--area`, includes remote roles alongside geographic matches ("remote, or in Texas").
 
 Postings outside the specified scope remain intact in the ledger and wait for subsequent runs. The run cap (`advance_per_run` or `--advance N`) applies strictly within the filtered scope. The scope filters share the exact matching engine (`jobview.Scope`) with `vani jobs list`, guaranteeing consistency between previewing pending roles and executing scoped runs.
+
+## Cloud shadow
+
+`decide.shadow` (`""`, `"openrouter"`, `"llm"`, `"lappi"`, `"local"`) asks a second backend beside
+the primary chain without letting its answer drop or reorder a posting (Rule 7). `decide.shadow_mode`
+chooses between:
+- `"sample"` (default): asks on every posting hashed into `1 / shadow_every` (default `12`, range `1..1000`).
+- `"drop_candidates"`: asks on every slot the drop policy would drop under a calibrated reading,
+  before applying the drop (`shadow_every` does not apply; recommended with `decide.shadow: "llm"` and a distinct `llm.triage_model`).
+
+`decide.escalate` (`enabled`, `below_p` default `0.5`, `max_per_run` default `200`, max `5000`)
+re-asks `llm.triage_model` on low-confidence primary slots using the shadow recording slot; it is
+exclusive with sampled shadow and coexists with `drop_candidates` on disjoint slots.
+
+## Idle warm
+
+Between scheduled runs and inbox polls, `vani daemon` runs an idle warm loop (`cmd/vani/idlewarm.go`,
+disabled with `VANI_NO_IDLE_WARM=1`):
+- Checks every 10 minutes (30 s after a run/poll nudge) when AC power is available, in chunks of
+  at most 16 postings / 2 minutes per `Matcher.Warm` call and 2-hour windows, releasing `semantic.lock`
+  between chunks.
+- Pauses immediately via `idleGate` whenever a scheduled or requested run begins, waiting up to one
+  Tessl call timeout plus 15 s (`idleYieldWait`) so the run never stalls on `semantic.lock`.
+
+## Semantic matching
+
+- **Local embeddings (`-tags tessl`):** When both `semantic.snapshot` and `kb.bank` are set, `vani`
+  embeds eligible KB entries and postings with Metal Qwen3 into the vector log (`2.5 GiB` cap) and
+  score cache (`256 MiB` read bound); `vani semantic warm [--max N]` warms scores on demand and
+  `vani semantic status` reports coverage against the open pool.
+- **LLM match (`vani kbmatch run [--top N] [--dry-run]`):** Sends the top postings, redacted
+  `target_summary`, and a bounded digest of eligible KB entries to `llm` to order and explain fit
+  (never drops); `vani kbmatch status` prints how many answers are kept and current.
+
+## Compatibility: renamed keys (2026-10-19)
+
+`jev_model`, `jev_key_env`, `daily_usd.jev`, `min_jev_prob`, and `decide.shadow: "jev"` were renamed
+to `openrouter_model`, `openrouter_key_env`, `daily_usd.openrouter`, `min_openrouter_prob`, and
+`"openrouter"` (plus `kbmatch.backend: "openrouter"`). Legacy configs and track files still load unless
+both old and new keys disagree; saving writes the new names while daily budget filenames stay `budget/jev.json`.
 
 ## Model ids
 

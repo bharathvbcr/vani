@@ -12,7 +12,7 @@ it is not a pip package, and a bare `vani` prints usage and exits 2 (there is no
 
 ## Install
 
-Go 1.26 and the repository's ignored `go.work` (it points at sibling checkouts):
+Go 1.27.4 and the repository's ignored `go.work` (it points at sibling checkouts):
 
 ```bash
 go -C <vani repo> build -o <vani repo>/build/vani ./cmd/vani
@@ -80,7 +80,9 @@ and work while a run holds the ledger.
 - `vani runs list|show [ID]|failures [ID]` covers finished runs and what failed in them.
 - `vani jobs list|stats|folders|gaps` browses and summarises the roles:
   - views: `new`, `saved`, `applied`, `hidden`, `all`, `pending`
-  - filters: `--q`, `--fit`, `--work-mode`, `--max-age`, `--state`, `--remote`, ...
+  - filters: `--q`, `--fit`, `--work-mode`, `--max-age`, `--state`, `--remote`, ... (`--fit`, rows,
+    `stats` and `export` use the ranking's `role_fit` reading—preferring manual `jobs retriage`
+    and escalated unsure primaries—while each job's JSON `triage` map keeps raw primary readings)
 - `vani jobs show KEY` prints one role with its description. `vani jobs find --url URL` says
   which tracked role a page is.
 - `vani jobs serve` is the Mac app's long-lived Jobs reader (NDJSON on stdin/stdout). It is not
@@ -113,7 +115,7 @@ and work while a run holds the ledger.
 **Change setup:**
 
 - `vani init` writes a config and refuses to overwrite one.
-- `vani watchlist add|remove|domain|icon` edits the boards.
+- `vani watchlist add|remove|domain|icon` edits the boards (`watchlist remove` writes a tombstone so the next run closes open postings unless `--keep-postings` is passed; `--close-postings` closes postings for an already-removed board).
 - `vani watchlist discover` reads a third-party site and never edits the watchlist, except
   `--profile --add N`, which adds the top N corroborated new boards (ask the owner first).
 - `vani config motivation|exclude [--set]` reads or replaces those config fields.
