@@ -378,11 +378,16 @@ swift test --package-path /Users/bharath/Code/apps/Vani/macos     # or scripts/t
 ```
 
 The Jobs tab UI tests drive a second process (`JobsTabHost`) through the accessibility API. Its windows are
-fully transparent, shadowless, kept out of window cycling and Spaces, and its app is never made active, so a
-run never shows a window or takes the keyboard (`JobsTabInvisibleTests` checks this without accessibility
-trust). `VANI_UI_HOST_VISIBLE=1` shows them, to watch a run. Without accessibility trust for the terminal the
-window tests skip and say so. `swift test --parallel` prints a skipped test like a passed one, so
-`scripts/test.sh` runs every class that can skip serially.
+fully transparent, shadowless and kept out of window cycling and Spaces (`JobsTabInvisibleTests` asserts that,
+without accessibility trust), so nothing is drawn. **It still takes the keyboard:** macOS made the host the
+active app in 12 of 12 runs measured from an agent shell, whatever the windows look like. Ordering the windows
+at the back, and giving activation back from `didBecomeActive` plus a 50 ms timer (35–43 yields in 3 s, still
+frontmost, flapping your focus), did not stop it, so that test ends in a skip naming it rather than a pass.
+Hence `scripts/test.sh` does not run these tests unless you pass `--ui` (a default run and `--bg` never open
+a window or take focus; the summary says the UI tests were NOT RUN). `VANI_UI_HOST_VISIBLE=1` shows the
+windows, to watch a run. Without accessibility trust for the terminal the window tests skip and say so.
+`swift test --parallel` prints a skipped test like a passed one, so `scripts/test.sh` runs every class that can
+skip serially.
 
 `bundle.sh` writes `macos/build/Vani Apply.app` and installs nothing. Build the bundled `vani`
 (`Contents/Helpers/vani`) at commit `>= 4451350` (so it carries the 2.5 GiB vector-log cap rather than

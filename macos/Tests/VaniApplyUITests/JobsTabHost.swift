@@ -61,7 +61,6 @@ private final class HostController {
     let window: NSWindow
     /// The window `unkey` makes key in place of the Jobs window.
     private var helper: NSWindow?
-    private var activationObserver: NSObjectProtocol?
     private var buffer = Data()
 
     init(vani: URL) {
@@ -89,16 +88,11 @@ private final class HostController {
         window.contentView = view
         window.setContentSize(NSSize(width: 1200, height: 820))
         Self.makeInvisible(window)
-        if ProcessInfo.processInfo.environment["VANI_UI_HOST_VISIBLE"] != "1" {
-            // macOS lets a process launched by the frontmost app take activation (seen: 2 of 5 runs from a
-            // frontmost parent), and an active host holds the keyboard even with every window transparent.
-            // Whenever the host is made active it gives that back at once; the tests do not need it (a click
-            // reaches a window that is not key, and one test forces the non-key state anyway).
-            activationObserver = NotificationCenter.default.addObserver(
-                forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
-                    NSApplication.shared.deactivate()
-            }
-        }
+        // Open question, measured and unresolved (2026-11-15, run from an agent shell with another app frontmost):
+        // in 12 of 12 runs macOS made this process the active app (AppKit isActive true), so it holds the keyboard
+        // although every window is transparent. Tried and ruled out: ordering the windows at the back instead of
+        // `orderFrontRegardless`; giving activation back from didBecomeActive and a 50 ms timer (35-43 yields in 3 s,
+        // still frontmost, and it flaps the person's focus). JobsTabInvisibleTests reports it as a skip, never a pass.
         window.orderFrontRegardless()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { print("READY \(getpid())") }
     }
@@ -195,6 +189,7 @@ private final class HostController {
             "policy": NSApplication.shared.activationPolicy().rawValue,
             "onScreen": window.isVisible,
             "frontmostIsHost": NSWorkspace.shared.frontmostApplication?.processIdentifier == getpid(),
+            "frontmost": NSWorkspace.shared.frontmostApplication?.localizedName ?? "none",
         ]
         let data = (try? JSONSerialization.data(withJSONObject: s, options: [.sortedKeys])) ?? Data("{}".utf8)
         return String(decoding: data, as: UTF8.self)

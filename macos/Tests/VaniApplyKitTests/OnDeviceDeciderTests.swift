@@ -133,7 +133,9 @@ final class OnDeviceDeciderTests: XCTestCase {
         p.standardOutput = outPipe
         p.standardError = FileHandle.nullDevice
         try p.run()
-        // The helper may exit before reading a large request; a broken pipe is its answer, not ours.
+        // The helper may exit before reading a large request; a broken pipe is its answer, not ours. EPIPE, not
+        // SIGPIPE, which would kill the whole test process.
+        _ = fcntl(inPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         DispatchQueue.global().async {
             try? inPipe.fileHandleForWriting.write(contentsOf: input)
             try? inPipe.fileHandleForWriting.close()

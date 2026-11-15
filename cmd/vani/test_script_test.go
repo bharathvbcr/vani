@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -126,15 +127,21 @@ func TestTestScriptBunPassFailAndFlake(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "did not reproduce serially") {
 		t.Errorf("flaky: exit %d:\n%s", code, out)
 	}
+	// ... but a retry that turned red green is not a clean pass for --strict.
+	out, code, _ = runTestScript(t, []string{"FAKE_BUN=flaky"}, "--suite", "bun", "--strict")
+	if code != 1 || !strings.Contains(out, "strict: bun") {
+		t.Errorf("--strict must fail a run that only passed on a serial re-run: exit %d:\n%s", code, out)
+	}
 }
 
 func TestTestScriptSkippedSwiftTestsAreNamedAndStrictFails(t *testing.T) {
-	out, code, runs := runTestScript(t, []string{"FAKE_SWIFT_SKIPS=3"}, "--suite", "swift")
+	// --ui: the window tests are run, so only the fake's three skips are in play.
+	out, code, runs := runTestScript(t, []string{"FAKE_SWIFT_SKIPS=3"}, "--suite", "swift", "--ui")
 	if code != 0 {
 		t.Fatalf("skips without --strict: exit %d:\n%s", code, out)
 	}
-	if !strings.Contains(out, "3 tests SKIPPED, not run") || strings.Contains(out, "swift  pass (") {
-		t.Errorf("a skip must not read as a plain pass:\n%s", out)
+	if !strings.Contains(out, "3 tests SKIPPED") || strings.Contains(out, "swift  pass (") || strings.Contains(out, "NOT RUN") {
+		t.Errorf("a skip must not read as a plain pass (and --ui leaves nothing NOT RUN):\n%s", out)
 	}
 	if !strings.Contains(out, "no Go vani at /x/vani") {
 		t.Errorf("the skip reason is missing from the summary:\n%s", out)
@@ -147,14 +154,86 @@ func TestTestScriptSkippedSwiftTestsAreNamedAndStrictFails(t *testing.T) {
 		t.Errorf("swift.skipped = %q, %v; release.sh reads this", b, err)
 	}
 
-	out, code, _ = runTestScript(t, []string{"FAKE_SWIFT_SKIPS=3"}, "--suite", "swift", "--strict")
+	out, code, _ = runTestScript(t, []string{"FAKE_SWIFT_SKIPS=3"}, "--suite", "swift", "--ui", "--strict")
 	if code != 1 || !strings.Contains(out, "strict") {
 		t.Errorf("--strict with skips: exit %d:\n%s", code, out)
 	}
 
-	out, code, _ = runTestScript(t, []string{"FAKE_SWIFT_SKIPS=0"}, "--suite", "swift", "--strict")
+	out, code, _ = runTestScript(t, []string{"FAKE_SWIFT_SKIPS=0"}, "--suite", "swift", "--ui", "--strict")
 	if code != 0 || !strings.Contains(out, "swift  pass (") {
 		t.Errorf("no skips under --strict: exit %d:\n%s", code, out)
+	}
+}
+
+// Without --ui the window tests (they launch a host macOS makes the active app) are never run, and the summary
+// says so instead of reading as a pass; the serial pass must not have been asked for them.
+func TestTestScriptUITestsAreNotRunByDefault(t *testing.T) {
+	out, code, runs := runTestScript(t, []string{"FAKE_SWIFT_SKIPS=0"}, "--suite", "swift")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "UI tests NOT RUN") || !strings.Contains(out, "--ui") || strings.Contains(out, "swift  pass (") {
+		t.Errorf("not running the UI tests must not read as a pass:\n%s", out)
+	}
+	latest, err := filepath.EvalSymlinks(filepath.Join(runs, "latest"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(latest, "swift.skipped")); err != nil || strings.TrimSpace(string(b)) == "0" || strings.TrimSpace(string(b)) == "" {
+		t.Errorf("swift.skipped = %q, %v; NOT RUN tests count as skipped for release.sh and --strict", b, err)
+	}
+	_, code, _ = runTestScript(t, []string{"FAKE_SWIFT_SKIPS=0"}, "--suite", "swift", "--strict")
+	if code != 1 {
+		t.Errorf("--strict must fail a run that did not run the UI tests, exit %d", code)
+	}
+}
+
+// A class that can skip but runs in the parallel pass would report its skip as a pass, so every XCTSkip-throwing
+// test class must be derived, including one that inherits from a shared base (ResumeStudioViewsTests: StudioFakeCase),
+// and the window classes (opt-in with --ui) must not be.
+func TestTestScriptDerivesEverySkipCapableClass(t *testing.T) {
+	out, code, _ := runTestScript(t, nil, "--print-skip-classes")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	got := map[string]bool{}
+	for _, c := range strings.Split(strings.TrimSpace(out), "|") {
+		got[c] = true
+	}
+	// Every class declared in a Swift test file that throws XCTSkip, read independently of the script.
+	var want []string
+	classRe := regexp.MustCompile(`class ([A-Za-z0-9_]+) *: *[A-Za-z0-9_]+`)
+	window := map[string]bool{"JobsGapsPanelTests": true, "JobsControlsTests": true, "JobsBackToTopTests": true, "JobsTabInvisibleTests": true, "JobsTabHost": true}
+	_ = filepath.WalkDir("../../macos/Tests", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(p, ".swift") {
+			return nil
+		}
+		b, rerr := os.ReadFile(p)
+		if rerr != nil || !strings.Contains(string(b), "XCTSkip") {
+			return nil
+		}
+		for _, m := range classRe.FindAllStringSubmatch(string(b), -1) {
+			if !window[m[1]] {
+				want = append(want, m[1])
+			}
+		}
+		return nil
+	})
+	if len(want) < 10 {
+		t.Fatalf("found only %d skip-capable classes in macos/Tests: the check did not run", len(want))
+	}
+	for _, c := range want {
+		if !got[c] {
+			t.Errorf("%s throws XCTSkip but is not in the serial pass; a skip there would read as a pass", c)
+		}
+	}
+	for c := range window {
+		if got[c] {
+			t.Errorf("window class %s must stay out of the default run (it launches the UI host)", c)
+		}
+	}
+	if !got["ResumeStudioViewsTests"] {
+		t.Error("ResumeStudioViewsTests (a StudioFakeCase subclass with two XCTSkips) is missing")
 	}
 }
 

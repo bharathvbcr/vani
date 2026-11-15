@@ -82,6 +82,7 @@ final class JobsTabSession {
         var policy: Int
         var onScreen: Bool
         var frontmostIsHost: Bool
+        var frontmost: String
     }
 
     /// How the host's windows present themselves to the person at the machine.
@@ -229,7 +230,10 @@ final class JobsTabSession {
     }
 
     private func send(_ line: String) {
-        input.write(Data((line + "\n").utf8))
+        // A host that already exited is a failed wait for its reply (every read has a deadline), not SIGPIPE
+        // killing the test process.
+        _ = fcntl(input.fileDescriptor, F_SETNOSIGPIPE, 1)
+        try? input.write(contentsOf: Data((line + "\n").utf8))
     }
 }
 

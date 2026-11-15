@@ -23,8 +23,11 @@ final class HostProcessTests: XCTestCase {
         p.standardOutput = outPipe
         p.standardError = errPipe
         try p.run()
-        inPipe.fileHandleForWriting.write(input)
-        try inPipe.fileHandleForWriting.close()
+        // EPIPE, not SIGPIPE, when the child is gone before it reads (as the app's own pipes are set up).
+        _ = fcntl(inPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        // A child that exits early is reported by its status below; the unread input is not an error here.
+        try? inPipe.fileHandleForWriting.write(contentsOf: input)
+        try? inPipe.fileHandleForWriting.close()
         let done = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var out = Data(), err = Data()
         DispatchQueue.global().async {
@@ -53,6 +56,14 @@ final class HostProcessTests: XCTestCase {
             all.append(try XCTUnwrap(JSONSerialization.jsonObject(with: m) as? [String: Any]))
         }
         return all
+    }
+
+    /// A child that exits without reading its input is its exit status here, not SIGPIPE killing the whole
+    /// test process (which took the serial Swift pass down intermittently when a host exited early).
+    func testAHostThatExitsWithoutReadingItsInputIsAStatusNotASigpipe() throws {
+        let r = try run(["--version"], input: Data(count: 4 << 20))
+        XCTAssertEqual(r.status, 0, String(decoding: r.err, as: UTF8.self))
+        XCTAssertTrue(String(decoding: r.out, as: UTF8.self).hasPrefix("vani-apply-host protocol"))
     }
 
     func testAnswersASessionAndExitsAtEndOfInput() throws {
@@ -97,7 +108,8 @@ final class HostProcessTests: XCTestCase {
         // identifies which request it answers.
         let n = 50
         let input = try frames((0..<n).map { ["op": "put", "baseRev": $0, "bank": bankJSON([])] as [String: Any] })
-        inPipe.fileHandleForWriting.write(input)
+        _ = fcntl(inPipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        try inPipe.fileHandleForWriting.write(contentsOf: input)   // a host that died fails the test, never the process
         for i in 0..<n {
             let m = try XCTUnwrap(try NativeMessaging.readMessage(from: outPipe.fileHandleForReading), "no reply for frame \(i)")
             let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: m) as? [String: Any])

@@ -85,14 +85,20 @@ if [ "$SKIP_TESTS" = 1 ]; then
   NOTES+=("tests-skipped")
 else
   # One runner for every gate (scripts/test.sh): Go, Swift, the extension's Bun tests and its type-check run
-  # concurrently, uncached (--fresh), and each suite's exit code is left in the run directory.
+  # concurrently, uncached (--fresh), with the Jobs tab UI tests (--ui), and each suite's exit code is left in the
+  # run directory.
   RUNDIR="$ROOT/tmp/test-runs"
-  if ! "$ROOT/scripts/test.sh" --fresh; then
+  # --ui: a release is run in the foreground at the owner's terminal, where the window tests may take focus.
+  if ! "$ROOT/scripts/test.sh" --fresh --ui; then
     LAST="$RUNDIR/latest"
     [ "$(cat "$LAST/go.rc" 2>/dev/null || echo 1)" = 0 ] || die "go-tests-failed: see $LAST/go.log"
     [ "$(cat "$LAST/swift.rc" 2>/dev/null || echo 1)" = 0 ] || die "swift-tests-failed: see $LAST/swift.log and swift-serial.log"
     [ "$(cat "$LAST/bun.rc" 2>/dev/null || echo 1)" = 0 ] || die "extension-tests-failed: see $LAST/bun.log"
-    die "typecheck-failed: see $LAST/types.log"
+    [ "$(cat "$LAST/types.rc" 2>/dev/null || echo 1)" = 0 ] || die "typecheck-failed: see $LAST/types.log"
+    die "tests-failed: scripts/test.sh exited non-zero with every suite passing (see $LAST)"
+  fi
+  if [ -f "$RUNDIR/latest/bun.rerun" ]; then
+    echo "release.sh: WARNING $(cat "$RUNDIR/latest/bun.rerun") extension test(s) failed under --parallel and passed only on a serial re-run (see $RUNDIR/latest/bun.log)" >&2
   fi
   # A Swift test that skipped (no Go vani built, runner not trusted for accessibility) is not a test that ran.
   if [ -f "$RUNDIR/latest/swift.skipped" ]; then

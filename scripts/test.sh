@@ -3,20 +3,26 @@
 # by absolute path and the Swift suite needs the owner's signing identity, so this is what runs the gate,
 # on this Mac, and what scripts/release.sh calls.
 #
-#   scripts/test.sh [--suite go,swift,bun,types] [--bg] [--strict] [--fresh] [--race] [--keep N]
+#   scripts/test.sh [--suite go,swift,bun,types] [--bg] [--ui] [--strict] [--fresh] [--race] [--keep N]
 #   scripts/test.sh status          # summary of the newest run (works while it is still going)
 #
 # Suites run concurrently, each logging to <run>/<suite>.log; the summary prints one line per suite:
-#   pass | FAIL | pass (N SKIPPED: why) -- a skipped check never reads as a pass; --strict makes it a failure.
+#   pass | FAIL | pass, but N tests SKIPPED / NOT RUN: why -- a check that did not run never reads as a pass;
+#   --strict makes it a failure.
 #   go     go test ./... (cmd/vani, the long pole, split into shards; cached unless --fresh)
-#   swift  build once, then every test except the three window-driving classes in parallel, then those
-#          three alone, serially. Their host window is transparent and never frontmost (JobsTabHost).
+#   swift  build once, then every test that cannot skip in parallel, then the ones that can (contract tests
+#          needing a built Go vani, ...) serially so each skip is counted. The window-driving UI tests launch a
+#          host process that macOS makes the active app (it takes the keyboard even with transparent windows),
+#          so they are NOT RUN unless --ui; a default run, and --bg, never opens a window or takes focus.
 #   bun    bun test --parallel over extension/test, then a serial re-run of any file that failed
 #   types  extension/scripts/typecheck.sh (bun test does not type-check)
 #
-# --bg runs the whole thing detached at background priority (taskpolicy -b: throttled CPU and disk, so the
-#   machine stays responsive), returns at once, and never posts a notification or opens a window.
-#   Read it with `scripts/test.sh status`; the exit code of the run is in <run>/exit.
+# --bg runs the whole thing detached, returns at once, and never posts a notification (nor, without --ui, a
+#   window). Read it with `scripts/test.sh status`; the exit code of the run is in <run>/exit. It is NOT
+#   throttled: `taskpolicy -b` (644 s, failures on timing) and `nice -n 10` (457 s, failures in every suite) were
+#   both tried, but while other agents' builds held the load average near 100, so neither result says whether
+#   the throttle or the load caused them. Several tests have timing assertions (the 5 s typecheck-gate tests,
+#   ScheduleAgentTests), so a run on a saturated machine can fail on timing whatever the priority.
 #
 # Logs: tmp/test-runs/<timestamp>/ (gitignored); `tmp/test-runs/latest` points at the newest; --keep N
 # (default 5) prunes older runs. Exit status: 0 only when every selected suite passed (and, with --strict,
@@ -27,10 +33,22 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNS="${VANI_TEST_RUNS:-$ROOT/tmp/test-runs}"
 export VANI_NO_KEYCHAIN=1   # a `vani` that builds a decision backend would otherwise read the owner's key
 
+WINDOW_TESTS='JobsGapsPanelTests|JobsControlsTests|JobsBackToTopTests|JobsTabInvisibleTests|JobsTabHost'
+
+# <Tests dir>: every class with a superclass (XCTestCase itself or a shared base such as StudioFakeCase) in a file
+# that throws XCTSkip, except the window ones. A class named here runs in the serial pass, where its skips are
+# counted; one missed here would run in the parallel pass, where a skip reads as a pass.
+skip_capable_classes() {
+  grep -rl 'XCTSkip' "$1" --include='*.swift' | while read -r f; do
+    grep -hoE 'class [A-Za-z0-9_]+ *: *[A-Za-z0-9_]+' "$f" | sed -E 's/class ([A-Za-z0-9_]+).*/\1/'
+  done | grep -Ev "^($WINDOW_TESTS)\$" | sort -u | paste -sd'|' -
+}
+
 SUITES="go,swift,bun,types"
 BG=0
 STRICT=0
 RACE=0
+UI=0
 FRESH=0
 KEEP=5
 ACTION=run
@@ -41,14 +59,16 @@ die() { echo "test.sh: $*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     status) ACTION=status ;;
+    --print-skip-classes) skip_capable_classes "$ROOT/macos/Tests"; exit 0 ;;   # for the derivation's test
     --suite) shift; [ $# -gt 0 ] || die "--suite needs a list"; SUITES="$1" ;;
     --bg) BG=1 ;;
     --strict) STRICT=1 ;;
     --race) RACE=1 ;;
     --fresh) FRESH=1 ;;
+    --ui) UI=1 ;;
     --keep) shift; [ $# -gt 0 ] || die "--keep needs a number"; KEEP="$1" ;;
     --run-dir) shift; RUN_DIR="$1" ;;   # internal: the detached child of --bg
-    *) die "unknown argument $1 (usage: scripts/test.sh [status] [--suite go,swift,bun,types] [--bg] [--strict] [--race] [--keep N])" ;;
+    *) die "unknown argument $1 (usage: scripts/test.sh [status] [--suite go,swift,bun,types] [--bg] [--ui] [--strict] [--fresh] [--race] [--keep N])" ;;
   esac
   shift
 done
@@ -86,7 +106,8 @@ if [ -z "$RUN_DIR" ]; then
     [ "$STRICT" = 1 ] && args+=(--strict)
     [ "$RACE" = 1 ] && args+=(--race)
     [ "$FRESH" = 1 ] && args+=(--fresh)
-    nohup taskpolicy -b "$0" "${args[@]}" > "$RUN_DIR/driver.log" 2>&1 < /dev/null &
+    [ "$UI" = 1 ] && args+=(--ui)
+    nohup "$0" "${args[@]}" > "$RUN_DIR/driver.log" 2>&1 < /dev/null &
     echo "running in the background (pid $!), logs in $RUN_DIR"
     echo "check with: $ROOT/scripts/test.sh status"
     exit 0
@@ -122,7 +143,7 @@ run_bun() {
     local files; files=$(grep -E '^test/.*\.ts:$' "$log" | tr -d ':' | sort -u)
     echo "--- serial re-run of files with output ---" >> "$log"
     bun test --cwd "$ext" $files >> "$log" 2>&1 && \
-      { finish bun "pass after serial re-run: $failed failure(s) under --parallel did not reproduce serially (load-dependent; see bun.log)" 0 "$t0"; return; }
+      { echo "$failed" > "$RUN_DIR/bun.rerun"; finish bun "pass after serial re-run: $failed failure(s) under --parallel did not reproduce serially (load-dependent; see bun.log)" 0 "$t0"; return; }
     finish bun "FAIL ($failed failing under --parallel; serial re-run also failed; see bun.log)" 1 "$t0"
     return
   fi
@@ -135,22 +156,29 @@ run_bun() {
 # may skip: a contract test that found no Go vani would read as green. Those classes -- every XCTestCase class in a
 # file that throws XCTSkip, plus the window-driving ones (they skip unless the runner is trusted for
 # accessibility) -- run in a second, serial pass that prints each skip, and the summary counts them.
-WINDOW_TESTS='JobsGapsPanelTests|JobsControlsTests|JobsBackToTopTests|JobsTabInvisibleTests|JobsTabHost'
-
-skip_capable_classes() { # <Tests dir>: the window classes plus every XCTestCase class in a file with XCTSkip
-  { echo "$WINDOW_TESTS" | tr '|' '\n'
-    grep -rl 'XCTSkip' "$1" --include='*.swift' | while read -r f; do
-      grep -hoE 'class [A-Za-z0-9_]+ *: *XCTestCase' "$f" | sed -E 's/class ([A-Za-z0-9_]+).*/\1/'
-    done
-  } | sort -u | paste -sd'|' -
+#
+# The window-driving classes (WINDOW_TESTS) launch a second process, JobsTabHost, to drive the Jobs tab through the
+# accessibility API. Its windows are transparent, but macOS makes that process the active app in every run measured
+# (12 of 12, from an agent shell with another app frontmost), so it holds the keyboard while it runs, and nothing in
+# the host prevented it (see JobsTabHost.start). So a default run never launches it: those tests are reported as
+# NOT RUN, and `--ui` opts in (scripts/release.sh does, at your terminal).
+count_window_tests() { # <Tests dir>: how many tests the window classes hold
+  local n=0 c
+  for c in ${WINDOW_TESTS//|/ }; do
+    [ "$c" = JobsTabHost ] && continue   # the host entry point, not a test
+    n=$((n + $(grep -h 'func test' "$1/VaniApplyUITests/$c.swift" 2>/dev/null | wc -l)))
+  done
+  echo "$n"
 }
 
 run_swift() {
   local t0 pkg="$ROOT/macos" log="$RUN_DIR/swift.log"; t0=$(now)
   swift build --package-path "$pkg" --build-tests > "$RUN_DIR/swift-build.log" 2>&1 \
     || { finish swift "FAIL (build; see swift-build.log)" 1 "$t0"; return; }
-  local serial; serial=$(skip_capable_classes "$pkg/Tests")
-  swift test --skip-build --parallel --package-path "$pkg" --skip "$serial" > "$log" 2>&1
+  local kit; kit=$(skip_capable_classes "$pkg/Tests")
+  local serial="$kit" notrun=0
+  if [ "$UI" = 1 ]; then serial="$kit|$WINDOW_TESTS"; else notrun=$(count_window_tests "$pkg/Tests"); fi
+  swift test --skip-build --parallel --package-path "$pkg" --skip "$kit|$WINDOW_TESTS" > "$log" 2>&1
   local rc1=$?
   swift test --skip-build --package-path "$pkg" --filter "$serial" > "$RUN_DIR/swift-serial.log" 2>&1
   local rc2=$?
@@ -158,11 +186,14 @@ run_swift() {
   local ran; ran=$(grep -Eo 'Executed [0-9]+ tests' "$RUN_DIR/swift-serial.log" | tail -1)
   # each distinct skip reason, with its count, goes to swift-skips.txt and the summary
   grep -o 'Test skipped - .*' "$RUN_DIR/swift-serial.log" | sed -E 's/^Test skipped - //' | cut -c1-110 | sort | uniq -c | sort -rn > "$RUN_DIR/swift-skips.txt"
+  local why=""
+  [ "$skipped" -gt 0 ] && why="${skipped} tests SKIPPED (reasons in swift-skips.txt: $(head -3 "$RUN_DIR/swift-skips.txt" | sed -E 's/^ *([0-9]+) /\1x /' | paste -sd';' -))"
+  [ "$notrun" -gt 0 ] && why="${why:+$why; }${notrun} UI tests NOT RUN (they launch a host process macOS makes the active app, so they take the keyboard; run with --ui)"
   if [ $rc1 -ne 0 ] || [ $rc2 -ne 0 ]; then
     finish swift "FAIL (parallel rc=$rc1, serial rc=$rc2; see swift.log, swift-serial.log)" 1 "$t0"
-  elif [ "$skipped" -gt 0 ]; then
-    finish swift "pass, but ${skipped} tests SKIPPED, not run (reasons in swift-skips.txt: $(head -3 "$RUN_DIR/swift-skips.txt" | sed -E 's/^ *([0-9]+) /\1x /' | paste -sd';' -))" 0 "$t0"
-    echo "$skipped" > "$RUN_DIR/swift.skipped"
+  elif [ -n "$why" ]; then
+    finish swift "pass, but $why" 0 "$t0"
+    echo "$((skipped + notrun))" > "$RUN_DIR/swift.skipped"
   else
     finish swift "pass (${ran:-serial pass ran})" 0 "$t0"
   fi
@@ -230,7 +261,8 @@ for s in ${SUITES//,/ }; do
   [ -f "$RUN_DIR/$s.result" ] || echo "did not finish" > "$RUN_DIR/$s.result"
 done
 if [ "$STRICT" = 1 ]; then
-  for s in swift; do [ -f "$RUN_DIR/$s.skipped" ] && { echo "strict: $s had skipped tests" >&2; rc=1; }; done
+  [ -f "$RUN_DIR/swift.skipped" ] && { echo "strict: swift had skipped or not-run tests" >&2; rc=1; }
+  [ -f "$RUN_DIR/bun.rerun" ] && { echo "strict: bun had failures under --parallel that passed only on a serial re-run" >&2; rc=1; }
 fi
 summary "$RUN_DIR"
 echo "logs: $RUN_DIR"
