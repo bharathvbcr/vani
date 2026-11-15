@@ -47,6 +47,11 @@ type Blend struct {
 	fitBackend, fitReading string
 }
 
+// FitReading is the role_fit reading b rests on when it is not the primary's
+// (the owner's manual reading or the escalation tier's, as SlotFor picked it):
+// its backend and value, both "" when b rests on the primary's.
+func (b *Blend) FitReading() (backend, value string) { return b.fitBackend, b.fitReading }
+
 // Closing is what Blend.Close reads: the posting's age against the clock, the
 // half-life, whether its employer is age-neutral, and its company's marks.
 type Closing struct {

@@ -436,7 +436,8 @@ var exportColumns = []exportColumn{
 	{"Relevance", 10, false, func(_ int, j jobview.Job, _ string) xlsx.Cell { return triagedScore(j, j.Relevance) }},
 	{"Rank", 7, false, func(_ int, j jobview.Job, _ string) xlsx.Cell { return optNumber(j.Rank) }},
 	{"Role fit", 18, false, func(_ int, j jobview.Job, _ string) xlsx.Cell {
-		return xlsx.Text(labelOr(jobview.FitLabel(j.Triage["role_fit"]), j.Triage["role_fit"]))
+		fit := jobview.FitOf(j)
+		return xlsx.Text(labelOr(jobview.FitLabel(fit), fit))
 	}},
 	{"Seniority", 15, false, triageCell("seniority")},
 	{"Work mode", 12, false, triageCell("work_mode")},

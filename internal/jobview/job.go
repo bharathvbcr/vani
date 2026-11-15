@@ -293,6 +293,11 @@ type Job struct {
 	Logo string `json:"logo,omitempty"`
 	// Row is the versioned contract every surface reads (internal/jobview).
 	Row *Row `json:"row,omitempty"`
+	// RankedFit is the role_fit reading the ranking reads when it is not
+	// Triage's (FitRanker: the owner's manual reading, or the escalation tier's
+	// reading of an unsure primary); "" when the ranking reads Triage's. It is
+	// not in the JSON: the row's Fit carries it (FitOf).
+	RankedFit string `json:"-"`
 	// ManualTriage is the reading the owner had a Claude model make by hand
 	// (`vani jobs retriage`), shown whether or not ranking still uses it. Display
 	// only: it orders the list when Current and never drops or undrops a posting.
@@ -548,6 +553,17 @@ func CleanText(s string, maxRunes int, keepLines bool) string {
 	return b.String()
 }
 
+// FitOf is the role_fit a job shows and is filtered and counted by: the
+// reading its ranking reads (RankedFit), else triage's. A "Strong fit" label
+// on a job the ranking reads as a partial fit would contradict its place in
+// the list.
+func FitOf(j Job) string {
+	if j.RankedFit != "" {
+		return j.RankedFit
+	}
+	return j.Triage["role_fit"]
+}
+
 // RowOf is the one place a Job becomes the versioned row contract
 // (internal/jobview) the Mac app and the browser extension read. Every list,
 // show, mark and find reply gets its row from here, after enrich has set the
@@ -556,7 +572,7 @@ func RowOf(j Job) Row {
 	return Build(Inputs{
 		Key: string(j.Key), Title: j.Title, Company: j.Company, Location: j.Location,
 		Status: string(j.Status), Relevance: j.Relevance, Priority: j.Priority,
-		RelevanceBasis: string(j.RelevanceBasis), RoleFit: j.Triage["role_fit"],
+		RelevanceBasis: string(j.RelevanceBasis), RoleFit: FitOf(j),
 		Reasons:  j.Reasons,
 		DupLinks: []string{j.DupOf, j.DupCandidateOf, j.DupSiblingOf},
 		AgeDays:  j.AgeDays, FreshSrc: j.FreshSrc,

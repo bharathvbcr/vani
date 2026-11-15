@@ -147,6 +147,30 @@ type PageRanker interface {
 	Finish(j *Job, r ledger.Record, kwLimit int, paid bool) []jobinsight.Hit
 }
 
+// FitRanker is a Ranker whose ranking may read a posting's role_fit from
+// somewhere other than triage's annotation (cmd/vani's: the owner's manual
+// reading, or the escalation tier's reading of an unsure primary). RankedFit
+// is that reading and true, or false when the ranking reads triage's; i is r's
+// index in the snapshot being selected from (-1 outside a selection), as Rank's.
+// It is asked on every selection, never kept with a ledger generation's rows: a
+// manual reading changes without the ledger moving. A FitRanker's Enrich (and
+// Finish) must set Job.RankedFit to the same reading: a selection filters on
+// RankedFit and then counts the enriched Job (FitOf), so the two must agree.
+type FitRanker interface {
+	RankedFit(i int, r ledger.Record) (string, bool)
+}
+
+// rankedFit is the role_fit rk ranks r (record i) on: its FitRanker reading,
+// else triage's (triageFit).
+func rankedFit(rk Ranker, i int, r ledger.Record, triageFit string) string {
+	if fr, ok := rk.(FitRanker); ok {
+		if v, ok := fr.RankedFit(i, r); ok {
+			return v
+		}
+	}
+	return triageFit
+}
+
 // needsPay says whether o's selection or order reads a job's pay.
 func (o *Opts) needsPay() bool {
 	return o.Sort == "salary" || o.More.PayListed || o.More.MinPay > 0

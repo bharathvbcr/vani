@@ -32,7 +32,8 @@ public struct JobRow: Codable, Equatable, Sendable {
     public var relevanceBasis: String?
     /// Relevance discounted by age.
     public var priority: Double
-    /// triage's role_fit option and its display string; nil with no reading.
+    /// the role_fit option the ranking reads (a manual reading, else an unsure
+    /// primary's escalation, else triage's) and its display string; nil with no reading.
     public var fit: String?
     public var fitLabel: String?
     public var reasons: [Job.Reason]?

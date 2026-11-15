@@ -35,8 +35,9 @@ type Row struct {
 	Relevance      float64 `json:"relevance"`
 	RelevanceBasis string  `json:"relevance_basis,omitempty"`
 	Priority       float64 `json:"priority"`
-	// Fit is triage's role_fit reading (one of FitOrder) and FitLabel its
-	// display string; both are empty when triage gave no reading.
+	// Fit is the role_fit reading the ranking reads (one of FitOrder; FitOf:
+	// the owner's manual reading, else an unsure primary's escalation, else
+	// triage's) and FitLabel its display string; both are empty with no reading.
 	Fit      string   `json:"fit,omitempty"`
 	FitLabel string   `json:"fit_label,omitempty"`
 	Reasons  []Reason `json:"reasons,omitempty"`

@@ -358,6 +358,18 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **A job's role fit is the reading its ranking uses** (2026-11-14, the owner's "fix the label").
+  The row's `fit`/`fit_label`, `--fit`, the stats' fit and strong counts and the export's Role fit
+  column showed triage's primary reading, while the ranking reads the owner's manual reading, or
+  the escalation tier's reading of an unsure primary, first (`jobinsight.RankContext.SlotFor`). On
+  the live ledger 1,225 of 30,746 open jobs were labelled "Strong fit", and the ranking read 550
+  of those as strong. They now read the same reading (`jobview.FitOf`, filled by
+  `jobview.FitRanker` on every request, since a manual reading changes without the ledger moving;
+  `jobs serve` reads it from the kept `Blend`, which names the reading it rested on, so it costs
+  no second `SlotFor` pass). All 30,746 rows matched their score's fit reading (2,942 manual,
+  12,495 escalation, 15,309 primary). The ledger's triage annotations, which the drop policy and
+  `vani relevance` read, are untouched, and the jobs JSON's `triage` map still shows them. The
+  order is unchanged (the top 2,000 keys and priorities compared equal on the live ledger).
 - **A run limited to some boards no longer throws away the other boards' pending reopens**
   (`--board`). The run cleared the pending reopens of every board outside its cut as if those
   boards had left the watchlist, and saved the set, so dropped postings `vani retriage` had let

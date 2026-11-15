@@ -641,6 +641,28 @@ func (in *insight) Rank(rk *jobview.Ranked, i int, r ledger.Record, withPay bool
 	}
 }
 
+// RankedFit is jobview.FitRanker: the role_fit reading the ranking reads for r
+// when it is not triage's, as jobinsight.RankContext.SlotFor (the one owner of
+// that choice) picks it: the owner's current manual reading, else the
+// escalation tier's reading of a primary under decide.escalate.below_p. Record
+// i's kept Blend (serve) names the reading it rested on, so a selection reads
+// it from there; otherwise SlotFor picks it, as BlendFor does. An untriaged
+// posting has none: Rank does not score it.
+func (in *insight) RankedFit(i int, r ledger.Record) (string, bool) {
+	if jobview.Untriaged(r) {
+		return "", false
+	}
+	if in.blends != nil && i >= 0 && i < len(in.blends.entries) {
+		_, v := in.blendFor(i, r).FitReading()
+		return v, v != ""
+	}
+	s := in.rc.SlotFor(r, "role_fit")
+	if s.Backend != jobinsight.BackendManual && s.Backend != jobinsight.ShadowEscalate {
+		return "", false
+	}
+	return s.Value, true
+}
+
 // Hits is the keyword hits Finish returns for r, without finishing a job.
 func (in *insight) Hits(r ledger.Record) []jobinsight.Hit {
 	if jobview.Untriaged(r) {
@@ -672,6 +694,7 @@ func (in *insight) Finish(j *jobview.Job, r ledger.Record, kwLimit int, paid boo
 	j.Reasons = jobview.ParseReasons(j.Explanation)
 	in.semanticInto(j, r)
 	j.ManualTriage = in.manual.view(r)
+	j.RankedFit, _ = in.RankedFit(-1, r)
 	if !paid {
 		j.Pay = in.payOf(r)
 	}

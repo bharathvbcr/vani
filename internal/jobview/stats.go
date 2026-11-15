@@ -152,7 +152,7 @@ func statsOfCands(sel []cand, info InsightInfo, target map[string]bool) Stats {
 		c := &sel[i]
 		st, rk := &c.st, &c.rk
 		basis, relevance, priority := rk.Basis, rk.Relevance, rk.Priority
-		out.Fit[or(st.fit)]++
+		out.Fit[or(c.fit)]++
 		out.WorkMode[or(st.workMode)]++
 		out.Sponsorship[or(st.sponsorship)]++
 		out.Seniority[or(st.seniority)]++
@@ -184,7 +184,7 @@ func statsOfCands(sel []cand, info InsightInfo, target map[string]bool) Stats {
 		}
 		a.n++
 		a.sum += relevance
-		if st.fit == "strong_fit" {
+		if c.fit == "strong_fit" {
 			a.strong++
 		}
 		for _, h := range c.hits {

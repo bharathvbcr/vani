@@ -70,9 +70,12 @@ func EnrichWith(pr PageRanker, j *Job, r ledger.Record, kwLimit int) []jobinsigh
 
 // cand is one job in a selection.
 type cand struct {
-	rec      int // index of its record in the snapshot
-	key      posting.Key
-	st       rowStatic
+	rec int // index of its record in the snapshot
+	key posting.Key
+	st  rowStatic
+	// fit is the role_fit the ranking reads (FitOf): what --fit and the stats
+	// read. st.fit stays triage's, as the Job's Triage map shows it.
+	fit      string
 	closed   bool
 	markedAt time.Time
 	rk       Ranked
@@ -89,7 +92,7 @@ func candOfJob(j *Job, hits []jobinsight.Hit, pay float64) cand {
 	if cat == "" && j.Triage != nil {
 		cat = j.Triage["category"]
 	}
-	return cand{key: j.Key, closed: j.Closed, markedAt: j.MarkedAt, rk: rankedOf(j), pay: pay, hits: hits, similar: j.Similar,
+	return cand{key: j.Key, fit: FitOf(*j), closed: j.Closed, markedAt: j.MarkedAt, rk: rankedOf(j), pay: pay, hits: hits, similar: j.Similar,
 		st: rowStatic{company: j.Company, title: j.Title, fit: j.Triage["role_fit"], sponsorship: j.Triage["sponsorship"],
 			workMode: j.Triage["work_mode"], seniority: j.Triage["seniority"], category: cat}}
 }
@@ -158,7 +161,8 @@ func selectCands(snap ledger.Snapshot, m map[posting.Key]marks.Entry, o *Opts, r
 			c = candOfJob(job, nil, 0)
 			c.rec, c.job = i, job
 		}
-		if !InSet(o.Fits, c.st.fit) || !InSet(o.WorkModes, c.st.workMode) || !InSet(o.Sponsors, c.st.sponsorship) {
+		c.fit = rankedFit(rk, i, r, c.st.fit)
+		if !InSet(o.Fits, c.fit) || !InSet(o.WorkModes, c.st.workMode) || !InSet(o.Sponsors, c.st.sponsorship) {
 			continue
 		}
 		if o.Open && c.closed {
