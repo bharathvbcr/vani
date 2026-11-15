@@ -1,6 +1,6 @@
 # Setup
 
-First-time setup for a local `/Users/bharath/Code/...` checkout, then day-to-day commands. For a **portable new-user setup** (fresh machine, minimal config without `rkb`/`DevPrism`/`Tessl`), start with [`ONBOARDING.md`](ONBOARDING.md). Config, state and key ownership live in [`RUNTIME.md`](RUNTIME.md), and the overview is in the [README](../README.md).
+First-time setup for a local checkout laid out as in [`go.work.example`](../go.work.example) (`$CODE_ROOT/apps/Vani`, `$CODE_ROOT/devtools/…`; replace `$CODE_ROOT` with your absolute path, including inside `go.work`, which does not expand variables), then day-to-day commands. For a **portable new-user setup** (fresh machine, minimal config without `rkb`/`DevPrism`/`Tessl`), start with [`ONBOARDING.md`](ONBOARDING.md). Config, state and key ownership live in [`RUNTIME.md`](RUNTIME.md), and the overview is in the [README](../README.md).
 
 Two audiences: the owner at a terminal, and an agent shell. An agent shell sets
 `VANI_NO_KEYCHAIN=1` before any `vani` that looks up the OpenRouter key. That variable is any
@@ -30,15 +30,15 @@ Go 1.27.4 (`go.mod`). Vani builds against three local checkouts, not published m
 
 | Module | Resolved directory (this checkout, 2026-10-25) |
 |---|---|
-| `github.com/bharathvbcr/Manvi/manvi` | `/Users/bharath/Code/devtools/Manvi/manvi` |
-| `github.com/bharathvbcr/decide` | `/Users/bharath/Code/devtools/decide` |
-| `github.com/bharathvbcr/tessl/go` | `/Users/bharath/Code/research/tessl/go` |
+| `github.com/bharathvbcr/Manvi/manvi` | `$CODE_ROOT/devtools/Manvi/manvi` |
+| `github.com/bharathvbcr/decide` | `$CODE_ROOT/devtools/decide` |
+| `github.com/bharathvbcr/tessl/go` | `$CODE_ROOT/research/tessl/go` |
 
 Manvi's own `go.mod` replaces DevCouncil and gusset with paths relative to that checkout
 (`../../DevCouncil/backend/go_orchestrator`, `../../gusset`). Those replaces apply only inside a
 workspace. `go list -m` from this checkout on 2026-10-25 resolved them to
-`/Users/bharath/Code/devtools/DevCouncil/backend/go_orchestrator` and
-`/Users/bharath/Code/devtools/gusset`.
+`$CODE_ROOT/devtools/DevCouncil/backend/go_orchestrator` and
+`$CODE_ROOT/devtools/gusset`.
 
 `go.work` and `go.work.sum` are gitignored. The `go.work` in this checkout is:
 
@@ -47,11 +47,11 @@ go 1.27.4
 
 use (
 	.
-	/Users/bharath/Code/devtools/Manvi/manvi
-	/Users/bharath/Code/devtools/decide
+	$CODE_ROOT/devtools/Manvi/manvi
+	$CODE_ROOT/devtools/decide
 )
 
-replace github.com/bharathvbcr/Manvi/manvi v0.0.0 => /Users/bharath/Code/devtools/Manvi/manvi
+replace github.com/bharathvbcr/Manvi/manvi v0.0.0 => $CODE_ROOT/devtools/Manvi/manvi
 ```
 
 If it is missing, recreate that file. Do not add `decide` or `tessl` replaces to it: `go.mod`
@@ -65,7 +65,7 @@ checkout, so those relative paths miss there; that worktree's own `go.work` need
 Confirm the workspace before building:
 
 ```bash
-go -C /Users/bharath/Code/apps/Vani list -m -f '{{.Path}} {{.Dir}}' github.com/bharathvbcr/Manvi/manvi github.com/bharathvbcr/decide github.com/bharathvbcr/tessl/go github.com/bharathvbcr/DevCouncil/backend/go_orchestrator github.com/bharathvbcr/gusset
+go -C $CODE_ROOT/apps/Vani list -m -f '{{.Path}} {{.Dir}}' github.com/bharathvbcr/Manvi/manvi github.com/bharathvbcr/decide github.com/bharathvbcr/tessl/go github.com/bharathvbcr/DevCouncil/backend/go_orchestrator github.com/bharathvbcr/gusset
 ```
 
 Each line must name a directory that exists. An empty `Dir` means that replace did not resolve.
@@ -75,20 +75,20 @@ Each line must name a directory that exists. An empty `Dir` means that replace d
 The default build is pure Go. It runs the pipeline, `kb sync` and OpenRouter. It does not embed.
 
 ```bash
-go -C /Users/bharath/Code/apps/Vani build -o /Users/bharath/Code/apps/Vani/build/vani ./cmd/vani
-go -C /Users/bharath/Code/apps/Vani vet ./...
-go -C /Users/bharath/Code/apps/Vani test ./...
+go -C $CODE_ROOT/apps/Vani build -o $CODE_ROOT/apps/Vani/build/vani ./cmd/vani
+go -C $CODE_ROOT/apps/Vani vet ./...
+go -C $CODE_ROOT/apps/Vani test ./...
 ```
 
-Run the full race suite with `VANI_NO_KEYCHAIN=1 go -C /Users/bharath/Code/apps/Vani test -race ./...`.
-Embeddings need the Tessl build in step 6. `vani` below means `/Users/bharath/Code/apps/Vani/build/vani`.
+Run the full race suite with `VANI_NO_KEYCHAIN=1 go -C $CODE_ROOT/apps/Vani test -race ./...`.
+Embeddings need the Tessl build in step 6. `vani` below means `$CODE_ROOT/apps/Vani/build/vani`.
 
 ### 3. Config and state
 
 ```bash
-/Users/bharath/Code/apps/Vani/build/vani init
-/Users/bharath/Code/apps/Vani/build/vani config check
-/Users/bharath/Code/apps/Vani/build/vani status
+$CODE_ROOT/apps/Vani/build/vani init
+$CODE_ROOT/apps/Vani/build/vani config check
+$CODE_ROOT/apps/Vani/build/vani status
 ```
 
 `init` writes `config.Default()` and refuses to overwrite a file that exists. On macOS the default
@@ -137,7 +137,7 @@ OpenRouter triage (`llm` or `--list-only` must carry the run). Full retry/timeou
 Create or check the Keychain item without putting the secret in shell history (`-T` grants a specific binary; do not pass `-A`):
 
 ```bash
-security add-generic-password -U -a LOGINNAME -s openrouter-api-key -T /Users/bharath/Code/apps/Vani/build/vani -w
+security add-generic-password -U -a LOGINNAME -s openrouter-api-key -T $CODE_ROOT/apps/Vani/build/vani -w
 security find-generic-password -s openrouter-api-key -a LOGINNAME >/dev/null  # exit 44 if absent
 ```
 
@@ -167,10 +167,10 @@ step ([`RUNTIME.md`](RUNTIME.md), "Building a resume") and is not required to ra
 
 ```bash
 # Preview eligible bullets and what is withheld (no DevPrism writes)
-/Users/bharath/Code/apps/Vani/build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/code
+$CODE_ROOT/apps/Vani/build/vani kb sync --dry-run --bank /abs/bank.json --rkb /abs/rkb --code-root /abs/code
 
 # Apply upserts once devprism.binary is set (step 7)
-/Users/bharath/Code/apps/Vani/build/vani kb sync
+$CODE_ROOT/apps/Vani/build/vani kb sync
 ```
 
 - `--bank`, `--rkb`, `--code-root` override config per run (`kb.selections` has no flag).
@@ -196,21 +196,21 @@ command (`VANI_TESSL_SNAPSHOT` sets the snapshot for tests, or `~/.cache/hugging
   is `0` or `>= 0.8`. See
   [`RUNTIME.md#the-identifying-words-file-gates-target_summary`](RUNTIME.md#the-identifying-words-file-gates-target_summary).
 - **Tessl Metal embedder (`darwin/arm64`, cgo, Xcode CLT, `-tags tessl`):** Links
-  `/Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a` (`cargo build --release --locked`
+  `$CODE_ROOT/research/tessl/go/engine/target/release/libgusset.a` (`cargo build --release --locked`
   via `tessl/go/Makefile`):
 
   ```bash
-  make -C /Users/bharath/Code/research/tessl/go engine
-  CGO_CFLAGS="-DTESSL_ENGINE_SHA=$(shasum -a 256 /Users/bharath/Code/research/tessl/go/engine/target/release/libgusset.a | cut -c1-16)" \
-    go -C /Users/bharath/Code/apps/Vani build -tags tessl -trimpath -o /Users/bharath/Code/apps/Vani/build/vani ./cmd/vani
-  /Users/bharath/Code/apps/Vani/build/vani semantic status
+  make -C $CODE_ROOT/research/tessl/go engine
+  CGO_CFLAGS="-DTESSL_ENGINE_SHA=$(shasum -a 256 $CODE_ROOT/research/tessl/go/engine/target/release/libgusset.a | cut -c1-16)" \
+    go -C $CODE_ROOT/apps/Vani build -tags tessl -trimpath -o $CODE_ROOT/apps/Vani/build/vani ./cmd/vani
+  $CODE_ROOT/apps/Vani/build/vani semantic status
   ```
 
   `CGO_CFLAGS` forces Go to re-link when `libgusset.a` changes (`ld: warning` about duplicate
   `-lgusset` is harmless). `semantic status` reports `this binary has the Tessl engine: yes|no`; if
   the snapshot or archive fails to load (`semantic: embedding model unavailable`), runs still write
   the digest with `semantic matching not run: <reason>`.
-- **Warming (`semantic.warm_per_run`, default 1000, max 5000):** Run `/Users/bharath/Code/apps/Vani/build/vani semantic warm --max 5000`
+- **Warming (`semantic.warm_per_run`, default 1000, max 5000):** Run `$CODE_ROOT/apps/Vani/build/vani semantic warm --max 5000`
   (reads the ledger without locking, safe while `daemon` runs; `--max 0`/omitted uses config;
   negative or `> 5000` exits 2). Scores cache under `<state dir>/semantic/`; `vani jobs` and digests
   read the cache without loading the model, though they still run `rkb claims export` to build the
@@ -235,10 +235,10 @@ first real `kb sync`. Back up `career.db` first. `--replace` copies it itself; a
 not.
 
 ```bash
-/Users/bharath/Code/apps/Vani/build/vani config check
-/Users/bharath/Code/apps/Vani/build/vani kb sync --dry-run
-/Users/bharath/Code/apps/Vani/build/vani kb sync
-/Users/bharath/Code/apps/Vani/build/vani rescore --dry-run
+$CODE_ROOT/apps/Vani/build/vani config check
+$CODE_ROOT/apps/Vani/build/vani kb sync --dry-run
+$CODE_ROOT/apps/Vani/build/vani kb sync
+$CODE_ROOT/apps/Vani/build/vani rescore --dry-run
 ```
 
 A real `rescore` opens the ledger, so stop the daemon first. While the daemon holds it the
@@ -267,7 +267,7 @@ Add boards with `vani watchlist add --ats CODE --token T --company 'Name' --allo
 | `fd`, `pg` | XML feed, generic careers page | Short slug `--token` + `--url`; `pg` also requires `--link-pattern RE` |
 
 ```bash
-/Users/bharath/Code/apps/Vani/build/vani watchlist add --ats gh --token BOARD --company 'Name' --allow-host
+$CODE_ROOT/apps/Vani/build/vani watchlist add --ats gh --token BOARD --company 'Name' --allow-host
 ```
 
 `--allow-host` is a boolean. It does not take a host. It appends the board's API host (Greenhouse
@@ -288,7 +288,7 @@ best-ranked new boards on the watchlist.
 Put `target_summary` in the config (step 6). Then list without spending:
 
 ```bash
-VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani run-once --list-only
+VANI_NO_KEYCHAIN=1 $CODE_ROOT/apps/Vani/build/vani run-once --list-only
 ```
 
 A run that triages needs the OpenRouter key (or an `llm` block) and spends from
@@ -296,7 +296,7 @@ A run that triages needs the OpenRouter key (or an `llm` block) and spends from
 to spend from. Cap the first one:
 
 ```bash
-/Users/bharath/Code/apps/Vani/build/vani run-once --board gh:BOARD --advance 25 --no-digest
+$CODE_ROOT/apps/Vani/build/vani run-once --board gh:BOARD --advance 25 --no-digest
 ```
 
 `--advance` sets that run's cap, from 1 to 5000. Omitting it, or passing 0, uses `advance_per_run`
@@ -369,19 +369,19 @@ not required for embeddings or for `kb sync`.
 ## Day to day
 
 ```bash
-go -C /Users/bharath/Code/apps/Vani vet ./...
-go -C /Users/bharath/Code/apps/Vani test ./...
-VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani status
-VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani config check
+go -C $CODE_ROOT/apps/Vani vet ./...
+go -C $CODE_ROOT/apps/Vani test ./...
+VANI_NO_KEYCHAIN=1 $CODE_ROOT/apps/Vani/build/vani status
+VANI_NO_KEYCHAIN=1 $CODE_ROOT/apps/Vani/build/vani config check
 ```
 
 After an rkb edit you stand behind (selection still lists the bullet, readers still pass it):
 
 ```bash
-VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani kb sync --dry-run
-VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani kb sync
-VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani semantic status
-VANI_NO_KEYCHAIN=1 /Users/bharath/Code/apps/Vani/build/vani semantic warm
+VANI_NO_KEYCHAIN=1 $CODE_ROOT/apps/Vani/build/vani kb sync --dry-run
+VANI_NO_KEYCHAIN=1 $CODE_ROOT/apps/Vani/build/vani kb sync
+VANI_NO_KEYCHAIN=1 $CODE_ROOT/apps/Vani/build/vani semantic status
+VANI_NO_KEYCHAIN=1 $CODE_ROOT/apps/Vani/build/vani semantic warm
 ```
 
 `kbmatch` answers go stale when the bank or the target summary changes. `vani kbmatch status`

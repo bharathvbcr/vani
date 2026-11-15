@@ -3,13 +3,13 @@
 How to set up Vani on a fresh machine without pre-existing local tools, and adopt optional modules one layer at a time. Checked against current code (`go.mod`, `internal/config`, `cmd/vani`).
 
 > [!NOTE]
-> If you already have local checkouts of `Manvi`, `decide`, `tessl`, `rkb`, and `DevPrism` on `/Users/bharath/Code/...`, follow [SETUP.md](SETUP.md) for the exact step-by-step bring-up of that full stack.
+> If you already have local checkouts of `Manvi`, `decide`, `tessl`, `rkb`, and `DevPrism` on `$CODE_ROOT/...`, follow [SETUP.md](SETUP.md) for the exact step-by-step bring-up of that full stack.
 
 ---
 
 ## 1. Choose what you need first
 
-Vani is modular. You only need Go and an OpenRouter API key to discover, filter, triage, and digest jobs. Every other external tool adds a specific optional capability:
+Vani is modular. The core pipeline needs Go, an OpenRouter API key, and the sibling `Manvi` and `decide` checkouts (`decide` is currently private, so a build outside the author's machine is not yet possible; see [#1](https://github.com/bharathvbcr/vani/issues/1)). Every other external tool adds a specific optional capability:
 
 | Layer | Capability | External requirement | What runs without it |
 |---|---|---|---|
@@ -24,7 +24,7 @@ Vani is modular. You only need Go and an OpenRouter API key to discover, filter,
 
 ## 2. Clone dependencies & build (portable `go.work`)
 
-Vani's [`go.mod`](../go.mod) resolves three sibling repositories relative to the repo root (`../../devtools/decide`, `../../research/tessl/go`, plus `Manvi` via `go.work`). Clone those sibling repositories into matching paths or create an untracked `go.work` at the Vani repo root pointing to where you checked them out:
+Vani's [`go.mod`](../go.mod) resolves three sibling repositories relative to the repo root (`../../devtools/decide`, `../../research/tessl/go`, plus `Manvi` via `go.work`). The expected directory layout and a ready-to-copy workspace file are in [`go.work.example`](../go.work.example). Clone those sibling repositories into matching paths or create an untracked `go.work` at the Vani repo root pointing to where you checked them out:
 
 ```
 go 1.27.4
