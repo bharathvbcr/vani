@@ -56,11 +56,13 @@ Every `kb.*` path must be **absolute** (`config check` rejects relative paths):
 
 ## 3. Exact Contract for `rkb` & Data Files
 
+The original `rkb` is not publicly available, so a compatible implementation must follow this contract.
+
 If you are building an `rkb`-compatible knowledge base (or authoring scripts for a new user), Vani depends on three file formats and one CLI subcommand (`rkb claims export` — plus `lint`/`render`/`fit` only if using `vani resume`).
 
 ### A. `bank.json` (`internal/kbsync/bank.go`)
 
-Bounded to **8 MiB** (`MaxBankBytes`), strict JSON (no duplicate keys), IDs `1..128` chars matching `[A-Za-z0-9._:-]+` (no `/` because DevPrism uses `<entry>/<bullet>`):
+Bounded to **8 MiB** (`MaxBankBytes`), strict JSON (no duplicate keys), IDs `1..128` chars matching `[A-Za-z0-9._:-]+`. A `/` (or any other character outside that set) in an entry or bullet id makes the whole bank fail to load, so nothing syncs; `/` is reserved because DevPrism uses `<entry>/<bullet>` (`checkID` in `internal/kbsync/bank.go`):
 
 ```json
 {
@@ -107,7 +109,8 @@ Bounded to **8 MiB** (`MaxBankBytes`), strict JSON (no duplicate keys), IDs `1..
 
 Key rules checked by `kbsync`:
 - **Block kind (`kbsync.KindOf`):** Title starting with `bachelor|master|doctor|ph.?d` -> `"education"`; non-empty `org` + `dates` -> `"work"`; otherwise `"project"`.
-- **Dates (`kbsync.ParseDates`):** Use `"MMM YYYY – MMM YYYY"`, `"MMM YYYY – Present"`, or `"YYYY"`.
+- **Dates (`kbsync.ParseDates`, `internal/kbsync/blocks.go`):** Runs on **every** entry (work, education, project); empty is allowed, but an unparseable value blocks that entry from sync. Each date is `MMM YYYY` or a full month name (any case, optional `.` after the month), `YYYY-MM`, or `YYYY`, with years `1900`–`2100`. A range is joined by `–`, `—`, a spaced hyphen (` - `), or `to`; the end may be `Present`, `Current`, or `Now`. A range with no start (`Present – 2024`) or more than two parts is rejected.
+- **Stack (`kbsync.ParseStack`, `internal/kbsync/tags.go`):** Split on `,` and `;`; year tokens are dropped and duplicates collapsed. Over-limit stacks block the entry rather than being truncated: `stack` at most **2048** bytes (`MaxStackBytes`), at most **32** skills (`MaxSkills`), each skill at most **64** bytes (`MaxSkillNameBytes`).
 - **Variants (`origin`):** Entries with non-empty `origin` are treated as rephrased variants of another entry and skipped during `kb sync` so DevPrism does not duplicate experience blocks.
 - **Unattached bullets:** Any bullet not listed under an entry in `entries` is ignored.
 
@@ -151,7 +154,7 @@ Every time `kb sync`, `semantic status/warm`, or `vani resume` runs, Vani invoke
 <kb.rkb> claims export --out /tmp/.../claims.json
 ```
 
-(with `RKB_CODE_ROOT=<kb.code_root>` when set; default 60 s timeout; output bounded to **4 MiB**):
+(with `RKB_CODE_ROOT=<kb.code_root>` when set; default 60 s timeout; the exported claims file is bounded to **4 MiB**, `MaxClaimsBytes`):
 
 ```json
 {
@@ -171,6 +174,18 @@ Every time `kb sync`, `semantic status/warm`, or `vani resume` runs, Vani invoke
 > [!NOTE]
 > If you also use `vani resume` (PDF tailoring), `<kb.rkb>` must additionally implement `claims export --used-in ...`, `lint`, `render`, and `fit --pages N --strict` (requiring Chrome + `pdftotext`). If you only want DevPrism ranking, `kbmatch`, semantic ordering, and draft grounding, `claims export --out <file>` is the entire `rkb` contract.
 
+Exact argv shapes (`<sel>` is a selection file Vani writes; `internal/rkbresume/build.go`, `internal/kbsync/resolve.go`):
+
+| Caller | Subcommand | Arguments | Timeout |
+|---|---|---|---|
+| `kb sync`, semantic | `claims export` | `--out <claims.json>` | 60 s |
+| `vani resume` | `claims export` | `--used-in <sel> --out <claims.json>` plus `--vm-report <kb.vm_report>` when set | 30 s |
+| `vani resume` | `lint` | `lint <sel> --claims <claims.json>` (draft mode, no `--final`) | 30 s |
+| `vani resume` | `render` | `render <sel> --claims <claims.json> --out-dir <dir>` | 30 s |
+| `vani resume` | `fit` | `fit <html> --pages N --strict --out <pdf> --report <fit.json>` | 100 s |
+
+**Execution environment (`internal/rkbexec/runner.go`, `internal/childenv`):** rkb runs with only `PATH`, `HOME`, and `TMPDIR` from Vani's environment (plus `SystemRoot`, `TEMP`, `TMP`, `USERPROFILE` on Windows), and `RKB_CODE_ROOT` when `kb.code_root` is set. There is no stdin. Every run is capped at 5 minutes, and only the first 64 KiB of each of stdout and stderr is kept. A script-based `rkb` must therefore find its interpreter and tools on that `PATH` (for `fit`, Vani appends `/opt/homebrew/bin` or `/usr/local/bin` if `pdftotext` is only there).
+
 ---
 
 ## 4. The Four `kbsync.Eligible` Rules
@@ -183,7 +198,7 @@ A bullet in an active selection is eligible (`kbsync.Eligible`) only when **all 
 4. **Independent two-round review (`hr` and `hm`):** For **both** `"hr"` and `"hm"` readers:
    - Compute `RKBPlain(text)` (substitute claims, replace `[label](url)` with `label`, strip `**bold**` and `*italic*`) and take the **first 12 lowercase hex characters of its SHA-1** (`kbsync.WordingHash`).
    - The latest `"round": 2` entry matching that `text_hash` must have `"verdict": "pass"`.
-   - There must also be an earlier `"round": 1` `"pass"`, or another `"round": 2` `"pass"` by a different `by`.
+   - There must also be a second pass: any `"round": 1` `"pass"` (on any wording; its `text_hash` is not checked), or a different `"round": 2` `"pass"` whose `by` differs from the matching round-2 entry's `by` (`readerPassed`, `internal/kbsync/eligible.go`). Only the round-2 entry must match the current hash.
    - The round-2 `by` must be non-empty, not `"drafter"`, and not equal to `bullet.author`; and the HR reviewer must not equal the HM reviewer.
 
 Inspect which bullets pass or why each is withheld without touching DevPrism:
