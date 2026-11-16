@@ -14,7 +14,7 @@ import (
 	"github.com/bharathvbcr/decide"
 )
 
-const testKey = "sk-or-TESTKEY-do-not-leak"
+const testKey = "fake-test-key-do-not-leak" // deliberately not shaped like a provider key, so secret scanners stay quiet
 
 type step struct {
 	status int

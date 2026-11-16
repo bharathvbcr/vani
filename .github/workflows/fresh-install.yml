@@ -53,6 +53,10 @@ jobs:
       - name: Go gate (root module, decide, rkb)
         run: scripts/test.sh --suite go --fresh
 
-      - name: Show the gate logs
+      - name: Show the failing tests
         if: failure()
-        run: tail -n 200 tmp/test-runs/latest/go*.log || true
+        run: |
+          # Every failing test with its messages, from every go log (cmd/vani's shards are verbose, so a
+          # plain tail hides them), then each log's last lines.
+          grep -h -A 12 -E '^\s*--- FAIL|^FAIL|^panic:' tmp/test-runs/latest/go*.log || true
+          tail -n 20 tmp/test-runs/latest/go*.log || true
