@@ -406,6 +406,11 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **An unmeasured strict fit is no longer a pass** (2026-11-16). When Chrome returned no bullet
+  measurement, `rkb fit --strict` skipped its orphan and line-length checks and still exited 0, so
+  `finalize` and Vani's resume build recorded a pass. It now exits 6 (UNMEASURED) and says why;
+  `finalize` stops on it. Vani keeps the PDF with rkb's note and records the fit as `soft` (the most
+  those checks find is a soft flaw), not `passed`, and does not ask the model again.
 - **A job's role fit is the reading its ranking uses** (2026-11-14, the owner's "fix the label").
   The row's `fit`/`fit_label`, `--fit`, the stats' fit and strong counts and the export's Role fit
   column showed triage's primary reading, while the ranking reads the owner's manual reading, or

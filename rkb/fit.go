@@ -29,6 +29,7 @@ import (
 // Exit codes — the fix is content, not CSS:
 //   0 fits, pages full    2 OVERFLOW (cut ~N lines)    3 SHORT (add ~N lines)
 //   4 GAP (an inner page ends early)    5 STRICT (orphan last line / too long)
+//   6 UNMEASURED (--strict, but the bullets' lines could not be measured)
 
 const ptPerIn = 72.0
 
@@ -379,6 +380,15 @@ func fit(htmlPath, pdfOut string, pages int, strict, final bool) FitReport {
 		die("%v", err)
 	}
 	bm, merr := measureBullets(finalHTML)
+	judgeBullets(&rep, bm, merr, strict)
+	rep.Density, rep.Vars, rep.Pages, rep.PageFill, rep.PDF, rep.HTML = tBest, vars, len(best.fills), best.fills, pdfOut, finalHTML
+	return rep
+}
+
+// judgeBullets applies the per-bullet line checks to the measured metrics.
+// Under --strict a page whose bullets could not be measured is UNMEASURED
+// (6), never a pass: the orphan and line-length checks did not run.
+func judgeBullets(rep *FitReport, bm []bulletMetric, merr error, strict bool) {
 	rep.Bullets = bm
 	for _, m := range rep.Bullets {
 		if m.Lines > 1 && m.LastLineFill < cfg.Rules.OrphanRatio {
@@ -390,13 +400,16 @@ func fit(htmlPath, pdfOut string, pages int, strict, final bool) FitReport {
 	}
 	if merr != nil {
 		rep.Advice += " (bullet line metrics unavailable: " + merr.Error() + ")"
+		if rep.Status == 0 && strict {
+			rep.Status = 6
+			rep.Advice += " UNMEASURED: the orphan and line-length checks did not run; re-run fit."
+		}
+		return
 	}
 	if rep.Status == 0 && strict && (len(rep.Orphans) > 0 || len(rep.OverLineLimit) > 0) {
 		rep.Status = 5
 		rep.Advice += fmt.Sprintf(" STRICT: %d orphan last line(s), %d over-long bullet(s); rewrite and re-run.", len(rep.Orphans), len(rep.OverLineLimit))
 	}
-	rep.Density, rep.Vars, rep.Pages, rep.PageFill, rep.PDF, rep.HTML = tBest, vars, len(best.fills), best.fills, pdfOut, finalHTML
-	return rep
 }
 
 func printFit(rep FitReport) {

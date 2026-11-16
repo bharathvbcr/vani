@@ -664,6 +664,11 @@ func (b *builder) unverifiedBullets(ch choice, cf claimsFile) []string {
 
 var unverifiedRe = regexp.MustCompile(`class="unverified" title="(clm[A-Za-z]+)"`)
 
+// fitUnmeasured is rkb fit's exit code when --strict could not measure the
+// bullets' lines: the page fits, but the orphan and line-length checks did not
+// run.
+const fitUnmeasured = 6
+
 // fitReport is the part of `rkb fit --report` this package reads. Bullets holds
 // ids and line counts only: the report's own text for each bullet is never
 // decoded.
@@ -803,7 +808,15 @@ func (b *builder) attempt(ctx context.Context, label string, ch choice, acceptLa
 	out.fitLines = fitLinesOf(rep, ch)
 	out.orphans = orphanIDs(rep, ch)
 	out.checks.Fit = checkPassed
-	if rep.Status != 0 {
+	if rep.Status == fitUnmeasured {
+		// The pages fit, but rkb could not measure the bullets' lines (Chrome
+		// under load), so its orphan and line-length checks did not run. The
+		// most they could have found is a soft flaw (STRICT, 5), which the
+		// owner accepts with a note, so it is "soft" with rkb's UNMEASURED note,
+		// never "passed". Asking the model again would not make Chrome measure.
+		out.checks.Fit = checkSoft
+		out.notes = append(out.notes, clip(b.scrub.clean(rep.Advice), 300))
+	} else if rep.Status != 0 {
 		msg := clip(b.scrub.clean(rep.Advice), 300)
 		if ids := fitIDs(rep); ids != "" {
 			msg += " (" + b.scrub.clean(ids) + ")"

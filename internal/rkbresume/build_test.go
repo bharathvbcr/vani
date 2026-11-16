@@ -483,6 +483,38 @@ func TestSoftFitFlawsKeepTheTailoredResume(t *testing.T) {
 	}
 }
 
+// A strict fit that could not measure the bullets' lines (exit 6) did not run
+// its orphan and line-length checks, which find only soft flaws: the PDF is
+// kept with rkb's UNMEASURED note, the fit check says soft (never passed), and
+// the model is not asked again, since a retry would not make Chrome measure.
+func TestUnmeasuredFitKeepsThePDFAndIsNotAPass(t *testing.T) {
+	const advice = "OK: 2 page(s). (bullet line metrics unavailable: no measurement in the page Chrome --dump-dom returned) UNMEASURED: the orphan and line-length checks did not run; re-run fit."
+	t.Run("tailored", func(t *testing.T) {
+		f := newFixture(t)
+		f.provider.replies = []string{validReply()}
+		f.rkb.fit = func(string) fitSpec { return fitSpec{status: 6, advice: advice, pages: 2, pdf: testPDF} }
+		res := mustBuild(t, f)
+		if res.Source != SourceTailored || res.Checks.Fit != "soft" || len(res.PDF) == 0 {
+			t.Fatalf("result = %+v", res)
+		}
+		if len(res.Notes) == 0 || !strings.Contains(strings.Join(res.Notes, "\n"), "UNMEASURED") {
+			t.Errorf("notes = %v, want rkb's UNMEASURED advice", res.Notes)
+		}
+		if len(f.provider.reqs) != 1 {
+			t.Errorf("turns = %d: an unmeasured fit must not ask the model again", len(f.provider.reqs))
+		}
+	})
+	t.Run("base", func(t *testing.T) {
+		f := newFixture(t)
+		f.cfg.Provider, f.cfg.NoModel = nil, "off"
+		f.rkb.fit = func(string) fitSpec { return fitSpec{status: 6, advice: advice, pages: 2, pdf: testPDF} }
+		res := mustBuild(t, f)
+		if res.Source != SourceBase || res.Checks.Fit != "soft" || len(res.PDF) == 0 || len(res.Notes) == 0 {
+			t.Fatalf("result = %+v", res)
+		}
+	})
+}
+
 func TestBaseAcceptsLayoutFlawsWithANoteButNotAShortPage(t *testing.T) {
 	for status, advice := range map[int]string{3: "SHORT: last page 88% full", 4: "GAP: inner page(s) end early", 5: "OK: 2 page(s). STRICT: 1 orphan last line(s)"} {
 		f := newFixture(t)
