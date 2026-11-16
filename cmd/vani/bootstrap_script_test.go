@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -216,11 +217,20 @@ func TestBootstrapFreshClonesAtLockWritesGoWorkAndBuilds(t *testing.T) {
 	if !strings.Contains(string(log), "/rkb build -o "+f.root+"/build/rkb . GOWORK=off") {
 		t.Errorf("rkb must build outside the workspace; go calls:\n%s", log)
 	}
-	for _, want := range []string{"done:", "OpenRouter key", "not checked", "VANI_NO_KEYCHAIN", "rkb", "DevPrism",
+	for _, want := range []string{"done:", "OpenRouter key", "rkb", "DevPrism",
 		"Chrome", "poppler", "Tessl engine", "Embedding model", "lightpanda"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
+	}
+	// No key in the environment: on macOS the Keychain is the next place, and
+	// VANI_NO_KEYCHAIN keeps it unasked; elsewhere there is no Keychain at all.
+	keyRow := "missing      export OPENROUTER_API_KEY"
+	if runtime.GOOS == "darwin" {
+		keyRow = "not checked  VANI_NO_KEYCHAIN is set"
+	}
+	if !strings.Contains(out, keyRow) {
+		t.Errorf("OpenRouter key row on %s should read %q:\n%s", runtime.GOOS, keyRow, out)
 	}
 	// A second run finds everything in place and changes nothing.
 	before, _ := os.ReadFile(filepath.Join(f.root, "go.work"))

@@ -58,5 +58,6 @@ jobs:
         run: |
           # Every failing test with its messages, from every go log (cmd/vani's shards are verbose, so a
           # plain tail hides them), then each log's last lines.
-          grep -h -A 12 -E '^\s*--- FAIL|^FAIL|^panic:' tmp/test-runs/latest/go*.log || true
+          # go test -v prints a test's messages above its --- FAIL line, so show both sides.
+          grep -h -B 25 -A 5 -E '^\s*--- FAIL|^panic:' tmp/test-runs/latest/go*.log || true
           tail -n 20 tmp/test-runs/latest/go*.log || true

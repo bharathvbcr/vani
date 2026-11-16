@@ -42,6 +42,22 @@ func TestJobsViewGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(want) != b.String() {
-		t.Fatalf("jobs views changed; compare %s against a VANI_UPDATE_GOLDEN=1 run", golden)
+		// Name the first line that differs, so a failure on another machine (CI)
+		// says what changed without a local rerun.
+		wl, gl := strings.Split(string(want), "\n"), strings.Split(b.String(), "\n")
+		i := 0
+		for i < len(wl) && i < len(gl) && wl[i] == gl[i] {
+			i++
+		}
+		clip := func(ls []string) string {
+			if i >= len(ls) {
+				return "<end of output>"
+			}
+			if s := ls[i]; len(s) > 2000 {
+				return s[:2000] + "…"
+			}
+			return ls[i]
+		}
+		t.Fatalf("jobs views changed at line %d; compare %s against a VANI_UPDATE_GOLDEN=1 run\nwant: %s\ngot:  %s", i+1, golden, clip(wl), clip(gl))
 	}
 }
