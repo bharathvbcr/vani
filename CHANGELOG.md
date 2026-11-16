@@ -368,6 +368,12 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Changed
 
+- **The Lappi client reads replies with `encoding/json/v2`** (2026-11-16). `decide/lappi/client.go`
+  and DevCouncil's copy moved together (DevCouncil `637b754a`, now the `scripts/deps.lock` pin), so
+  the drift check still holds. A reply with a repeated member name or invalid UTF-8 is now
+  unparseable (v1 read the last copy); a choice value keeps v1's escaped bytes, so a recorded
+  `SlotAnswer` does not change. The pin bump also brings in DevCouncil's 16 commits since
+  `230bbf04`, none in the Lappi client.
 - **`rkb bank import-tex` works again** (2026-11-16). It built the bank without the guard `save`
   commits through, so every import died at the rename (the pre-fold binary too). With `--force`
   and no `.tex` files in `cv_dir` it would have replaced the bank with an empty one; it now refuses.

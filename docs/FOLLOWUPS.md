@@ -244,9 +244,9 @@ The ranking and filtering audit and its status per finding are in
   constants); DevCouncil still has its own copy, so there are two until this lands;
   `decide/lappi/drift_test.go` fails if their code (comments aside, imports included) diverges. It
   compares against `.deps/DevCouncil` (bootstrap's pinned clone, which CI uses) or the owner's
-  `devtools/DevCouncil`, and skips with a message only when neither exists. `client.go` stays on
-  `encoding/json` v1 until DevCouncil's copy moves to v2 with it (a DevCouncil change, then a
-  `scripts/deps.lock` pin bump). The change: DevCouncil
+  `devtools/DevCouncil`, and skips with a message only when neither exists. Both copies of
+  `client.go` read replies with `encoding/json/v2` since 2026-11-16 (DevCouncil `637b754a`, the
+  commit `scripts/deps.lock` pins). The change: DevCouncil
   requires `github.com/bharathvbcr/decide` and keeps only its defect-class request, `asker.go`,
   `record.go` and `diffsplit.go`. Blast radius: replace directives in a dependency are ignored, so
   every module that builds DevCouncil through a `replace` (Manvi, Jarvis, Vani's workspace) needs
