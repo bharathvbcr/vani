@@ -1,0 +1,31 @@
+{
+  "clmShelfSearch": [
+    {
+      "pass": 1,
+      "kind": "figure",
+      "verdict": "CONFIRMED",
+      "method": "manual-read",
+      "by": "sample-person",
+      "at": "2025-01-15T12:00:00Z",
+      "value": "470 → 94 ms (-80%)",
+      "found": "470 → 94 ms (-80%)",
+      "evidence": "p95 470 ms before, 94 ms after",
+      "source_path": "projects/shelfwise/bench.txt",
+      "source_sha256": "be7633b8512a028607ce55a6b48c31cad67025949364d330c1ad1a562180e7df"
+    }
+  ],
+  "clmSkyCalls": [
+    {
+      "pass": 1,
+      "kind": "figure",
+      "verdict": "CONFIRMED",
+      "method": "manual-read",
+      "by": "sample-person",
+      "at": "2025-01-15T12:00:00Z",
+      "value": "12 → 3 calls (-75%)",
+      "found": "12 → 3 calls (-75%)",
+      "source_path": "projects/skycast/calls.txt",
+      "source_sha256": "abe8a6cd772e7a6a4deeeaa4ccb0c02a940b5d8219308e1ff19d7dcd25c7468f"
+    }
+  ]
+}

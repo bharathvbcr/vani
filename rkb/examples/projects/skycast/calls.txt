@@ -1,0 +1,3 @@
+Skycast forecast refresh, API call count (sample data)
+before (one call per panel): 12 calls
+after (one batched call per city group): 3 calls

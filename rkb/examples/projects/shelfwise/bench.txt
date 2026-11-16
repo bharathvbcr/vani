@@ -1,0 +1,4 @@
+Shelfwise title-search benchmark (sample data)
+catalog: 17,500 titles, 730 queries replayed
+before (table scan):  p95 470 ms
+after (title index):  p95 94 ms

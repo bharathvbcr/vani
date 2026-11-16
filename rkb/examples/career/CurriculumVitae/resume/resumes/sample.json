@@ -1,0 +1,24 @@
+{
+  "bank": "../bank.json",
+  "meta": {
+    "target": "Software engineer (sample)",
+    "pages": 2,
+    "paper": "letter",
+    "output_basename": "Sample_Resume"
+  },
+  "sections": [
+    {
+      "title": "Projects",
+      "kind": "entries",
+      "entries": [
+        {"entry": "shelfwise"},
+        {"entry": "skycast"}
+      ]
+    },
+    {
+      "title": "Skills",
+      "kind": "lines",
+      "lines": "skills"
+    }
+  ]
+}

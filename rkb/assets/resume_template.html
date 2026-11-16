@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="rkb-paper" content="__PAPER__">
+<title>__TITLE__</title>
+<!--
+  One-column resume layout ported from a LaTeX resume class: Times 10pt, 0.5in margins, centered capitals name over a rule,
+  three-column contact block, capitals section titles with a full-width rule (real uppercase letters,
+  not synthesized small caps, which split words in the PDF text layer),
+  "Title, Org" + bold dates, bold project titles + italic stack, justified bullets,
+  label/value skills, stacked education. Black only.
+
+  ATS rules kept (references/layout-export.md): one reading order top to bottom; real
+  text (no icons, no images of text); no <table>, text boxes or floats; contact in the
+  body, not a page header/footer; standard section names; links as visible text.
+  Density is driven by the CSS variables below; scripts/fit_pages.py tunes them so
+  every page is full.
+-->
+<style>
+:root {
+  --fs: 10pt;            /* body font size        (fit_pages tunes) */
+  --lh: 1.2;             /* line height           (fit_pages tunes) */
+  --sec-gap: 7pt;        /* space above a section (fit_pages tunes) */
+  --entry-gap: 3pt;      /* space above an entry  (fit_pages tunes) */
+  --bullet-gap: 1pt;     /* space between bullets (fit_pages tunes) */
+  --ink: #000;
+  --rule: #000;
+  --font: "Times New Roman", "Nimbus Roman", "Nimbus Roman No9 L", "TeX Gyre Termes", Times, "Liberation Serif", serif;
+__STYLE_VARS__
+}
+@page { size: __PAPER__; margin: __MARGIN_TOP__in __MARGIN_RIGHT__in __MARGIN_BOTTOM__in __MARGIN_LEFT__in; }
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #fff; color: var(--ink); }
+body {
+  font-family: var(--font); font-size: var(--fs); line-height: var(--lh);
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  font-variant-ligatures: none;           /* keeps "fi"/"fl" as real letters for ATS text */
+  font-kerning: normal; hyphens: manual;
+}
+main { width: 100%; }
+a { color: inherit; text-decoration: none; }
+b, strong { font-weight: 700; }
+i, em { font-style: italic; }
+
+/* ---- header: \Huge \scshape \textbf name, \rule{14cm}{1pt}, 3-column contact ---- */
+header.top { margin: 0 0 2pt; }
+header.top h1 {
+  text-align: center; margin: 0; font-weight: 700; text-transform: uppercase;
+  font-size: calc(var(--fs) * 2.1); line-height: 1.05; letter-spacing: 0.05em;
+}
+header.top .namerule { width: 14cm; max-width: 100%; margin: 1pt auto 3pt; border-top: 1pt solid var(--rule); }
+header.top .headline { text-align: center; margin: 0 0 2pt; }
+header.top .contact {
+  display: grid; grid-template-columns: 1fr auto 1fr; column-gap: 8pt;
+  font-size: calc(var(--fs) * 0.92); line-height: 1.2;
+}
+header.top .contact span:nth-child(3n+1) { text-align: left; }
+header.top .contact span:nth-child(3n+2) { text-align: center; }
+header.top .contact span:nth-child(3n)   { text-align: right; }
+
+/* ---- \section: \scshape\bfseries + \titlerule, 8pt above / 5pt below ---- */
+section { margin-top: var(--sec-gap); }
+section > h2 {
+  font-size: calc(var(--fs) * 0.95); font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; margin: 0 0 3pt; padding-bottom: 0.5pt;
+  border-bottom: 0.6pt solid var(--rule);
+  break-after: avoid; page-break-after: avoid;
+}
+.seclead { font-style: italic; margin: 0 0 1pt; break-after: avoid; page-break-after: avoid; }
+
+/* ---- entries: \resumeProfessionalExperience / \resumeAcademicProject / \resumeSubheading ---- */
+.entry { margin-top: var(--entry-gap); }
+section > .entry:first-of-type, .seclead + .entry { margin-top: 0; }
+.eh { display: flex; justify-content: space-between; align-items: baseline; gap: 10pt;
+      break-after: avoid; page-break-after: avoid; }
+.eh .t .ttl { font-weight: 700; }
+.eh .d { white-space: nowrap; font-weight: 700; }
+.eh .d.stack { font-weight: 400; font-style: italic; font-size: calc(var(--fs) * 0.9); }
+.sub { break-after: avoid; page-break-after: avoid; }
+.lead { font-style: italic; break-after: avoid; page-break-after: avoid; }
+
+/* ---- bullets: itemize with a small bullet, justified (\justifying) ---- */
+ul { margin: 1pt 0 0; padding-left: 0.32in; }
+li { margin: var(--bullet-gap) 0 0; text-align: justify; break-inside: avoid; page-break-inside: avoid; }
+li::marker { font-size: 0.7em; }
+
+/* ---- skills: \resumeSkillsSectionThree, 20% label column ---- */
+.lines p { margin: var(--bullet-gap) 0 0; }
+.lines.labeled p { display: grid; grid-template-columns: 20% 1fr; }
+.lines .lbl { font-weight: 700; }
+
+.unverified { background: #fff1b8; outline: 1px dashed #c99a00; }  /* draft mode only */
+.pagebox { padding: __MARGIN_TOP__in __MARGIN_RIGHT__in __MARGIN_BOTTOM__in __MARGIN_LEFT__in; }
+@media screen {
+  body { background: #e6e6e6; }
+  .pagebox { width: __PAPER_W__in; margin: 16px auto; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,.18); }
+}
+@media print { .pagebox { padding: 0; } }
+main { padding-right: 1.5pt; }  /* Chrome clips ink that touches the page box edge */
+</style>
+</head>
+<body>
+<div class="pagebox"><main>
+__BODY__
+</main></div>
+<script>
+/* rkb fit: when opened as page.html#measure, report each bullet's rendered
+   line count and how full its last line is (read back via --dump-dom). */
+if (location.hash === '#measure') {
+  const out = [];
+  for (const li of document.querySelectorAll('li')) {
+    const r = document.createRange(); r.selectNodeContents(li);
+    const rects = Array.from(r.getClientRects()).filter(x => x.width > 0.5).sort((a, b) => a.top - b.top);
+    const lines = [];
+    for (const x of rects) {
+      const l = lines[lines.length - 1];
+      if (l && Math.abs(l.top - x.top) < 3) { l.left = Math.min(l.left, x.left); l.right = Math.max(l.right, x.right); }
+      else lines.push({top: x.top, left: x.left, right: x.right});
+    }
+    const box = li.getBoundingClientRect(), last = lines[lines.length - 1];
+    out.push({id: li.dataset.id || '', text: li.innerText.slice(0, 70), lines: lines.length,
+              last_line_fill: last ? +((last.right - box.left) / (box.right - box.left)).toFixed(3) : 0});
+  }
+  const pre = document.createElement('pre'); pre.id = 'rkb-measure';
+  pre.textContent = JSON.stringify(out); document.body.appendChild(pre);
+}
+</script>
+</body>
+</html>

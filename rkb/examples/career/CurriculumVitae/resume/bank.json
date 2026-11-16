@@ -1,0 +1,137 @@
+{
+  "_about": "A sample knowledge base for a fictional person; every name, project and figure in it is invented.",
+  "headers": {
+    "default": {
+      "name": "Sample Person",
+      "headline": "Software Engineer",
+      "contact": [
+        "sample.person@example.invalid",
+        "Example City"
+      ]
+    }
+  },
+  "entries": {
+    "shelfwise": {
+      "title": "Shelfwise, a library catalog app",
+      "dates": "2025",
+      "stack": "Go, SQLite",
+      "bullets": [
+        "shelf-title-index",
+        "shelf-loan-reminders"
+      ]
+    },
+    "skycast": {
+      "title": "Skycast, a weather widget",
+      "dates": "2024",
+      "stack": "TypeScript",
+      "bullets": [
+        "sky-batched-calls"
+      ]
+    }
+  },
+  "bullets": {
+    "shelf-loan-reminders": {
+      "id": "shelf-loan-reminders",
+      "text": "**Lowered Shelfwise's late returns {{clmShelfOverdue}} with overdue-loan reminders:** borrowers now get one email per loan shortly before its due date.",
+      "need": "shows shipping a user-facing feature",
+      "sources": [
+        "projects/shelfwise/overdue.txt"
+      ],
+      "author": "sample-person"
+    },
+    "shelf-title-index": {
+      "id": "shelf-title-index",
+      "text": "**Cut Shelfwise's title-search latency {{clmShelfSearch}} across the whole catalog:** a title index replaced reading every row on each query.",
+      "need": "shows database performance work with a measured before-and-after",
+      "sources": [
+        "projects/shelfwise/bench.txt"
+      ],
+      "author": "sample-person",
+      "review": {
+        "hm": [
+          {
+            "round": 1,
+            "verdict": "pass",
+            "text_hash": "05010708375a",
+            "by": "reader-hm-a",
+            "at": "2025-01-15T12:00:00Z"
+          },
+          {
+            "round": 2,
+            "verdict": "pass",
+            "text_hash": "05010708375a",
+            "by": "reader-hm-b",
+            "at": "2025-01-15T12:00:00Z"
+          }
+        ],
+        "hr": [
+          {
+            "round": 1,
+            "verdict": "pass",
+            "text_hash": "05010708375a",
+            "by": "reader-hr-a",
+            "at": "2025-01-15T12:00:00Z"
+          },
+          {
+            "round": 2,
+            "verdict": "pass",
+            "text_hash": "05010708375a",
+            "by": "reader-hr-b",
+            "at": "2025-01-15T12:00:00Z"
+          }
+        ]
+      }
+    },
+    "sky-batched-calls": {
+      "id": "sky-batched-calls",
+      "text": "**Reduced Skycast's API calls per forecast refresh {{clmSkyCalls}}:** forecasts for each city group now arrive together in a single batched request.",
+      "need": "shows reducing network cost in a client app",
+      "sources": [
+        "projects/skycast/calls.txt"
+      ],
+      "author": "sample-person",
+      "review": {
+        "hm": [
+          {
+            "round": 1,
+            "verdict": "pass",
+            "text_hash": "1c9e05a1437f",
+            "by": "reader-hm-a",
+            "at": "2025-01-15T12:00:00Z"
+          },
+          {
+            "round": 2,
+            "verdict": "pass",
+            "text_hash": "1c9e05a1437f",
+            "by": "reader-hm-b",
+            "at": "2025-01-15T12:00:00Z"
+          }
+        ],
+        "hr": [
+          {
+            "round": 1,
+            "verdict": "pass",
+            "text_hash": "1c9e05a1437f",
+            "by": "reader-hr-a",
+            "at": "2025-01-15T12:00:00Z"
+          },
+          {
+            "round": 2,
+            "verdict": "pass",
+            "text_hash": "1c9e05a1437f",
+            "by": "reader-hr-b",
+            "at": "2025-01-15T12:00:00Z"
+          }
+        ]
+      }
+    }
+  },
+  "lines": {
+    "skills": [
+      {
+        "label": "Languages",
+        "text": "Go, TypeScript, SQL"
+      }
+    ]
+  }
+}
