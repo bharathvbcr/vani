@@ -82,7 +82,9 @@ func main() {
 		out(map[string]any{"v": 1, "reading": "answered", "value": req.Options[0]})
 	case "hang":
 		if arg != "" {
-			_ = os.WriteFile(arg, []byte(fmt.Sprint(os.Getpid())), 0o600)
+			// The newline marks a complete write: a reader never takes a
+			// partly written number for the pid.
+			_ = os.WriteFile(arg, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600)
 		}
 		time.Sleep(time.Hour)
 	case "dumpreq":
