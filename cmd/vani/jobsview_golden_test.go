@@ -3,9 +3,29 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// longFloat matches a float printed at full float64 precision.
+var longFloat = regexp.MustCompile(`-?\d+\.\d{13,}(?:[eE][-+]?\d+)?`)
+
+// archStableFloats rounds every full-precision float to 12 significant digits.
+// The last bit of a float64 can differ by architecture: arm64 fuses a*b+c into
+// one rounding and amd64 runs its own math.Exp assembly, so the keyword part
+// printed 0.5447979521118679 on arm64 and ...678 on amd64 (CI). The golden
+// pins the views, not the last ulp of the arithmetic behind them.
+func archStableFloats(s string) string {
+	return longFloat.ReplaceAllStringFunc(s, func(m string) string {
+		v, err := strconv.ParseFloat(m, 64)
+		if err != nil {
+			return m
+		}
+		return strconv.FormatFloat(v, 'g', 12, 64)
+	})
+}
 
 // TestJobsViewGolden pins the exact `vani jobs list|stats --json` output of
 // the ranking views (every view and sort, the filters, stats, folding), so the
@@ -41,10 +61,10 @@ func TestJobsViewGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(want) != b.String() {
+	if w, g := archStableFloats(string(want)), archStableFloats(b.String()); w != g {
 		// Name the first line that differs, so a failure on another machine (CI)
 		// says what changed without a local rerun.
-		wl, gl := strings.Split(string(want), "\n"), strings.Split(b.String(), "\n")
+		wl, gl := strings.Split(w, "\n"), strings.Split(g, "\n")
 		i := 0
 		for i < len(wl) && i < len(gl) && wl[i] == gl[i] {
 			i++
@@ -59,5 +79,20 @@ func TestJobsViewGolden(t *testing.T) {
 			return ls[i]
 		}
 		t.Fatalf("jobs views changed at line %d; compare %s against a VANI_UPDATE_GOLDEN=1 run\nwant: %s\ngot:  %s", i+1, golden, clip(wl), clip(gl))
+	}
+}
+
+func TestArchStableFloats(t *testing.T) {
+	arm, amd := `{"value":0.5447979521118679}`, `{"value":0.5447979521118678}`
+	if archStableFloats(arm) != archStableFloats(amd) {
+		t.Errorf("a last-bit difference must compare equal: %s vs %s", archStableFloats(arm), archStableFloats(amd))
+	}
+	if archStableFloats(`{"value":0.5447979521118679}`) == archStableFloats(`{"value":0.5447979531118679}`) {
+		t.Error("a difference in the 10th digit must still show")
+	}
+	for _, keep := range []string{`{"value":0.4,"weight":0.25,"n":12}`, `"2026-10-18T12:00:00Z"`, `{"x":-1.5e-07}`} {
+		if got := archStableFloats(keep); got != keep {
+			t.Errorf("short numbers must be left alone: %s -> %s", keep, got)
+		}
 	}
 }
