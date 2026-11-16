@@ -35,10 +35,16 @@ func cmdDoctor(a *args) {
 		exe, _ = filepath.EvalSymlinks(exe)
 		if st, err := os.Stat(exe); err == nil {
 			if sd := skillDir(); sd != "" {
-				if newest, f := newestSource(filepath.Join(sd, "rkb")); !newest.IsZero() && newest.After(st.ModTime().Add(2*time.Second)) {
+				newest, f := newestSource(filepath.Join(sd, "rkb"))
+				switch {
+				case newest.IsZero():
+					// The usual case: rkb is built from its own module, and the
+					// skill holds only binaries, config and template.
+					say("OK", "binary", "%s (version %s); no Go sources beside the skill, so freshness is not checked here", filepath.Base(exe), version)
+				case newest.After(st.ModTime().Add(2 * time.Second)):
 					say("WARN", "binary", "%s is older than %s (%s); rebuild: cd %s/rkb && go build -o ../bin/rkb-$(go env GOOS)-$(go env GOARCH) .",
 						filepath.Base(exe), filepath.Base(f), newest.Format(time.RFC3339), sd)
-				} else {
+				default:
 					say("OK", "binary", "%s (version %s) is current with its sources", filepath.Base(exe), version)
 				}
 			}
@@ -178,7 +184,9 @@ func cmdDoctor(a *args) {
 	}
 }
 
-// newestSource returns the newest .go or asset file under dir.
+// newestSource returns the newest non-test .go file under dir. The skill's
+// assets (config.json, resume_template.html) are read at run time, so a newer
+// one never calls for a rebuild.
 func newestSource(dir string) (time.Time, string) {
 	var t time.Time
 	var f string
@@ -186,10 +194,7 @@ func newestSource(dir string) (time.Time, string) {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(p, ".go") && !strings.Contains(p, string(os.PathSeparator)+"assets"+string(os.PathSeparator)) {
-			return nil
-		}
-		if strings.HasSuffix(p, "_test.go") || strings.HasSuffix(p, "config.json") { // config.json is read at run time
+		if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
 			return nil
 		}
 		if st, err := d.Info(); err == nil && st.ModTime().After(t) {
