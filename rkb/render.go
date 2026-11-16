@@ -60,7 +60,7 @@ type ClaimsFile struct {
 	// Guards: the export records refuted sentences (RefutedSentences,
 	// StatementView.Refuted). 0 means an older rkb wrote it and the
 	// refuted-wording check cannot run on it.
-	Guards int `json:"guards,omitempty"`
+	Guards int `json:"guards,omitzero"`
 }
 
 func loadClaimsFile(p string) *ClaimsFile {

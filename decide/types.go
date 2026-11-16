@@ -65,8 +65,8 @@ type JevCalib struct {
 type SlotReading struct {
 	Reading Reading     `json:"reading"`
 	Value   string      `json:"value,omitempty"`
-	Lappi   *LappiCalib `json:"lappi,omitempty"`
-	Jev     *JevCalib   `json:"jev,omitempty"`
+	Lappi   *LappiCalib `json:"lappi,omitzero"`
+	Jev     *JevCalib   `json:"jev,omitzero"`
 	Detail  string      `json:"detail,omitempty"` // refusal kind, error class; never model text
 }
 
@@ -74,7 +74,7 @@ type SlotReading struct {
 type Answer struct {
 	Backend string                 `json:"backend"` // "lappi" | "jev" | "llm"
 	Slots   map[string]SlotReading `json:"slots"`
-	CostUSD float64                `json:"cost_usd,omitempty"`
+	CostUSD float64                `json:"cost_usd,omitzero"`
 	// Shadow holds the shadow backend's per-slot readings when a Router has one
 	// and asked it. A shadow that errored or timed out is recorded too, as
 	// Unavailable on every slot, so Shadow non-nil means "was asked", not

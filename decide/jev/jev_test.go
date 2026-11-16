@@ -105,6 +105,30 @@ func TestRequestShapeGolden(t *testing.T) {
 	}
 }
 
+// The pinned bytes are what encoding/json v1 wrote: & < > and U+2028/U+2029
+// escaped, maps sorted, a nil list or map written as null.
+func TestRequestBytesKeepPinnedEscaping(t *testing.T) {
+	state := func(decide.Question) any {
+		return map[string]any{"text": "a<b> & c\u2028d", "tags": []string(nil), "meta": map[string]int(nil)}
+	}
+	b, d, _ := newBackend(t, Config{
+		State:        state,
+		Descriptions: map[string]map[string]string{"mode": {"remote": "remote & <async>"}},
+	}, ok(goodResp))
+	q := question()
+	q.Prompt = "Rate <it> & say\u2029why"
+	if _, err := b.Decide(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	want := `{"model":"typesafe/jev-1.13","questions":{` +
+		`"level":{"criteria":{"junior":"junior","senior":"senior"},"instructions":"Rate \u003cit\u003e \u0026 say\u2029why","type":"choice"},` +
+		`"mode":{"criteria":{"onsite":"onsite","remote":"remote \u0026 \u003casync\u003e"},"instructions":"Rate \u003cit\u003e \u0026 say\u2029why","type":"choice"}},` +
+		`"state":{"meta":null,"tags":null,"text":"a\u003cb\u003e \u0026 c\u2028d"}}`
+	if d.bodies[0] != want {
+		t.Errorf("body:\n got %s\nwant %s", d.bodies[0], want)
+	}
+}
+
 func TestParsesAnswersAndCost(t *testing.T) {
 	b, _, _ := newBackend(t, Config{}, ok(goodResp))
 	a, err := b.Decide(context.Background(), question())

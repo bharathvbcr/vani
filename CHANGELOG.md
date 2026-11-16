@@ -368,6 +368,19 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Changed
 
+- **`decide` and `rkb` on `encoding/json/v2`** (2026-11-16). Every file and request body they write
+  keeps its bytes: options pin sorted map keys, `null` for a nil list or map, rkb's literal `& < >`
+  with escaped U+2028/U+2029 and carried-over escapes kept as written, and the escaped `& < >` that
+  the Lappi request line and the Decisions API body (pinned by n8n-email-engine) have always had.
+  Byte goldens written by the v1 build pin this (`rkb/testdata/json-contract`, the jev, Lappi and
+  spend-file tests), and rkb run on the owner's bank, resumes and verify log gave byte-identical
+  output. Deliberate changes: a field name in the wrong case (`"Text"` for `"text"`) in bank.json
+  is now an error naming the right spelling (v1 read it and also carried it, so the next save wrote
+  both); invalid UTF-8 in a bank, resume or verify log is refused (v1 replaced it with U+FFFD and
+  the next save rewrote it); a new verify-log entry writes `& < >` literally like every other rkb
+  write; the spend file refuses a miscased key. `decide/lappi/client.go` stays on v1 until
+  DevCouncil's copy moves with it, and the drift check now compares imports, so a one-sided switch
+  fails it. The root module is still on v1.
 - **One bounded detail step** (`srcutil.PlanDetails`): Workday, SmartRecruiters, Oracle HCM, Rippling,
   Avature and TalentBrew reuse stored postings, re-read each once in 30 days, skip new rows the title
   rule drops, and spend at most a fixed number of detail requests a board a run. Rippling (every

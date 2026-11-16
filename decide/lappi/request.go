@@ -2,8 +2,10 @@ package lappi
 
 import (
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
+
+	"github.com/bharathvbcr/decide/internal/jsonwire"
 )
 
 // Slot types this client can read an answer for.
@@ -68,5 +70,5 @@ func (r Request) Encode() ([]byte, error) {
 			return nil, errors.New("lappi: slot " + s.Name + " has a type this client cannot read: " + s.Type)
 		}
 	}
-	return json.Marshal(r)
+	return json.Marshal(r, jsonwire.V1Bytes)
 }

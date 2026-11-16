@@ -1,0 +1,70 @@
+{
+  "_about": "invented",
+  "headers": {
+    "default": {
+      "name": "Sample Person",
+      "contact": null,
+      "x_alt": {
+        "z": 1,
+        "a": [
+          true,
+          null
+        ]
+      }
+    }
+  },
+  "entries": {
+    "e1": {
+      "title": "Shelfwise",
+      "bullets": [
+        "b1",
+        "b2"
+      ],
+      "x_flag": false
+    }
+  },
+  "bullets": {
+    "b1": {
+      "id": "b1",
+      "text": "Line\u2028break é",
+      "caution_ok": {
+        "clmA": "a",
+        "clmB": "b"
+      },
+      "x_ls": "a\u2028b"
+    },
+    "b2": {
+      "id": "b2",
+      "text": "Cut p99 <1 ms & kept \"hot\" paths",
+      "sources": [
+        "a.md"
+      ],
+      "review": {
+        "hr": [
+          {
+            "round": 1,
+            "verdict": "pass",
+            "text_hash": "h",
+            "by": "r",
+            "x_seen": 1e3
+          }
+        ]
+      },
+      "x_num": 1.50,
+      "x_raw": "caf\u00e9 \/ \u0026"
+    }
+  },
+  "lines": {
+    "skills": [
+      {
+        "text": "Go & Rust",
+        "note": "kept"
+      }
+    ]
+  },
+  "x_top": [
+    3,
+    2,
+    1
+  ]
+}

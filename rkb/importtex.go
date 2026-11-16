@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -437,7 +436,7 @@ func (b *Bank) addBullet(text, prefix, origin string, byText map[string]string) 
 }
 
 func (b *Bank) addLines(key string, rows []Line, seen map[string]string) string {
-	j, _ := json.Marshal(rows)
+	j, _ := marshalNoEscape(rows)
 	if k, ok := seen[string(j)]; ok {
 		return k
 	}

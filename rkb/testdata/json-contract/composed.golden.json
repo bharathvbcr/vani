@@ -1,0 +1,53 @@
+{
+  "composed": true,
+  "selection": "resumes/r.json",
+  "bank_path": "bank.json",
+  "meta": {
+    "target": "Backend & data",
+    "bold_figures": true,
+    "style": {
+      "a": "2",
+      "z": "1"
+    }
+  },
+  "header": {
+    "name": "Sample Person",
+    "contact": null
+  },
+  "sections": [
+    {
+      "title": "Experience",
+      "kind": "entries",
+      "entries": [
+        {
+          "id": "e1",
+          "title": "Shelfwise",
+          "bullets": [
+            {
+              "id": "b1",
+              "text": "Sorted <3> queues & tags"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Skills",
+      "kind": "lines",
+      "bulleted": true,
+      "lines": [
+        {
+          "text": "Go"
+        },
+        {
+          "label": "Tools",
+          "text": "git"
+        }
+      ]
+    },
+    {
+      "title": "Empty",
+      "kind": "bullets"
+    }
+  ]
+}

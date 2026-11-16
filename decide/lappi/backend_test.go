@@ -4,7 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"net"
 	"path/filepath"
 	"strings"
@@ -173,7 +174,7 @@ func TestBackendRejectsInvalidQuestionAndConfig(t *testing.T) {
 func TestAnswerRefusesValuesOutsideTheOptions(t *testing.T) {
 	q := triageQuestion()
 	res := Result{Reading: ModelAnswered, Backend: "b", Slots: map[string]SlotAnswer{
-		"work_mode": {Value: json.RawMessage(`"spaceship"`), Score: 0.9},
+		"work_mode": {Value: jsontext.Value(`"spaceship"`), Score: 0.9},
 	}}
 	ans := answer(q, res)
 	if rd := ans.Slots["work_mode"]; rd.Reading != decide.Failed || rd.Value != "" {

@@ -49,6 +49,21 @@ func TestNewRequestReproducesATrainedRequestByteForByte(t *testing.T) {
 	}
 }
 
+// The escaping is part of the bytes: & < > and U+2028/U+2029 come out escaped
+// and other non-ASCII text as UTF-8, as encoding/json v1 wrote them.
+func TestRequestLineEscaping(t *testing.T) {
+	r := NewRequest("app", "t", "Is <it> & ok\u2028 — é?", []byte("x"),
+		[]SlotSpec{{Name: "s", Type: SlotChoice, Options: []string{"a&b", "<c>"}}}, "id")
+	line, err := r.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"schema_version":1,"task":"t","context_b64":"eA==","context_len":1,"question":"Is \u003cit\u003e \u0026 ok\u2028 — é?","slots":[{"name":"s","type":"choice","options":["a\u0026b","\u003cc\u003e"]}],"route":"generic","example_id":"app:t:id","metadata":{}}`
+	if string(line) != want {
+		t.Fatalf("request line:\n%s\nwant\n%s", line, want)
+	}
+}
+
 func TestNewRequestCopiesSlots(t *testing.T) {
 	slots := defectSlots()
 	r := NewRequest("app", "t", "q", nil, slots, "id")

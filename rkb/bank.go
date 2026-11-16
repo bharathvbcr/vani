@@ -1,7 +1,8 @@
 package main
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
@@ -16,14 +17,14 @@ import (
 // ---------------------------------------------------------------- types
 
 type Review struct {
-	Round    int                        `json:"round"`
-	Verdict  string                     `json:"verdict"`
-	Note     string                     `json:"note,omitempty"`
-	Rewrite  string                     `json:"rewrite,omitempty"`
-	TextHash string                     `json:"text_hash"`
-	By       string                     `json:"by"`
-	At       string                     `json:"at,omitempty"`
-	Extra    map[string]json.RawMessage `json:"-"`
+	Round    int                       `json:"round"`
+	Verdict  string                    `json:"verdict"`
+	Note     string                    `json:"note,omitempty"`
+	Rewrite  string                    `json:"rewrite,omitempty"`
+	TextHash string                    `json:"text_hash"`
+	By       string                    `json:"by"`
+	At       string                    `json:"at,omitempty"`
+	Extra    map[string]jsontext.Value `json:"-"`
 }
 
 type reviewAlias Review
@@ -74,19 +75,19 @@ type Bullet struct {
 	// Attested: a statement no artifact can back (employer work under NDA,
 	// lab work), confirmed by the person in their own words. It passes the
 	// statement gate but is listed in every manifest; never set it for them.
-	Attested      string                     `json:"attested,omitempty"`
-	AllowLiterals []string                   `json:"allow_literals,omitempty"`
-	Glossed       []string                   `json:"glossed,omitempty"`
-	Author        string                     `json:"author,omitempty"`
-	Origin        []string                   `json:"origin,omitempty"`
-	Review        map[string][]Review        `json:"review,omitempty"`
-	Extra         map[string]json.RawMessage `json:"-"`
+	Attested      string                    `json:"attested,omitempty"`
+	AllowLiterals []string                  `json:"allow_literals,omitempty"`
+	Glossed       []string                  `json:"glossed,omitempty"`
+	Author        string                    `json:"author,omitempty"`
+	Origin        []string                  `json:"origin,omitempty"`
+	Review        map[string][]Review       `json:"review,omitempty"`
+	Extra         map[string]jsontext.Value `json:"-"`
 }
 
 type Line struct {
-	Label string                     `json:"label,omitempty"`
-	Text  string                     `json:"text"`
-	Extra map[string]json.RawMessage `json:"-"`
+	Label string                    `json:"label,omitempty"`
+	Text  string                    `json:"text"`
+	Extra map[string]jsontext.Value `json:"-"`
 }
 
 type lineAlias Line
@@ -109,10 +110,10 @@ func (l *Line) UnmarshalJSON(data []byte) error {
 }
 
 type Header struct {
-	Name     string                     `json:"name"`
-	Headline string                     `json:"headline,omitempty"`
-	Contact  []string                   `json:"contact"`
-	Extra    map[string]json.RawMessage `json:"-"`
+	Name     string                    `json:"name"`
+	Headline string                    `json:"headline,omitempty"`
+	Contact  []string                  `json:"contact"`
+	Extra    map[string]jsontext.Value `json:"-"`
 }
 
 type headerAlias Header
@@ -135,20 +136,20 @@ func (h *Header) UnmarshalJSON(data []byte) error {
 }
 
 type BankEntry struct {
-	Title    string                     `json:"title,omitempty"`
-	Org      string                     `json:"org,omitempty"`
-	Dates    string                     `json:"dates,omitempty"`
-	Stack    string                     `json:"stack,omitempty"`
-	Location string                     `json:"location,omitempty"`
-	Sub      string                     `json:"sub,omitempty"`
-	Lead     string                     `json:"lead,omitempty"`
-	Layout   string                     `json:"layout,omitempty"`
-	Group    string                     `json:"group,omitempty"`
-	Members  []string                   `json:"members,omitempty"`
-	Links    []string                   `json:"links,omitempty"`
-	Bullets  []string                   `json:"bullets,omitempty"`
-	Origin   []string                   `json:"origin,omitempty"`
-	Extra    map[string]json.RawMessage `json:"-"`
+	Title    string                    `json:"title,omitempty"`
+	Org      string                    `json:"org,omitempty"`
+	Dates    string                    `json:"dates,omitempty"`
+	Stack    string                    `json:"stack,omitempty"`
+	Location string                    `json:"location,omitempty"`
+	Sub      string                    `json:"sub,omitempty"`
+	Lead     string                    `json:"lead,omitempty"`
+	Layout   string                    `json:"layout,omitempty"`
+	Group    string                    `json:"group,omitempty"`
+	Members  []string                  `json:"members,omitempty"`
+	Links    []string                  `json:"links,omitempty"`
+	Bullets  []string                  `json:"bullets,omitempty"`
+	Origin   []string                  `json:"origin,omitempty"`
+	Extra    map[string]jsontext.Value `json:"-"`
 }
 
 type bankEntryAlias BankEntry
@@ -181,7 +182,7 @@ type Bank struct {
 	raw     []byte
 	// allowDrop: field paths ($.bullets.<id>.need) a command clears on purpose.
 	allowDrop []string
-	Extra     map[string]json.RawMessage `json:"-"`
+	Extra     map[string]jsontext.Value `json:"-"`
 }
 
 type bankAlias Bank
@@ -205,7 +206,7 @@ func (b *Bank) UnmarshalJSON(data []byte) error {
 
 type Meta struct {
 	Target          string            `json:"target,omitempty"`
-	Pages           int               `json:"pages,omitempty"`
+	Pages           int               `json:"pages,omitzero"`
 	Paper           string            `json:"paper,omitempty"`
 	BoldFigures     *bool             `json:"bold_figures,omitempty"`
 	OutputBasename  string            `json:"output_basename,omitempty"`
@@ -238,20 +239,20 @@ func (s *SelEntry) UnmarshalJSON(b []byte) error {
 }
 
 type SelSection struct {
-	Title    string          `json:"title"`
-	Kind     string          `json:"kind,omitempty"`
-	Lead     string          `json:"lead,omitempty"`
-	Bulleted bool            `json:"bulleted,omitempty"`
-	Bullets  []string        `json:"bullets,omitempty"`
-	Entries  []SelEntry      `json:"entries,omitempty"`
-	Lines    json.RawMessage `json:"lines,omitempty"`
+	Title    string         `json:"title"`
+	Kind     string         `json:"kind,omitempty"`
+	Lead     string         `json:"lead,omitempty"`
+	Bulleted bool           `json:"bulleted,omitzero"`
+	Bullets  []string       `json:"bullets,omitempty"`
+	Entries  []SelEntry     `json:"entries,omitempty"`
+	Lines    jsontext.Value `json:"lines,omitempty"`
 }
 
 type Selection struct {
-	Bank     string          `json:"bank"`
-	Meta     Meta            `json:"meta"`
-	Header   json.RawMessage `json:"header"`
-	Sections []SelSection    `json:"sections"`
+	Bank     string         `json:"bank"`
+	Meta     Meta           `json:"meta"`
+	Header   jsontext.Value `json:"header"`
+	Sections []SelSection   `json:"sections"`
 }
 
 // Composed is what every renderer and check works on.
@@ -274,7 +275,7 @@ type Section struct {
 	Title    string    `json:"title"`
 	Kind     string    `json:"kind"`
 	Lead     string    `json:"lead,omitempty"`
-	Bulleted bool      `json:"bulleted,omitempty"`
+	Bulleted bool      `json:"bulleted,omitzero"`
 	Bullets  []*Bullet `json:"bullets,omitempty"`
 	Entries  []*Entry  `json:"entries,omitempty"`
 	Lines    []Line    `json:"lines,omitempty"`
@@ -526,11 +527,11 @@ func loadResumeErr(p string) (*Composed, []string) {
 
 // selectionUnknownKeys lists keys a selection file has that rkb does not read.
 func selectionUnknownKeys(raw []byte) []string {
-	var top map[string]json.RawMessage
+	var top map[string]jsontext.Value
 	if json.Unmarshal(raw, &top) != nil {
 		return nil
 	}
-	allow := func(path string, m map[string]json.RawMessage, keys ...string) []string {
+	allow := func(path string, m map[string]jsontext.Value, keys ...string) []string {
 		var bad []string
 		for k := range m {
 			if !contains(keys, k) && !strings.HasPrefix(k, "_") {
@@ -540,19 +541,19 @@ func selectionUnknownKeys(raw []byte) []string {
 		return bad
 	}
 	bad := allow("$", top, "bank", "meta", "header", "sections")
-	var meta map[string]json.RawMessage
+	var meta map[string]jsontext.Value
 	if json.Unmarshal(top["meta"], &meta) == nil {
 		bad = append(bad, allow("$.meta", meta, "target", "pages", "paper", "bold_figures", "output_basename", "jd_keywords", "max_testing_share", "style", "origin")...)
 	}
-	var secs []map[string]json.RawMessage
+	var secs []map[string]jsontext.Value
 	if json.Unmarshal(top["sections"], &secs) == nil {
 		for i, sec := range secs {
 			sp := fmt.Sprintf("$.sections[%d]", i)
 			bad = append(bad, allow(sp, sec, "title", "kind", "lead", "bulleted", "bullets", "entries", "lines")...)
-			var ents []json.RawMessage
+			var ents []jsontext.Value
 			if json.Unmarshal(sec["entries"], &ents) == nil {
 				for j, e := range ents {
-					var em map[string]json.RawMessage
+					var em map[string]jsontext.Value
 					if json.Unmarshal(e, &em) == nil {
 						bad = append(bad, allow(fmt.Sprintf("%s.entries[%d]", sp, j), em, "entry", "bullets", "title", "stack", "lead", "org", "dates")...)
 					}

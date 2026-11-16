@@ -6,7 +6,7 @@ package jev
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +23,7 @@ import (
 	"unicode"
 
 	"github.com/bharathvbcr/decide"
+	"github.com/bharathvbcr/decide/internal/jsonwire"
 )
 
 // Doer sends one HTTP request. A caller passes its egress client, which owns
@@ -327,7 +328,7 @@ func (b *Backend) Serves(string) bool { return !b.disabled.Load() }
 func (b *Backend) ChargeErrors() int64 { return b.chargeErrors.Load() }
 
 // The request structs list their fields in key order, so a body comes out
-// byte-for-byte as encoding/json writes the same object built from maps
+// byte-for-byte as encoding/json v1 wrote the same object built from maps
 // (n8n-email-engine's config/jev_requests.json pins those bytes).
 type criteriaQuestion struct {
 	Criteria     map[string]string `json:"criteria"`
@@ -362,7 +363,7 @@ func (b *Backend) body(q decide.Question) ([]byte, error) {
 		}
 		rb.Questions[s.Name] = criteriaQuestion{Type: "choice", Instructions: instructions, Criteria: crit}
 	}
-	return json.Marshal(rb)
+	return json.Marshal(rb, jsonwire.V1Bytes)
 }
 
 type slotAnswer struct {

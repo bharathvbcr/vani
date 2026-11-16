@@ -1,0 +1,36 @@
+{
+  "bank": "../bank.json",
+  "meta": {
+    "pages": 1
+  },
+  "header": "default",
+  "sections": [
+    {
+      "title": "Work",
+      "entries": [
+        {
+          "entry": "e1"
+        },
+        {
+          "entry": "e2",
+          "bullets": [
+            "b1"
+          ],
+          "title": "Lead & owner"
+        }
+      ]
+    },
+    {
+      "title": "Skills",
+      "lines": "skills"
+    },
+    {
+      "title": "Inline",
+      "lines": [
+        {
+          "text": "Go"
+        }
+      ]
+    }
+  ]
+}

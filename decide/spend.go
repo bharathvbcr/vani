@@ -1,9 +1,9 @@
 package decide
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -89,14 +89,11 @@ func (d *DailyCap) load() (spendFile, error) {
 	if len(raw) > maxSpendFile {
 		return empty, fmt.Errorf("decide: spend file exceeds %d bytes", maxSpendFile)
 	}
+	// Unknown or miscased keys, duplicate keys and trailing data are all
+	// corruption: an amount this cap cannot read must never count as zero.
 	var s spendFile
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&s); err != nil {
+	if err := json.Unmarshal(raw, &s, json.RejectUnknownMembers(true)); err != nil {
 		return empty, fmt.Errorf("decide: spend file is corrupt: %w", err)
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return empty, errors.New("decide: spend file has trailing data")
 	}
 	if s.Version != spendVersion {
 		return empty, fmt.Errorf("decide: spend file version %d, want %d", s.Version, spendVersion)
@@ -125,7 +122,7 @@ func (d *DailyCap) save(s spendFile) error {
 			delete(s.Days, day)
 		}
 	}
-	raw, err := json.MarshalIndent(s, "", "  ")
+	raw, err := json.Marshal(s, json.Deterministic(true), jsontext.WithIndent("  "))
 	if err != nil {
 		return err
 	}

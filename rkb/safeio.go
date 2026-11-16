@@ -22,7 +22,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -141,15 +142,12 @@ func writeAtomic(p string, b []byte) error {
 
 // encodeJSON is the one JSON style rkb writes: two-space indent, trailing
 // newline, and & < > kept literal (bullet text is prose, not HTML).
-func encodeJSON(v interface{}) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(v); err != nil {
+func encodeJSON(v any) ([]byte, error) {
+	b, err := json.Marshal(v, writeOpts, jsontext.WithIndent("  "))
+	if err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return append(b, '\n'), nil
 }
 
 // withLock runs fn holding the advisory lock for p. Waits up to timeout for
@@ -210,8 +208,9 @@ func guardedUpdate(p string, attempts int, apply func(old []byte, exists bool) (
 // and Python's decoders silently keep the last one, which would make one of
 // two bullets with the same id vanish.
 func dupKeys(b []byte) ([]string, error) {
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.UseNumber()
+	// The decoder must let duplicates through so that every one is listed, not
+	// only the first.
+	dec := jsontext.NewDecoder(bytes.NewReader(b), jsontext.AllowDuplicateNames(true))
 	type frame struct {
 		obj    bool
 		keys   map[string]bool
@@ -249,7 +248,7 @@ func dupKeys(b []byte) ([]string, error) {
 	}
 	tops := 0
 	for {
-		tok, err := dec.Token()
+		tok, err := dec.ReadToken()
 		if err == io.EOF {
 			break
 		}
@@ -261,25 +260,23 @@ func dupKeys(b []byte) ([]string, error) {
 				return dups, fmt.Errorf("more than one JSON value in the file")
 			}
 		}
-		switch t := tok.(type) {
-		case json.Delim:
-			switch t {
-			case '{', '[':
-				p := childPath()
-				stack = append(stack, &frame{obj: t == '{', keys: map[string]bool{}, path: p, expKey: true})
-			case '}', ']':
-				stack = stack[:len(stack)-1]
-				valueDone()
-			}
-		case string:
+		switch k := tok.Kind(); k {
+		case '{', '[':
+			p := childPath()
+			stack = append(stack, &frame{obj: k == '{', keys: map[string]bool{}, path: p, expKey: true})
+		case '}', ']':
+			stack = stack[:len(stack)-1]
+			valueDone()
+		case '"':
 			f := cur()
 			if f != nil && f.obj && f.expKey {
-				if f.keys[t] {
-					dups = append(dups, f.path+"."+t)
+				name := tok.String()
+				if f.keys[name] {
+					dups = append(dups, f.path+"."+name)
 				}
-				f.keys[t] = true
+				f.keys[name] = true
 				f.expKey = false
-				lastKey = t
+				lastKey = name
 				continue
 			}
 			valueDone()

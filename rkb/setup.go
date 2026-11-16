@@ -3,8 +3,9 @@ package main
 import (
 	"archive/zip"
 	"bufio"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -172,7 +173,15 @@ func installGo(version string) {
 			U string `json:"download_url"`
 		} `json:"files"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&man); err != nil {
+	const maxManifest = 32 << 20 // the manifest is about 1 MiB; a bigger body is not it
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxManifest+1))
+	if err != nil {
+		die("go manifest: %v", err)
+	}
+	if len(body) > maxManifest {
+		die("go manifest: larger than %d bytes, refusing it", maxManifest)
+	}
+	if err := json.Unmarshal(body, &man); err != nil {
 		die("go manifest: %v", err)
 	}
 	arch := runtime.GOARCH
@@ -298,7 +307,7 @@ func writeProxyModule(out, mod, ver, src string, full bool) error {
 	if ts == "" {
 		ts = time.Now().Format(time.RFC3339)
 	}
-	info, err := json.Marshal(map[string]string{"Version": ver, "Time": ts})
+	info, err := marshalNoEscape(map[string]string{"Version": ver, "Time": ts})
 	if err != nil {
 		return err
 	}
