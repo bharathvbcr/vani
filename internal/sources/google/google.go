@@ -9,8 +9,10 @@
 // rather than guessing.
 //
 // robots.txt allows the first results page and disallows every "?page=" or
-// "&page=" variant (checked 2026-10-19), so each term is read from page 1
-// only. A term that matches more jobs than page 1 holds fails the board:
+// "&page=" variant (checked 2026-10-19, again 2026-11-16), so each term is
+// read from page 1 only. A term that matches more jobs than page 1 holds is
+// read once more sorted by date, and kept when the two pages prove between
+// them that every match was read (readTerm). Otherwise it fails the board:
 // truncating would let the reconciler mark the unseen postings dead. Narrow
 // it with a more specific term or the target_level and location filters.
 package google
@@ -37,9 +39,9 @@ import (
 
 const (
 	resultsURL = "https://www.google.com/about/careers/applications/jobs/results"
-	// MaxPostings bounds one board: page 1 of each term (20) times the most
-	// terms a board may hold.
-	MaxPostings = 20 * sources.MaxSearches
+	// MaxPostings bounds one board: the two page-1 views of each term
+	// (readTerm, 20 rows each) times the most terms a board may hold.
+	MaxPostings = 2 * 20 * sources.MaxSearches
 )
 
 var (
@@ -86,11 +88,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		page, err := srcutil.GetBody(ctx, s.d, searchURL(term, b.Filters))
-		if err != nil {
-			return nil, fmt.Errorf("google %q: search %q: %w", b.Token, term, err)
-		}
-		jobs, err := decodeResults(page)
+		jobs, err := s.readTerm(ctx, term, b.Filters)
 		if err != nil {
 			return nil, fmt.Errorf("google %q: search %q: %w", b.Token, term, err)
 		}
@@ -135,6 +133,12 @@ func searchURL(term string, filters map[string][]string) string {
 	return resultsURL + "?" + q.Encode() // Encode sorts by key
 }
 
+// dateSortedURL is searchURL ordered newest first: the second view readTerm
+// asks of a term page 1 does not hold. Like searchURL it never pages.
+func dateSortedURL(term string, filters map[string][]string) string {
+	return searchURL(term, filters) + "&sort_by=date"
+}
+
 // job is one decoded result.
 type job struct {
 	id, title, team  string
@@ -149,38 +153,34 @@ const dsMarker = "AF_initDataCallback({key: 'ds:1'"
 // decodeResults finds the ds:1 block and decodes its result list. It reads
 // one JSON value starting at the block's "data:", so nothing after the value
 // (the rest of the script) is guessed at.
-func decodeResults(page []byte) ([]decoded, error) {
+func decodeResults(page []byte) (results, error) {
 	at := bytes.Index(page, []byte(dsMarker))
 	if at < 0 {
-		return nil, ErrNoResults
+		return results{}, ErrNoResults
 	}
 	rest := page[at+len(dsMarker):]
 	d := bytes.Index(rest, []byte("data:"))
 	if d < 0 || d > 200 { // the key, then a short hash, then data
-		return nil, fmt.Errorf("%w: no data after the ds:1 key", ErrShape)
+		return results{}, fmt.Errorf("%w: no data after the ds:1 key", ErrShape)
 	}
 	dec := json.NewDecoder(bytes.NewReader(rest[d+len("data:"):]))
 	dec.UseNumber()
 	var top []json.RawMessage
 	if err := dec.Decode(&top); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrShape, err)
+		return results{}, fmt.Errorf("%w: %v", ErrShape, err)
 	}
 	if len(top) < 3 {
-		return nil, fmt.Errorf("%w: data has %d elements, want at least 3", ErrShape, len(top))
+		return results{}, fmt.Errorf("%w: data has %d elements, want at least 3", ErrShape, len(top))
 	}
 	var rows []json.RawMessage
 	if string(top[0]) == "null" {
 		rows = nil
 	} else if err := json.Unmarshal(top[0], &rows); err != nil {
-		return nil, fmt.Errorf("%w: results are not a list", ErrShape)
+		return results{}, fmt.Errorf("%w: results are not a list", ErrShape)
 	}
 	var total int
 	if err := json.Unmarshal(top[2], &total); err != nil || total < 0 {
-		return nil, fmt.Errorf("%w: total is not a count", ErrShape)
-	}
-	if total > len(rows) {
-		return nil, fmt.Errorf("%w: %d jobs match, page 1 holds %d; use a narrower term or the target_level/location filters",
-			ErrTruncated, total, len(rows))
+		return results{}, fmt.Errorf("%w: total is not a count", ErrShape)
 	}
 	jobs := make([]decoded, 0, len(rows))
 	for i, r := range rows {
@@ -190,7 +190,80 @@ func decodeResults(page []byte) ([]decoded, error) {
 		}
 		jobs = append(jobs, decoded{j: j, err: err})
 	}
-	return jobs, nil
+	return results{jobs: jobs, total: total}, nil
+}
+
+// results is one results page: the rows it sent and how many jobs the search
+// matches. total over len(jobs) is a search page 1 does not hold.
+type results struct {
+	jobs  []decoded
+	total int
+}
+
+// truncated is the error for a term whose matches page 1 does not hold.
+func (r results) truncated() error {
+	return fmt.Errorf("%w: %d jobs match, page 1 holds %d; use a narrower term or the target_level/location filters",
+		ErrTruncated, r.total, len(r.jobs))
+}
+
+// readTerm reads one term's matches. Page 1 in the site's own order holds
+// every match of most terms. For a term it does not, page 1 sorted by date is
+// read as well: robots.txt disallows only the page= variants, not sort_by
+// (checked 2026-11-16), and the two orders often hold between them what
+// neither holds alone ("agent runtime" in the US: 22 matches, 20 on each
+// page, 22 distinct ids across the two). The two pages are kept only when
+// they prove they hold every match: both count the same total, every row of
+// both decodes, and their distinct ids number exactly that total. Anything
+// short of that is ErrTruncated as before, since a term read in part would let
+// the reconciler mark its unseen postings dead.
+func (s *source) readTerm(ctx context.Context, term string, filters map[string][]string) ([]decoded, error) {
+	first, err := s.page(ctx, searchURL(term, filters))
+	if err != nil {
+		return nil, err
+	}
+	if first.total <= len(first.jobs) {
+		return first.jobs, nil
+	}
+	// Two views of page 1 hold at most twice the rows page 1 sent, so a larger
+	// total can only end in ErrTruncated: do not spend a request on it.
+	if first.total > 2*len(first.jobs) {
+		return nil, fmt.Errorf("%w; the date-sorted page 1 was not asked for because two views of %d rows could not cover %d",
+			first.truncated(), len(first.jobs), first.total)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	second, err := s.page(ctx, dateSortedURL(term, filters))
+	if err != nil {
+		return nil, fmt.Errorf("%w; the date-sorted page 1 could not be read: %w", first.truncated(), err)
+	}
+	if second.total != first.total {
+		return nil, fmt.Errorf("%w; the date-sorted page 1 counts %d, so the two cannot be joined", first.truncated(), second.total)
+	}
+	merged := make([]decoded, 0, first.total)
+	ids := make(map[string]bool, first.total)
+	for _, d := range append(first.jobs, second.jobs...) {
+		if d.err != nil {
+			return nil, fmt.Errorf("%w; a row of the two pages could not be read, so their union proves nothing: %w", first.truncated(), d.err)
+		}
+		if !ids[d.j.id] {
+			ids[d.j.id] = true
+			merged = append(merged, d)
+		}
+	}
+	if len(merged) != first.total {
+		return nil, fmt.Errorf("%w; with the date-sorted page 1 it holds %d", first.truncated(), len(merged))
+	}
+	return merged, nil
+}
+
+// page fetches and decodes one results page.
+func (s *source) page(ctx context.Context, u string) (results, error) {
+	body, err := srcutil.GetBody(ctx, s.d, u)
+	if err != nil {
+		return results{}, err
+	}
+	return decodeResults(body)
 }
 
 // decoded is one result row: the job, or why the row could not be read. The
