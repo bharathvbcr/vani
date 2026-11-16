@@ -230,7 +230,11 @@ func TestRedteamARetryThatRunsOutOfTimeKeepsTheSoftFitResult(t *testing.T) {
 	oldM, oldB := minForModel, minForBase
 	minForModel, minForBase = 150*time.Millisecond, 10*time.Millisecond
 	t.Cleanup(func() { minForModel, minForBase = oldM, oldB })
-	f.cfg.Deadline = 1500 * time.Millisecond
+	// The first round (fake rkb processes, one model turn) must finish inside
+	// the deadline before the held second fit uses it up. 1.5 s was not enough
+	// on a loaded machine: round one overran it and no soft fit was in hand. The
+	// test lasts the whole deadline, so this is the price of being load-proof.
+	f.cfg.Deadline = 6 * time.Second
 	f.cfg.Runner = &rtRunner{fakeRKB: f.rkb}
 	f.rkb.fit = func(string) fitSpec {
 		return fitSpec{status: 5, advice: "STRICT: 1 orphan last line(s)", pages: 2, pdf: testPDF, orphans: []string{"a1"}}
