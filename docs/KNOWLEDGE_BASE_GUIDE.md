@@ -242,11 +242,16 @@ Inspect which bullets pass or why each is withheld without touching DevPrism:
    Expected:
 
    ```
+   note: planned against an empty DevPrism; live DevPrism state was not read
    approved pool: 2 entries, 2 bullets of the bank's 2 entries and 3 bullets; 0 listed entries withheld
      1 bullets a selection lists are not eligible
      ineligible      shelf-loan-reminders: HR reader has not passed this wording in both rounds
    kbsync plan (dry run, nothing sent): 2 add, 0 update, 0 unchanged, 0 blocked, 0 orphaned
+     add       shelfwise (1 bullets)
+     add       skycast (1 bullets)
    ```
+
+   A plain `--dry-run` always plans against an empty DevPrism (the `note:` line), whether or not `devprism.binary` is set; `--replace --dry-run` reads DevPrism's current blocks and needs the binary.
 
 5. Make it yours: replace the header, entries, bullets, `Claims.tex` figures and `projects/` artifacts with your own, using the same commands the sample was built with ([`rkb/examples/README.md`](../rkb/examples/README.md)): `rkb bank set`, `rkb claims add`, `rkb lint --sheet`, then `rkb review` for each reader round. Put your own lists (project codenames, field jargon, phrases to refuse) in `~/.config/rkb/config.json`, which holds only the keys you change; rkb reads it even when Vani runs it. `rkb doctor` prints which config file is in use.
 

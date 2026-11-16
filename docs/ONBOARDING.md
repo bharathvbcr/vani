@@ -59,7 +59,7 @@ What `vani init` writes (`config.Default()`, mode `0600`):
 - `decide.daily_usd.openrouter`: `0.25` (must be in `(0, 50]` while model is set)
 - `allowed_hosts`: `["openrouter.ai"]`
 - `schedule`: `08:30` `America/Los_Angeles`
-- `watchlist`: empty; `llm`, `devprism`, `kb`, `semantic`: unset
+- `watchlist`: empty; `llm` and `devprism`: present with empty values (off); `kb`, `semantic`: absent
 
 Provide your OpenRouter API key via login Keychain (recommended on macOS) or env var for a shell test:
 
@@ -117,7 +117,7 @@ Test fetching without spending model budget:
 ## 5. Set your target profile, exclusions, and track
 
 1. **Target summary (non-PII ceiling):** Edit `target_summary` in `config.json` to describe what roles/systems you target (under 1,024 collapsed-whitespace bytes; **no** name, contact info, employers, schools, locations, or visa status).
-2. **Identifying-words guard:** Create `<state dir>/tracks/identifying-words.txt` (one forbidden term per line, `#` comments). `vani run-once` and `vani daemon` refuse to run while `target_summary` is non-empty and this file is missing, empty, or matches `target_summary`.
+2. **Identifying-words guard:** Create `<state dir>/tracks/identifying-words.txt` (one forbidden term per line, `#` comments) before you set `target_summary`. While `target_summary` is non-empty and this file is missing, empty, or matches it, every run refuses (`vani run-once`, `--list-only` included, and `vani daemon`), and so does every command that sends a model prompt. `vani config check` does not test this; `vani status` does, and prints the path it expects.
 3. **Hard exclusions (zero spend):** Set `titles`, `title_unless`, `companies`, `locations`, `only_locations`, and `descriptions` via `vani config exclude --set` ([SETUP.md#exclusions](SETUP.md#exclusions)), then verify with `vani prefilter`.
 4. **Role tracks:** Organize different target focuses (drop rules, title signals, employer preferences) with `vani track` ([TRACKS.md](TRACKS.md)).
 

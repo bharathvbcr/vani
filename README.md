@@ -88,10 +88,11 @@ Set up Vani (https://github.com/bharathvbcr/vani) on this machine for me.
    docs/SETUP.md before running anything.
 2. Check the prerequisites: git, and Go at the version go.mod names (1.27.4 or newer). If one is
    missing or too old, tell me and ask before installing anything.
-3. From the repo root, run `VANI_NO_KEYCHAIN=1 scripts/bootstrap.sh`. It clones the public sibling
-   repos into .deps/ at the commits in scripts/deps.lock, writes go.work, builds build/vani and
-   build/rkb, writes the default config and checks it. Do not edit go.mod, go.work or
-   scripts/deps.lock. If the script fails, show me the exact error and stop.
+3. From the repo root, run `scripts/bootstrap.sh`. It clones the public sibling repos into .deps/
+   at the commits in scripts/deps.lock, writes go.work, builds build/vani and build/rkb, writes
+   the default config and checks it. It reads no secret and spends nothing (it only asks whether
+   the Keychain item exists). Do not edit go.mod, go.work or scripts/deps.lock. If the script
+   fails, show me the exact error and stop.
 4. Show me the "optional layers" table it prints. For each missing layer, say what it adds and
    what it needs, and ask me before installing anything (Rust, the embedding model, DevPrism,
    poppler, Chrome, lightpanda). If I want the knowledge-base features (grounded drafts, tailored
@@ -100,11 +101,23 @@ Set up Vani (https://github.com/bharathvbcr/vani) on this machine for me.
 5. Ask me which companies I want to watch, add them with `build/vani watchlist add ... --allow-host`
    (docs/SETUP.md step 8 lists the board types), then run
    `VANI_NO_KEYCHAIN=1 build/vani run-once --list-only`, which lists postings and spends nothing.
-6. Do not run anything that spends money (run-once without --list-only, daemon, run-request
-   without --list-only, suggest, reasons draft, kbmatch run) until I have set my OpenRouter key
-   myself and said go. Never ask me to paste an API key into the chat: tell me how to set it (the
-   OPENROUTER_API_KEY environment variable, or the macOS Keychain command in docs/SETUP.md step 4).
-7. Keep my name, contact details and work-authorization status out of target_summary,
+6. If I want a target_summary (what roles I am after), help me word it without my name, contact
+   details, employers, schools or work-authorization status. Before you save it, I create the
+   identifying-words file myself: one term per line (my name, email, handles and the like), at
+   <state dir>/tracks/identifying-words.txt. Tell me that path and format, but do not ask me to
+   type those terms into the chat and do not open the file. While target_summary is set and that
+   file is missing or empty, every run (--list-only included) refuses. `config check` does not
+   test this, so confirm with `VANI_NO_KEYCHAIN=1 build/vani status` and another
+   `VANI_NO_KEYCHAIN=1 build/vani run-once --list-only`.
+7. Put VANI_NO_KEYCHAIN=1 in front of every `build/vani` command you run. Besides the edits above
+   (init, watchlist add, the config fields I agree to), run only reads, dry runs and --list-only
+   runs: status, config check, watchlist list, jobs list, prefilter, kb sync --dry-run,
+   run-once --list-only. Anything that triages, drafts or asks a model spends money. skills/cli-anything-vani/SKILL.md lists those commands under "Run the pipeline" and
+   "Spend from the daily LLM budget"; read it before running any vani command not listed here.
+   Run none of them until I have set my OpenRouter key myself and said go. Never ask me to paste an
+   API key into the chat: tell me how to set it (the OPENROUTER_API_KEY environment variable, or
+   the macOS Keychain command in docs/SETUP.md step 4).
+8. Keep my name, contact details and work-authorization status out of target_summary,
    motivation_notes, logs, prompts and test fixtures.
 
 Finish with what was built, the config and state paths in use (from `build/vani status`), which
@@ -116,9 +129,11 @@ Then watch a board and run once:
 ```sh
 build/vani watchlist add --ats gh --token stripe --company Stripe --allow-host
 VANI_NO_KEYCHAIN=1 build/vani run-once --list-only   # lists postings, spends nothing
-# Add your redacted target summary and OpenRouter key (OPENROUTER_API_KEY), then:
-build/vani run-once
-build/vani status
+# Add your redacted target_summary, and your own terms (name, email, handles; one per line) to
+# <state dir>/tracks/identifying-words.txt: every run refuses a summary without that file.
+# Set your OpenRouter key (OPENROUTER_API_KEY or the Keychain, docs/SETUP.md step 4), then:
+build/vani status                     # names the state dir and whether target_summary passes
+build/vani run-once --advance 25      # a small first triage; spends from decide.daily_usd
 ```
 
 > [!TIP]

@@ -125,7 +125,7 @@ Everything else is an edit of the JSON file. Unknown fields are refused. `config
 | `decide.daily_usd.llm` | `1.0` |
 | `allowed_hosts` | `openrouter.ai` |
 | `schedule` | `08:30` `America/Los_Angeles` |
-| `llm` | absent (no Claude until you add it) |
+| `llm` | `provider` and `model` empty (no Claude until you fill them, step 9) |
 | `devprism.binary` | empty (ranking skipped until you set it) |
 | watchlist | empty |
 
@@ -208,9 +208,13 @@ command (`VANI_TESSL_SNAPSHOT` sets the snapshot for tests, or `~/.cache/hugging
 
 - **`target_summary`, `identifying-words.txt`, `motivation_notes`, drop floors:** Keep
   `target_summary` under 1,024 collapsed-whitespace bytes with no names, contact details,
-  employers, schools, or work-authorization terms. `vani run` and `vani daemon` refuse when
-  `target_summary` is set and `<state dir>/tracks/identifying-words.txt` is missing, empty, or
-  matches the summary (`vani teacher` / `vani kbmatch run` take `--allow-missing-identifying-words`).
+  employers, schools, or work-authorization terms. While `target_summary` is set and
+  `<state dir>/tracks/identifying-words.txt` (or `tracks_dir` when set) is missing, empty, or
+  matches the summary, `vani run-once` (`--list-only` included), `vani daemon`, `vani digest`,
+  a real `retriage` or `rescore` (not their `--dry-run`), and every command that builds a model
+  prompt from the config (`reasons draft`, `draft`, `suggest` and others) refuse (`vani teacher` /
+  `vani kbmatch run` take `--allow-missing-identifying-words`). `config check` does not test it;
+  `vani status` does, and names the file it expects.
   `motivation_notes` (`vani config motivation --set`) refuses `@`/handles, `linkedin`, `github`, and
   visa/citizenship wording. Drop floors: `min_openrouter_prob` is `0` or `>= 0.9`; `min_lappi_score`
   is `0` or `>= 0.8`. See
