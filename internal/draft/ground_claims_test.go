@@ -532,24 +532,29 @@ func adversarialRun(k int) time.Duration {
 
 // The guard must stay linear on adversarial text. A fixed wall-clock bound
 // measured the machine, not the code (1.2 s here, over 10 s on a loaded CI
-// runner), so the test compares growth instead: doubling every input should
-// about double the time (2x), where a quadratic pass would quadruple it. Each
-// size takes the best of three runs to shed scheduling noise. The full-size
-// run keeps a generous absolute ceiling for a catastrophic blowup.
+// runner), so the test compares growth instead: four times every input takes
+// about 4x as long when linear (measured 3.96x here), 16x when quadratic. The
+// 8x threshold leaves a factor of two either way; a 2x step did not (linear 2x
+// against quadratic 4x, and a noisy runner read 3.1x). Each size takes the best
+// of three runs; the full-size runs keep a 1-minute ceiling for a catastrophic
+// blowup.
 func TestGuardIsBoundedOnAdversarialText(t *testing.T) {
-	if d := adversarialRun(4); d > time.Minute {
-		t.Errorf("full-size adversarial inputs took %s", d)
-	}
 	best := func(k int) time.Duration {
-		m := adversarialRun(k)
-		for i := 0; i < 2; i++ {
-			m = min(m, adversarialRun(k))
+		var m time.Duration
+		for i := 0; i < 3; i++ {
+			d := adversarialRun(k)
+			if k == 4 && d > time.Minute {
+				t.Fatalf("full-size adversarial inputs took %s", d)
+			}
+			if i == 0 || d < m {
+				m = d
+			}
 		}
 		return m
 	}
-	small, double := best(1), best(2)
-	if ratio := float64(double) / float64(small); ratio > 3 {
-		t.Errorf("doubling the adversarial inputs took %.1fx as long (%s -> %s); linear is about 2x, quadratic 4x", ratio, small, double)
+	small, full := best(1), best(4)
+	if ratio := float64(full) / float64(small); ratio > 8 {
+		t.Errorf("4x the adversarial inputs took %.1fx as long (%s -> %s); linear is about 4x, quadratic 16x", ratio, small, full)
 	}
 	if f, n := seekerOnly().ungrounded(strings.Repeat("five ", 5000)); n != 1 || f.String() != "5" {
 		t.Errorf("repeated number words: %q (%d), want the single bare figure 5", f.String(), n)
