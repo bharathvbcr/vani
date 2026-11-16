@@ -94,7 +94,7 @@ type Options struct {
 }
 
 // Stats counts what one List did. Every listed row is counted once, in
-// Reused, Fetched, Refreshed, Prefiltered, Deferred or Gone.
+// Reused, Fetched, Refreshed, Prefiltered, Deferred, Gone or Unanswered.
 type Stats struct {
 	Listed   int `json:"listed"`
 	Queries  int `json:"queries"`  // listing queries; a split board has one per bucket
@@ -112,6 +112,10 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone rows answered their detail with 404 or 403: closed or restricted since listing.
 	Gone int `json:"gone,omitempty"`
+	// Unanswered rows' detail request failed transiently (srcutil.DetailMisses): a
+	// stored one was returned as stored, a new one was left for a later run
+	// like a deferred one, under the same guards as a deferred one.
+	Unanswered int `json:"unanswered,omitempty"`
 	// Stubs are listing rows with no path and no title, not counted in
 	// Listed (see isStub).
 	Stubs int `json:"stubs,omitempty"`
@@ -317,64 +321,99 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			unmatched, site, pl.Deferred, MaxDetails)
 	}
 	st.Deferred, st.Prefiltered = pl.Deferred, pl.Prefiltered
-	slot := make([]*posting.Posting, len(rows))
-	for _, i := range pl.Reuse {
-		p := stored[rows[i].ExternalPath]
-		p.SeenAt = seen
-		if loc, moved := srcutil.Relocate(p.Location, listedPlace(p.Location, rows[i])); moved {
-			p.Location = loc
-			st.Relocated++
-		}
-		slot[i] = &p
-		st.Reused++
+	// A reposted posting is listed under a path with Workday's "-N" suffix, so
+	// it matches no stored path and is planned as a new row; its key is known
+	// only from its detail. A row left out with no detail (deferred, or its
+	// detail missed) whose path id names a stored posting would age that
+	// posting as absent, so it is refused.
+	repostOf := func(i int) (posting.Key, bool) {
+		key, ok := pathKey(tenant, site, rows[i].ExternalPath)
+		return key, ok && storedKeys[key]
 	}
-	allowed := srcutil.MaxGone(len(pl.Fetch))
-	for n, i := range pl.Fetch {
-		if err := ctx.Err(); err != nil {
-			return nil, err
+	if pl.Deferred > 0 {
+		inPlan := make([]bool, len(rows))
+		for _, i := range pl.Fetch {
+			inPlan[i] = true
 		}
-		row := rows[i]
-		p, err := s.detail(ctx, base, host, tenant, site, row, b, seen)
-		if errors.Is(err, errDetailGone) {
-			// The posting closed between the listing and its detail; leaving it
-			// out is the truth. Many at once is the detail endpoint failing, not
-			// postings closing, and would empty a healthy board. With every
-			// other row reused, one new posting gone is only that posting.
-			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
-				return nil, fmt.Errorf("%d of %d posting details are gone (HTTP 404/403); the detail endpoint is not answering",
-					st.Gone, len(pl.Fetch))
+		for i := range rows {
+			if key, ok := repostOf(i); ok && !inPlan[i] && !plan[i].Stored && !plan[i].Drop {
+				return nil, fmt.Errorf("posting %q is deferred past the %d-request cap, but its path names stored posting %s (a repost), so leaving it out would age that posting",
+					rows[i].ExternalPath, MaxDetails, key)
 			}
-			continue
 		}
-		if err != nil {
-			// A partial listing would make the reconciler age healthy postings
-			// as absent, so one bad posting fails the whole board.
-			return nil, fmt.Errorf("posting %q: %w", row.ExternalPath, err)
-		}
-		if n >= pl.New {
-			st.Refreshed++
-		} else {
-			st.Fetched++
+	}
+	storedNew := "" // a "new" row whose posting turned out stored
+	res, err := srcutil.DetailStep{
+		Rows: len(rows), Plan: pl,
+		// A missed new row is left out the way a deferred one is, so it needs the
+		// deferred row's guard: every stored posting matched to a path, so a row
+		// with no stored path holds no stored posting.
+		CanDefer: s.opt != nil && unmatched == 0,
+		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
+			p, err := s.detail(ctx, base, host, tenant, site, rows[i], b, seen)
+			return &p, err
+		},
+		Reuse: func(i int) posting.Posting {
+			p := stored[rows[i].ExternalPath]
+			p.SeenAt = seen
+			if loc, moved := srcutil.Relocate(p.Location, listedPlace(p.Location, rows[i])); moved {
+				p.Location = loc
+				st.Relocated++
+			}
+			return p
+		},
+		Gone: errDetailGone,
+		GoneErr: func(gone, fetch int) error {
+			return fmt.Errorf("%d of %d posting details are gone (HTTP 404/403); the detail endpoint is not answering", gone, fetch)
+		},
+		FetchErr: func(i int, err error) error { return fmt.Errorf("posting %q: %w", rows[i].ExternalPath, err) },
+		LeftOut: func(i int, err error) error {
+			if key, ok := repostOf(i); ok {
+				return fmt.Errorf("posting %q: its detail missed and its path names stored posting %s (a repost), so leaving it out would age that posting: %w",
+					rows[i].ExternalPath, key, err)
+			}
+			return nil
+		},
+		Accepted: func(n, i int, p posting.Posting) error {
+			if n >= pl.New {
+				return nil
+			}
 			// A "new" row that turns out to be stored means its URL and the
 			// listing's path disagree: other stored rows may be among the
 			// deferred, so a deferring listing cannot be trusted.
 			if storedKeys[p.Key] && st.Deferred > 0 {
-				return nil, fmt.Errorf("posting %s is stored under a URL that does not match its listed path %q, so the %d deferred rows may hold stored postings",
-					p.Key, row.ExternalPath, st.Deferred)
+				return fmt.Errorf("posting %s is stored under a URL that does not match its listed path %q, so the %d deferred rows may hold stored postings",
+					p.Key, rows[i].ExternalPath, st.Deferred)
 			}
-		}
-		slot[i] = &p
+			if storedKeys[p.Key] && storedNew == "" {
+				storedNew = string(p.Key)
+			}
+			return nil
+		},
+	}.Run(ctx)
+	st.Gone, st.Reused, st.Fetched, st.Refreshed, st.Unanswered = res.Gone, res.Reused, res.Fetched, res.Refreshed, res.Unanswered
+	if err != nil {
+		return nil, err
 	}
-	out := make([]posting.Posting, 0, len(rows))
-	keys := make(map[posting.Key]bool, len(rows))
-	for _, p := range slot {
-		if p == nil || keys[p.Key] {
-			continue
-		}
-		keys[p.Key] = true
-		out = append(out, *p)
+	if res.LeftOut > 0 && storedNew != "" {
+		// The same distrust for the missed new rows, which may be read before
+		// or after the row that showed it.
+		return nil, fmt.Errorf("posting %s is stored under a URL that does not match its listed path, so the %d missed new rows may hold stored postings",
+			storedNew, res.LeftOut)
 	}
-	return out, nil
+	return srcutil.UniquePostings(res.Slots), nil
+}
+
+// pathKey is the key a listed externalPath names: its last segment's trailing
+// requisition id ("..._REF087764W-1" is REF087764W). False when the segment
+// carries none, or the key cannot be built.
+func pathKey(tenant, site, path string) (posting.Key, bool) {
+	id := trailingID(path[strings.LastIndex(path, "/")+1:])
+	if id == "" {
+		return "", false
+	}
+	key, err := posting.WorkdayKey(tenant, site, id)
+	return key, err == nil
 }
 
 // repostSuffix is the "-{n}" Workday appends to a reposted posting's path

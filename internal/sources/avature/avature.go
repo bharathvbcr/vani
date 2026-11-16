@@ -181,7 +181,7 @@ func ParseListURL(raw, host string) (ListPage, error) {
 var errDetailGone = errors.New("detail is gone (HTTP 404)")
 
 // Stats counts what one List did. Every listed row is counted once, in
-// Reused, Fetched, Refreshed, Prefiltered, Deferred or Gone.
+// Reused, Fetched, Refreshed, Prefiltered, Deferred, Gone or Unanswered.
 type Stats struct {
 	Listed int `json:"listed"`
 	// Reused rows were returned as stored, with no request.
@@ -197,6 +197,10 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone rows answered their detail with 404: closed since listing.
 	Gone int `json:"gone,omitempty"`
+	// Unanswered rows' detail request failed transiently (srcutil.DetailMisses): a
+	// stored one was returned as stored, a new one was left for a later run
+	// like a deferred one.
+	Unanswered int `json:"unanswered,omitempty"`
 	// Relocated reused rows were listed with a place other than the stored
 	// posting's, and were returned with the listed one.
 	Relocated int `json:"relocated,omitempty"`
@@ -325,55 +329,38 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	}
 	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), limit)
 	stats.Deferred, stats.Prefiltered = pl.Deferred, pl.Prefiltered
-	slot := make([]*posting.Posting, len(rows))
-	for _, i := range pl.Reuse {
-		p := stored[keys[i]]
-		p.SeenAt = seen
-		// The card's place leads the posting's (firstNonEmpty in posting), so a
-		// place that moved shows without a request (srcutil.Relocate).
-		if loc, moved := srcutil.Relocate(p.Location, rows[i].location); moved {
-			p.Location = loc
-			stats.Relocated++
-		}
-		slot[i] = &p
-		stats.Reused++
-	}
-	allowed := srcutil.MaxGone(len(pl.Fetch))
-	for n, i := range pl.Fetch {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		r := rows[i]
-		p, err := s.detail(ctx, st, b, token, r, seen)
-		if errors.Is(err, errDetailGone) {
-			// The posting closed between the listing and its page; leaving it out
-			// is the truth. Many at once is the detail page failing. The error is
-			// deliberately not ErrBoardNotFound: the listing answered. With every
-			// other row reused, one new posting gone is only that posting.
-			if stats.Gone++; stats.Gone > allowed || (stats.Gone == len(pl.Fetch) && stats.Reused == 0) {
-				return nil, fmt.Errorf("avature %q: %d of %d posting details are gone (HTTP 404); the detail pages are not answering",
-					b.Token, stats.Gone, len(pl.Fetch))
+	res, err := srcutil.DetailStep{
+		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
+		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
+			p, err := s.detail(ctx, st, b, token, rows[i], seen)
+			return &p, err
+		},
+		Reuse: func(i int) posting.Posting {
+			p := stored[keys[i]]
+			p.SeenAt = seen
+			// The card's place leads the posting's (firstNonEmpty in posting), so a
+			// place that moved shows without a request (srcutil.Relocate).
+			if loc, moved := srcutil.Relocate(p.Location, rows[i].location); moved {
+				p.Location = loc
+				stats.Relocated++
 			}
-			continue
-		}
-		if err != nil {
-			// A partial listing would age healthy postings as absent.
-			return nil, fmt.Errorf("avature %q: posting %s: %w", b.Token, r.id, err)
-		}
-		if n >= pl.New {
-			stats.Refreshed++
-		} else {
-			stats.Fetched++
-		}
-		slot[i] = &p
+			return p
+		},
+		// The error is deliberately not ErrBoardNotFound: the listing answered.
+		Gone: errDetailGone,
+		GoneErr: func(gone, fetch int) error {
+			return fmt.Errorf("avature %q: %d of %d posting details are gone (HTTP 404); the detail pages are not answering", b.Token, gone, fetch)
+		},
+		FetchErr: func(i int, err error) error {
+			return fmt.Errorf("avature %q: posting %s: %w", b.Token, rows[i].id, err)
+		},
+		DoneErr: func(err error) error { return fmt.Errorf("avature %q: %w", b.Token, err) },
+	}.Run(ctx)
+	stats.Gone, stats.Reused, stats.Fetched, stats.Refreshed, stats.Unanswered = res.Gone, res.Reused, res.Fetched, res.Refreshed, res.Unanswered
+	if err != nil {
+		return nil, err
 	}
-	out := make([]posting.Posting, 0, len(rows))
-	for _, p := range slot {
-		if p != nil {
-			out = append(out, *p)
-		}
-	}
-	return out, nil
+	return srcutil.Postings(res.Slots), nil
 }
 
 // checkRobots reads the host's robots.txt and refuses a board whose listing or

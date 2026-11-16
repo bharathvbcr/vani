@@ -188,7 +188,7 @@ type Options struct {
 }
 
 // Stats counts what one List did. Every listed row is counted once, in
-// Reused, Fetched, Refreshed, Deferred or Gone.
+// Reused, Fetched, Refreshed, Deferred, Gone or Unanswered.
 type Stats struct {
 	Listed   int `json:"listed"`
 	Requests int `json:"requests"` // listing requests, every term's
@@ -206,6 +206,10 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone rows answered their detail with no requisition: closed since listing.
 	Gone int `json:"gone,omitempty"`
+	// Unanswered rows' detail request failed transiently (srcutil.DetailMisses): a
+	// stored one was returned as stored, a new one was left for a later run
+	// like a deferred one.
+	Unanswered int `json:"unanswered,omitempty"`
 	// Short is the requisitions the board's searches counted and did not list,
 	// within the allowance that keeps a search (shortfall), summed over its
 	// terms and never below zero per term; markers the pages serve are listed
@@ -405,55 +409,34 @@ func (s *source) details(ctx context.Context, b sources.Board, t target, rows []
 			srcutil.ErrTooManyPostings, pl.New+pl.Deferred, MaxDetails)
 	}
 	st.Deferred = pl.Deferred
-	slot := make([]*posting.Posting, len(rows))
-	for _, i := range pl.Reuse {
-		p := stored[keys[i]]
-		p.SeenAt = seen
-		// A posting's location is built from its row alone, so a place that
-		// moved shows without a request (srcutil.Relocate).
-		if loc, moved := srcutil.Relocate(p.Location, rowLocation(rows[i])); moved {
-			p.Location = loc
-			st.Relocated++
-		}
-		slot[i] = &p
-		st.Reused++
-	}
-	allowed := srcutil.MaxGone(len(pl.Fetch))
-	for n, i := range pl.Fetch {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		r := rows[i]
-		p, err := s.detail(ctx, b, t, r, seen)
-		if errors.Is(err, errDetailGone) {
-			// The posting closed between the listing and its detail; leaving it
-			// out is the truth. Many at once is the detail endpoint failing, not
-			// postings closing, and would empty a healthy board. With every other
-			// row reused, one new posting gone is only that posting.
-			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
-				return nil, fmt.Errorf("%d of %d posting details are gone; the detail endpoint is not answering", st.Gone, len(pl.Fetch))
+	res, err := srcutil.DetailStep{
+		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
+		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
+			p, err := s.detail(ctx, b, t, rows[i], seen)
+			return &p, err
+		},
+		Reuse: func(i int) posting.Posting {
+			p := stored[keys[i]]
+			p.SeenAt = seen
+			// A posting's location is built from its row alone, so a place that
+			// moved shows without a request (srcutil.Relocate).
+			if loc, moved := srcutil.Relocate(p.Location, rowLocation(rows[i])); moved {
+				p.Location = loc
+				st.Relocated++
 			}
-			continue
-		}
-		if err != nil {
-			// A partial listing would make the reconciler age healthy postings
-			// as absent, so one bad posting fails the whole board.
-			return nil, fmt.Errorf("posting %s: %w", r.ID, err)
-		}
-		if n >= pl.New {
-			st.Refreshed++
-		} else {
-			st.Fetched++
-		}
-		slot[i] = &p
+			return p
+		},
+		Gone: errDetailGone,
+		GoneErr: func(gone, fetch int) error {
+			return fmt.Errorf("%d of %d posting details are gone; the detail endpoint is not answering", gone, fetch)
+		},
+		FetchErr: func(i int, err error) error { return fmt.Errorf("posting %s: %w", rows[i].ID, err) },
+	}.Run(ctx)
+	st.Gone, st.Reused, st.Fetched, st.Refreshed, st.Unanswered = res.Gone, res.Reused, res.Fetched, res.Refreshed, res.Unanswered
+	if err != nil {
+		return nil, err
 	}
-	out := make([]posting.Posting, 0, len(rows))
-	for _, p := range slot {
-		if p != nil {
-			out = append(out, *p)
-		}
-	}
-	return out, nil
+	return srcutil.Postings(res.Slots), nil
 }
 
 // detail reads one requisition's text and builds its posting.

@@ -57,7 +57,7 @@ func detailRequests(d *srctest.Doer) int {
 }
 
 func accounted(st Stats) bool {
-	return st.Reused+st.Fetched+st.Refreshed+st.Deferred+st.Gone == st.Listed
+	return st.Reused+st.Fetched+st.Refreshed+st.Deferred+st.Gone+st.Unanswered == st.Listed
 }
 
 // With the stored postings to reuse, a board over the old 200 cap is listed to

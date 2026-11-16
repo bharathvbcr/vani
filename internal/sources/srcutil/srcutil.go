@@ -426,6 +426,9 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 	}
 	out, err := fetchLoop(ctx, d, method, rawURL, body, header, accept, limit, probeWhy)
 	var rl *RateLimitedError
+	if err != nil && answeredHTTP(err) {
+		th.heard(host)
+	}
 	switch {
 	case err == nil:
 		th.answered(host)
@@ -492,6 +495,7 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 	verb := strings.ToLower(method)
 	var waited time.Duration // spent waiting to retry this request
 	stretched := false
+	transportRetries := 0 // retries after a failure with no response (retryTransport)
 	for attempt := 0; ; attempt++ {
 		var rd io.Reader
 		if body != nil {
@@ -505,15 +509,32 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 			req.Header[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
 		}
 		req.Header.Set("Accept", accept)
+		reqHost := strings.ToLower(req.URL.Hostname())
 		resp, err := d.Do(ctx, req)
 		if err != nil {
+			if retryTransport(ctx, reqHost, method, probeWhy, transportRetries, &waited, err) {
+				transportRetries++
+				continue
+			}
+			noteTransportGiveUp(ctx, reqHost, transportRetries, err)
 			return nil, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), err)
 		}
 		if resp == nil || resp.Body == nil {
 			return nil, fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
 		}
 		if resp.StatusCode == http.StatusOK {
-			return readBody(resp.Body, req, limit)
+			// readBody closes the body, so a retry starts from a fresh response.
+			// A read cut short is the same transient class as a failed Do and
+			// shares its one retry; a body over the cap is not transient.
+			raw, err := readBody(resp.Body, req, limit)
+			if err != nil {
+				if retryTransport(ctx, reqHost, method, probeWhy, transportRetries, &waited, err) {
+					transportRetries++
+					continue
+				}
+				noteTransportGiveUp(ctx, reqHost, transportRetries, err)
+			}
+			return raw, err
 		}
 		code, hdr := resp.StatusCode, resp.Header
 		// Drain a little so the connection can be reused, then let it go.

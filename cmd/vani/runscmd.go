@@ -877,6 +877,9 @@ func boardFetchSummary(b *boardsReport) string {
 	if b.Deferred > 0 {
 		parts = append(parts, fmt.Sprintf("%d deferred", b.Deferred))
 	}
+	if b.Unanswered > 0 {
+		parts = append(parts, fmt.Sprintf("%d unanswered (detail request failed; retried next run)", b.Unanswered))
+	}
 	if b.PayFailed > 0 {
 		parts = append(parts, fmt.Sprintf("%d pay failed", b.PayFailed))
 	}

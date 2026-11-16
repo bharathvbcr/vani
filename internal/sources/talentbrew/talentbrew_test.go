@@ -331,7 +331,7 @@ func TestSitemapMissingIsBoardNotFound(t *testing.T) {
 }
 
 func TestSitemapTimeoutIsAnErrorNotAnEmptyList(t *testing.T) {
-	s := &source{d: &toggleDoer{inner: siteDoer(locsN(2), nil), failURL: sitemapURL}, now: time.Now, wait: noWait}
+	s := &source{d: &toggleDoer{inner: siteDoer(locsN(2), nil), failURL: map[string]bool{sitemapURL: true}}, now: time.Now, wait: noWait}
 	got, err := s.List(context.Background(), board)
 	if err == nil || got != nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("got %d postings, err %v; want a deadline error", len(got), err)
@@ -408,7 +408,7 @@ func TestRobotsThatCannotBeReadFailsTheBoard(t *testing.T) {
 		})
 	}
 	t.Run("timeout", func(t *testing.T) {
-		s := &source{d: &toggleDoer{inner: siteDoer(locsN(1), nil), failURL: robotsURL}, now: time.Now, wait: noWait}
+		s := &source{d: &toggleDoer{inner: siteDoer(locsN(1), nil), failURL: map[string]bool{robotsURL: true}}, now: time.Now, wait: noWait}
 		if got, err := s.List(context.Background(), board); err == nil || got != nil || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("%d postings, %v", len(got), err)
 		}

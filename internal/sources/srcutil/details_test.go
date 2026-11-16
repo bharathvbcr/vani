@@ -1,8 +1,12 @@
 package srcutil
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,6 +109,34 @@ func TestRefreshTurnOncePerCycle(t *testing.T) {
 		if n != 1 {
 			t.Fatalf("%q due %d times in a cycle", id, n)
 		}
+	}
+}
+
+// Refusal words a cap hit, and only a cap hit, and keeps the cause.
+func TestDetailMissesRefusalNamesTheCapHit(t *testing.T) {
+	ctx := context.Background()
+	timeout := fmt.Errorf("Get x: timeout awaiting response headers: %w", os.ErrDeadlineExceeded)
+	m := NewDetailMisses(DetailPlan{Fetch: make([]int, 40), New: 0, Reuse: []int{40}}, true)
+	for range maxMissesPerBoard {
+		if !m.Take(ctx, 0, timeout) {
+			t.Fatal("a miss under the cap was refused")
+		}
+	}
+	if m.Take(ctx, 0, timeout) {
+		t.Fatal("a miss past the cap was taken")
+	}
+	err := m.Refusal(ctx, 0, timeout)
+	if !errors.Is(err, ErrTooManyMisses) || !errors.Is(err, os.ErrDeadlineExceeded) || !strings.Contains(err.Error(), "3 already left") {
+		t.Fatalf("Refusal = %v", err)
+	}
+	// Not a cap hit: a non-transient error, and a new row that cannot be deferred.
+	boom := errors.New("HTTP 500")
+	if got := m.Refusal(ctx, 0, boom); got != boom {
+		t.Fatalf("a non-transient error was reworded: %v", got)
+	}
+	fresh := NewDetailMisses(DetailPlan{Fetch: make([]int, 40), New: 10}, false)
+	if got := fresh.Refusal(ctx, 0, timeout); got != timeout {
+		t.Fatalf("a refusal that is not the cap was reworded: %v", got)
 	}
 }
 

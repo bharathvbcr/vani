@@ -1,6 +1,9 @@
 package srcutil
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"hash/fnv"
 	"time"
 )
@@ -11,7 +14,9 @@ import (
 // them, re-reads a share of them each run so an edited description is seen
 // within RefreshDays, and spends at most a fixed number of detail requests per
 // board per run. New rows past that number are deferred to the next run; not
-// being stored, their absence ages nothing.
+// being stored, their absence ages nothing. A detail request that fails
+// transiently is left for a later run the same way, within a bound
+// (DetailMisses); any other detail failure fails the board.
 
 // RefreshDays is how many runs it takes to re-read every stored posting.
 const RefreshDays = 30
@@ -33,6 +38,110 @@ func RefreshTurn(id string, day int) bool {
 // is the detail endpoint failing, not postings closing, and would empty a
 // healthy board.
 func MaxGone(n int) int { return max(1, n/10) }
+
+// maxMissesPerBoard bounds the detail requests one board may miss in a run.
+// It is a count, not a share: each miss may have cost a timed-out request and
+// its retry, so a detail endpoint that stops answering fails the board after a
+// few, not after a tenth of a hundred.
+const maxMissesPerBoard = 3
+
+// MaxMissed is how many of fetch detail requests may fail transiently
+// (Transient) before the board fails: as many as MaxGone allows, at most
+// maxMissesPerBoard, and, when no row was reused, fewer than fetch, so a board
+// is never answered by nothing the endpoint confirmed.
+func MaxMissed(fetch, reused int) int {
+	if fetch <= 0 {
+		return 0
+	}
+	m := min(MaxGone(fetch), maxMissesPerBoard)
+	if reused == 0 {
+		m = min(m, fetch-1)
+	}
+	return m
+}
+
+// DetailMisses is the bounded detail step's tolerance for a detail request
+// that failed transiently. Before it, one timed-out posting page failed its
+// whole board (Apple's camera-algorithms page and a JPMorgan requisition on
+// 2026-11-16, each beside a hundred-odd healthy rows). A missed row is left for
+// a later run the way the plan already leaves rows:
+//
+//   - a stored row whose re-read missed is returned as stored, as if its re-read
+//     had not fit (DetailPlan.Reuse), so it is still listed and ages nothing;
+//   - a new row that missed is not returned, as if it were past the cap
+//     (DetailPlan.Deferred). That is safe only where a deferred row is: the
+//     caller passes canDefer false when it cannot tell a new row from a stored
+//     one, and a missed new row then fails the board as before.
+//
+// Anything not Transient, and anything past MaxMissed, still fails the board.
+type DetailMisses struct {
+	newRows  int
+	reused   int
+	canDefer bool
+	allowed  int
+	// New is how many new rows missed and were left out; Stored is how many
+	// stored rows missed and were returned as stored.
+	New, Stored int
+}
+
+// NewDetailMisses returns the tolerance for the detail requests of pl.
+// canDefer is whether a new row of pl may be left out (see DetailMisses).
+func NewDetailMisses(pl DetailPlan, canDefer bool) *DetailMisses {
+	return &DetailMisses{newRows: pl.New, reused: len(pl.Reuse), canDefer: canDefer, allowed: MaxMissed(len(pl.Fetch), len(pl.Reuse))}
+}
+
+// ErrNothingAnswered is a detail step that missed requests and had no other
+// row to show for the board: none reused and none answered. The endpoint, not
+// the postings, is what failed.
+var ErrNothingAnswered = errors.New("no detail request was answered and none was reused; the detail endpoint is not answering")
+
+// Done checks the detail step once its requests are spent: answered is how
+// many detail requests returned a posting. A step that missed any while
+// nothing was answered or reused is ErrNothingAnswered, so a board is never
+// answered by misses and gone rows alone.
+func (m *DetailMisses) Done(answered int) error {
+	if m.Total() > 0 && answered == 0 && m.reused == 0 {
+		return fmt.Errorf("%w (%d missed)", ErrNothingAnswered, m.Total())
+	}
+	return nil
+}
+
+// Take reports whether the failed detail request for pl.Fetch[n] is left for a
+// later run, and counts it when it is. False means the board fails with err.
+func (m *DetailMisses) Take(ctx context.Context, n int, err error) bool {
+	if ctx.Err() != nil || !Transient(err) || m.Total() >= m.allowed {
+		return false
+	}
+	if n < m.newRows {
+		if !m.canDefer {
+			return false
+		}
+		m.New++
+		return true
+	}
+	m.Stored++
+	return true
+}
+
+// Total is how many detail requests were missed and left for a later run.
+func (m *DetailMisses) Total() int { return m.New + m.Stored }
+
+// ErrTooManyMisses is a detail request that failed transiently after the board
+// had already left as many for a later run as it may: the detail endpoint, not
+// one posting, is what is failing.
+var ErrTooManyMisses = errors.New("too many detail requests missed")
+
+// Refusal is the error a board fails with when Take refused the failed request
+// for pl.Fetch[n]. Where Take refused only because the cap was reached (the
+// request was transient and its row could have been left out), the error says
+// so and how many misses were already absorbed, and still wraps err, so a
+// timeout stays a timeout to errors.Is. In every other case it is err itself.
+func (m *DetailMisses) Refusal(ctx context.Context, n int, err error) error {
+	if ctx.Err() != nil || !Transient(err) || m.Total() < m.allowed || (n < m.newRows && !m.canDefer) {
+		return err
+	}
+	return fmt.Errorf("%w: %d already left for a later run, the most this board may leave is %d: %w", ErrTooManyMisses, m.Total(), m.allowed, err)
+}
 
 // DetailRow is what the bounded detail step knows about one listed row before
 // any detail request.

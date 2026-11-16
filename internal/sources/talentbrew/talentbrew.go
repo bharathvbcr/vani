@@ -143,7 +143,7 @@ var (
 var errDetailGone = errors.New("detail is gone (HTTP 404)")
 
 // Stats counts what one List did. Every listed job is counted once, in Reused,
-// Fetched, Refreshed, Prefiltered, Deferred or Gone.
+// Fetched, Refreshed, Prefiltered, Deferred, Gone or Unanswered.
 type Stats struct {
 	Listed int `json:"listed"`
 	// Reused jobs were returned as stored, with no request.
@@ -159,6 +159,10 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Gone jobs answered their detail 404: closed since the sitemap.
 	Gone int `json:"gone,omitempty"`
+	// Unanswered jobs' page request failed transiently (srcutil.DetailMisses): a
+	// stored one was returned as stored, a new one was left for a later run
+	// like a deferred one.
+	Unanswered int `json:"unanswered,omitempty"`
 }
 
 // Options turn on the bounded detail step (NewWith).
@@ -505,51 +509,29 @@ func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Boa
 			srcutil.ErrTooManyPostings, pl.New+pl.Deferred, MaxDetails)
 	}
 	st.Deferred, st.Prefiltered = pl.Deferred, pl.Prefiltered
-	slot := make([]*posting.Posting, len(rows))
-	for _, i := range pl.Reuse {
-		p := stored[keys[i]]
-		p.SeenAt = seen
-		slot[i] = &p
-		st.Reused++
+	res, err := srcutil.DetailStep{
+		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
+		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
+			p, err := s.detail(ctx, pace, b, host, company, rows[i], keys[i], seen)
+			return &p, err
+		},
+		Reuse: func(i int) posting.Posting {
+			p := stored[keys[i]]
+			p.SeenAt = seen
+			return p
+		},
+		// Deliberately not ErrBoardNotFound: the sitemap answered.
+		Gone: errDetailGone,
+		GoneErr: func(gone, fetch int) error {
+			return fmt.Errorf("%d of %d job pages are gone (HTTP 404); the site is not answering", gone, fetch)
+		},
+		FetchErr: func(i int, err error) error { return fmt.Errorf("job %s: %w", rows[i].id, err) },
+	}.Run(ctx)
+	st.Gone, st.Reused, st.Fetched, st.Refreshed, st.Unanswered = res.Gone, res.Reused, res.Fetched, res.Refreshed, res.Unanswered
+	if err != nil {
+		return nil, err
 	}
-
-	allowed := srcutil.MaxGone(len(pl.Fetch))
-	for n, i := range pl.Fetch {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		r := rows[i]
-		p, err := s.detail(ctx, pace, b, host, company, r, keys[i], seen)
-		if errors.Is(err, errDetailGone) {
-			// The job closed between the sitemap and its page; leaving it out
-			// is the truth. Many at once is the site failing, not jobs closing,
-			// and would empty a healthy board. With every other row reused, one
-			// new job gone is only that job. Deliberately not ErrBoardNotFound:
-			// the sitemap answered.
-			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
-				return nil, fmt.Errorf("%d of %d job pages are gone (HTTP 404); the site is not answering", st.Gone, len(pl.Fetch))
-			}
-			continue
-		}
-		if err != nil {
-			// A partial listing would make the reconciler age healthy postings
-			// as absent, so one bad page fails the whole board.
-			return nil, fmt.Errorf("job %s: %w", r.id, err)
-		}
-		if n >= pl.New {
-			st.Refreshed++
-		} else {
-			st.Fetched++
-		}
-		slot[i] = &p
-	}
-	out := make([]posting.Posting, 0, len(rows))
-	for _, p := range slot {
-		if p != nil {
-			out = append(out, *p)
-		}
-	}
-	return out, nil
+	return srcutil.Postings(res.Slots), nil
 }
 
 func (s *source) detail(ctx context.Context, pace *srcutil.Pacer, b sources.Board, host, company string, r row, key posting.Key, seen time.Time) (posting.Posting, error) {

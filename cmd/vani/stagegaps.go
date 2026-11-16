@@ -5,9 +5,14 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/apple"
+	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
+	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -111,6 +116,10 @@ type boardFetch struct {
 	PaySkipped int
 	Gone       int
 	PayError   string
+	// Unanswered is details whose request failed transiently and were left for a
+	// later run (the adapters' Stats.Unanswered): a new row is not returned, a
+	// stored one is returned as stored.
+	Unanswered int
 	// Prefiltered is new listed rows the drop policy rejected before any
 	// detail request (the adapter's Stats.Prefiltered): never stored.
 	Prefiltered int
@@ -135,15 +144,35 @@ func fetchKey(ats posting.ATS, token string) boardKey {
 // count an adapter reports and the record drops fails a test
 // (TestAdapterStatsReachTheBoardFetch) rather than an inline closure.
 func workdayFetch(st workday.Stats) boardFetch {
-	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short}
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short, Unanswered: st.Unanswered}
 }
 
 func smartRecruitersFetch(st smartrecruiters.Stats) boardFetch {
-	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short}
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short, Unanswered: st.Unanswered}
 }
 
 func oracleFetch(st oraclehcm.Stats) boardFetch {
-	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short}
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Short: st.Short, Unanswered: st.Unanswered}
+}
+
+func ripplingFetch(st rippling.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Prefiltered: st.Prefiltered, Unanswered: st.Unanswered}
+}
+
+func talentBrewFetch(st talentbrew.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Unanswered: st.Unanswered}
+}
+
+func eightfoldFetch(st eightfold.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Unanswered: st.Unanswered}
+}
+
+func avatureFetch(st avature.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Unanswered: st.Unanswered}
+}
+
+func appleFetch(st apple.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Unanswered: st.Unanswered}
 }
 
 func ibmFetch(st ibm.Stats) boardFetch { return boardFetch{Short: st.Short} }
@@ -172,6 +201,7 @@ func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	prev.Prefiltered += f.Prefiltered
 	prev.Short += f.Short
 	prev.BadRows += f.BadRows
+	prev.Unanswered += f.Unanswered
 	if prev.PayError == "" {
 		prev.PayError = f.PayError
 	}
@@ -204,6 +234,7 @@ func (w *wired) applyFetchesLocked(rep *boardsReport) {
 		it.Gone = f.Gone
 		it.Prefiltered = f.Prefiltered
 		it.Short = f.Short
+		it.Unanswered = f.Unanswered
 		it.PayError = f.PayError
 		addFetch(rep, f)
 	}
@@ -225,6 +256,7 @@ func addFetch(rep *boardsReport, f boardFetch) {
 	rep.Gone += f.Gone
 	rep.Prefiltered += f.Prefiltered
 	rep.Short += f.Short
+	rep.Unanswered += f.Unanswered
 	if rep.PayError == "" {
 		rep.PayError = f.PayError
 	}

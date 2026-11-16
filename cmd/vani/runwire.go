@@ -318,7 +318,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st rippling.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Prefiltered: st.Prefiltered})
+			w.noteBoardFetch(b, ripplingFetch(st))
 		},
 	})
 	if err != nil {
@@ -333,7 +333,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st talentbrew.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
+			w.noteBoardFetch(b, talentBrewFetch(st))
 		},
 	})
 	if err != nil {
@@ -348,7 +348,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
+			w.noteBoardFetch(b, eightfoldFetch(st))
 		},
 	})
 	// Avature: a detail page per posting, bounded like Workday's (stored
@@ -359,14 +359,21 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered})
+			w.noteBoardFetch(b, avatureFetch(st))
 		},
 	})
-	srcs[posting.Apple] = apple.NewWith(d, apple.Options{
+	// Apple renders its details pages slowly (appleTimeout): its source gets a
+	// client of its own with a longer timeout, under the same allowlist, so
+	// every other host keeps egress's default.
+	ad, err := egress.New(appleEgressConfig(w.cfg.AllowedHosts))
+	if err != nil {
+		return pipeline.BoardCounts{}, fmt.Errorf("egress for apple: %w", err)
+	}
+	srcs[posting.Apple] = apple.NewWith(ad, apple.Options{
 		Stored: storedFor,
 		Report: func(b sources.Board, st apple.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
-			w.noteBoardFetch(b, boardFetch{Deferred: st.Deferred, Gone: st.Gone})
+			w.noteBoardFetch(b, appleFetch(st))
 		},
 	})
 	var pageErr error
@@ -526,7 +533,7 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 // here, before any board is read, when none can be built (runnerFor); a
 // --list-only run does not need one.
 func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pipeline.Runner, func(), error) {
-	d, err := egress.New(egress.Config{AllowedHosts: w.cfg.AllowedHosts, MaxBodyBytes: maxBoardBytes})
+	d, err := egress.New(runEgressConfig(w.cfg.AllowedHosts))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("egress: %w", err)
 	}

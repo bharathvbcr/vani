@@ -64,6 +64,27 @@ func (w *wired) shadowName() string {
 // descriptions included, in one response (Anduril's exceeds 32 MiB).
 const maxBoardBytes = 64 << 20
 
+// runEgressConfig is the client a run lists boards through: the configured
+// allowlist, maxBoardBytes, and egress's default timeout.
+func runEgressConfig(allowed []string) egress.Config {
+	return egress.Config{AllowedHosts: allowed, MaxBodyBytes: maxBoardBytes}
+}
+
+// appleTimeout bounds one request of Apple's source. Its details pages are
+// rendered slowly: over one reused HTTP/2 connection on 2026-11-16, 10 of 36
+// took longer than egress's 30s default to send headers, 6 longer than 60s, the
+// slowest 119.4s, and every one answered (two runs at 30s each failed the board
+// after four timeouts; spacing the requests 2s apart did not help).
+const appleTimeout = 120 * time.Second
+
+// appleEgressConfig is runEgressConfig with appleTimeout: the same allowlist
+// and body bound, so it reaches nothing the run's own client cannot.
+func appleEgressConfig(allowed []string) egress.Config {
+	c := runEgressConfig(allowed)
+	c.Timeout = appleTimeout
+	return c
+}
+
 // wireApp builds the real components. It opens only what every command needs
 // (the ledger); network clients and child processes start on the first run,
 // so `vani status` never spawns DevPrism or reads an API key.

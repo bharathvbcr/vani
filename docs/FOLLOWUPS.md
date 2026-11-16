@@ -1893,9 +1893,14 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
       egress client listed 35 postings with no error (36–40 s each). In the 09:57 run the ledger
       shows NVIDIA reconciled at 09:59:52 and Adobe at 10:01:12. Adobe's 47 details at Broadcom's
       rate (7 in 9 s) take about 55 s, so Intel ran for roughly 20–30 s before it ended with no
-      records. That fits a transient detail failure partway through, which fails the whole board
-      by design. The next failure's `boards` entry will carry the cause. If it recurs, a bounded
-      per-posting retry or skip is a separate decision, because absence tracking must stay honest.
+      records. That fits a transient detail failure partway through, which failed the whole board
+      by design until 2026-11-16. Since then a GET that times out or has its connection reset is
+      sent once more (`srcutil.retryTransport`), and in the eight bounded-detail adapters a detail
+      that still fails transiently (`srcutil.Transient`: timeouts, resets, 502/503/504/52x; never
+      500, 429 or a shape error) is left for a later run: a stored posting is returned as stored
+      and a new one is left out like a deferred row. This applies only where a new row can be
+      deferred, and only up to `srcutil.MaxMissed` (at most 3) per board. The count is
+      `Unanswered` in the board's `details` log line. The run record does not carry it yet.
     - **An older installed `vani` reading a new record over 64 KiB reports the last run as unknown.**
       Rebuild the installed binary with the app.
   - **Safari can't draft.** Its sandboxed appex cannot start `vani`, so the draft op answers

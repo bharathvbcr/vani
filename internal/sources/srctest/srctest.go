@@ -19,6 +19,10 @@ type Reply struct {
 	Body   []byte
 	// Header adds response headers (e.g. Retry-After) to Content-Type.
 	Header http.Header
+	// Err, when set, is returned by Do in place of a response: a transport
+	// failure such as a timeout or a reset connection. The request is still
+	// recorded.
+	Err error
 }
 
 // Request is one request the Doer saw: its method, URL, headers and body.
@@ -75,6 +79,9 @@ func (d *Doer) Do(_ context.Context, req *http.Request) (*http.Response, error) 
 	}
 	if !ok {
 		return nil, fmt.Errorf("srctest: unexpected request %s %s", req.Method, u)
+	}
+	if r.Err != nil {
+		return nil, r.Err
 	}
 	hdr := http.Header{"Content-Type": []string{"application/json"}}
 	for k, vs := range r.Header {

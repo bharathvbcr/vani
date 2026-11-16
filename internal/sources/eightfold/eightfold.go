@@ -114,7 +114,7 @@ var (
 var errDetailGone = errors.New("detail is gone (HTTP 404)")
 
 // Stats counts what one List did. Every listed position is counted once, in
-// Reused, Fetched, Refreshed, Prefiltered, Deferred or Gone.
+// Reused, Fetched, Refreshed, Prefiltered, Deferred, Gone or Unanswered.
 type Stats struct {
 	Listed int `json:"listed"`
 	// Reused positions were returned as stored, with no detail request.
@@ -131,6 +131,10 @@ type Stats struct {
 	// Deferred positions were new and past MaxDetails: not returned, not
 	// stored, and fetched on a later run.
 	Deferred int `json:"deferred,omitempty"`
+	// Unanswered positions' detail request failed transiently
+	// (srcutil.DetailMisses): a stored one was returned as stored, a new one
+	// was left for a later run like a deferred one.
+	Unanswered int `json:"unanswered,omitempty"`
 	// V2 is set when the board was read through /api/apply/v2: its pcsx search
 	// answered 403, or its host's robots.txt disallows pcsx.
 	V2 bool `json:"v2,omitempty"`
@@ -340,50 +344,32 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if s.opt != nil && s.opt.Report != nil {
 		defer func() { s.opt.Report(b, st) }()
 	}
-	slot := make([]*posting.Posting, len(ids))
-	for _, i := range pl.Reuse {
-		p := stored[keys[i]]
-		p.SeenAt = seen
-		slot[i] = &p
-		st.Reused++
+	res, err := srcutil.DetailStep{
+		Rows: len(ids), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
+		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
+			p, err := s.detail(ctx, a, host, domain, ids[i], b, seen)
+			return &p, err
+		},
+		Reuse: func(i int) posting.Posting {
+			p := stored[keys[i]]
+			p.SeenAt = seen
+			return p
+		},
+		// The error is deliberately not ErrBoardNotFound: the search answered.
+		Gone: errDetailGone,
+		GoneErr: func(gone, fetch int) error {
+			return fmt.Errorf("eightfold %q: %d of %d position details are gone (HTTP 404); the detail endpoint is not answering", b.Token, gone, fetch)
+		},
+		FetchErr: func(i int, err error) error {
+			return fmt.Errorf("eightfold %q: position %s: %w", b.Token, ids[i].id, err)
+		},
+		DoneErr: func(err error) error { return fmt.Errorf("eightfold %q: %w", b.Token, err) },
+	}.Run(ctx)
+	st.Gone, st.Reused, st.Fetched, st.Refreshed, st.Unanswered = res.Gone, res.Reused, res.Fetched, res.Refreshed, res.Unanswered
+	if err != nil {
+		return nil, err
 	}
-	allowed := srcutil.MaxGone(len(pl.Fetch))
-	for n, i := range pl.Fetch {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		l := ids[i]
-		p, err := s.detail(ctx, a, host, domain, l, b, seen)
-		if errors.Is(err, errDetailGone) {
-			// The position closed between the search and its detail; leaving it
-			// out is the truth. Many at once is the detail endpoint failing; with
-			// every other position reused, one new position gone is only that
-			// position. The error is deliberately not ErrBoardNotFound: the
-			// search answered.
-			if st.Gone++; st.Gone > allowed || (st.Gone == len(pl.Fetch) && st.Reused == 0) {
-				return nil, fmt.Errorf("eightfold %q: %d of %d position details are gone (HTTP 404); the detail endpoint is not answering",
-					b.Token, st.Gone, len(pl.Fetch))
-			}
-			continue
-		}
-		if err != nil {
-			// A partial listing would age healthy postings as absent.
-			return nil, fmt.Errorf("eightfold %q: position %s: %w", b.Token, l.id, err)
-		}
-		if n < pl.New {
-			st.Fetched++
-		} else {
-			st.Refreshed++
-		}
-		slot[i] = &p
-	}
-	out := make([]posting.Posting, 0, len(ids))
-	for _, p := range slot {
-		if p != nil {
-			out = append(out, *p)
-		}
-	}
-	return out, nil
+	return srcutil.Postings(res.Slots), nil
 }
 
 // planDetails is the bounded detail step for the listed positions: which get a

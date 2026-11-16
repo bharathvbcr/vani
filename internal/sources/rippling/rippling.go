@@ -1,8 +1,9 @@
 // Package rippling lists postings from a public Rippling board
 // (GET https://api.rippling.com/platform/api/ats/v1/board/{slug}/jobs).
-// The list has no description, so each job costs a detail request, and any
+// The list has no description, so each job costs a detail request, and a
 // detail that cannot be read fails the board: a partial list would age the
-// missing jobs out.
+// missing jobs out. The exception is a transient miss (srcutil.DetailMisses)
+// under NewWith, left for a later run as a deferred job is.
 //
 // Detail volume is bounded as Workday's is (srcutil.PlanDetails): a source
 // from New fails a board that needs more than MaxDetails detail requests; one
@@ -45,7 +46,7 @@ var maxDetailBody int64 = 2 << 20
 const MaxDetails = 300
 
 // Stats counts what one List did. Every distinct listed job is counted once,
-// in Reused, Fetched, Refreshed, Prefiltered, Deferred or Unlisted.
+// in Reused, Fetched, Refreshed, Prefiltered, Deferred, Unlisted or Unanswered.
 type Stats struct {
 	Listed int `json:"listed"`
 	// Reused jobs were returned as stored, with no request.
@@ -61,6 +62,10 @@ type Stats struct {
 	Deferred int `json:"deferred,omitempty"`
 	// Unlisted jobs' details said they are hidden from search: not returned.
 	Unlisted int `json:"unlisted,omitempty"`
+	// Unanswered jobs' detail request failed transiently (srcutil.DetailMisses): a
+	// stored one was returned as stored, a new one was left for a later run
+	// like a deferred one.
+	Unanswered int `json:"unanswered,omitempty"`
 }
 
 // Options turn on the bounded detail step (NewWith).
@@ -206,48 +211,39 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if s.opt != nil && s.opt.Report != nil {
 		defer func() { s.opt.Report(b, st) }()
 	}
-	slot := make([]*posting.Posting, len(uniq))
-	for _, i := range pl.Reuse {
-		p := stored[keys[i]]
-		p.SeenAt = seen
-		slot[i] = &p
-		st.Reused++
-	}
-	for n, i := range pl.Fetch {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		j := uniq[i]
-		var d detail
-		endpoint := jobsURL(b.Token) + "/" + url.PathEscape(strings.TrimSpace(j.UUID))
-		if err := srcutil.GetJSONLimit(ctx, s.d, endpoint, maxDetailBody, &d); err != nil {
-			if errors.Is(err, srcutil.ErrBoardNotFound) {
-				err = fmt.Errorf("job %s is not on the board", strings.TrimSpace(j.UUID))
+	res, err := srcutil.DetailStep{
+		Rows: len(uniq), Plan: pl, CanDefer: s.opt != nil,
+		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
+			j := uniq[i]
+			var d detail
+			endpoint := jobsURL(b.Token) + "/" + url.PathEscape(strings.TrimSpace(j.UUID))
+			if err := srcutil.GetJSONLimit(ctx, s.d, endpoint, maxDetailBody, &d); err != nil {
+				return nil, err
 			}
-			return nil, fmt.Errorf("rippling %q: job %d: %w", b.Token, i, err)
-		}
-		p, keep, err := d.posting(b, j, places[strings.ToLower(strings.TrimSpace(j.UUID))], seen)
-		if err != nil {
-			return nil, fmt.Errorf("rippling %q: job %d: %w", b.Token, i, err)
-		}
-		switch {
-		case !keep:
-			st.Unlisted++
-			continue
-		case n >= pl.New:
-			st.Refreshed++
-		default:
-			st.Fetched++
-		}
-		slot[i] = &p
+			p, keep, err := d.posting(b, j, places[strings.ToLower(strings.TrimSpace(j.UUID))], seen)
+			if err != nil || !keep {
+				return nil, err
+			}
+			return &p, nil
+		},
+		Reuse: func(i int) posting.Posting {
+			p := stored[keys[i]]
+			p.SeenAt = seen
+			return p
+		},
+		FetchErr: func(i int, err error) error {
+			if errors.Is(err, srcutil.ErrBoardNotFound) {
+				err = fmt.Errorf("job %s is not on the board", strings.TrimSpace(uniq[i].UUID))
+			}
+			return fmt.Errorf("rippling %q: job %d: %w", b.Token, i, err)
+		},
+		DoneErr: func(err error) error { return fmt.Errorf("rippling %q: %w", b.Token, err) },
+	}.Run(ctx)
+	st.Reused, st.Fetched, st.Refreshed, st.Unlisted, st.Unanswered = res.Reused, res.Fetched, res.Refreshed, res.Skipped, res.Unanswered
+	if err != nil {
+		return nil, err
 	}
-	out := make([]posting.Posting, 0, len(uniq))
-	for _, p := range slot {
-		if p != nil {
-			out = append(out, *p)
-		}
-	}
-	return out, nil
+	return srcutil.Postings(res.Slots), nil
 }
 
 // listedPosting is what a list row says of its job before any detail: the

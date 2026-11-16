@@ -144,6 +144,12 @@ type HostThrottle struct {
 	mu    sync.Mutex
 	clock func() time.Time
 	hosts map[string]*hostEntry
+	// silent is the hosts whose request failed transiently again after its
+	// transport retry (Transient, no answer twice): later requests to them are
+	// sent once, with no transport retry, until one is answered. It says nothing
+	// of a rate limit, so it never refuses or delays a request. Bounded by
+	// maxThrottleHosts; past it a host keeps the usual retry.
+	silent map[string]struct{}
 }
 
 // NewHostThrottle returns a throttle seeded with the cooldowns of earlier runs
@@ -361,10 +367,53 @@ func (e *hostEntry) settle() {
 func (t *HostThrottle) answered(host string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	delete(t.silent, host)
 	if e := t.hosts[host]; e != nil {
 		e.settle()
 		e.phase, e.seen, e.prior = hostOpen, sawAnswer, 0
 		e.cooling, e.fails, e.until = false, 0, time.Time{}
+	}
+}
+
+// markSilent records that host did not answer a request or its transport retry.
+// heard records an HTTP answer from host that was not a 200 (a 404, a 500, a
+// 429): the host is answering, so it is no longer silent. Unlike answered it
+// leaves a rate-limit memory as it is.
+func (t *HostThrottle) heard(host string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.silent, host)
+}
+
+func (t *HostThrottle) markSilent(host string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.silent[host]; ok || len(t.silent) >= maxThrottleHosts {
+		return
+	}
+	if t.silent == nil {
+		t.silent = map[string]struct{}{}
+	}
+	t.silent[host] = struct{}{}
+}
+
+// hostSilent reports whether ctx's throttle has host as one that did not answer
+// a request and its retry earlier this run.
+func hostSilent(ctx context.Context, host string) bool {
+	t, _ := ctx.Value(throttleKey{}).(*HostThrottle)
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.silent[host]
+	return ok
+}
+
+// noteSilent is markSilent on ctx's throttle, if it carries one.
+func noteSilent(ctx context.Context, host string) {
+	if t, _ := ctx.Value(throttleKey{}).(*HostThrottle); t != nil {
+		t.markSilent(host)
 	}
 }
 

@@ -366,6 +366,9 @@ type boardsReport struct {
 	// audit (audit/prefilter-sample.json, prefilterwire.go); the audit class of
 	// each is "dropped:prefilter:<rule>".
 	Prefiltered int `json:"prefiltered,omitempty"`
+	// Unanswered is the whole listing's details left unanswered (boardReport.Unanswered).
+	// Exact when Items is cut. Additive.
+	Unanswered int `json:"unanswered,omitempty"`
 	// PrefilteredByRule is those rows by the rule that dropped them
 	// (pipeline.PrefilterRule: "exclude_title", "exclude_location",
 	// "read_<slot>" ...), counted as the adapters reported them this run, so a
@@ -481,6 +484,11 @@ type boardReport struct {
 	// Prefiltered is new listed rows the drop policy rejected before any
 	// detail request: never stored.
 	Prefiltered int `json:"prefiltered,omitempty"`
+	// Unanswered is details whose request failed transiently and were left for
+	// a later run (Stats.Unanswered of the bounded-detail adapters): a new row
+	// was not returned, a stored one was returned as stored (stale). Per run,
+	// not a streak: it does not feed DeferredSince. Additive.
+	Unanswered int `json:"unanswered,omitempty"`
 	// Short is rows a read board counted but did not list: a Workday query
 	// under its 2000-row window that ended before its own total
 	// (workday.Stats.Short). The listing is kept, not failed, so the postings

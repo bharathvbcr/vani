@@ -371,14 +371,40 @@ func TestOnlyA404IsGone(t *testing.T) {
 	}
 }
 
-func TestDetailTimeoutFailsTheBoardAndReportsIt(t *testing.T) {
+// One job page timing out (after its retry) is a miss the bounded step
+// absorbs: the new job is left for the next run, unreturned and unstored, and
+// the report counts it. Timeouts past srcutil.MaxMissed are the site failing:
+// the board fails with the deadline and no partial list.
+func TestDetailTimeoutIsMissedWithinTheBoundAndFailsPastIt(t *testing.T) {
 	locs := locsN(3)
 	d := siteDoer(locs, nil)
-	d2 := &toggleDoer{inner: d, failURL: locs[1]}
-	s, err := NewWith(d2, Options{Stored: storedNone, Wait: noWait})
+	var reps []Stats
+	s, err := NewWith(&toggleDoer{inner: d, failURL: map[string]bool{locs[1]: true}},
+		Options{Stored: storedNone, Wait: noWait, Report: func(_ sources.Board, st Stats) { reps = append(reps, st) }})
 	if err != nil {
 		t.Fatal(err)
 	}
+	got, err := s.List(context.Background(), board)
+	if err != nil || len(got) != 2 || len(reps) != 1 || reps[0].Unanswered != 1 || reps[0].Fetched != 2 {
+		t.Fatalf("%d postings, %v, reports %+v; want 2 postings and one miss", len(got), err, reps)
+	}
+
+	both := &toggleDoer{inner: siteDoer(locs, nil), failURL: map[string]bool{locs[0]: true, locs[1]: true}}
+	if s, err = NewWith(both, Options{Stored: storedNone, Wait: noWait}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.List(context.Background(), board)
+	if err == nil || got != nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("%d postings, %v; want a deadline error and no partial list", len(got), err)
+	}
+}
+
+// Without the stored postings (New) a missed job could not be told from a
+// stored one left out, so a timeout still fails the board.
+func TestDetailTimeoutFailsTheBoardWithoutStoredPostings(t *testing.T) {
+	locs := locsN(3)
+	s := newSource(siteDoer(locs, nil))
+	s.d = &toggleDoer{inner: siteDoer(locs, nil), failURL: map[string]bool{locs[1]: true}}
 	got, err := s.List(context.Background(), board)
 	if err == nil || got != nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("%d postings, %v; want a deadline error and no partial list", len(got), err)
@@ -387,11 +413,11 @@ func TestDetailTimeoutFailsTheBoardAndReportsIt(t *testing.T) {
 
 type toggleDoer struct {
 	inner   *srctest.Doer
-	failURL string
+	failURL map[string]bool
 }
 
 func (d *toggleDoer) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	if req.URL.String() == d.failURL {
+	if d.failURL[req.URL.String()] {
 		return nil, context.DeadlineExceeded
 	}
 	return d.inner.Do(ctx, req)
