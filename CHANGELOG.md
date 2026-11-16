@@ -420,6 +420,11 @@ were ported with notice. Source files do not carry an upstream copyright header.
   `finalize` and Vani's resume build recorded a pass. It now exits 6 (UNMEASURED) and says why;
   `finalize` stops on it. Vani keeps the PDF with rkb's note and records the fit as `soft` (the most
   those checks find is a soft flaw), not `passed`, and does not ask the model again.
+- **rkb lint says the same thing twice in a row** (2026-11-16). For two places that share a run of
+  wording, the repeated-phrase warning quoted whichever four-word window a map range met first, so
+  the same page warned differently on each run (4 runs, 4 outputs on a real page). It now quotes
+  the window where the shared run starts. Which pairs are warned about, and every other lint line,
+  is unchanged.
 - **A job's role fit is the reading its ranking uses** (2026-11-14, the owner's "fix the label").
   The row's `fit`/`fit_label`, `--fit`, the stats' fit and strong counts and the export's Role fit
   column showed triage's primary reading, while the ranking reads the owner's manual reading, or

@@ -111,8 +111,12 @@ func checkRepeats(c *Composed, cf *ClaimsFile, R *lintResult) {
 		}
 	}
 
-	// 3. the same phrase (4 content-bearing words) in two places
+	// 3. the same phrase (4 content-bearing words) in two places. Phrases are
+	// visited in reading order, so the one reported for a pair of places is
+	// where their shared wording starts, and the same page always gives the
+	// same warning (ranging over the map picked one at random).
 	ng := map[string]map[string]bool{}
+	var order []string
 	for _, it := range items {
 		w := wordRe.FindAllString(strings.ToLower(it.Text), -1)
 		for i := 0; i+4 <= len(w); i++ {
@@ -129,6 +133,7 @@ func checkRepeats(c *Composed, cf *ClaimsFile, R *lintResult) {
 			p := strings.Join(g, " ")
 			if ng[p] == nil {
 				ng[p] = map[string]bool{}
+				order = append(order, p)
 			}
 			ng[p][it.Key] = true
 		}
@@ -139,7 +144,8 @@ func checkRepeats(c *Composed, cf *ClaimsFile, R *lintResult) {
 	}
 	var reps []rep
 	pairSeen := map[string]bool{}
-	for p, m := range ng {
+	for _, p := range order {
+		m := ng[p]
 		if len(m) < 2 {
 			continue
 		}
