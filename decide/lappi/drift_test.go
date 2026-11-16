@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +27,9 @@ const devCouncilClient = "DevCouncil/backend/go_orchestrator/devcouncil/lappi/cl
 var devCouncilRoots = []string{"../../.deps", "../../../../devtools"}
 
 // codeDecls prints every top-level declaration of a Go file without comments.
+// The first entry is the sorted import set: grouping may differ, but the
+// packages may not (the same json.Unmarshal call means something else under
+// encoding/json and encoding/json/v2).
 func codeDecls(t *testing.T, path string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -32,10 +37,19 @@ func codeDecls(t *testing.T, path string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []string
+	var imports []string
+	for _, im := range f.Imports {
+		s := im.Path.Value
+		if im.Name != nil {
+			s = im.Name.Name + " " + s
+		}
+		imports = append(imports, s)
+	}
+	sort.Strings(imports)
+	out := []string{"imports: " + strings.Join(imports, ", ")}
 	for _, d := range f.Decls {
 		if gd, ok := d.(*ast.GenDecl); ok && gd.Tok == token.IMPORT {
-			continue // imports may differ in grouping only
+			continue // compared above as a set
 		}
 		var b bytes.Buffer
 		if err := printer.Fprint(&b, fset, d); err != nil {
@@ -93,10 +107,21 @@ func TestCodeDeclsSeesCodeNotComments(t *testing.T) {
 	a := codeDecls(t, write("a.go", "package x\n// one\nfunc F() int { return 1 }\n"))
 	b := codeDecls(t, write("b.go", "package x\n// two\nfunc F() int { return 1 }\n"))
 	c := codeDecls(t, write("c.go", "package x\nfunc F() int { return 2 }\n"))
-	if a[0] != b[0] {
+	if a[1] != b[1] {
 		t.Fatal("a comment change counted as drift")
 	}
-	if a[0] == c[0] {
+	if a[1] == c[1] {
 		t.Fatal("a code change was not seen")
+	}
+	// Imports: regrouping is not drift, a different package is.
+	const body = "\nfunc F(b []byte) error { var v any; return json.Unmarshal(b, &v) }\n"
+	v1 := codeDecls(t, write("v1.go", "package x\nimport (\n\t\"encoding/json\"\n\t\"os\"\n)\nvar _ = os.Args"+body))
+	split := codeDecls(t, write("split.go", "package x\nimport \"os\"\nimport \"encoding/json\"\nvar _ = os.Args"+body))
+	v2 := codeDecls(t, write("v2.go", "package x\nimport (\n\t\"encoding/json/v2\"\n\t\"os\"\n)\nvar _ = os.Args"+body))
+	if strings.Join(v1, "\n") != strings.Join(split, "\n") {
+		t.Fatal("regrouped imports counted as drift")
+	}
+	if strings.Join(v1, "\n") == strings.Join(v2, "\n") {
+		t.Fatal("encoding/json -> encoding/json/v2 was not seen")
 	}
 }

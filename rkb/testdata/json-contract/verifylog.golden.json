@@ -1,0 +1,50 @@
+{
+  "clmA": [
+    {
+      "pass": 2,
+      "verdict": "CONFIRMED",
+      "method": "blind",
+      "by": "v",
+      "at": "t0",
+      "line": "L3"
+    },
+    {
+      "pass": 2,
+      "verdict": "CONFIRMED",
+      "method": "blind",
+      "by": "w",
+      "at": "t1"
+    }
+  ],
+  "clmB": [
+    {
+      "pass": 1,
+      "verdict": "CONFIRMED",
+      "method": "manual-read",
+      "by": "me",
+      "at": "t0",
+      "found": "4 \u0026 5 \u003c 6",
+      "line": 12,
+      "legacy_note": "python",
+      "score": 1.50
+    }
+  ],
+  "clmC": [
+    {
+      "pass": 1,
+      "kind": "figure",
+      "verdict": "CONFIRMED",
+      "method": "manual-read",
+      "by": "me",
+      "at": "t1",
+      "found": "41 ms",
+      "line": 7,
+      "sources": [
+        {
+          "path": "a.md",
+          "sha256": "s"
+        }
+      ]
+    }
+  ]
+}

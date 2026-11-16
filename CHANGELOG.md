@@ -368,6 +368,26 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Changed
 
+- **`rkb bank import-tex` works again** (2026-11-16). It built the bank without the guard `save`
+  commits through, so every import died at the rename (the pre-fold binary too). With `--force`
+  and no `.tex` files in `cv_dir` it would have replaced the bank with an empty one; it now refuses.
+- **`decide` and `rkb` on `encoding/json/v2`** (2026-11-16). Every file and request body they write
+  keeps its bytes: options pin sorted map keys, `null` for a nil list or map, rkb's literal `& < >`
+  with escaped U+2028/U+2029 and carried-over escapes kept as written, and the escaped `& < >` that
+  the Lappi request line and the Decisions API body (pinned by n8n-email-engine) have always had.
+  Byte goldens written by the v1 build pin this (`rkb/testdata/json-contract`, the jev, Lappi and
+  spend-file tests), and rkb run on the owner's bank, resumes and verify log gave byte-identical
+  output. Deliberate changes: a key in the wrong case (`"Text"` for `"text"`) in bank.json, the rkb
+  config or any file rkb reads strictly is now an error naming the right spelling (v1 matched it;
+  v2 alone would have ignored it); invalid UTF-8 in a bank, resume or verify log is refused (v1
+  replaced it with U+FFFD and the next save rewrote it); a new verify-log entry writes `& < >`
+  literally like every other rkb write; the spend file refuses a miscased key; a Decisions API
+  response with a repeated name, a miscased key or invalid UTF-8 fails every slot (v1 read an
+  answer from it); `rkb eco` skips a `package.json` with a repeated key or invalid UTF-8 as it
+  skips any it cannot parse. `rkb fit` still reads its bullet metrics when a measured label ends in
+  half a surrogate pair, and says why when it cannot read them. `decide/lappi/client.go` stays on v1 until
+  DevCouncil's copy moves with it, and the drift check now compares imports, so a one-sided switch
+  fails it. The root module is still on v1.
 - **One bounded detail step** (`srcutil.PlanDetails`): Workday, SmartRecruiters, Oracle HCM, Rippling,
   Avature and TalentBrew reuse stored postings, re-read each once in 30 days, skip new rows the title
   rule drops, and spend at most a fixed number of detail requests a board a run. Rippling (every

@@ -2,7 +2,8 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
@@ -139,7 +140,7 @@ type LogEntry struct {
 	Found        string `json:"found,omitempty"`
 	Evidence     string `json:"evidence,omitempty"`
 	SourcePath   string `json:"source_path,omitempty"`
-	Line         any    `json:"line,omitempty"`
+	Line         any    `json:"line,omitzero"`
 	SourceSHA    string `json:"source_sha256,omitempty"`
 	SentenceHash string `json:"sentence_hash,omitempty"`
 	Quote        string `json:"quote,omitempty"`
@@ -192,7 +193,7 @@ func appendLog(add VerifyLog) {
 // repeats an existing verdict (the same sheet ingested twice) is skipped.
 // Returns nil bytes when nothing is new.
 func mergeLog(old []byte, exists bool, add VerifyLog) ([]byte, int, error) {
-	cur := map[string][]json.RawMessage{}
+	cur := map[string][]jsontext.Value{}
 	if exists && len(bytes.TrimSpace(old)) > 0 {
 		if err := decodeJSONStrict(logPath(), old, &cur); err != nil {
 			return nil, 0, fmt.Errorf("verify log is unreadable; refusing to overwrite it: %v", err)
@@ -215,7 +216,7 @@ func mergeLog(old []byte, exists bool, add VerifyLog) ([]byte, int, error) {
 				continue
 			}
 			have[e.dedupeKey()] = true
-			b, err := json.Marshal(e)
+			b, err := marshalNoEscape(e)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -1006,7 +1007,7 @@ func claimsVM(a *args) {
 	for _, r := range vm {
 		t[r.Verdict]++
 	}
-	b, _ := json.Marshal(t)
+	b, _ := marshalNoEscape(t)
 	fmt.Printf("wrote %s: %s\n", p, b)
 }
 

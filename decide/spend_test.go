@@ -142,6 +142,55 @@ func TestDailyCapCorruptFileFailsClosed(t *testing.T) {
 	}
 }
 
+// The spend file's bytes: days and keys sorted, two-space indent, no trailing
+// newline, amounts as encoding/json v1 wrote them. A file in the old
+// spelling must keep loading, and a key in the wrong case is refused.
+func TestDailyCapFileBytes(t *testing.T) {
+	d, path, now := newCap(t, 100)
+	ctx := context.Background()
+	for _, c := range []struct {
+		key string
+		usd float64
+	}{{"jev", 0.1}, {"jev", 0.2}, {"b-key", 1e-7}, {"a_key", 12.5}} {
+		if err := d.Charge(ctx, c.key, c.usd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	*now = now.Add(24 * time.Hour)
+	if err := d.Charge(ctx, "jev", 3); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{
+  "version": 1,
+  "days": {
+    "2026-10-18": {
+      "a_key": 12.5,
+      "b-key": 1e-7,
+      "jev": 0.30000000000000004
+    },
+    "2026-10-19": {
+      "jev": 3
+    }
+  }
+}`
+	if string(got) != want {
+		t.Fatalf("spend file:\n%s\nwant\n%s", got, want)
+	}
+	if _, err := NewDailyCap(path, 1); err != nil {
+		t.Fatalf("own file does not load: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"Version":1,"days":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewDailyCap(path, 1); err == nil {
+		t.Error(`accepted "Version" for "version"`)
+	}
+}
+
 func TestDailyCapPrunesOldDays(t *testing.T) {
 	d, path, now := newCap(t, 1.0)
 	for i := 0; i < spendKeepDays+10; i++ {

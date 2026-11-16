@@ -1,7 +1,8 @@
 package main
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"os"
@@ -131,78 +132,19 @@ func FuzzDupKeys(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, s string) {
 		d, err := dupKeys([]byte(s))
-		if err != nil || !json.Valid([]byte(s)) {
+		v := jsontext.Value(s)
+		if err != nil {
+			if v.IsValid(jsontext.AllowDuplicateNames(true)) {
+				t.Fatalf("dupKeys refused valid JSON %q: %v", s, err)
+			}
 			return
 		}
-		// no duplicates reported => re-encoding the generic value keeps every key
-		if len(d) == 0 {
-			var v any
-			dec := json.NewDecoder(strings.NewReader(s))
-			dec.UseNumber() // huge numbers are valid JSON but overflow float64
-			if dec.Decode(&v) != nil {
-				t.Fatalf("valid json did not decode: %q", s)
-			}
-			if countKeys([]byte(s)) != countDecoded(v) {
-				t.Fatalf("dupKeys missed a duplicate in %q", s)
-			}
+		// The strict validator is an independent oracle: it rejects a value
+		// exactly when some object in it repeats a name.
+		if strict := v.IsValid(); (len(d) == 0) != strict {
+			t.Fatalf("dupKeys listed %v for %q, but the strict validator says valid=%v", d, s, strict)
 		}
 	})
-}
-
-// countKeys counts every object key token in b.
-func countKeys(b []byte) int {
-	dec := json.NewDecoder(strings.NewReader(string(b)))
-	type fr struct{ obj, expKey bool }
-	var st []*fr
-	n := 0
-	done := func() {
-		if len(st) > 0 && st[len(st)-1].obj {
-			st[len(st)-1].expKey = true
-		}
-	}
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return n
-		}
-		switch v := tok.(type) {
-		case json.Delim:
-			if v == '{' || v == '[' {
-				st = append(st, &fr{obj: v == '{', expKey: true})
-			} else {
-				st = st[:len(st)-1]
-				done()
-			}
-		case string:
-			if len(st) > 0 && st[len(st)-1].obj && st[len(st)-1].expKey {
-				n++
-				st[len(st)-1].expKey = false
-				continue
-			}
-			done()
-		default:
-			done()
-		}
-	}
-}
-
-// countDecoded counts keys that survived decoding (duplicates collapse).
-func countDecoded(v any) int {
-	switch t := v.(type) {
-	case map[string]any:
-		n := len(t)
-		for _, x := range t {
-			n += countDecoded(x)
-		}
-		return n
-	case []any:
-		n := 0
-		for _, x := range t {
-			n += countDecoded(x)
-		}
-		return n
-	}
-	return 0
 }
 
 // ---------------------------------------------------------------- droppedFields
@@ -893,7 +835,7 @@ func FuzzMergeLog(f *testing.F) {
 		if err != nil || nb == nil {
 			return
 		}
-		var before, after map[string][]json.RawMessage
+		var before, after map[string][]jsontext.Value
 		if json.Unmarshal([]byte(old), &before) != nil && strings.TrimSpace(old) != "" {
 			t.Fatalf("merge accepted an unparsable log %q", old)
 		}

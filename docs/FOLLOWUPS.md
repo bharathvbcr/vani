@@ -1234,8 +1234,8 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     only ever the shadow and never drops.
   - **Prompt variant measured:** each option goes out with its fixture description
     (`jdtriage.Descriptions()`), and the target summary is in the state. The options are in
-    alphabetical order, not fixture order: `decide/jev` builds `criteria` as a Go map, and
-    encoding/json sorts map keys (`decide/jev/jev.go`, `body`). Cloud and local get the same order,
+    alphabetical order, not fixture order: `decide/jev` builds `criteria` as a Go map and encodes
+    it with sorted keys (`decide/jev/jev.go`, `body`; `jsonwire.V1Bytes`). Cloud and local get the same order,
     so the comparison stays fair. The
     qd.sock scoping session found that the bare option strings change 3 of 12 choices and that a
     reordering can move a probability by up to 0.36. A shadow verdict therefore holds only for this

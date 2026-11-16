@@ -25,7 +25,7 @@ type RouterAnswer struct {
 	// backend was asked about has no entry.
 	SlotBackend map[string]string `json:"slot_backend,omitempty"`
 	// ShadowCostUSD is what the shadow backend cost; it is not part of CostUSD.
-	ShadowCostUSD float64 `json:"shadow_cost_usd,omitempty"`
+	ShadowCostUSD float64 `json:"shadow_cost_usd,omitzero"`
 }
 
 // Router asks backends in order, passing each only the slots earlier backends

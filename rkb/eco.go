@@ -2,7 +2,8 @@ package main
 
 import (
 	"bufio"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"io/fs"
 	"os"
@@ -127,7 +128,7 @@ func scanManifests(repo string, al []string) []string {
 		rel, _ := filepath.Rel(repo, p)
 		switch name {
 		case "package.json":
-			var pj map[string]json.RawMessage
+			var pj map[string]jsontext.Value
 			b, _ := os.ReadFile(p)
 			if json.Unmarshal(b, &pj) != nil {
 				return nil
@@ -403,7 +404,7 @@ func cmdEco(a *args) {
 	if j := a.get("json", ""); j != "" {
 		writeJSON(j, rep)
 	}
-	b, _ := json.Marshal(t)
+	b, _ := marshalNoEscape(t)
 	fmt.Printf("\n%s\n", b)
 	if t["NONE"] > 0 {
 		os.Exit(1)

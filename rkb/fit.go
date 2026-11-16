@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"html"
 	"math"
@@ -218,16 +220,26 @@ type bulletMetric struct {
 
 var reMeasure = regexp.MustCompile(`(?s)<pre id="rkb-measure">(.*?)</pre>`)
 
-func measureBullets(htmlPath string) []bulletMetric {
+// measureBullets reads the metrics the template reports under #measure. The
+// text field is the first 70 UTF-16 units of a bullet, so it can end in half
+// a surrogate pair; that is accepted (as U+FFFD), not a reason to lose every
+// metric.
+func measureBullets(htmlPath string) ([]bulletMetric, error) {
 	abs, _ := filepath.Abs(htmlPath)
 	out, _ := runChrome("--window-size=1100,1600", "--dump-dom", "file://"+abs+"#measure")
-	m := reMeasure.FindSubmatch(out)
+	return parseMeasure(out)
+}
+
+func parseMeasure(dom []byte) ([]bulletMetric, error) {
+	m := reMeasure.FindSubmatch(dom)
 	if m == nil {
-		return nil
+		return nil, errors.New("no measurement in the page Chrome --dump-dom returned")
 	}
 	var bm []bulletMetric
-	_ = json.Unmarshal([]byte(html.UnescapeString(string(m[1]))), &bm)
-	return bm
+	if err := json.Unmarshal([]byte(html.UnescapeString(string(m[1]))), &bm, jsontext.AllowInvalidUTF8(true)); err != nil {
+		return nil, fmt.Errorf("the measurement did not parse: %v", err)
+	}
+	return bm, nil
 }
 
 type FitReport struct {
@@ -366,7 +378,8 @@ func fit(htmlPath, pdfOut string, pages int, strict, final bool) FitReport {
 	if err := writeAtomic(pdfOut, b); err != nil {
 		die("%v", err)
 	}
-	rep.Bullets = measureBullets(finalHTML)
+	bm, merr := measureBullets(finalHTML)
+	rep.Bullets = bm
 	for _, m := range rep.Bullets {
 		if m.Lines > 1 && m.LastLineFill < cfg.Rules.OrphanRatio {
 			rep.Orphans = append(rep.Orphans, m)
@@ -375,8 +388,8 @@ func fit(htmlPath, pdfOut string, pages int, strict, final bool) FitReport {
 			rep.OverLineLimit = append(rep.OverLineLimit, m)
 		}
 	}
-	if rep.Bullets == nil {
-		rep.Advice += " (bullet line metrics unavailable: Chrome --dump-dom returned nothing)"
+	if merr != nil {
+		rep.Advice += " (bullet line metrics unavailable: " + merr.Error() + ")"
 	}
 	if rep.Status == 0 && strict && (len(rep.Orphans) > 0 || len(rep.OverLineLimit) > 0) {
 		rep.Status = 5

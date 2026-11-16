@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -293,9 +292,18 @@ func cmdImportTex(a *args) {
 	if fileExists(bp) && !a.bools["force"] {
 		die("%s already exists: the bank is the source of truth now. Re-importing would overwrite edits; pass --force only if you mean it", bp)
 	}
+	// The guard is what save compares and swaps against: what is on disk now
+	// (nothing, or the bank --force replaces). Without it save had no path.
+	_, guard, err := readGuarded(bp)
+	if err != nil {
+		die("bank: %v", err)
+	}
 	docs, _ := filepath.Glob(filepath.Join(cv, "*.tex"))
+	if len(docs) == 0 { // with --force, importing nothing would replace the bank with an empty one
+		die("no .tex files in %s: nothing to import, the bank is left as it is", cv)
+	}
 	sort.Strings(docs)
-	bank := &Bank{About: "Single source for every resume and the CV. Edit a bullet here once; resumes/*.json choose and order them. Imported from the LaTeX sources by `rkb bank import-tex`; generated LaTeX lives in generated/.",
+	bank := &Bank{guard: guard, About: "Single source for every resume and the CV. Edit a bullet here once; resumes/*.json choose and order them. Imported from the LaTeX sources by `rkb bank import-tex`; generated LaTeX lives in generated/.",
 		Headers: map[string]Header{}, Entries: map[string]*BankEntry{}, Bullets: map[string]*Bullet{}, Lines: map[string][]Line{}, path: bp}
 	// The header starts blank: the name and contact lines are the user's own,
 	// written into bank.json (headers.default) after the import, never compiled in.
@@ -437,7 +445,7 @@ func (b *Bank) addBullet(text, prefix, origin string, byText map[string]string) 
 }
 
 func (b *Bank) addLines(key string, rows []Line, seen map[string]string) string {
-	j, _ := json.Marshal(rows)
+	j, _ := marshalNoEscape(rows)
 	if k, ok := seen[string(j)]; ok {
 		return k
 	}

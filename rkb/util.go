@@ -5,10 +5,11 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -161,6 +162,9 @@ func loadConfigFrom(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
+	if err := checkKeyCase(b, reflect.TypeOf(cfg)); err != nil {
+		return "", fmt.Errorf("config %s: %v", path, err)
+	}
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
@@ -259,6 +263,9 @@ func decodeJSONStrict(p string, b []byte, v interface{}) error {
 		return fmt.Errorf("%s: invalid JSON: %w", p, err)
 	} else if len(d) > 0 {
 		return fmt.Errorf("%s: duplicate key(s) %s — one copy would silently win; merge or rename them", p, humanList(d, 5))
+	}
+	if err := checkKeyCase(b, reflect.TypeOf(v)); err != nil {
+		return fmt.Errorf("%s: %w", p, err)
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		return fmt.Errorf("%s: %w", p, err)
