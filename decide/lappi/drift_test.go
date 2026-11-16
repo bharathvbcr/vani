@@ -15,7 +15,14 @@ import (
 // devCouncilClient is DevCouncil's copy of client.go, which this package was
 // moved from. Until DevCouncil imports this module (a change that touches the
 // Manvi and Jarvis pins), the two copies must stay identical in code.
-const devCouncilClient = "../../DevCouncil/backend/go_orchestrator/devcouncil/lappi/client.go"
+const devCouncilClient = "DevCouncil/backend/go_orchestrator/devcouncil/lappi/client.go"
+
+// devCouncilRoots are where a DevCouncil checkout sits relative to this
+// package (decide/lappi in the Vani repo): .deps/ is where scripts/bootstrap.sh
+// clones it (and CI runs it), and ../../../../devtools/ is the owner's
+// $CODE_ROOT/apps/Vani + $CODE_ROOT/devtools layout. The first that exists is
+// compared.
+var devCouncilRoots = []string{"../../.deps", "../../../../devtools"}
 
 // codeDecls prints every top-level declaration of a Go file without comments.
 func codeDecls(t *testing.T, path string) []string {
@@ -40,18 +47,28 @@ func codeDecls(t *testing.T, path string) []string {
 }
 
 // TestClientMatchesDevCouncilCopy fails when either copy of the client code
-// changes without the other. It skips, saying so, when DevCouncil is not
-// checked out beside this module.
+// changes without the other. It skips, saying so and naming every place it
+// looked, when no DevCouncil checkout is found.
 func TestClientMatchesDevCouncilCopy(t *testing.T) {
 	_, here, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("cannot locate test file")
 	}
 	dir := filepath.Dir(here)
-	theirs := filepath.Join(dir, devCouncilClient)
-	if _, err := os.Stat(theirs); err != nil {
-		t.Skipf("DevCouncil checkout not found at %s: drift NOT checked", theirs)
+	theirs := ""
+	var tried []string
+	for _, root := range devCouncilRoots {
+		p := filepath.Join(dir, root, devCouncilClient)
+		tried = append(tried, p)
+		if _, err := os.Stat(p); err == nil {
+			theirs = p
+			break
+		}
 	}
+	if theirs == "" {
+		t.Skipf("no DevCouncil checkout found (looked at %v): drift NOT checked", tried)
+	}
+	t.Logf("comparing with %s", theirs)
 	ours, them := codeDecls(t, filepath.Join(dir, "client.go")), codeDecls(t, theirs)
 	if len(ours) != len(them) {
 		t.Fatalf("client.go has %d declarations, DevCouncil's copy %d: port the change to both", len(ours), len(them))

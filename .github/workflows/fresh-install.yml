@@ -53,6 +53,19 @@ jobs:
       - name: Go gate (root module, decide, rkb)
         run: scripts/test.sh --suite go --fresh
 
+      - name: Checks that may skip must run here
+        run: |
+          # These skip, saying so, when a dependency is absent; a skip reads as "ok" in the gate. Here every
+          # dependency is present (sqlite3 on the runner, DevCouncil in .deps), so a skip is a failure.
+          set -o pipefail
+          out=$( { go test -count=1 -v -run 'TestBackupIncludesUncheckpointedWAL' ./internal/kbsync/ &&
+                   GOWORK=off go -C decide test -count=1 -v -run 'TestClientMatchesDevCouncilCopy' ./lappi/; } 2>&1 )
+          echo "$out"
+          if echo "$out" | grep -q -- '--- SKIP'; then
+            echo "a check that must run here was skipped" >&2
+            exit 1
+          fi
+
       - name: Show the failing tests
         if: failure()
         run: |

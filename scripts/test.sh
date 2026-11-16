@@ -186,6 +186,17 @@ run_go() {
   local flags=(-timeout 15m)   # never empty: bash 3.2 under set -u treats an empty array as unbound
   [ "$FRESH" = 1 ] && flags+=(-count=1)
   [ "$RACE" = 1 ] && flags+=(-race)
+  # decide lives in this repo. A go.work that still `use`s an outside copy wins over go.mod's replace, so
+  # the root module would be tested against that copy while the nested run below tests this one.
+  local decide_dir
+  if ! decide_dir=$(go -C "$ROOT" list -m -f '{{.Dir}}' github.com/bharathvbcr/decide 2>&1); then
+    echo "go list could not resolve decide: $decide_dir" > "$log"
+    finish go "FAIL (decide does not resolve; see go.log)" 1 "$t0"; return
+  fi
+  if [ "$(cd "$decide_dir" 2>/dev/null && pwd -P)" != "$(cd "$ROOT/decide" && pwd -P)" ]; then
+    echo "decide resolves to $decide_dir, not $ROOT/decide: in go.work, replace the use line for that directory with ./decide" > "$log"
+    finish go "FAIL (decide resolves outside this repo; see go.log)" 1 "$t0"; return
+  fi
   local others; others=$(go -C "$ROOT" list ./... | grep -v '/cmd/vani$')
   # shellcheck disable=SC2086
   go -C "$ROOT" test -p "$GO_P" "${flags[@]}" $others > "$log" 2>&1 &

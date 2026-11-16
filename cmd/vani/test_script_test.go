@@ -171,6 +171,7 @@ const fakeGoForGate = `#!/bin/sh
 dir=.
 [ "$1" = -C ] && { dir=$2; shift 2; }
 case "$1 $2" in
+  "list -m") echo "${FAKE_GO_DECIDE_DIR:-$dir/decide}" ;;
   "list ./...") echo "example.invalid/vani/pkg"; echo "example.invalid/vani/cmd/vani" ;;
   "test -list") echo "TestOne" ;;
   *)
@@ -231,6 +232,16 @@ func TestTestScriptGoSuiteNestedModules(t *testing.T) {
 	out, code, _ = runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb", "FAKE_GO_NESTED_FAIL=rkb")
 	if code != 1 || !strings.Contains(out, "nested modules rc=1") {
 		t.Fatalf("a failing nested module must fail the suite: exit %d:\n%s", code, out)
+	}
+}
+
+// A go.work that still uses an outside decide checkout would test the root module against that copy; the
+// go suite refuses before running anything.
+func TestTestScriptGoSuiteRefusesOutsideDecide(t *testing.T) {
+	out, code, log := runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb", "FAKE_GO_DECIDE_DIR=/")
+	if code != 1 || !strings.Contains(out, "decide resolves outside this repo") ||
+		!strings.Contains(log, "decide resolves to /, not") || strings.Contains(log, "example.invalid/vani/pkg") {
+		t.Fatalf("an outside decide must fail the go suite before testing: exit %d:\n%s\n%s", code, out, log)
 	}
 }
 
