@@ -16,13 +16,14 @@ import (
 	"sync"
 )
 
-var knownCache sync.Map // reflect.Type -> map[string]bool
+var fieldCache sync.Map // reflect.Type -> map[string]reflect.Type
 
-func knownFields(t reflect.Type) map[string]bool {
-	if v, ok := knownCache.Load(t); ok {
-		return v.(map[string]bool)
+// jsonFields maps each JSON name a struct type decodes to the field's type.
+func jsonFields(t reflect.Type) map[string]reflect.Type {
+	if v, ok := fieldCache.Load(t); ok {
+		return v.(map[string]reflect.Type)
 	}
-	m := map[string]bool{}
+	m := map[string]reflect.Type{}
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		if !f.IsExported() {
@@ -36,37 +37,105 @@ func knownFields(t reflect.Type) map[string]bool {
 		if name == "" {
 			name = f.Name
 		}
-		m[name] = true
+		m[name] = f.Type
 	}
-	knownCache.Store(t, m)
+	fieldCache.Store(t, m)
 	return m
 }
 
+func knownFields(t reflect.Type) map[string]bool {
+	m := map[string]bool{}
+	for name := range jsonFields(t) {
+		m[name] = true
+	}
+	return m
+}
+
+// Field names match exactly (v1 matched them ignoring case). A key that
+// differs from a field name only in case ("Text" for "text") would be ignored
+// or carried along unread while the field it was meant for stays empty, so it
+// is an error that names the right spelling.
+func miscased(key string, names []string) error {
+	for _, name := range names {
+		if key != name && strings.EqualFold(key, name) {
+			return fmt.Errorf("field %q: the field is spelled %q (names are case-sensitive)", key, name)
+		}
+	}
+	return nil
+}
+
+// checkKeyCase applies miscased to every object in data that decodes into a
+// struct of type t, at any depth.
+func checkKeyCase(data []byte, t reflect.Type) error {
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	return walkKeyCase(v, t, "$")
+}
+
+func walkKeyCase(v any, t reflect.Type, path string) error {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		fields := jsonFields(t)
+		names := sortedKeys(fields)
+		for _, k := range sortedKeys(obj) {
+			if ft, ok := fields[k]; ok {
+				if err := walkKeyCase(obj[k], ft, path+"."+k); err != nil {
+					return err
+				}
+			} else if err := miscased(k, names); err != nil {
+				return fmt.Errorf("%s: %v", path, err)
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		arr, ok := v.([]any)
+		if !ok {
+			return nil
+		}
+		for i, e := range arr {
+			if err := walkKeyCase(e, t.Elem(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		for _, k := range sortedKeys(obj) {
+			if err := walkKeyCase(obj[k], t.Elem(), path+"."+k); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // captureExtra returns the keys of a JSON object that t does not declare.
-// A key that differs from a field name only in case ("Text" for "text") is an
-// error: field names match exactly, so it would be carried along unread while
-// the field it was meant for stays empty.
+// A miscased field name is an error (see miscased).
 func captureExtra(data []byte, t reflect.Type, alsoKnown ...string) (map[string]jsontext.Value, error) {
 	var all map[string]jsontext.Value
 	if err := json.Unmarshal(data, &all); err != nil {
 		return nil, err
 	}
 	known := knownFields(t)
+	names := append(sortedKeys(known), alsoKnown...)
 	var extra map[string]jsontext.Value
 	for _, k := range sortedKeys(all) {
 		v := all[k]
 		if known[k] || contains(alsoKnown, k) {
 			continue
 		}
-		for name := range known {
-			if strings.EqualFold(k, name) {
-				return nil, fmt.Errorf("field %q: the field is spelled %q (names are case-sensitive)", k, name)
-			}
-		}
-		for _, name := range alsoKnown {
-			if strings.EqualFold(k, name) {
-				return nil, fmt.Errorf("field %q: the field is spelled %q (names are case-sensitive)", k, name)
-			}
+		if err := miscased(k, names); err != nil {
+			return nil, err
 		}
 		if extra == nil {
 			extra = map[string]jsontext.Value{}

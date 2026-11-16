@@ -92,6 +92,47 @@ func TestConfigBrokenFileIsAnError(t *testing.T) {
 	}
 }
 
+// v1 matched config keys ignoring case; v2 matches them exactly. A key in the
+// wrong case, at any depth, must stop rkb rather than be ignored, so a rule the
+// person added by hand cannot silently not apply.
+func TestConfigMiscasedKeyIsAnError(t *testing.T) {
+	restoreConfig(t)
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"top":    `{"Bank": "x.json"}`,
+		"nested": `{"bullet_rules": {"Codenames": ["Orion"]}}`,
+		"layout": `{"layout": {"Margin_In": {"top": 0.5}}}`,
+	} {
+		p := filepath.Join(dir, name+".json")
+		writeCfg(t, p, body)
+		_, err := loadConfigFrom(p)
+		if err == nil || !strings.Contains(err.Error(), "case-sensitive") || !strings.Contains(err.Error(), p) {
+			t.Errorf("%s: got %v, want a case-sensitive key error naming the file", name, err)
+		}
+	}
+	ok := filepath.Join(dir, "ok.json")
+	writeCfg(t, ok, `{"_about": "mine", "bullet_rules": {"codenames": ["Orion"]}}`)
+	if _, err := loadConfigFrom(ok); err != nil {
+		t.Fatalf("exact keys must load: %v", err)
+	}
+	if len(cfg.Rules.Codenames) != 1 {
+		t.Fatalf("codenames = %v", cfg.Rules.Codenames)
+	}
+}
+
+// The same holds for every file read through decodeJSONStrict (claims
+// exports, reviewer sheets, verifier answers, the verify log).
+func TestStrictReadMiscasedKeyIsAnError(t *testing.T) {
+	var l VerifyLog
+	err := decodeJSONStrict("log.json", []byte(`{"clmA": [{"pass": 1, "Verdict": "CONFIRMED"}]}`), &l)
+	if err == nil || !strings.Contains(err.Error(), `$.clmA[0]`) || !strings.Contains(err.Error(), `"verdict"`) {
+		t.Fatalf("got %v, want an error naming $.clmA[0] and \"verdict\"", err)
+	}
+	if err := decodeJSONStrict("log.json", []byte(`{"clmA": [{"pass": 1, "verdict": "CONFIRMED", "note_x": 1}]}`), &l); err != nil {
+		t.Fatalf("exact keys and unrelated unknown keys must load: %v", err)
+	}
+}
+
 func TestUserConfigPathOrder(t *testing.T) {
 	restoreConfig(t)
 	home := t.TempDir()

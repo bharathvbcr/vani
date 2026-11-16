@@ -148,6 +148,32 @@ func TestParsesAnswersAndCost(t *testing.T) {
 	}
 }
 
+// Responses encoding/json v1 accepted and v2 refuses: a repeated name (v1 kept
+// the last), a key in the wrong case (v1 matched it), invalid UTF-8 (v1
+// replaced it). Each now fails every slot instead of reading an answer.
+func TestResponsesV1AcceptedAreFailed(t *testing.T) {
+	const good = `"answers":{"mode":{"choice":"remote","confidence":0.9},"level":{"choice":"senior","confidence":0.5}}`
+	cases := map[string]string{
+		"repeated name": `{"answers":{},` + good + `}`,
+		"wrong case":    `{"Answers":{"mode":{"choice":"remote","confidence":0.9},"level":{"choice":"senior","confidence":0.5}}}`,
+		"invalid utf-8": `{` + good + `,"note":"` + "\xff" + `"}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			b, _, _ := newBackend(t, Config{}, ok(body))
+			a, err := b.Decide(context.Background(), question())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, s := range []string{"mode", "level"} {
+				if got := a.Slots[s]; got.Reading != decide.Failed {
+					t.Errorf("%s = %+v, want Failed", s, got)
+				}
+			}
+		})
+	}
+}
+
 func TestStrictParsing(t *testing.T) {
 	cases := map[string]string{
 		"unknown choice":  `{"answers":{"mode":{"choice":"hybrid","confidence":0.9},"level":{"choice":"senior","confidence":0.5}},"usage":{"cost":0.01}}`,
