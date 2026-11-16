@@ -1,10 +1,13 @@
 # Testing and the gate
 
 `scripts/test.sh` is the one entry point: Go, Swift, the extension's Bun tests and its type-check, run
-concurrently. It is what `scripts/release.sh` calls (with `--fresh --ui`). There is no hosted CI and none is
-planned here: `go.work` and `go.mod` point at sibling checkouts by absolute path (Manvi, decide, tessl,
-DevCouncil, gusset), and the Swift suite and release need this Mac's signing identity. A hosted runner could not
-build the repo as it stands.
+concurrently. It is what `scripts/release.sh` calls (with `--fresh --ui`).
+
+Hosted CI (`.github/workflows/fresh-install.yml`) runs the Go suite only, on Linux and macOS, from a fresh
+clone set up by `scripts/bootstrap.sh` (siblings pinned in `scripts/deps.lock`): `go vet` and
+`scripts/test.sh --suite go --fresh` over the root module and the nested `decide` and `rkb` modules, then
+re-runs by name the checks that may skip and fails if one did. Swift, Bun and the type-check run only here,
+on this Mac: the Swift suite and release need its signing identity.
 
 ```sh
 scripts/test.sh                     # all four suites; Go cached; no window, no focus taken

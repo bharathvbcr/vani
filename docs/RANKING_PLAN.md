@@ -142,7 +142,7 @@ signal missing.
 ### Model access today
 
 The decision model is **Liquid D**. "Jev" survives as the name of the wire client
-(`devtools/decide/jev`, the OpenRouter Decisions API protocol) and in two file/value names kept on
+(`decide/jev`, the OpenRouter Decisions API protocol) and in two file/value names kept on
 purpose: the daily cap files `budget/jev.json` and `budget/jev-notes.json`, and their spend key
 `jev`. The cap takes no lock across processes, so renaming the file would let a daemon still on the
 old path start the day at zero (pinned by `cmd/vani/openrouter_budget_test.go`). Config keys and

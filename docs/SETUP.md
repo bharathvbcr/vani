@@ -295,6 +295,20 @@ is `boards-api.greenhouse.io`), and `--domain` and the `--icon` host when those 
 Without it, save fails with `allowed_hosts is missing: boards-api.greenhouse.io` and tells you to
 pass `--allow-host`. `config check` fails the same way while a board's host is missing.
 
+Company icons are optional. Give a board the host of the company's own website (`--domain
+www.acme.com` on `watchlist add`, or `vani watchlist domain --ats gh --token acme --domain
+www.acme.com --allow-host` for a board you already have) and each run asks that host for
+`/apple-touch-icon.png`, `/favicon.ico`, then `/favicon.png`. The first reply that is a PNG, ICO or
+JPEG of at most 1 MiB is kept in `<state dir>/logos/`; an SVG or an HTML page is refused, the
+site's pages are never read, and a redirect to any other host is refused, so give the host that
+serves the icon (often the `www.` one). A site that names its icon only in its HTML needs the URL set
+by hand: `vani watchlist icon --ats gh --token acme --url https://www.acme.com/assets/icon.png
+--allow-host` (or `watchlist add … --icon URL`). That URL is asked for first. It must be https,
+its host must be in `allowed_hosts`, the board needs a domain (the icon is cached under it), and
+boards sharing a domain may not name two different icons. Changing it refetches at once, and
+`--url ""` clears it. Icons are refetched after 30 days and a failed domain waits 7; a run fetches
+at most 50 domains. `vani logos refresh [--force]` fetches them now.
+
 To find boards worth adding, `vani watchlist discover --search "ml engineer" --country US --allow-host`
 asks freehire.me which companies have matching roles and prints a `watchlist add` command for each
 new board; it edits nothing. freehire.me is a third-party site, so the command refuses until it is in

@@ -16,7 +16,7 @@ flowchart TD
         MANVI_PIN["go.work Local Checkout Pin\n[Follow-up: Version lockfile]"]
     end
 
-    subgraph DecideEcosystem["Decide Module (devtools/decide)"]
+    subgraph DecideEcosystem["Decide Module (nested decide/)"]
         DECIDE_ROUTER["Decision Router & Spend Caps"]
         DECIDE_JEV["decide/jev\n[Follow-up: Multi-slot & n8n support]"]
         DECIDE_LAPPI["decide/lappi\n[Follow-up: Unify DevCouncil copy]"]
@@ -240,10 +240,13 @@ The ranking and filtering audit and its status per finding are in
 - **n8n-email-engine `vani.event` lines** feeding the ledger (alerts from email). A change in
   another repo.
 - **DevCouncil's `devcouncil/lappi` onto `decide/lappi`.** The client and request code now live in
-  `~/Code/devtools/decide/lappi` (moved, made generic: `NewRequest`, no defect-class constants);
-  DevCouncil still has its own copy, so there are two until this lands;
-  `decide/lappi/drift_test.go` fails if their code (comments aside) diverges, and skips with a
-  message when DevCouncil is not checked out beside `decide`. The change: DevCouncil
+  this repo's nested module, `decide/lappi` (moved, made generic: `NewRequest`, no defect-class
+  constants); DevCouncil still has its own copy, so there are two until this lands;
+  `decide/lappi/drift_test.go` fails if their code (comments aside, imports included) diverges. It
+  compares against `.deps/DevCouncil` (bootstrap's pinned clone, which CI uses) or the owner's
+  `devtools/DevCouncil`, and skips with a message only when neither exists. `client.go` stays on
+  `encoding/json` v1 until DevCouncil's copy moves to v2 with it (a DevCouncil change, then a
+  `scripts/deps.lock` pin bump). The change: DevCouncil
   requires `github.com/bharathvbcr/decide` and keeps only its defect-class request, `asker.go`,
   `record.go` and `diffsplit.go`. Blast radius: replace directives in a dependency are ignored, so
   every module that builds DevCouncil through a `replace` (Manvi, Jarvis, Vani's workspace) needs
@@ -832,8 +835,9 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
 
 ## Structural
 
-- **Decide module location.** `decide` is local-only (no remote, nothing committed); Vani reaches
-  it by `replace => ../../devtools/decide`.
+- **Decide module location.** Fixed (2026-11-16, PR #8). `decide` is the nested module `decide/`
+  in this repo; `go.mod` replaces it with `./decide`, and a `go.work` must `use ./decide`
+  (`scripts/test.sh` and `scripts/bootstrap.sh` refuse an outside copy).
 - **Manvi pin.** `go.work` uses the local Manvi checkout (main at ccbe4ed on 2026-10-18), while
   Jarvis pins 5dbf47c. Add a lock file and a check.
 - **`vani status --json` re-reads decide's spend file.** `decide.DailyCap` has no reader (only
