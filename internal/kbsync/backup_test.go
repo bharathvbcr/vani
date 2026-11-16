@@ -97,15 +97,26 @@ func TestBackupIncludesUncheckpointedWAL(t *testing.T) {
 	if _, err := fmt.Fprintln(in, "PRAGMA wal_autocheckpoint=0; INSERT INTO blocks VALUES ('in-wal','project','{}',2);"); err != nil {
 		t.Fatal(err)
 	}
+	// Wait until the row is committed, as a second connection sees it, while it
+	// still sits in the -wal. A non-empty -wal alone is not enough: SQLite writes
+	// the frames before the commit frame, and a backup taken in between rightly
+	// leaves the uncommitted row out (seen on Linux).
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if fi, err := os.Stat(db + "-wal"); err == nil && fi.Size() > 0 {
-			break
+		fi, err := os.Stat(db + "-wal")
+		if err == nil && fi.Size() > 0 {
+			out, qerr := exec.Command(sqlite, "-batch", db, "SELECT count(*) FROM blocks WHERE id='in-wal';").Output()
+			if qerr == nil && strings.TrimSpace(string(out)) == "1" {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Skip("could not leave commits in the -wal on this sqlite3; the case is untested here")
+			t.Skip("could not leave a committed row in the -wal on this sqlite3; the case is untested here")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if fi, err := os.Stat(db + "-wal"); err != nil || fi.Size() == 0 {
+		t.Skip("the -wal was checkpointed before the backup; the case is untested here")
 	}
 	info, err := Backuper{}.Backup(context.Background(), db, filepath.Join(dir, "backups"), time.Now())
 	if err != nil {

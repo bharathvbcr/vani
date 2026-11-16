@@ -82,9 +82,14 @@ func TestRefuseLeafSwapRejectsReplacedRegularFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Close(); err != nil {
-		t.Fatal(err)
-	}
+	// Keep the file open across the swap, as the real caller does: a closed
+	// file's inode can be handed straight to the replacement (Linux reuses it),
+	// and then dev+inode cannot tell the two apart. An open one cannot be reused.
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err := os.Remove(live); err != nil {
 		t.Fatal(err)
 	}

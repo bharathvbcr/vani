@@ -505,28 +505,51 @@ func TestGuardAtTheReplyCap(t *testing.T) {
 }
 
 // Adversarial inputs stay linear and bounded.
-func TestGuardIsBoundedOnAdversarialText(t *testing.T) {
+// adversarialRun times the guard over every adversarial input, each repeated
+// k times (k=4 is the full-size set).
+func adversarialRun(k int) time.Duration {
 	start := time.Now()
-	g := seekerOnly(strings.Repeat("five ", 20000), strings.Repeat("PhD AWS ", 5000))
+	g := seekerOnly(strings.Repeat("five ", 5000*k), strings.Repeat("PhD AWS ", 1250*k))
 	for _, in := range []string{
-		strings.Repeat("five ", 20000),
-		strings.Repeat("thousand ", 20000),
-		strings.Repeat("a hundred ", 10000),
-		strings.Repeat("one hundred and ", 10000),
-		strings.Repeat("twenty-", 20000),
-		strings.Repeat("AWS ", 20000),
-		strings.Repeat("Ph.D. ", 20000),
-		strings.Repeat("aws ", 5000) + strings.Repeat("certified ", 5000),
-		strings.Repeat("AWS as a ", 20000) + "associate",
-		strings.Repeat("AWS as a developer associate. ", 5000),
-		strings.Repeat("MS ", 20000) + strings.Repeat("MS Teams ", 20000),
-		strings.Repeat("GPUs ", 20000),
-		strings.Repeat("5+ years ", 20000),
+		strings.Repeat("five ", 5000*k),
+		strings.Repeat("thousand ", 5000*k),
+		strings.Repeat("a hundred ", 2500*k),
+		strings.Repeat("one hundred and ", 2500*k),
+		strings.Repeat("twenty-", 5000*k),
+		strings.Repeat("AWS ", 5000*k),
+		strings.Repeat("Ph.D. ", 5000*k),
+		strings.Repeat("aws ", 1250*k) + strings.Repeat("certified ", 1250*k),
+		strings.Repeat("AWS as a ", 5000*k) + "associate",
+		strings.Repeat("AWS as a developer associate. ", 1250*k),
+		strings.Repeat("MS ", 5000*k) + strings.Repeat("MS Teams ", 5000*k),
+		strings.Repeat("GPUs ", 5000*k),
+		strings.Repeat("5+ years ", 5000*k),
 	} {
 		g.ungrounded(in)
 	}
-	if d := time.Since(start); d > 10*time.Second {
-		t.Errorf("adversarial inputs took %s", d)
+	return time.Since(start)
+}
+
+// The guard must stay linear on adversarial text. A fixed wall-clock bound
+// measured the machine, not the code (1.2 s here, over 10 s on a loaded CI
+// runner), so the test compares growth instead: doubling every input should
+// about double the time (2x), where a quadratic pass would quadruple it. Each
+// size takes the best of three runs to shed scheduling noise. The full-size
+// run keeps a generous absolute ceiling for a catastrophic blowup.
+func TestGuardIsBoundedOnAdversarialText(t *testing.T) {
+	if d := adversarialRun(4); d > time.Minute {
+		t.Errorf("full-size adversarial inputs took %s", d)
+	}
+	best := func(k int) time.Duration {
+		m := adversarialRun(k)
+		for i := 0; i < 2; i++ {
+			m = min(m, adversarialRun(k))
+		}
+		return m
+	}
+	small, double := best(1), best(2)
+	if ratio := float64(double) / float64(small); ratio > 3 {
+		t.Errorf("doubling the adversarial inputs took %.1fx as long (%s -> %s); linear is about 2x, quadratic 4x", ratio, small, double)
 	}
 	if f, n := seekerOnly().ungrounded(strings.Repeat("five ", 5000)); n != 1 || f.String() != "5" {
 		t.Errorf("repeated number words: %q (%d), want the single bare figure 5", f.String(), n)
