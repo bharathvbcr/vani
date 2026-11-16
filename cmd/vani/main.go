@@ -54,10 +54,13 @@ commands:
                              stdin. The next run drops what they match and reopens what they
                              no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
-  watchlist add [--json] --ats gh|lv|ab|wd|gm|sr|ib|av|ds|at|oc|pg --token T --company C [--region eu]
-                   [--host H --search S] (workday, oc) [--host H --url U] (av)
-                   [--url U --link-pattern RE] (pg)
-                   [--domain HOST [--icon URL]] [--allow-host]
+  watchlist add [--json] --ats CODE --token T --company C [--allow-host]
+                   CODE: gh|lv|ab|wd|az|gg|ap|ef|jb|gm|sr|ib|av|ds|at|oc|rp|wk|rc|pp|bh|ps|bz|tm|hv|hb|tt|tb|fd|pg
+                   [--region eu] (lv) [--board-name N] (ab) [--host H] (wd, oc, ef, jb, av, tb)
+                   [--search S]... (wd, oc, az, gg, ap, ef, jb, ib, tt)
+                   [--filter name=value]... (az, gg, ap, ef, jb, sr, tt)
+                   [--url U] (av, fd, pg) [--link-pattern RE] (pg) [--domain HOST [--icon URL]]
+                   watchlist add -h says what each flag and token is per CODE
   watchlist remove [--json] --ats A --token T [--keep-postings | --close-postings]
                              the next run closes the board's open postings (adding it back
                              reopens them); --keep-postings leaves them open; --close-postings

@@ -406,6 +406,15 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **Help and hints name real commands** (2026-11-16, found by running the README's coding-agent
+  setup on a fresh clone). `vani status`, the semantic warning and the identifying-words refusal
+  told the owner to run `vani track apply`, which does not exist; they now say `vani track use`.
+  `vani help` listed 12 of the 30 board kinds `watchlist add --ats` takes; it now lists all 30
+  and which flags each kind uses. Two tests keep them honest: the help's board kinds must equal
+  the adapters plus `pg` (and the `--ats` flag help must name each), and every `vani GROUP SUB`
+  mention in `cmd/vani` must be a command the help lists. The setup docs gained the
+  identifying-words step the agent prompt lacked (every run refuses a `target_summary` without
+  that file, `--list-only` included, while `config check` passes).
 - **An unmeasured strict fit is no longer a pass** (2026-11-16). When Chrome returned no bullet
   measurement, `rkb fit --strict` skipped its orphan and line-length checks and still exited 0, so
   `finalize` and Vani's resume build recorded a pass. It now exits 6 (UNMEASURED) and says why;

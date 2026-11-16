@@ -73,7 +73,7 @@ func checkPromptSummary(cfg config.Config, stateDir string, allowMissing bool) e
 			errTargetSummary, track.WordsFile, state, filepath.Join(dir, track.WordsFile))
 	}
 	if n := len(w.Found(cfg.TargetSummary)); n > 0 {
-		return fmt.Errorf("%w: contains %d term(s) from the identifying-words list (the terms are not shown); no model prompt is built from it. Edit target_summary in the config to describe the roles without them, or apply a track whose summary is clean (vani track apply)",
+		return fmt.Errorf("%w: contains %d term(s) from the identifying-words list (the terms are not shown); no model prompt is built from it. Edit target_summary in the config to describe the roles without them, or apply a track whose summary is clean (vani track use)",
 			errTargetSummary, n)
 	}
 	return nil
@@ -96,7 +96,7 @@ func (e *env) loadPromptConfig(allowMissing bool) (config.Config, error) {
 // genericTargetNote is what status and the run say when no target_summary is
 // set: the semantic ranking still runs, against the generic default target.
 func genericTargetNote(cfg config.Config) string {
-	return fmt.Sprintf("target_summary is empty, so ranking compares postings with the generic default target (%q), not your roles; set target_summary in the config, or apply a track (vani track apply)",
+	return fmt.Sprintf("target_summary is empty, so ranking compares postings with the generic default target (%q), not your roles; set target_summary in the config, or apply a track (vani track use)",
 		semantic.DefaultTarget)
 }
 

@@ -567,7 +567,7 @@ func (e *env) logSemantic(rep semanticReport) {
 		fmt.Fprintf(e.stderr, "vani: semantic: %s\n", rep.countsLine())
 	}
 	if rep.GenericTarget {
-		fmt.Fprintf(e.stderr, "vani: semantic: target_summary is empty: ranking against the generic default target (%q), not your roles; set target_summary in the config, or apply a track (vani track apply)\n", semantic.DefaultTarget)
+		fmt.Fprintf(e.stderr, "vani: semantic: target_summary is empty: ranking against the generic default target (%q), not your roles; set target_summary in the config, or apply a track (vani track use)\n", semantic.DefaultTarget)
 	}
 	if rep.Rebuilt {
 		fmt.Fprintln(e.stderr, "vani: semantic: the score cache was unreadable and was started again")

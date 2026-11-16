@@ -292,7 +292,7 @@ func TestTeacherTakesTheExistingOverrideForAMissingWordsFile(t *testing.T) {
 func TestStatusSaysTheGenericDefaultTargetIsInUse(t *testing.T) {
 	summaryConfig(t, "", kbTestOwnWord)
 	s, ok := targetSummaryStatus(t)
-	if !ok || !s.OK || !s.GenericDefault || !strings.Contains(s.Reason, "target_summary") || !strings.Contains(s.Reason, "vani track apply") {
+	if !ok || !s.OK || !s.GenericDefault || !strings.Contains(s.Reason, "target_summary") || !strings.Contains(s.Reason, "vani track use") {
 		t.Fatalf("status target_summary facet = %+v (present %v)", s, ok)
 	}
 	o, _ := mustCode(t, 0, "status")
