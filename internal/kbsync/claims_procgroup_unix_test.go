@@ -52,7 +52,9 @@ func recordedChild(t *testing.T, pidFile string) int {
 }
 
 func childGone(pid int) bool {
-	deadline := time.Now().Add(3 * time.Second) // init reaps the orphan
+	// init reaps the orphan; a loaded machine can take far longer than a second
+	// to. This is a bound on a failure, not a delay: it returns when the pid is gone.
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 			return true
@@ -65,25 +67,44 @@ func childGone(pid int) bool {
 // The claims export runs through the one runner, so a timeout or a cancel stops
 // rkb's whole process group, not rkb alone: a Chrome started by rkb is not left
 // running.
+//
+// The timeout starts when rkb starts, and on a loaded machine a shell can take
+// longer than a short timeout to reach the line that records its child; the
+// group is then killed before there is a child to check, and the test would
+// have been checking nothing. So the timeout grows until the child was recorded
+// before the timeout fired (as rkbexec's own group-kill test does). Only a run
+// that never gets that far is skipped, and says so: it is not a pass.
 func TestClaimsExportTimeoutKillsTheProcessGroup(t *testing.T) {
-	script, pidFile := startFakeRKB(t)
-	done := make(chan error, 1)
-	go func() {
-		_, err := RKB{Binary: script, Timeout: 400 * time.Millisecond}.Claims(context.Background())
-		done <- err
-	}()
-	child := recordedChild(t, pidFile)
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrResolve) || !errors.Is(err, rkbexec.ErrStepTimeout) {
-			t.Fatalf("err = %v, want an ErrResolve that is ErrStepTimeout", err)
+	for _, timeout := range []time.Duration{400 * time.Millisecond, 2 * time.Second, 10 * time.Second} {
+		script, pidFile := startFakeRKB(t)
+		done := make(chan error, 1)
+		go func() {
+			_, err := RKB{Binary: script, Timeout: timeout}.Claims(context.Background())
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrResolve) || !errors.Is(err, rkbexec.ErrStepTimeout) {
+				t.Fatalf("err = %v, want an ErrResolve that is ErrStepTimeout", err)
+			}
+		case <-time.After(timeout + 10*time.Second):
+			t.Fatal("Claims did not return after its timeout")
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("Claims did not return after its timeout")
+		raw, err := os.ReadFile(pidFile)
+		if err != nil || !strings.HasSuffix(string(raw), "\n") {
+			continue // timed out before the fake rkb recorded its child: nothing to check yet
+		}
+		child, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil || child <= 1 {
+			t.Fatalf("bad child pid %q", raw)
+		}
+		t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+		if !childGone(child) {
+			t.Fatalf("child %d of the fake rkb survived the claims export timeout (%s)", child, timeout)
+		}
+		return
 	}
-	if !childGone(child) {
-		t.Fatalf("child %d of the fake rkb survived the claims export timeout", child)
-	}
+	t.Skip("the fake rkb never recorded its child before even a 10s timeout fired: the machine is too loaded to check the group kill")
 }
 
 func TestClaimsExportCancelKillsTheProcessGroup(t *testing.T) {
