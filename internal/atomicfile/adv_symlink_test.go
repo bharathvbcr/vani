@@ -164,7 +164,16 @@ func TestResolveHopCountBoundary(t *testing.T) {
 
 func TestResolveLongPath(t *testing.T) {
 	root := evalRoot(t)
-	p := filepath.Join(root, strings.Repeat("d", 200), strings.Repeat("e", 200), strings.Repeat("f", 200), strings.Repeat("g", 200), strings.Repeat("h", 200), "file")
+	// Over PATH_MAX everywhere: 1024 on darwin, 4096 on Linux. Each component
+	// stays under NAME_MAX (255), so only the total length is at fault.
+	parts := []string{root}
+	for i := 0; i < 25; i++ {
+		parts = append(parts, strings.Repeat(string(rune('a'+i)), 200))
+	}
+	p := filepath.Join(append(parts, "file")...)
+	if len(p) <= 4096 {
+		t.Fatalf("test path is only %d bytes; it must exceed every PATH_MAX", len(p))
+	}
 	got, err := atomicfile.Resolve(p)
 	t.Logf("len=%d unchanged=%v err=%v", len(p), got == p, err)
 	if err == nil {

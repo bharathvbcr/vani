@@ -1,4 +1,7 @@
 # Build outputs, executables, and dependencies
+/.deps/
+# rkb's write locks, left beside bank.json when rkb runs in the sample itself
+/rkb/examples/**/*.lock
 /build/
 build/
 /vani

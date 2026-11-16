@@ -1,0 +1,76 @@
+# What an outside user gets from a fresh clone: scripts/bootstrap.sh fetches the pinned public siblings
+# (scripts/deps.lock), builds vani and rkb and checks the default config; then vet and the Go gate
+# (root module, plus the nested decide and rkb modules, including the rkb sample knowledge base and the
+# Vani <-> rkb contract test). Go only: the Swift app and the browser extension need the owner's signing
+# identity and stay on scripts/test.sh locally. It calls no model and holds no secret.
+name: fresh-install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fresh-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      VANI_NO_KEYCHAIN: "1"
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false # a fresh install starts with an empty module cache
+
+      - name: Bootstrap from the fresh clone
+        run: |
+          export VANI_CONFIG="$RUNNER_TEMP/vani/config.json" VANI_STATE_DIR="$RUNNER_TEMP/vani/state"
+          scripts/bootstrap.sh
+
+      - name: Vet (root module, decide, rkb)
+        run: |
+          go vet ./...
+          GOWORK=off go -C decide vet ./...
+          GOWORK=off go -C rkb vet ./...
+
+      - name: Go gate (root module, decide, rkb)
+        run: scripts/test.sh --suite go --fresh
+
+      - name: Checks that may skip must run here
+        run: |
+          # These skip, saying so, when a dependency is absent; a skip reads as "ok" in the gate. Here every
+          # dependency is present (sqlite3 on the runner, DevCouncil in .deps), so a skip is a failure.
+          set -o pipefail
+          out=$( { go test -count=1 -v -run 'TestBackupIncludesUncheckpointedWAL' ./internal/kbsync/ &&
+                   GOWORK=off go -C decide test -count=1 -v -run 'TestClientMatchesDevCouncilCopy' ./lappi/; } 2>&1 )
+          echo "$out"
+          if echo "$out" | grep -q -- '--- SKIP'; then
+            echo "a check that must run here was skipped" >&2
+            exit 1
+          fi
+
+      - name: Show the failing tests
+        if: failure()
+        run: |
+          # Every failing test with its messages, from every go log (cmd/vani's shards are verbose, so a
+          # plain tail hides them), then each log's last lines.
+          # go test -v prints a test's messages above its --- FAIL line, so show both sides.
+          grep -h -B 25 -A 5 -E '^\s*--- FAIL|^panic:' tmp/test-runs/latest/go*.log || true
+          tail -n 20 tmp/test-runs/latest/go*.log || true

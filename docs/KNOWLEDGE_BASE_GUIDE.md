@@ -33,7 +33,7 @@ Every `kb.*` path must be **absolute** (`config check` rejects relative paths):
 ```json
 "kb": {
   "bank": "/abs/path/to/career/bank.json",
-  "rkb": "/abs/path/to/bin/rkb",
+  "rkb": "/abs/path/to/Vani/build/rkb",
   "code_root": "/abs/path/to/career-repo",
   "selections": [
     "/abs/path/to/career/resumes/base.json",
@@ -56,7 +56,7 @@ Every `kb.*` path must be **absolute** (`config check` rejects relative paths):
 
 ## 3. Exact Contract for `rkb` & Data Files
 
-The original `rkb` is not publicly available, so a compatible implementation must follow this contract.
+`rkb` ships with Vani as the nested module [`rkb/`](../rkb/README.md); `scripts/bootstrap.sh` builds it to `build/rkb`, so `kb.rkb` can point there. Its default layout and rules come from its embedded config; one user file layers over it, `<skill>/rkb/assets/config.json` when `RKB_SKILL_DIR` (or a `SKILL.md` above the binary) names a skill folder, else `~/.config/rkb/config.json`, which also works under Vani's minimal environment ([`rkb/README.md`](../rkb/README.md), "Configuration"). A replacement implementation must follow this contract.
 
 If you are building an `rkb`-compatible knowledge base (or authoring scripts for a new user), Vani depends on three file formats and one CLI subcommand (`rkb claims export` — plus `lint`/`render`/`fit` only if using `vani resume`).
 
@@ -209,6 +209,51 @@ Inspect which bullets pass or why each is withheld without touching DevPrism:
 
 ---
 
+## Try the sample knowledge base
+
+[`rkb/examples/`](../rkb/examples/README.md) is a complete, invented knowledge base (a fictional "Sample Person", two made-up projects, three figures) in rkb's default layout. It was built with rkb's own commands, and it shows both outcomes: two bullets that are eligible and one that is withheld because no reader has reviewed it. Use it to see the whole path work before writing your own, then copy it as your starting point.
+
+1. Build `vani` and `rkb` (`scripts/bootstrap.sh` does both, to `build/vani` and `build/rkb`).
+2. Copy the sample, since rkb writes lock files next to `bank.json`:
+
+   ```bash
+   cp -R /abs/path/to/Vani/rkb/examples /abs/path/to/my-kb
+   ```
+
+3. Point the `kb` block of your Vani config at the copy. Every path must be absolute, and `kb.code_root` is the folder that holds `career/`:
+
+   ```json
+   "kb": {
+     "bank": "/abs/path/to/my-kb/career/CurriculumVitae/resume/bank.json",
+     "rkb": "/abs/path/to/Vani/build/rkb",
+     "code_root": "/abs/path/to/my-kb",
+     "selections": ["/abs/path/to/my-kb/career/CurriculumVitae/resume/resumes/sample.json"],
+     "base_selection": "/abs/path/to/my-kb/career/CurriculumVitae/resume/resumes/sample.json"
+   }
+   ```
+
+4. Check it. This sends nothing and needs no DevPrism:
+
+   ```bash
+   /abs/path/to/Vani/build/vani config check
+   VANI_NO_KEYCHAIN=1 /abs/path/to/Vani/build/vani kb sync --dry-run
+   ```
+
+   Expected:
+
+   ```
+   approved pool: 2 entries, 2 bullets of the bank's 2 entries and 3 bullets; 0 listed entries withheld
+     1 bullets a selection lists are not eligible
+     ineligible      shelf-loan-reminders: HR reader has not passed this wording in both rounds
+   kbsync plan (dry run, nothing sent): 2 add, 0 update, 0 unchanged, 0 blocked, 0 orphaned
+   ```
+
+5. Make it yours: replace the header, entries, bullets, `Claims.tex` figures and `projects/` artifacts with your own, using the same commands the sample was built with ([`rkb/examples/README.md`](../rkb/examples/README.md)): `rkb bank set`, `rkb claims add`, `rkb lint --sheet`, then `rkb review` for each reader round. Put your own lists (project codenames, field jargon, phrases to refuse) in `~/.config/rkb/config.json`, which holds only the keys you change; rkb reads it even when Vani runs it. `rkb doctor` prints which config file is in use.
+
+The sample passes `rkb bank check` and `rkb lint`. `rkb lint --final`, the release gate for a finished PDF, refuses it on purpose: that gate also needs blind pass 2 (`rkb claims worksheet` / `claims ingest`) and a validator report (`rkb claims vm`), and the sample ships no validator. `rkb fit` renders a real PDF but reports it SHORT, because three bullets do not fill the two pages rkb requires. Vani's eligibility rule is a subset of the release gate and needs neither. `internal/kbsync/sample_contract_test.go` and `rkb/example_test.go` run this exact path on every test run.
+
+---
+
 ## 5. Step-by-Step Bring-Up for a New Knowledge Base
 
 1. **Author `bank.json`, claims exporter, and selection file(s)** following §3–§4, or import an existing `rkb` workspace.
@@ -249,5 +294,7 @@ Run the KB & resume unit tests (no live API spend; set `VANI_NO_KEYCHAIN=1`):
 ```bash
 VANI_NO_KEYCHAIN=1 go -C /abs/path/to/Vani test ./internal/kbsync ./internal/rkbresume
 ```
+
+`TestSampleKBContract` in `internal/kbsync` builds the in-repo `rkb` and runs Vani's real claims-and-eligibility path on `rkb/examples`. It fails, and never skips, when Go or the build is missing, so drift between rkb's output and what Vani reads shows up here.
 
 (Note: `KBSYNC_REAL_BANK=1 KBSYNC_BANK=... KBSYNC_RKB=... go test ./internal/kbsync -run TestRealBank` validates a live `bank.json` and `rkb` binary read-only when set.)

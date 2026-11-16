@@ -9,6 +9,21 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Fresh install from a clone** (2026-11-15, issue #1). `scripts/bootstrap.sh` clones the public
+  siblings (Manvi, DevCouncil, gusset, tessl) at the commits in `scripts/deps.lock`, writes
+  `go.work`, builds `build/vani` and `build/rkb`, runs `vani init` and `config check`, and reports
+  each optional layer as found, missing or not checked; it never changes an existing `go.work`,
+  checkout or config, and refuses a `go.work` that still uses an outside `decide` checkout. The
+  decision client moved in as the nested module `decide/` (`go.mod` replaces it with `./decide`,
+  module path unchanged), and the knowledge-base tool as `rkb/`, without the owner's resumes,
+  claims or real-data tests; owner-specific lint vocabulary, recurring-point mechanisms and parity
+  baselines moved to `rkb` config keys (empty by default). rkb now layers one user config over its
+  embedded default (the skill's, else `~/.config/rkb/config.json`, which works under Vani's
+  minimal child environment), and a config that exists but cannot be read stops it instead of
+  falling back. `rkb/examples` is an invented sample knowledge base a new user can copy, with a
+  Vani–rkb contract test. `decide`, `rkb` and Vani all target Go 1.27.4. `scripts/test.sh` tests
+  both nested modules; `.github/workflows/fresh-install.yml` runs the bootstrap and the Go gate on
+  Linux and macOS. The README has a copyable prompt for setting Vani up with a coding agent.
 - **`vani rescore --coverage-unknown`** (2026-11-15, the owner's "yes, do both"). A posting DevPrism
   found no must-have in keeps the `gap.coverage_unknown` marker and is ranked on the unknown-coverage
   prior, and plain `rescore` never asks about it again (it takes only Scored and Explained postings

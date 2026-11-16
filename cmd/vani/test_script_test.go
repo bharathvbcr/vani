@@ -244,6 +244,86 @@ func TestTestScriptSwiftSerialFailureFails(t *testing.T) {
 	}
 }
 
+// fakeGoForGate stands in for go in the go suite: one root package, one cmd/vani test, and a nested-module
+// test run that fails when FAKE_GO_NESTED_FAIL names the module directory's last element.
+const fakeGoForGate = `#!/bin/sh
+dir=.
+[ "$1" = -C ] && { dir=$2; shift 2; }
+case "$1 $2" in
+  "list -m") echo "${FAKE_GO_DECIDE_DIR:-$dir/decide}" ;;
+  "list ./...") echo "example.invalid/vani/pkg"; echo "example.invalid/vani/cmd/vani" ;;
+  "test -list") echo "TestOne" ;;
+  *)
+    case "$*" in
+      *"-run ^(TestOne)\$"*) echo "--- PASS: TestOne (0.00s)" ;;
+      *./...*)
+        if [ -n "$FAKE_GO_NESTED_FAIL" ] && [ "$(basename "$dir")" = "$FAKE_GO_NESTED_FAIL" ]; then
+          echo "--- FAIL: TestNested (0.00s)"; echo "FAIL"; exit 1
+        fi
+        echo "ok  	example.invalid/$(basename "$dir")	0.01s GOWORK=$GOWORK" ;;
+      *) echo "ok  	example.invalid/vani/pkg	0.01s" ;;
+    esac ;;
+esac
+exit 0
+`
+
+// runGoGate runs `test.sh --suite go` with the fake go first on PATH and returns the output, exit code and
+// the go suite's log.
+func runGoGate(t *testing.T, env ...string) (string, int, string) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(fakeGoForGate), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runs := t.TempDir()
+	cmd := exec.Command(testScript(t), "--suite", "go")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "VANI_TEST_RUNS="+runs)
+	cmd.Env = append(cmd.Env, env...)
+	b, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	log, _ := os.ReadFile(filepath.Join(runs, "latest", "go.log"))
+	return string(b), code, string(log)
+}
+
+// The nested modules (decide, rkb) are outside the root module's ./..., so the go suite tests each on its
+// own, without the workspace. A nested module that is missing or fails must fail the suite, never pass it.
+func TestTestScriptGoSuiteNestedModules(t *testing.T) {
+	out, code, log := runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb")
+	if code != 0 || !strings.Contains(out, "pass (") {
+		t.Fatalf("all green: exit %d:\n%s\n%s", code, out, log)
+	}
+	for _, m := range []string{"decide", "rkb"} {
+		if !strings.Contains(log, "example.invalid/"+m+"\t0.01s GOWORK=off") {
+			t.Errorf("nested module %s not tested outside the workspace; go.log:\n%s", m, log)
+		}
+	}
+
+	out, code, log = runGoGate(t, "VANI_TEST_GO_NESTED=decide no-such-module")
+	if code != 1 || !strings.Contains(out, "nested modules rc=1") || !strings.Contains(log, "no-such-module: no go.mod") {
+		t.Fatalf("a missing nested module must fail the suite: exit %d:\n%s\n%s", code, out, log)
+	}
+
+	out, code, _ = runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb", "FAKE_GO_NESTED_FAIL=rkb")
+	if code != 1 || !strings.Contains(out, "nested modules rc=1") {
+		t.Fatalf("a failing nested module must fail the suite: exit %d:\n%s", code, out)
+	}
+}
+
+// A go.work that still uses an outside decide checkout would test the root module against that copy; the
+// go suite refuses before running anything.
+func TestTestScriptGoSuiteRefusesOutsideDecide(t *testing.T) {
+	out, code, log := runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb", "FAKE_GO_DECIDE_DIR=/")
+	if code != 1 || !strings.Contains(out, "decide resolves outside this repo") ||
+		!strings.Contains(log, "decide resolves to /, not") || strings.Contains(log, "example.invalid/vani/pkg") {
+		t.Fatalf("an outside decide must fail the go suite before testing: exit %d:\n%s\n%s", code, out, log)
+	}
+}
+
 func TestTestScriptKeepsOnlyTheNewestRuns(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "bun"), []byte(fakeBun), 0o755); err != nil {

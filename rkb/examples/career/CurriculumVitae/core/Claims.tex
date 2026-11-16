@@ -1,0 +1,15 @@
+% Claims.tex: the only place a figure's value lives. Bullets in bank.json use
+% {{clmName}} tokens; rkb substitutes these values. Everything here is invented
+% sample data for a fictional person.
+%
+% Each \newcommand sits under a "% <source> [<check.id>]" line naming the
+% artifact that produced the figure.
+% ----
+% p95 title-search latency before and after the index, from the benchmark log projects/shelfwise/bench.txt [shelfwise.search]
+\newcommand{\clmShelfSearch}{470 → 94 ms (-80%)}
+% ----
+% API calls per forecast refresh, from projects/skycast/calls.txt [skycast.calls]
+\newcommand{\clmSkyCalls}{12 → 3 calls (-75%)}
+% ----
+% Share of loans returned late, the month before and after reminders, from projects/shelfwise/overdue.txt [shelfwise.overdue]
+\newcommand{\clmShelfOverdue}{18% → 7% of loans}

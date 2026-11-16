@@ -1,0 +1,3 @@
+Shelfwise overdue loans (sample data)
+month before reminders: 18% of loans returned late
+month after reminders: 7% of loans returned late

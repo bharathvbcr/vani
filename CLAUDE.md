@@ -10,13 +10,22 @@ Tessl (`-tags tessl`). `docs/RUNTIME.md` maps each entry point to its config, st
 ## Build
 
 The ignored `go.work` is required: it points at the local Manvi checkout, whose own `go.mod`
-replaces DevCouncil and gusset with sibling checkouts, and at the shared decision module
-`/Users/bharath/Code/devtools/decide` (also `replace`d in `go.mod`).
+replaces DevCouncil and gusset with sibling checkouts. The shared decision module lives in this
+repo as the nested module `decide/` (`replace`d to `./decide` in `go.mod`; `use ./decide` in
+`go.work`). The knowledge-base tool `rkb` is the nested module `rkb/` (stdlib only, built and
+tested with `GOWORK=off`). rkb layers one user config over its embedded generic default: the
+skill's `rkb/assets/config.json` (the owner's, in the career repo), else `~/.config/rkb/config.json`.
+Root `./...` does not reach a nested module; `scripts/test.sh` tests both separately. A fresh clone
+is set up with `scripts/bootstrap.sh` (siblings pinned in `scripts/deps.lock`), and
+`.github/workflows/fresh-install.yml` checks that on Linux and macOS (Go suite only). All three
+modules target the same Go release as `go.mod`. No personal data in `rkb/`: fixtures and the
+`rkb/examples` sample stay synthetic, and owner vocabulary lives in config, never compiled in.
 
 ```bash
 go -C /Users/bharath/Code/apps/Vani build ./...
 go -C /Users/bharath/Code/apps/Vani vet ./...
 go -C /Users/bharath/Code/apps/Vani test ./...
+GOWORK=off go -C /Users/bharath/Code/apps/Vani/decide test ./...
 ```
 
 ## Rules
@@ -26,8 +35,8 @@ go -C /Users/bharath/Code/apps/Vani test ./...
 - Shared contracts live in `internal/{posting,egress,sources,resume,ledger}` type files and in the
   `decide` module (question, readings, router, the OpenRouter Decisions API client (package `jev`) and Lappi clients; Vani keeps only
   `internal/decide/jdtriage` and `internal/decide/llmbackend`). Change a contract only by asking;
-  implement against it. A `decide` change is tested in that repo too
-  (`go -C /Users/bharath/Code/devtools/decide test ./...`).
+  implement against it. A `decide` change is tested in its own module too
+  (`GOWORK=off go -C /Users/bharath/Code/apps/Vani/decide test ./...`).
 - `internal/decide/jdtriage/fixture.json` is the career.jd_triage contract Lappi trains on. Its
   sha256 is pinned in `jdtriage_test.go` (and is to be pinned in Lappi-decision's generator);
   changing it means a retrain.
