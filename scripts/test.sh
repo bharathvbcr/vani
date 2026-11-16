@@ -1,7 +1,8 @@
 #!/bin/bash
-# One local entry point for every Vani test gate. There is no hosted CI: go.work points at sibling checkouts
-# by absolute path and the Swift suite needs the owner's signing identity, so this is what runs the gate,
-# on this Mac, and what scripts/release.sh calls.
+# One local entry point for every Vani test gate, and what scripts/release.sh calls. Hosted CI
+# (.github/workflows/fresh-install.yml) runs only the go suite, from a fresh clone set up by
+# scripts/bootstrap.sh, on Linux and macOS; the Swift suite needs the owner's signing identity, so swift,
+# bun and types run here, on this Mac.
 #
 #   scripts/test.sh [--suite go,swift,bun,types] [--bg] [--strict] [--fresh] [--race] [--keep N]
 #   scripts/test.sh status          # summary of the newest run (works while it is still going)
@@ -178,6 +179,7 @@ run_swift() {
 # that unbounded parallelism makes more likely. --fresh adds -count=1 (no cache; scripts/release.sh uses it).
 GO_SHARDS="${VANI_TEST_GO_SHARDS:-4}"
 GO_P="${VANI_TEST_GO_P:-6}"
+GO_NESTED="${VANI_TEST_GO_NESTED:-decide rkb}"   # nested modules tested on their own (see run_go); the variable is a test seam
 
 run_go() {
   local t0 log="$RUN_DIR/go.log"; t0=$(now)
@@ -210,10 +212,19 @@ run_go() {
     [ "$ran" -ge "$total" ] || { echo "cmd/vani: only $ran of $total tests reported" >> "$log"; rc_cmd=1; }
   fi
   wait "$others_pid"; local rc_others=$?
-  if [ $rc_cmd -eq 0 ] && [ $rc_others -eq 0 ]; then
+  # Nested modules in this repo (stdlib only) are outside the root module's ./..., so each is tested on its
+  # own, without the workspace. A missing one is a failure, not a skip.
+  local rc_nested=0 m
+  for m in $GO_NESTED; do
+    if [ ! -f "$ROOT/$m/go.mod" ]; then
+      echo "$m: no go.mod" >> "$log"; rc_nested=1; continue
+    fi
+    GOWORK=off go -C "$ROOT/$m" test "${flags[@]}" ./... >> "$log" 2>&1 || rc_nested=1
+  done
+  if [ "$rc_cmd" -eq 0 ] && [ "$rc_others" -eq 0 ] && [ "$rc_nested" -eq 0 ]; then
     finish go "pass ($(grep -c '^ok' "$log") packages + cmd/vani: $total tests in $GO_SHARDS shards)" 0 "$t0"
   else
-    finish go "FAIL (other packages rc=$rc_others, cmd/vani rc=$rc_cmd; see go.log, go-cmd-*.log)" 1 "$t0"
+    finish go "FAIL (other packages rc=$rc_others, cmd/vani rc=$rc_cmd, nested modules rc=$rc_nested; see go.log, go-cmd-*.log)" 1 "$t0"
   fi
 }
 

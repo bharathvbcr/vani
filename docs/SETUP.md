@@ -26,41 +26,53 @@ the config, the launchd plist, a doc or a command that prints it.
 
 ### 1. Checkouts and `go.work`
 
-Go 1.27.4 (`go.mod`). Vani builds against three local checkouts, not published modules:
+Go 1.27.4 (`go.mod`). Two modules live in this repo as nested modules: the decision client
+`decide/` (`go.mod` replaces it with `./decide`) and the knowledge-base tool `rkb/` (stdlib only,
+built with `GOWORK=off`). Vani builds against four public sibling checkouts, not published
+modules:
 
-| Module | Resolved directory (this checkout, 2026-10-25) |
+| Module | Repository |
 |---|---|
-| `github.com/bharathvbcr/Manvi/manvi` | `$CODE_ROOT/devtools/Manvi/manvi` |
-| `github.com/bharathvbcr/decide` | `$CODE_ROOT/devtools/decide` |
-| `github.com/bharathvbcr/tessl/go` | `$CODE_ROOT/research/tessl/go` |
+| `github.com/bharathvbcr/Manvi/manvi` | `github.com/bharathvbcr/Manvi` |
+| `github.com/bharathvbcr/DevCouncil/backend/go_orchestrator` | `github.com/bharathvbcr/DevCouncil` (Manvi needs it) |
+| `github.com/bharathvbcr/gusset` | `github.com/bharathvbcr/gusset` (Manvi and tessl need it) |
+| `github.com/bharathvbcr/tessl/go` | `github.com/bharathvbcr/tessl` (`go.mod` requires it; only `-tags tessl` compiles it) |
 
-Manvi's own `go.mod` replaces DevCouncil and gusset with paths relative to that checkout
-(`../../DevCouncil/backend/go_orchestrator`, `../../gusset`). Those replaces apply only inside a
-workspace. `go list -m` from this checkout on 2026-10-25 resolved them to
-`$CODE_ROOT/devtools/DevCouncil/backend/go_orchestrator` and
-`$CODE_ROOT/devtools/gusset`.
+**The short way.** `scripts/bootstrap.sh` clones the four into `.deps/` (gitignored; `--deps DIR`
+for elsewhere) at the commits in `scripts/deps.lock`, writes `go.work` with absolute paths, checks
+that each module resolves, builds `build/vani` and `build/rkb`, runs `vani init` (only when no
+config exists) and `vani config check`, and reports each optional layer of steps 4–7 as found or
+missing. It never changes an existing `go.work`, checkout or config: with a `go.work` present it
+clones nothing and only checks what that file names. Then continue at step 3.
 
-`go.work` and `go.work.sum` are gitignored. The `go.work` in this checkout is:
+**The manual way.** Manvi's own `go.mod` replaces DevCouncil and gusset with paths relative to
+that checkout (`../../DevCouncil/backend/go_orchestrator`, `../../gusset`), so the three must be
+siblings. Those replaces apply only inside a workspace. `go.mod` replaces `tessl/go` with
+`../../research/tessl/go`. [`go.work.example`](../go.work.example) is the workspace for the
+layout `$CODE_ROOT/apps/Vani`, `$CODE_ROOT/devtools/{Manvi,DevCouncil,gusset}`,
+`$CODE_ROOT/research/tessl`:
 
 ```
 go 1.27.4
 
 use (
 	.
+	./decide
 	$CODE_ROOT/devtools/Manvi/manvi
-	$CODE_ROOT/devtools/decide
 )
 
 replace github.com/bharathvbcr/Manvi/manvi v0.0.0 => $CODE_ROOT/devtools/Manvi/manvi
 ```
 
-If it is missing, recreate that file. Do not add `decide` or `tessl` replaces to it: `go.mod`
-already replaces those two with paths relative to this checkout (`../../devtools/decide`,
-`../../research/tessl/go`), and `go list -m` resolved them to the table above. The `use` block is
-what selects Manvi and decide in the workspace. A git worktree's module directory is not this
-checkout, so those relative paths miss there; that worktree's own `go.work` needs absolute
-`replace` lines for `decide` and `tessl/go`. This checkout's file does not have them. Do not edit
-`go.mod` or run `go mod tidy`.
+`go.work` and `go.work.sum` are gitignored. Do not add a `decide` or `tessl` replace to it in
+that layout: `go.mod` already replaces both. A git worktree outside that layout misses the
+relative `tessl` path; its `go.work` needs an absolute `replace` line for `tessl/go` (the
+bootstrap writes one). Do not edit `go.mod` or run `go mod tidy`.
+
+**Moving a pin.** `scripts/deps.lock` records sibling commits that were verified together. To move
+one: clone Vani and the four siblings at the new commits into an empty directory, run
+`scripts/bootstrap.sh` there with an empty `GOMODCACHE`, then `go vet ./...`, `go test ./...` and a
+`-tags tessl` build, and only then edit the lock.
 
 Confirm the workspace before building:
 
@@ -145,8 +157,16 @@ If the key is missing, `run-once` stops before listing when no `llm` fallback is
 
 ### 5. Knowledge base
 
-rkb is a separate program. Vani does not build `bank.json` or `Claims.tex`. It calls the rkb
-binary you point at. The canonical bank is rkb's; DevPrism's `career.db` is a one-way copy of the
+rkb is a separate program whose source is the nested module [`rkb/`](../rkb/README.md); the
+bootstrap builds it to `build/rkb` (by hand: `GOWORK=off go -C rkb build -o ../build/rkb .`).
+Vani does not build `bank.json` or `Claims.tex`. It calls the rkb binary `kb.rkb` points at. That
+rkb starts from its embedded generic config and layers one user file over it: the skill's
+`<skill>/rkb/assets/config.json` when the binary sits in a skill folder, else
+`~/.config/rkb/config.json` (Vani passes rkb only `PATH`, `HOME`, `TMPDIR` and `RKB_CODE_ROOT`, so
+`RKB_SKILL_DIR` does not reach it). Put your own codenames, jargon and phrase lists there
+([`rkb/README.md`](../rkb/README.md)); `rkb doctor` names the file in use. A knowledge base kept in
+an rkb skill folder keeps `kb.rkb` on that skill's `bin/rkb`, so its config applies. To start from
+nothing, copy [`rkb/examples`](../rkb/examples) ([`KNOWLEDGE_BASE_GUIDE.md`](KNOWLEDGE_BASE_GUIDE.md)). The canonical bank is rkb's; DevPrism's `career.db` is a one-way copy of the
 approved bullets, used for ranking (`resume_gap_analysis`). Building a tailored PDF is a later
 step ([`RUNTIME.md`](RUNTIME.md), "Building a resume") and is not required to rank postings.
 

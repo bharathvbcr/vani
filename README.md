@@ -62,34 +62,67 @@ Optional external tools, and what happens without them:
 | Tool | Used for | Without it |
 |---|---|---|
 | [DevPrism](https://github.com/bharathvbcr/DevPrism) (`devprism.binary`) | KB gap ranking, `kb sync`, `rescore` | Jobs are ranked without KB coverage |
-| `rkb` (`kb.rkb`) | KB claims, `kbmatch`, `draft`, `resume` (contract in [KNOWLEDGE_BASE_GUIDE.md](docs/KNOWLEDGE_BASE_GUIDE.md)) | KB features are off |
+| `rkb` (`kb.rkb`; built from [`rkb/`](rkb/README.md) by the bootstrap) | KB claims, `kbmatch`, `draft`, `resume` (contract in [KNOWLEDGE_BASE_GUIDE.md](docs/KNOWLEDGE_BASE_GUIDE.md)) | KB features are off |
 | [Lightpanda](https://github.com/lightpanda-io/browser) (`lightpanda_binary`) | `pg` careers-page boards | Use the ATS adapters, `fd` feeds or the extension crawler |
 | Chrome + `pdftotext` (poppler) | `vani resume` page fitting | `resume` reports a `render` error |
 
 ## Quick start
 
-> [!WARNING]
-> **Private dependencies.** The default build imports `github.com/bharathvbcr/decide`, which is not publicly available, and the knowledge-base layer shells out to `rkb`, which is also private. A fresh clone cannot currently build `cmd/vani` without access to them. `internal/kbsync` and its tests build with only the public Manvi checkout. See [#1](https://github.com/bharathvbcr/vani/issues/1).
-
-Vani requires **Go 1.27.4** ([go.mod](go.mod); with an older Go, `GOTOOLCHAIN=auto` downloads it) and sibling local checkouts laid out as described in [`go.work.example`](go.work.example). In the commands below, `$CODE_ROOT` is the directory that holds `apps/Vani` and `devtools/…`. Because `/go.work` is gitignored, create it once at the repo root:
+You need **git** and **Go 1.27.4** ([go.mod](go.mod); with an older Go, `GOTOOLCHAIN=auto` downloads it). Everything else is fetched or reported by one script:
 
 ```sh
-cp go.work.example go.work
+git clone https://github.com/bharathvbcr/vani.git && cd vani
+scripts/bootstrap.sh
 ```
 
-Build, initialize config/state, watch a board, and run once:
+[`scripts/bootstrap.sh`](scripts/bootstrap.sh) clones the four public sibling repos Vani builds against (Manvi, DevCouncil, gusset, tessl) into `.deps/` at the commits pinned in [`scripts/deps.lock`](scripts/deps.lock), writes `go.work`, builds `build/vani` and `build/rkb`, writes the default config (`vani init`) and checks it, then lists each optional layer (OpenRouter key, DevPrism, Chrome/poppler, Tessl engine, embedding model, lightpanda) as found or missing with the next step. It never changes an existing `go.work`, checkout or config, and spends nothing. The decision client (`decide/`) and the knowledge-base tool (`rkb/`) live in this repo as nested modules.
+
+### Set up with a coding agent
+
+Paste this into Claude Code, Codex or another coding agent running in the directory where you want Vani:
+
+```text
+Set up Vani (https://github.com/bharathvbcr/vani) on this machine for me.
+
+1. Clone it here unless it is already cloned, then read README.md, docs/ONBOARDING.md and
+   docs/SETUP.md before running anything.
+2. Check the prerequisites: git, and Go at the version go.mod names (1.27.4 or newer). If one is
+   missing or too old, tell me and ask before installing anything.
+3. From the repo root, run `VANI_NO_KEYCHAIN=1 scripts/bootstrap.sh`. It clones the public sibling
+   repos into .deps/ at the commits in scripts/deps.lock, writes go.work, builds build/vani and
+   build/rkb, writes the default config and checks it. Do not edit go.mod, go.work or
+   scripts/deps.lock. If the script fails, show me the exact error and stop.
+4. Show me the "optional layers" table it prints. For each missing layer, say what it adds and
+   what it needs, and ask me before installing anything (Rust, the embedding model, DevPrism,
+   poppler, Chrome, lightpanda). If I want the knowledge-base features (grounded drafts, tailored
+   resumes, gap ranking), start from the invented sample in rkb/examples as
+   docs/KNOWLEDGE_BASE_GUIDE.md describes, and help me replace its content with my own.
+5. Ask me which companies I want to watch, add them with `build/vani watchlist add ... --allow-host`
+   (docs/SETUP.md step 8 lists the board types), then run
+   `VANI_NO_KEYCHAIN=1 build/vani run-once --list-only`, which lists postings and spends nothing.
+6. Do not run anything that spends money (run-once without --list-only, daemon, run-request
+   without --list-only, suggest, reasons draft, kbmatch run) until I have set my OpenRouter key
+   myself and said go. Never ask me to paste an API key into the chat: tell me how to set it (the
+   OPENROUTER_API_KEY environment variable, or the macOS Keychain command in docs/SETUP.md step 4).
+7. Keep my name, contact details and work-authorization status out of target_summary,
+   motivation_notes, logs, prompts and test fixtures.
+
+Finish with what was built, the config and state paths in use (from `build/vani status`), which
+optional layers are still missing, and my next step.
+```
+
+Then watch a board and run once:
 
 ```sh
-go -C $CODE_ROOT/apps/Vani build -o vani ./cmd/vani
-./vani init
-./vani watchlist add --ats gh --token stripe --company Stripe --allow-host
+build/vani watchlist add --ats gh --token stripe --company Stripe --allow-host
+VANI_NO_KEYCHAIN=1 build/vani run-once --list-only   # lists postings, spends nothing
 # Add your redacted target summary and OpenRouter key (OPENROUTER_API_KEY), then:
-./vani run-once
-./vani status
+build/vani run-once
+build/vani status
 ```
 
 > [!TIP]
-> New to Vani? Start with **[docs/ONBOARDING.md](docs/ONBOARDING.md)** (minimal portable setup & optional layers). For the full checkout setup (`go.work`, Keychain, `-tags tessl`, all 30 board flags, `exclude`, `launchd`), follow **[docs/SETUP.md](docs/SETUP.md)**.
+> New to Vani? Start with **[docs/ONBOARDING.md](docs/ONBOARDING.md)** (minimal portable setup & optional layers). For the full setup (manual `go.work`, Keychain, `-tags tessl`, all 30 board flags, `exclude`, `launchd`), follow **[docs/SETUP.md](docs/SETUP.md)**.
 
 ## Core CLI commands
 

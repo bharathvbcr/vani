@@ -1,24 +1,26 @@
-// Copy to go.work (gitignored) at the repo root:  cp go.work.example go.work
+// scripts/bootstrap.sh writes go.work for you (absolute paths, siblings at the
+// commits in scripts/deps.lock). This file is the manual alternative:
+//   cp go.work.example go.work
 //
-// Expected sibling layout (go.mod's replace lines and Manvi's own go.mod use
+// Expected sibling layout (go.mod's tessl replace and Manvi's own go.mod use
 // these relative paths), with $CODE_ROOT being any directory you choose:
 //
-//   $CODE_ROOT/apps/Vani                          this repo
+//   $CODE_ROOT/apps/Vani                          this repo (decide/ and rkb/ are nested modules in it;
+//                                                 rkb is stdlib-only and built with GOWORK=off)
 //   $CODE_ROOT/devtools/Manvi                     github.com/bharathvbcr/Manvi (public)
 //   $CODE_ROOT/devtools/DevCouncil                github.com/bharathvbcr/DevCouncil (public, needed by Manvi)
 //   $CODE_ROOT/devtools/gusset                    github.com/bharathvbcr/gusset (public, needed by Manvi)
-//   $CODE_ROOT/devtools/decide                    github.com/bharathvbcr/decide (private: required by the default build)
 //   $CODE_ROOT/research/tessl                     github.com/bharathvbcr/tessl (public; required: go.mod requires and replaces tessl/go)
 //
-// Do not add decide or tessl replaces here: go.mod already replaces them.
+// Do not add a decide or tessl replace here: go.mod already replaces them.
 // In a git worktree outside this layout, use absolute paths instead.
 
 go 1.27.4
 
 use (
 	.
+	./decide
 	../../devtools/Manvi/manvi
-	../../devtools/decide
 )
 
 replace github.com/bharathvbcr/Manvi/manvi v0.0.0 => ../../devtools/Manvi/manvi

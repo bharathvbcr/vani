@@ -1,0 +1,58 @@
+# What an outside user gets from a fresh clone: scripts/bootstrap.sh fetches the pinned public siblings
+# (scripts/deps.lock), builds vani and rkb and checks the default config; then vet and the Go gate
+# (root module, plus the nested decide and rkb modules, including the rkb sample knowledge base and the
+# Vani <-> rkb contract test). Go only: the Swift app and the browser extension need the owner's signing
+# identity and stay on scripts/test.sh locally. It calls no model and holds no secret.
+name: fresh-install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fresh-install-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      VANI_NO_KEYCHAIN: "1"
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false # a fresh install starts with an empty module cache
+
+      - name: Bootstrap from the fresh clone
+        run: |
+          export VANI_CONFIG="$RUNNER_TEMP/vani/config.json" VANI_STATE_DIR="$RUNNER_TEMP/vani/state"
+          scripts/bootstrap.sh
+
+      - name: Vet (root module, decide, rkb)
+        run: |
+          go vet ./...
+          GOWORK=off go -C decide vet ./...
+          GOWORK=off go -C rkb vet ./...
+
+      - name: Go gate (root module, decide, rkb)
+        run: scripts/test.sh --suite go --fresh
+
+      - name: Show the gate logs
+        if: failure()
+        run: tail -n 200 tmp/test-runs/latest/go*.log || true

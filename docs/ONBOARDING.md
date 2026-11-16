@@ -3,50 +3,39 @@
 How to set up Vani on a fresh machine without pre-existing local tools, and adopt optional modules one layer at a time. Checked against current code (`go.mod`, `internal/config`, `cmd/vani`).
 
 > [!NOTE]
-> If you already have local checkouts of `Manvi`, `decide`, `tessl`, `rkb`, and `DevPrism` on `$CODE_ROOT/...`, follow [SETUP.md](SETUP.md) for the exact step-by-step bring-up of that full stack.
+> If you already have local checkouts of `Manvi`, `tessl` and `DevPrism` on `$CODE_ROOT/...`, follow [SETUP.md](SETUP.md) for the exact step-by-step bring-up of that full stack.
 
 ---
 
 ## 1. Choose what you need first
 
-Vani is modular. The core pipeline needs Go, an OpenRouter API key, and the sibling `Manvi` and `decide` checkouts (`decide` is currently private, so a build outside the author's machine is not yet possible; see [#1](https://github.com/bharathvbcr/vani/issues/1)). Every other external tool adds a specific optional capability:
+Vani is modular. The core pipeline needs git, Go and an OpenRouter API key; [`scripts/bootstrap.sh`](../scripts/bootstrap.sh) fetches the public sibling checkouts it builds against (section 2). The decision client (`decide/`) and the knowledge-base tool (`rkb/`) are part of this repository. Every other external tool adds a specific optional capability, and the bootstrap lists which of them it found:
 
 | Layer | Capability | External requirement | What runs without it |
 |---|---|---|---|
-| **Core pipeline (Minimal)** | Watchlists, exclusions, triage, daily Markdown digests | Go 1.27.4 + OpenRouter key (or local `llm`) + sibling `Manvi` & `decide` checkouts (`go.mod`) | Everything except resume tailoring, gap ranking, Metal embeddings, and Chrome-rendered careers pages |
+| **Core pipeline (Minimal)** | Watchlists, exclusions, triage, daily Markdown digests | git + Go 1.27.4 + OpenRouter key (or local `llm`); the bootstrap fetches the public `Manvi`, `DevCouncil`, `gusset` and `tessl` checkouts | Everything except resume tailoring, gap ranking, Metal embeddings, and Chrome-rendered careers pages |
 | **Desktop & browser** | Autofill job forms, crawl career pages into inbox, Submit -> Applied tracking | Chromium or Safari + [macos/README.md](../macos/README.md) app | CLI-only discovery, triage, and digest workflow |
-| **Knowledge base** | Grounded drafts (`draft`/`suggest`), tailored PDFs (`resume`), resume gap ranking | `rkb` CLI + `bank.json` + DevPrism (`--mcp`) + Anthropic/Gemini key via Manvi | Jobs still fetch, triage, filter, and appear in digests (ranked by fit without KB coverage) |
-| **Semantic ordering** | Embedding similarity against your approved bullets | `tessl/go` Metal archive + Hugging Face `google/embeddinggemma-2` snapshot | Pure-Go build skips embeddings (`-tags tessl` omitted). The `tessl` checkout itself is still needed at build time because [`go.mod`](../go.mod) requires and replaces `tessl/go` |
+| **Knowledge base** | Grounded drafts (`draft`/`suggest`), tailored PDFs (`resume`), resume gap ranking | `rkb` (built from [`rkb/`](../rkb/README.md) by the bootstrap) + your `bank.json` + DevPrism (`--mcp`) + Anthropic/Gemini key via Manvi; PDFs also need Chrome and poppler | Jobs still fetch, triage, filter, and appear in digests (ranked by fit without KB coverage) |
+| **Semantic ordering** | Embedding similarity against your approved bullets | `tessl/go` Metal archive (Rust `cargo`) + Hugging Face `google/embeddinggemma-2` snapshot | Pure-Go build skips embeddings (`-tags tessl` omitted). The `tessl` checkout itself is still needed at build time because [`go.mod`](../go.mod) requires and replaces `tessl/go`; the bootstrap fetches it |
 | **Employer badges** | H-1B LCA history & cap-exempt/non-profit badges | Public DOL OFLC `.xlsx`/CSV, IRS EO BMF, IPEDS `HDyyyy.csv` ([LCA.md](LCA.md), [EMPLOYER.md](EMPLOYER.md)) | Postings omit badges; ranking/dropping unaffected |
 | **Careers-page crawler** | Scrape JS-rendered company career pages (`pg` boards) | `lightpanda` binary (`lightpanda_binary`) ([PHASE0-lightpanda.md](PHASE0-lightpanda.md)) | Use the 28 built-in ATS adapters, XML feeds (`fd`), or the extension's **Crawl all pages → Vani** |
 
 ---
 
-## 2. Clone dependencies & build (portable `go.work`)
-
-Vani's [`go.mod`](../go.mod) resolves three sibling repositories relative to the repo root (`../../devtools/decide`, `../../research/tessl/go`, plus `Manvi` via `go.work`). The expected directory layout and a ready-to-copy workspace file are in [`go.work.example`](../go.work.example). Clone those sibling repositories into matching paths or create an untracked `go.work` at the Vani repo root pointing to where you checked them out:
-
-```
-go 1.27.4
-
-use (
-	.
-	/abs/path/to/Manvi/manvi
-	/abs/path/to/decide
-)
-
-replace github.com/bharathvbcr/Manvi/manvi v0.0.0 => /abs/path/to/Manvi/manvi
-replace github.com/bharathvbcr/decide v0.0.0 => /abs/path/to/decide
-replace github.com/bharathvbcr/tessl/go v0.0.0 => /abs/path/to/tessl/go
-```
-
-Verify resolution, build the pure-Go binary, and run baseline checks:
+## 2. Clone dependencies & build
 
 ```bash
-go -C /abs/path/to/Vani list -m -f '{{.Path}} {{.Dir}}' \
-  github.com/bharathvbcr/Manvi/manvi \
-  github.com/bharathvbcr/decide \
-  github.com/bharathvbcr/tessl/go
+git clone https://github.com/bharathvbcr/vani.git /abs/path/to/Vani
+/abs/path/to/Vani/scripts/bootstrap.sh
+```
+
+The script clones `Manvi`, `DevCouncil`, `gusset` and `tessl` into `/abs/path/to/Vani/.deps/` (gitignored; `--deps DIR` puts them elsewhere) at the commits pinned in [`scripts/deps.lock`](../scripts/deps.lock), writes `go.work`, builds `build/vani` and `build/rkb`, runs `vani init` when no config exists and `vani config check`, and ends with a found/missing table for the optional layers above. It honours `VANI_CONFIG`/`VANI_STATE_DIR` (section 3), so set them first for an isolated config. It never edits an existing `go.work`, checkout or config, and running it again is safe.
+
+To have a coding agent do this for you, paste the prompt in the README's [Set up with a coding agent](../README.md#set-up-with-a-coding-agent) section; it runs this script, spends nothing and asks before installing anything.
+
+To lay the checkouts out by hand instead, use [`go.work.example`](../go.work.example) and [SETUP.md](SETUP.md) step 1. Either way, the baseline checks are:
+
+```bash
 go -C /abs/path/to/Vani build -o /abs/path/to/Vani/build/vani ./cmd/vani
 VANI_NO_KEYCHAIN=1 go -C /abs/path/to/Vani vet ./...
 ```
