@@ -2,6 +2,8 @@
 # Each commit was verified together on 2026-11-15: a fresh clone of Vani, these four at these commits and an
 # empty module cache built `vani`, compiled `-tags tessl`, and passed `go vet ./...` and `go test ./...`.
 # Move a pin only after re-running that check (docs/SETUP.md, "Moving a pin").
+# DevCouncil moved to 637b754a on 2026-11-16 (Lappi client on JSON v2): fresh-install CI on Linux and macOS
+# (bootstrap with an empty cache, vet, the Go gate, the drift check against this pin) and a -tags tessl build.
 #
 # name        url                                         commit
 Manvi         https://github.com/bharathvbcr/Manvi        8a7bada404db9745324f0d282dd9f461caafd0f0
