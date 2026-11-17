@@ -1,6 +1,7 @@
 package page
 
 import (
+	"fmt"
 	"html"
 	"strings"
 
@@ -27,6 +28,12 @@ type scanned struct {
 	// as HTML uses it: relative links resolve against it, not the page URL.
 	baseHref string
 	hasBase  bool
+	// truncated says why the scan stopped before the end of the document: an
+	// unterminated comment, tag or quoted value, or a script, style, textarea or
+	// title with no closing tag. Empty means the scan read the whole document. Every
+	// other field then holds only what came before the stop, so a caller that needs
+	// every link must not use them as complete.
+	truncated string
 }
 
 const (
@@ -38,9 +45,11 @@ const (
 // anchors, JSON-LD blocks and the title in a DOM dump, and to never mistake
 // the inside of a script, style or comment for markup. Page content is
 // untrusted: nothing here is executed, and an unterminated construct ends the
-// scan rather than being guessed at. Work is linear in len(doc).
+// scan rather than being guessed at, with scanned.truncated saying so (a scan
+// that stopped early is never a complete one). Work is linear in len(doc).
 func scanHTML(doc string) scanned {
 	var out scanned
+	foreign := 0 // open <svg> and <math> elements around the scan point
 	for i := 0; i < len(doc); {
 		j := strings.IndexByte(doc[i:], '<')
 		if j < 0 {
@@ -48,14 +57,20 @@ func scanHTML(doc string) scanned {
 		}
 		i += j
 		if strings.HasPrefix(doc[i:], "<!--") {
-			end := strings.Index(doc[i+4:], "-->")
-			if end < 0 {
+			next, ok := commentEnd(doc, i+4)
+			if !ok {
+				out.truncated = fmt.Sprintf("unterminated comment at byte %d", i)
 				break
 			}
-			i += 4 + end + 3
+			i = next
 			continue
 		}
 		if i+1 >= len(doc) || !isLetter(doc[i+1]) {
+			if foreign > 0 && strings.HasPrefix(doc[i:], "</") {
+				if n := endTagName(doc, i+2); n == "svg" || n == "math" {
+					foreign--
+				}
+			}
 			i++
 			continue
 		}
@@ -66,9 +81,15 @@ func scanHTML(doc string) scanned {
 		name := htmltext.LowerASCII(doc[i+1 : k])
 		attrs, end, ok := parseAttrs(doc, k, name == "a" || name == "base" || name == "script")
 		if !ok {
-			break // unterminated tag or quote: stop rather than guess
+			// Unterminated tag or quote: stop rather than guess.
+			out.truncated = fmt.Sprintf("unterminated <%s> tag at byte %d", name, i)
+			break
 		}
 		switch name {
+		case "svg", "math":
+			if !selfClosed(doc, k, end) {
+				foreign++
+			}
 		case "body":
 			if out.bodyStart == 0 {
 				out.bodyStart = end
@@ -90,8 +111,15 @@ func scanHTML(doc string) scanned {
 				out.links = append(out.links, link{href: html.UnescapeString(href), text: htmltext.Text(text, 200)})
 			}
 		case "script", "style", "textarea", "title":
+			if foreign > 0 && selfClosed(doc, k, end) {
+				// Inside <svg> or <math>, <title/> or <script/> has no body and no
+				// closing tag. In HTML it is a start tag: the element runs to its
+				// closer, and with none the rest of the document is its body.
+				break
+			}
 			closeAt := htmltext.IndexFold(doc[end:], "</"+name)
 			if closeAt < 0 {
+				out.truncated = fmt.Sprintf("<%s> at byte %d has no closing tag", name, i)
 				return out
 			}
 			body := doc[end : end+closeAt]
@@ -108,6 +136,48 @@ func scanHTML(doc string) scanned {
 		i = end
 	}
 	return out
+}
+
+// commentEnd is the offset just past the comment whose text starts at pos (past
+// "<!--"). HTML5 closes a comment at "-->" or "--!>", and the abrupt forms
+// "<!-->" and "<!--->" are empty comments that close at once. ok is false when
+// the comment never closes.
+func commentEnd(doc string, pos int) (next int, ok bool) {
+	if strings.HasPrefix(doc[pos:], ">") {
+		return pos + 1, true
+	}
+	if strings.HasPrefix(doc[pos:], "->") {
+		return pos + 2, true
+	}
+	rest := doc[pos:]
+	a, b := strings.Index(rest, "-->"), strings.Index(rest, "--!>")
+	switch {
+	case a < 0 && b < 0:
+		return 0, false
+	case b < 0 || (a >= 0 && a < b):
+		return pos + a + 3, true
+	default:
+		return pos + b + 4, true
+	}
+}
+
+// endTagName is the lowercase name of the end tag whose name starts at pos.
+func endTagName(doc string, pos int) string {
+	k := pos
+	for k < len(doc) && isNameByte(doc[k]) {
+		k++
+	}
+	return htmltext.LowerASCII(doc[pos:k])
+}
+
+// selfClosed is whether the tag whose name ends at k and whose ">" ends just
+// before end was written with a "/>" of its own: the "/" follows the name, a
+// space or a closing quote, not the tail of an unquoted value ("src=/a/>").
+func selfClosed(doc string, k, end int) bool {
+	if end-2 < k || doc[end-2] != '/' {
+		return false
+	}
+	return end-2 == k || isSpace(doc[end-3]) || doc[end-3] == '"' || doc[end-3] == '\''
 }
 
 // parseAttrs reads attributes from pos up to the tag's ">", returning them by

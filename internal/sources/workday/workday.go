@@ -83,13 +83,18 @@ type Options struct {
 	// posting has the row's path (read from its URL) is returned as stored,
 	// with no detail request. Required.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// DropListed reports whether the engine drops a posting before triage
 	// from what a listed row says: its title, the board's company and the
 	// row's location text (no description, no remote flag). A listed row with
 	// no stored posting that DropListed drops is neither fetched nor returned
 	// (it would be dropped before triage anyway). Nil drops nothing.
 	DropListed func(p posting.Posting) bool
-	// Report, when set, receives each listed board's counts.
+	// Report, when set, receives each listed board's counts, once, whether the
+	// board then succeeded or failed on a detail.
 	Report func(sources.Board, Stats)
 }
 
@@ -224,12 +229,14 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 	}
 	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests, Stubs: w.stubs, Short: w.short}
+	if s.opt != nil && s.opt.Report != nil {
+		// Once, whether the board then succeeds or fails on a detail, as the other
+		// bounded-detail adapters report: the counts of a failed board say what ran.
+		defer func() { s.opt.Report(b, st) }()
+	}
 	out, err := s.details(ctx, b, base, host, tenant, site, w.rows, &st)
 	if err != nil {
 		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
-	}
-	if s.opt != nil && s.opt.Report != nil {
-		s.opt.Report(b, st)
 	}
 	return out, nil
 }
@@ -300,8 +307,8 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	}
 	plan := make([]srcutil.DetailRow, len(rows))
 	for i, row := range rows {
-		_, ok := stored[row.ExternalPath]
-		plan[i] = srcutil.DetailRow{ID: row.ExternalPath, Stored: ok}
+		sp, ok := stored[row.ExternalPath]
+		plan[i] = srcutil.DetailRow{ID: row.ExternalPath, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, sp.Key)}
 		if !ok && s.opt != nil && s.opt.DropListed != nil {
 			plan[i].Drop = s.opt.DropListed(listedPosting(b, tenant, row))
 		}
@@ -344,7 +351,7 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	}
 	storedNew := "" // a "new" row whose posting turned out stored
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl,
+		Board: b, Rows: len(rows), Plan: pl,
 		// A missed new row is left out the way a deferred one is, so it needs the
 		// deferred row's guard: every stored posting matched to a path, so a row
 		// with no stored path holds no stored posting.
@@ -497,7 +504,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 		return posting.Posting{}, err
 	}
 	var d detailResponse
-	if err := srcutil.GetJSON(ctx, s.d, base+path, &d); err != nil {
+	if err := srcutil.GetJSONLimit(ctx, s.d, base+path, srcutil.MaxDetailBody, &d); err != nil {
 		var se *egress.StatusError
 		if errors.Is(err, srcutil.ErrBoardNotFound) || (errors.As(err, &se) && se.Code == http.StatusForbidden) {
 			// The board exists (its listing answered); only this posting is

@@ -19,11 +19,25 @@ func oldScanHTML(doc string) scanned {
 		}
 		i += j
 		if strings.HasPrefix(doc[i:], "<!--") {
-			end := strings.Index(doc[i+4:], "-->")
+			// HTML5 comment ends, which the original scan did not know: "<!-->" and
+			// "<!--->" are empty comments, and "--!>" closes one like "-->".
+			rest := doc[i+4:]
+			switch {
+			case strings.HasPrefix(rest, ">"):
+				i += 5
+				continue
+			case strings.HasPrefix(rest, "->"):
+				i += 6
+				continue
+			}
+			end, w := strings.Index(rest, "-->"), 3
+			if bang := strings.Index(rest, "--!>"); bang >= 0 && (end < 0 || bang < end) {
+				end, w = bang, 4
+			}
 			if end < 0 {
 				break
 			}
-			i += 4 + end + 3
+			i += 4 + end + w
 			continue
 		}
 		if i+1 >= len(doc) || !isLetter(doc[i+1]) {

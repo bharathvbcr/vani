@@ -164,6 +164,10 @@ type Options struct {
 	// Stored returns the postings an earlier run stored for b: every record
 	// under b.KeyPrefix(), whatever its status. Required.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// DropListed reports whether the engine drops a posting before triage from
 	// what a listed row says: its title, the board's company and its location
 	// text (no description). A new row it drops is neither fetched nor returned.
@@ -436,6 +440,12 @@ func (s *source) list(ctx context.Context, pace *srcutil.Pacer, company, country
 		if added == 0 {
 			return nil, requests, 0, fmt.Errorf("%w: the board served a page with nothing new at offset %d, after %d postings (a wrap to the first page or a stuck offset)", errIncomplete, read, len(rows))
 		}
+		if pg == 0 {
+			// A page cannot list more postings than the board counts.
+			if err := srcutil.TotalCoversRows(count, len(rows)); err != nil {
+				return nil, requests, 0, fmt.Errorf("%w: %w", ErrShape, err)
+			}
+		}
 		read += len(lr.Content)
 		ended = read >= count
 	}
@@ -523,7 +533,7 @@ func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Boa
 		}
 		keys[i] = key
 		p, ok := stored[key]
-		plan[i] = srcutil.DetailRow{ID: r.ID, Stored: ok}
+		plan[i] = srcutil.DetailRow{ID: r.ID, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, key)}
 		if ok {
 			stamp, _ := parseStamp(r.ReleasedDate) // read by list
 			plan[i].Changed = !p.PostedAt.Equal(stamp)
@@ -540,7 +550,7 @@ func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Boa
 	}
 	st.Deferred, st.Prefiltered = pl.Deferred, pl.Prefiltered
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
+		Board: b, Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			p, err := s.detail(ctx, pace, company, b, rows[i], seen)
 			return &p, err

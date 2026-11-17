@@ -25,18 +25,26 @@ func randomScanDoc(rng *rand.Rand, n int) string {
 	return b.String()
 }
 
+// scanFound is scanHTML's findings without its truncation note, which the old
+// scan (the oracle) predates: it stopped at the same places without saying so.
+func scanFound(doc string) scanned {
+	sc := scanHTML(doc)
+	sc.truncated = ""
+	return sc
+}
+
 // scanHTML no longer lowers a copy of the document; every result must be
 // what the old version found.
 func TestScanHTMLMatchesOldScanOnRandomDocuments(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
 	for i := range 50000 {
 		doc := randomScanDoc(rng, rng.Intn(30))
-		if got, want := scanHTML(doc), oldScanHTML(doc); !reflect.DeepEqual(got, want) {
+		if got, want := scanFound(doc), oldScanHTML(doc); !reflect.DeepEqual(got, want) {
 			t.Fatalf("case %d, doc %q:\n got %+v\nwant %+v", i, doc, got, want)
 		}
 	}
 	for _, doc := range []string{benchDOM(3000), randomScanDoc(rand.New(rand.NewSource(12)), 20000)} {
-		if got, want := scanHTML(doc), oldScanHTML(doc); !reflect.DeepEqual(got, want) {
+		if got, want := scanFound(doc), oldScanHTML(doc); !reflect.DeepEqual(got, want) {
 			t.Fatalf("a %d-byte document scans differently (%d vs %d links)", len(doc), len(got.links), len(want.links))
 		}
 	}

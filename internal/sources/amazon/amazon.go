@@ -182,6 +182,12 @@ func (s *source) search(ctx context.Context, term string, filters map[string][]s
 			out = append(out, j)
 			added++
 		}
+		if page == 0 {
+			// A page cannot list more jobs than the search matches.
+			if err := srcutil.TotalCoversRows(hits, len(out)); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrShape, err)
+			}
+		}
 		if len(out) >= hits {
 			return out, nil
 		}

@@ -255,6 +255,96 @@ type listFetch struct {
 	release  func() // returns the host and pool slots; nil when none were taken
 }
 
+// maxPanicRunes bounds the panic value in a board's error: at most 4 bytes a
+// rune, so 512 bytes.
+const maxPanicRunes = 128
+
+// listOneBoard is one board's List, and the point where a panic on the
+// adapter's own goroutine stops: it becomes that board's error, so the other
+// boards finish and the caller still sends its one listFetch and releases the
+// board's slots. The error carries the board and the panic value, bounded and
+// on one line. The value is the adapter's own panic text, which may echo a row;
+// it is bounded and never stored beyond the run report.
+//
+// What this does not cover: a panic in a goroutine the adapter itself starts
+// cannot be recovered here (recover sees only its own goroutine) and ends the
+// process. runtime.Goexit in List runs no recover; the caller's deferred send
+// answers for it.
+func listOneBoard(ctx context.Context, src sources.Source, b sources.Board) (listed []posting.Posting, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			listed = nil
+			err = fmt.Errorf("adapter %s/%s panicked: %s", b.ATS, oneLine(b.Token, maxBoardNameRunes), oneLine(panicText(r), maxPanicRunes))
+		}
+	}()
+	listCtx, counted := srcutil.CountBadRows(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget))
+	listed, err = src.List(listCtx, b)
+	if err != nil {
+		return listed, err
+	}
+	return storableListing(ctx, b, listed, counted())
+}
+
+// failsBoardOnBadRow is the adapters that keep failing their board on a row
+// they pass that cannot be stored. They are the ones docs/FOLLOWUPS.md
+// ("Skip-and-count bad rows: which listings convert") lists as not converted
+// to skip-and-count: workable, bamboohr, apple and eightfold, avature,
+// workday, smartrecruiters, oraclehcm, rippling, talentbrew and page. A row
+// they list is already one they read a detail for or relocated from a stored
+// posting, so it is not a malformed payload row to leave out. Ashby is not
+// here: its main path converts, and its GraphQL fallback cannot be told apart
+// at this seam, so an unstorable Ashby row is skipped and counted (held), which
+// is the safe reading of either path.
+var failsBoardOnBadRow = map[posting.ATS]bool{
+	posting.Workable: true, posting.BambooHR: true, posting.Apple: true, posting.Eightfold: true,
+	posting.Avature: true, posting.Workday: true, posting.SmartRecruiters: true, posting.OracleHCM: true,
+	posting.Rippling: true, posting.TalentBrew: true, posting.Page: true,
+}
+
+// storableListing is the one check every listed row passes before it can reach
+// the ledger (srcutil.Storable). Fixes with one safe value (a title cleaned, a
+// time outside years 1..9999 made unknown) are applied; a row that cannot be
+// stored fails the board when its adapter is in failsBoardOnBadRow, and is
+// otherwise skipped and counted through the run's BadRowSink, so the listing
+// reconciles as a short one and the stored postings it left out are held, not
+// aged. Without a sink, or past srcutil.MaxGone rows, the board fails. The
+// bound is on the rows the adapter skipped and the rows skipped here together,
+// out of every row the adapter's Rows counted, and is checked even when this
+// call skips none. The sink adds to what the
+// adapter itself reported for this listing: the rows are different rows, and
+// this call reports only its own. The error names the row's position and the field, never
+// the value.
+func storableListing(ctx context.Context, b sources.Board, listed []posting.Posting, counted srcutil.ListingCount) ([]posting.Posting, error) {
+	if len(listed) == 0 && counted.Skipped == 0 {
+		return listed, nil
+	}
+	// The total is what the adapter's Rows saw (rows it dropped without
+	// reporting, a prefilter, are in it), and never less than the rows now in
+	// hand plus the ones it skipped. An adapter with no Rows has counted
+	// nothing, so the listing itself is the total.
+	total := max(counted.Total, len(listed)+counted.Skipped)
+	rows := srcutil.NewRowsAfter(ctx, b, total, counted.Skipped)
+	kept := make([]posting.Posting, 0, len(listed))
+	for i, p := range listed {
+		sp, err := srcutil.Storable(b, p)
+		if err == nil {
+			kept = append(kept, sp)
+			continue
+		}
+		err = fmt.Errorf("row %d of %d: %w", i+1, len(listed), err)
+		if failsBoardOnBadRow[b.ATS] {
+			return nil, err
+		}
+		if err := rows.Bad(err); err != nil {
+			return nil, err
+		}
+	}
+	if err := rows.Done(); err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
 // launchBoardFetches starts each board's List as slots allow and sends one
 // listFetch per board, so the caller can reconcile in watchlist order.
 // A busy host parks that board and the scan continues, so a later board on a
@@ -317,6 +407,15 @@ func launchBoardFetches(ctx context.Context, watchlist []sources.Board, srcs map
 			b := watchlist[i]
 			give, ok := gate.tryAcquire(b)
 			if !ok {
+				if gate.parallel == 1 {
+					// One at a time: the caller returns the slot, in watchlist
+					// order, after it has read that board's result. A later
+					// board started past this one would hold the only slot
+					// while the caller waits for this one, which cannot start
+					// until that slot is returned.
+					parked = append(parked, pending[n:]...)
+					break
+				}
 				parked = append(parked, i)
 				continue
 			}
@@ -348,11 +447,24 @@ func launchBoardFetches(ctx context.Context, watchlist []sources.Board, srcs map
 			progressed = true
 			go func(i int, b sources.Board, src sources.Source, release func()) {
 				defer fetchWG.Done()
-				listed, err := src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
+				// The one send and the release come from this defer when List
+				// ended the goroutine (runtime.Goexit: a test's t.FailNow, an
+				// adapter that exits) and never returned, so the consumer is not
+				// left waiting on a listFetch that will not come.
+				sent := false
+				defer func() {
+					if sent {
+						return
+					}
+					release()
+					results[i] <- listFetch{kind: fetchDone, err: fmt.Errorf("adapter %s/%s exited without returning", b.ATS, oneLine(b.Token, maxBoardNameRunes))}
+				}()
+				listed, err := listOneBoard(ctx, src, b)
 				canceled := ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 				if gate.parallel > 1 && !canceled {
 					release()
 				}
+				sent = true
 				results[i] <- listFetch{kind: fetchDone, listed: listed, err: err, canceled: canceled, release: release}
 			}(i, b, srcs[b.ATS], release)
 		}

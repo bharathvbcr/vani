@@ -3,6 +3,7 @@ package srcutil
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
@@ -44,9 +45,12 @@ func WithBadRowSink(ctx context.Context, sink BadRowSink) context.Context {
 // not safe for concurrent use.
 type Rows struct {
 	sink    BadRowSink
+	count   *listingCounter // the listing's counter (CountBadRows), or nil
 	b       sources.Board
 	total   int
+	prior   int // rows an earlier stage of this listing skipped; counted against the bound, not reported
 	skipped int
+	held    int
 	first   string
 }
 
@@ -54,11 +58,60 @@ type Rows struct {
 // that does not know its total yet passes 0 and calls Add as each page lands.
 func NewRows(ctx context.Context, b sources.Board, total int) *Rows {
 	sink, _ := ctx.Value(badRowsKey{}).(BadRowSink)
-	return &Rows{sink: sink, b: b, total: total}
+	count, _ := ctx.Value(countKey{}).(*listingCounter)
+	if count != nil {
+		count.used.Store(1)
+		count.total.Add(int64(max(total, 0)))
+	}
+	return &Rows{sink: sink, count: count, b: b, total: total}
+}
+
+// NewRowsAfter starts counting for a listing of total rows on b, of which an
+// earlier stage already skipped already. The bound is on both together, so two
+// stages that each stay inside it cannot together leave out more than it
+// allows; Done reports only the rows this Rows skipped, so the sum a sink
+// receives across the stages stays exact.
+func NewRowsAfter(ctx context.Context, b sources.Board, total, already int) *Rows {
+	r := NewRows(ctx, b, total)
+	r.prior = max(already, 0)
+	return r
+}
+
+// ListingCount is what every Rows an adapter started during one List call saw:
+// the rows it counted (NewRows and Add) and the rows it skipped. Used says
+// whether the adapter used Rows at all; 11 adapters do not, and their counts
+// are zero.
+type ListingCount struct {
+	Total, Skipped int
+	Held           int // stored postings the listing left out on purpose (Rows.Hold); not bad rows, never counted toward the bound
+	Used           bool
+}
+
+type listingCounter struct{ total, skipped, held, used atomic.Int64 }
+
+type countKey struct{}
+
+// CountBadRows returns ctx carrying a per-listing counter, and the function
+// that reads it. Every Rows created under the returned ctx adds its rows and
+// skips to the counter as it counts, whether or not a BadRowSink is installed
+// or ever called, so the caller can bound what a paged adapter (a Rows per
+// page) left out across all of its pages. The sink is untouched: each Rows
+// still reports only its own skips, so the sums a sink receives stay exact.
+// The counter belongs to this ctx: another List call has its own.
+func CountBadRows(ctx context.Context) (context.Context, func() ListingCount) {
+	c := &listingCounter{}
+	return context.WithValue(ctx, countKey{}, c), func() ListingCount {
+		return ListingCount{Total: int(c.total.Load()), Skipped: int(c.skipped.Load()), Held: int(c.held.Load()), Used: c.used.Load() > 0}
+	}
 }
 
 // Add counts n more rows of the listing.
-func (r *Rows) Add(n int) { r.total += n }
+func (r *Rows) Add(n int) {
+	r.total += n
+	if r.count != nil {
+		r.count.total.Add(int64(n))
+	}
+}
 
 // Skipped is how many rows Bad has skipped so far. An adapter whose board
 // counts its own rows adds it to the postings it kept, so a skipped row still
@@ -75,17 +128,48 @@ func (r *Rows) Bad(err error) error {
 		return err
 	}
 	r.skipped++
-	if r.first == "" {
-		r.first = err.Error()
+	if r.count != nil {
+		r.count.skipped.Add(1)
 	}
-	if r.skipped > MaxGone(r.total) {
+	if r.first == "" || r.skipped == 1 {
+		r.first = err.Error() // a bad row's error outranks a hold's constant reason
+	}
+	if r.skipped+r.prior > MaxGone(r.total) {
 		return r.over(err)
 	}
 	return nil
 }
 
+// CanHold is whether a caller that can hold what a listing leaves out installed
+// a sink, so Hold and Bad can report a shortfall rather than fail the board.
+func (r *Rows) CanHold() bool { return r.sink != nil }
+
+// Hold counts n stored postings the listing leaves out on purpose and must not
+// age (their re-read was not made or did not answer), so the listing reads as
+// short: the caller holds them. Unlike Bad it has no bound of its own: how many
+// may be held is the caller's (the detail step's miss bound and request cap), and
+// held rows do not count toward the bad-row bound. why is the one-line reason the
+// sink receives when no row was skipped by Bad; it is constant text, never row
+// content. Without a sink it holds nothing and returns false, and the caller must
+// fail the board.
+func (r *Rows) Hold(n int, why string) bool {
+	if r.sink == nil {
+		return false
+	}
+	if n > 0 {
+		r.held += n
+		if r.count != nil {
+			r.count.held.Add(int64(n))
+		}
+		if r.first == "" {
+			r.first = why
+		}
+	}
+	return true
+}
+
 func (r *Rows) over(err error) error {
-	return fmt.Errorf("%w (%d bad rows of %d, over the %d the board may leave out)", err, r.skipped, r.total, MaxGone(r.total))
+	return fmt.Errorf("%w (%d bad rows of %d, over the %d the board may leave out)", err, r.skipped+r.prior, r.total, MaxGone(r.total))
 }
 
 // Done ends the listing. It returns an error when the rows skipped turn out to
@@ -93,12 +177,15 @@ func (r *Rows) over(err error) error {
 // otherwise reports the shortfall to the sink. Call it just before returning
 // the postings, so a board that then fails reports nothing.
 func (r *Rows) Done() error {
-	if r.sink == nil || r.skipped == 0 {
+	if r.sink == nil {
 		return nil
 	}
-	if r.skipped > MaxGone(r.total) {
+	if r.skipped+r.prior > MaxGone(r.total) {
 		return r.over(fmt.Errorf("rows could not be read: %s", r.first))
 	}
-	r.sink(r.b, r.skipped, r.first)
+	if r.skipped+r.held == 0 {
+		return nil
+	}
+	r.sink(r.b, r.skipped+r.held, r.first)
 	return nil
 }

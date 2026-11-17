@@ -11,6 +11,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
 )
 
@@ -67,6 +68,7 @@ func TestAdapterStatsReachTheBoardFetch(t *testing.T) {
 		"smartrecruiters": {smartRecruitersFetch(smartrecruiters.Stats{Deferred: 2, Gone: 3, Short: 5}), boardFetch{Deferred: 2, Gone: 3, Short: 5}},
 		"oraclehcm":       {oracleFetch(oraclehcm.Stats{Deferred: 2, Gone: 3, Short: 5}), boardFetch{Deferred: 2, Gone: 3, Short: 5}},
 		"ibm":             {ibmFetch(ibm.Stats{Listed: 9, Short: 5}), boardFetch{Short: 5}},
+		"workable":        {workableFetch(workable.Stats{Deferred: 2, Gone: 3, Prefiltered: 4, Unanswered: 1}), boardFetch{Deferred: 2, Gone: 3, Prefiltered: 4, Unanswered: 1}},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("%s: %+v, want %+v", name, tc.got, tc.want)

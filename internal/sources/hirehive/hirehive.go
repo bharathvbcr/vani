@@ -118,7 +118,8 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, err
 	}
 	out := make([]posting.Posting, 0)
-	keys := map[posting.Key]int{}
+	type where struct{ page, item int }
+	keys := map[posting.Key]where{}
 	rows := srcutil.NewRows(ctx, b, 0)
 	for page := 1; page <= maxPages; page++ {
 		if err := ctx.Err(); err != nil {
@@ -152,9 +153,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 				continue
 			}
 			if prev, dup := keys[p.Key]; dup {
-				return nil, fmt.Errorf("hirehive %q: postings %d and %d share key %s", b.Token, prev, len(keys), p.Key)
+				return nil, fmt.Errorf("hirehive %q: page %d item %d and page %d item %d share key %s", b.Token, prev.page, prev.item, page, i, p.Key)
 			}
-			keys[p.Key] = len(keys)
+			keys[p.Key] = where{page, i}
 			out = append(out, p)
 		}
 		if hasNext && len(items) == 0 {

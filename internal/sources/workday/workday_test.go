@@ -842,7 +842,9 @@ func TestRemoteType(t *testing.T) {
 }
 
 func TestDescriptionCapped(t *testing.T) {
-	huge := strings.Repeat("<p>word </p>", srcutil.MaxDescription)
+	// About 80 KB of text, over MaxDescription, in a detail (JSON-escaped, about
+	// 0.5 MiB) still under the shared detail cap srcutil.MaxDetailBody.
+	huge := strings.Repeat("<p>word </p>", srcutil.MaxDescription/4)
 	s, _ := newSource(func(r srctest.Request) (srctest.Reply, bool) {
 		if r.Method == "POST" {
 			return ok(`{"total":1,"jobPostings":[{"title":"t","externalPath":"/job/x_JR1"}]}`), true

@@ -73,6 +73,10 @@ type Options struct {
 	// Stored returns the postings an earlier run stored for b: every record
 	// under b.KeyPrefix(), whatever its status. Required.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// DropListed reports whether the engine drops a posting before triage from
 	// what a list row says: its title, the board's company and its location
 	// labels (no description). A new job it drops is neither fetched nor
@@ -195,7 +199,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		key, _ := posting.RipplingKey(b.Token, id) // checked above
 		keys[i] = key
 		_, ok := stored[key]
-		plan[i] = srcutil.DetailRow{ID: strings.ToLower(id), Stored: ok}
+		plan[i] = srcutil.DetailRow{ID: strings.ToLower(id), Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, key)}
 		if !ok && s.opt != nil && s.opt.DropListed != nil {
 			plan[i].Drop = s.opt.DropListed(listedPosting(b, j, places[strings.ToLower(id)]))
 		}
@@ -212,7 +216,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		defer func() { s.opt.Report(b, st) }()
 	}
 	res, err := srcutil.DetailStep{
-		Rows: len(uniq), Plan: pl, CanDefer: s.opt != nil,
+		Board: b, Rows: len(uniq), Plan: pl, CanDefer: s.opt != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			j := uniq[i]
 			var d detail

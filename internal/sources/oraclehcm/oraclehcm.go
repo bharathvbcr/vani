@@ -183,6 +183,10 @@ type Options struct {
 	// stored posting is returned as stored, with no detail request, except on
 	// its turn to be re-read. Required.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// Report, when set, receives each board's counts, a failed board's too.
 	Report func(sources.Board, Stats)
 }
@@ -399,7 +403,7 @@ func (s *source) details(ctx context.Context, b sources.Board, t target, rows []
 		}
 		keys[i] = key
 		_, ok := stored[key]
-		plan[i] = srcutil.DetailRow{ID: r.ID.String(), Stored: ok}
+		plan[i] = srcutil.DetailRow{ID: r.ID.String(), Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, key)}
 	}
 	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), MaxDetails)
 	if s.opt == nil && pl.Deferred > 0 {
@@ -410,7 +414,7 @@ func (s *source) details(ctx context.Context, b sources.Board, t target, rows []
 	}
 	st.Deferred = pl.Deferred
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
+		Board: b, Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			p, err := s.detail(ctx, b, t, rows[i], seen)
 			return &p, err

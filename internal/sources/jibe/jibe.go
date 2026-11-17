@@ -280,6 +280,14 @@ func (l *lister) run(ctx context.Context, q query) error {
 				return fmt.Errorf("%w: the board's queries together list more; narrow them", err)
 			}
 		}
+		if page == 1 {
+			// A page cannot list more jobs than the search counts: a total
+			// under the rows served ended the walk after page 1 and aged every
+			// stored posting past it as absent.
+			if err := srcutil.TotalCoversRows(total, len(read)); err != nil {
+				return fmt.Errorf("%w: %w", ErrShape, err)
+			}
+		}
 		if len(read) >= total {
 			return nil
 		}

@@ -122,8 +122,8 @@ func (w *walker) firstPage(ctx context.Context, term string) (listPage, error) {
 	for _, r := range first.rows {
 		distinct[r.ID.String()] = true
 	}
-	if first.total < len(distinct) {
-		return listPage{}, fmt.Errorf("%w: the search counts %d postings but its first page lists %d", errShape, first.total, len(distinct))
+	if err := srcutil.TotalCoversRows(first.total, len(distinct)); err != nil {
+		return listPage{}, fmt.Errorf("%w: %w", errShape, err)
 	}
 	return first, nil
 }

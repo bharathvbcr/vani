@@ -155,6 +155,10 @@ type Options struct {
 	// 2026-11-11, each run asking for all of its ~137 details again: reuse
 	// cuts a run to its search pages and the new positions' details.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// DropListed reports whether the engine drops a posting from what a
 	// search row says of it: its title and the board's company. A new position
 	// it drops is neither fetched nor returned. Nil drops nothing.
@@ -345,7 +349,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		defer func() { s.opt.Report(b, st) }()
 	}
 	res, err := srcutil.DetailStep{
-		Rows: len(ids), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
+		Board: b, Rows: len(ids), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			p, err := s.detail(ctx, a, host, domain, ids[i], b, seen)
 			return &p, err
@@ -403,7 +407,7 @@ func (s *source) planDetails(b sources.Board, domain string, ids []listing, seen
 		}
 		keys[i] = key
 		_, ok := stored[key]
-		rows[i] = srcutil.DetailRow{ID: l.id, Stored: ok}
+		rows[i] = srcutil.DetailRow{ID: l.id, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, key)}
 		if !ok && drop != nil {
 			rows[i].Drop = drop(posting.Posting{ATS: posting.Eightfold, Company: company, Title: srcutil.Title(l.name)})
 		}
@@ -426,8 +430,11 @@ func (s *source) get(ctx context.Context, pace *srcutil.Pacer, u string, v any) 
 	if err := srcutil.GetJSON(ctx, s.d, u, &env); err != nil {
 		return err
 	}
-	if env.Status == nil || *env.Status != 200 {
-		return fmt.Errorf("%w: envelope status %v, error %s", ErrShape, env.Status, env.Error)
+	if env.Status == nil {
+		return fmt.Errorf("%w: envelope has no status, error %s", ErrShape, env.Error)
+	}
+	if *env.Status != 200 {
+		return fmt.Errorf("%w: envelope status %d, error %s", ErrShape, *env.Status, env.Error)
 	}
 	if len(env.Data) == 0 || string(env.Data) == "null" {
 		return fmt.Errorf("%w: no data", ErrShape)
@@ -571,6 +578,12 @@ func (s *source) search(ctx context.Context, a api, domain, term string, filters
 				have[id] = true
 				ids = append(ids, listing{id: id, name: p.Name, work: strings.TrimSpace(p.WorkLocationOption)})
 				added++
+			}
+		}
+		if pg == 0 {
+			// A page cannot list more positions than the search counts.
+			if err := srcutil.TotalCoversRows(count, len(ids)); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrShape, err)
 			}
 		}
 		if len(ids) >= count {
