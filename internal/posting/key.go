@@ -129,6 +129,10 @@ func HireHiveKey(board, jobID string) (Key, error) { return build(HireHive, boar
 // HiBobKey is hb:{subdomain}:{job_ad_id}. The id is the job ad's id.
 func HiBobKey(board, jobID string) (Key, error) { return build(HiBob, board, jobID) }
 
+// ManatalKey is mn:{slug}:{hash}. The hash is the job's public path segment on
+// www.careers-page.com/{slug}/job/{hash}.
+func ManatalKey(board, hash string) (Key, error) { return build(Manatal, board, hash) }
+
 // TikTokKey is tt:tiktok:{job_post_id}, the id the job page URL carries.
 func TikTokKey(board, postID string) (Key, error) { return build(TikTok, board, postID) }
 
@@ -219,7 +223,7 @@ func (k Key) ATS() ATS {
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
 		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, Meta, Jobvite, OracleHCM, Rippling, Workable,
-		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, TikTok, TalentBrew, Feed, Page, Other:
+		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, Manatal, TikTok, TalentBrew, Feed, Page, Other:
 		return a
 	}
 	return ""

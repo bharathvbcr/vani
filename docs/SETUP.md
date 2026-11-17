@@ -287,7 +287,7 @@ Add boards with `vani watchlist add --ats CODE --token T --company 'Name' --allo
 | `wd`, `oc` | Workday, Oracle HCM | `--token tenant/site` (`jpmc/CX_1001`), `--host` board host (`acme.wd5.myworkdayjobs.com` / `wd1.myworkdaysite.com` or `jpmc.fa.oraclecloud.com`), optional repeatable `--search` |
 | `az`, `gg`, `ap`, `ib`, `tt` | Amazon, Google, Apple, IBM, TikTok | `ib` accepts `--token ibm` or `confluent`; `tt` requires `--token tiktok`; all take optional `--search`; `az`/`gg`/`ap`/`tt` take repeatable `--filter key=value` |
 | `ef`, `jb`, `av`, `tb` | Eightfold, Jibe, Avature, TalentBrew | Require `--host`; `ef` token is company domain + optional `--search`/`--filter`; `jb` token is client code + optional `--search`/`--filter`; `av` also requires `--url` portal listing URL |
-| `sr`, `ds`, `at`, `rp`, `wk` | SmartRecruiters, D. E. Shaw, Atlassian, Rippling, Workable | Slug `--token`; `sr` accepts repeatable `--filter country=us` (2-letter ISO code) |
+| `sr`, `ds`, `at`, `rp`, `wk`, `mn` | SmartRecruiters, D. E. Shaw, Atlassian, Rippling, Workable, Manatal | Slug `--token`; `sr` accepts repeatable `--filter country=us` (2-letter ISO code) |
 | `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb` | Recruitee, Pinpoint, BambooHR, Personio, Breezy HR, Teamtailor, HireHive, HiBob | Lower-case subdomain `--token` (e.g. `acme` for `acme.recruitee.com`) |
 | `fd`, `pg` | XML feed, generic careers page | Short slug `--token` + `--url`; `pg` also requires `--link-pattern RE` |
 

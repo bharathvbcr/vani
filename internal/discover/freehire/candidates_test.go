@@ -90,6 +90,7 @@ func TestBoardsFromTheFixture(t *testing.T) {
 		{posting.Workday, "ebay/apply", 1, "ebay.wd5.myworkdayjobs.com", "", "eBay"},
 		// A Workable shortlink (/j/{id}) names the job only: the id names the account.
 		{posting.Workable, "workana-premium", 1, "", "", "Workana Premium"},
+		{posting.Manatal, "performacentric", 1, "", "", "Performacentric"},
 	} {
 		b, ok := find(c, tc.ats, tc.token)
 		if !ok {
@@ -311,13 +312,14 @@ func TestSourceTable(t *testing.T) {
 		"recruitee": posting.Recruitee, "pinpoint": posting.Pinpoint, "bamboohr": posting.BambooHR, "personio": posting.Personio,
 		"breezy": posting.Breezy, "teamtailor": posting.Teamtailor,
 		"hirehive": posting.HireHive, "hibob": posting.HiBob,
+		"manatal": posting.Manatal,
 	} {
 		i := slices.IndexFunc(sourceATS, func(r sourceRow) bool { return r.Source == source })
 		if i < 0 || sourceATS[i].ATS != ats {
 			t.Errorf("source %q does not map to %s", source, ats)
 		}
 	}
-	if len(sourceATS) != 17 {
+	if len(sourceATS) != 18 {
 		t.Errorf("%d rows: a new row needs a case here and a host in sources.BoardFromURL", len(sourceATS))
 	}
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
 	"github.com/bharathvbcr/Vani/internal/sources/jobvite"
 	"github.com/bharathvbcr/Vani/internal/sources/lever"
+	"github.com/bharathvbcr/Vani/internal/sources/manatal"
 	"github.com/bharathvbcr/Vani/internal/sources/meta"
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/personio"
@@ -916,6 +917,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Teamtailor:      teamtailor.New(d),
 		posting.HireHive:        hirehive.New(d),
 		posting.HiBob:           hibob.New(d),
+		posting.Manatal:         manatal.New(d),
 		posting.TikTok:          tiktok.New(d),
 		posting.TalentBrew:      talentbrew.New(d),
 		posting.Feed:            feed.New(d),

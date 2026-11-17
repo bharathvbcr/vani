@@ -81,6 +81,11 @@ func BoardFromURL(u *url.URL) (b Board, known bool, err error) {
 			return none("Gem board")
 		}
 		return Board{ATS: posting.Gem, Token: first}, true, nil
+	case host == "www.careers-page.com" || host == "careers-page.com":
+		if first == "" || strings.EqualFold(first, "api") || strings.EqualFold(first, "static") {
+			return none("Manatal board")
+		}
+		return Board{ATS: posting.Manatal, Token: first}, true, nil
 	case host == "jobs.smartrecruiters.com" || host == "careers.smartrecruiters.com":
 		// Both serve a company's page at /{companyIdentifier} (checked
 		// 2026-10-27: jobs. redirects to careers.). The first segment of these two

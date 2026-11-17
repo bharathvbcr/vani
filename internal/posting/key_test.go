@@ -77,6 +77,7 @@ func TestSearchSiteKeys(t *testing.T) {
 		{TeamtailorKey, "Polestar", "2370D02D-914F-44E0-ABF2-8EC6EB860415", "tm:polestar:2370d02d-914f-44e0-abf2-8ec6eb860415", Teamtailor},
 		{HireHiveKey, "AMCSGroup", "job_zo9SLD", "hv:amcsgroup:job_zo9sld", HireHive},
 		{HiBobKey, "Corlytics", "D1C264EA-1AB6-4FF8-BE27-227FA82F179A", "hb:corlytics:d1c264ea-1ab6-4ff8-be27-227fa82f179a", HiBob},
+		{ManatalKey, "Performacentric", "RY787VY6", "mn:performacentric:ry787vy6", Manatal},
 		{TikTokKey, "TikTok", "7680987768009754885", "tt:tiktok:7680987768009754885", TikTok},
 		{TalentBrewKey, "Intuit", "102521439872", "tb:intuit:102521439872", TalentBrew},
 		{MetaKey, "Meta", "2486789151677735", "mt:meta:2486789151677735", Meta},

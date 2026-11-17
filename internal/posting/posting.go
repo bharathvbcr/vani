@@ -78,6 +78,10 @@ const (
 	// HiBob is a HiBob career site ({token}.careers.hibob.com). The token is
 	// the subdomain. The key id is the job ad's id.
 	HiBob ATS = "hb"
+	// Manatal is a Manatal career page (www.careers-page.com/{token}, read
+	// from api.manatal.com). The token is the career-page slug and the key id
+	// is the job's hash.
+	Manatal ATS = "mn"
 	// TikTok is TikTok's careers site (lifeattiktok.com). The token is
 	// "tiktok", the one site the adapter knows.
 	TikTok ATS = "tt"

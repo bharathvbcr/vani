@@ -59,6 +59,7 @@ var sourceATS = []sourceRow{
 	{"teamtailor", posting.Teamtailor, false},
 	{"hirehive", posting.HireHive, false},
 	{"hibob", posting.HiBob, false},
+	{"manatal", posting.Manatal, false},
 }
 
 // searchesBoard is true for the ATSs whose board takes the search that found

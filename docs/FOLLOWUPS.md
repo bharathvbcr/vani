@@ -2158,8 +2158,14 @@ Left open:
     rendered in the browser from `/services/`, which robots disallows. No adapter yet.
   - **Akamai** (`jobs.akamai.com`, Oracle HCM `CX_1`) answers 403 from its own edge to every
     plain request, robots.txt included. Not built.
-  - Not yet located: Applied Materials, Lam Research and NetApp (Eightfold; Lam and NetApp also
-    show SuccessFactors markers).
+  - Not yet located: Lam Research and NetApp (Eightfold; Lam and NetApp also
+    show SuccessFactors markers). Applied Materials is Workday (`wd amat/External`,
+    `amat.wd1.myworkdayjobs.com`, added 2026-11-17).
+  - **Manatal** (`mn`, `internal/sources/manatal`, 2026-11-17): reads `api.manatal.com/open/v3/career-page/{token}/jobs/`
+    and maps `www.careers-page.com/{token}` in `BoardFromURL` and `freehire`.
+  - Added 195 more tech and profile-matched company boards on 2026-11-17 (126 general tech/quant/cloud/security
+    boards + 69 AI/inference/GPU/Rust/robotics/quant profile-matched boards, 9,528 postings verified across
+    `gh`, `ab`, `lv`, `gm`, `rp`, `bz`, `tm`, `wd`; live watchlist now 701 boards).
   - Added 2026-11-17 after a scratch dry run (1,542 postings, all with description and location):
     Riot Games, Pure Storage (board name "Everpure"), PagerDuty, New Relic, Fastly, YugabyteDB,
     Zscaler, SoFi, Samsung Semiconductor, PlayStation, Netlify (gh) and Fly.io (lv `fly`).
