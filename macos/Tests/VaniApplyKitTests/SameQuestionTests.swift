@@ -259,6 +259,332 @@ final class SameQuestionTests: XCTestCase {
         XCTAssertEqual(viaAgent.calls.count, 1, "an explicit backend is not shadowed by the agent")
     }
 
+    /// Suggest's pre-model skip: a label `vani suggest` would not send to a model must not start the
+    /// helper. `skipped` is the closed detail for that. An empty label stays `bad_request`, not a skip.
+    func testSuggestSkipDoesNotStartTheHelper() throws {
+        let store = BankStore(directory: try tempDir(self))
+        func asked(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws -> Bool {
+            let spy = Spy()
+            let reply = try handle(["op": "sameQuestion", "a": a, "b": b], store: store, backend: spy)
+            XCTAssertEqual(reply["reading"] as? String, "unavailable", file: file, line: line)
+            XCTAssertEqual(reply["detail"] as? String, "skipped", file: file, line: line)
+            XCTAssertNil(reply["value"], file: file, line: line)
+            XCTAssertFalse(String(describing: reply).contains(a) || (b.count > 2 && String(describing: reply).contains(b)),
+                           "the reply must not echo a label", file: file, line: line)
+            return spy.calls.isEmpty
+        }
+        func started(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws {
+            let spy = Spy(reply: ["reading": "answered", "value": "different"])
+            let reply = try handle(["op": "sameQuestion", "a": a, "b": b], store: store, backend: spy)
+            XCTAssertEqual(reply as NSDictionary, ["reading": "answered", "value": "different"], file: file, line: line)
+            XCTAssertEqual(spy.calls.count, 1, file: file, line: line)
+            let agentSpy = Spy()
+            let agent = SQ.agentReply(a: a, b: b, helper: agentSpy)
+            XCTAssertNil(agent.error, file: file, line: line)
+            XCTAssertEqual(agentSpy.calls.count, 1, "the agent must reach the helper", file: file, line: line)
+        }
+
+        for (a, b) in [
+            ("Visa sponsorship", "Favorite color"),
+            ("Favorite color", "Visa sponsorship"),
+            ("Gender", "Years of experience"),
+            ("I agree to the terms", "LinkedIn profile"),
+            ("Visa\u{00A0}sponsorship", "Favorite color"),
+            ("Visa\u{200B}sponsorship", "Favorite color"),
+            ("\u{FF36}\u{FF49}\u{FF53}\u{FF41} sponsorship", "Favorite color"),
+            ("citi&lt;b&gt;zenship", "Favorite color"),
+            ("authoris\u{0435}d to work", "Favorite color"),
+            ("Are you on OPT or CPT?", "Favorite color"),
+            ("Are you a citiz\u{00E9}n?", "Favorite color"),
+            ("citi&shy;zenship", "Favorite color"),
+            ("Visa&nbsp;sponsorship", "Favorite color"),
+            ("Are you 18 or older?", "Favorite color"),
+            ("Are you a citi<b>zen</b>?", "Favorite color"),
+            ("Are you a \u{24B8}itizen?", "Favorite color"),
+            ("Are you a citi\u{2060}zen?", "Favorite color"),
+            ("citi\u{00AD}zen", "Favorite color"),
+            ("White", "Favorite color"),
+            ("workauthorization", "Favorite color"),
+            ("Describe your visa sponsorship history", "Favorite color"),
+        ] {
+            XCTAssertTrue(try asked(a, b), "\(a) / \(b)")
+        }
+        let emptySpy = Spy()
+        let empty = try handle(["op": "sameQuestion", "a": "", "b": "Visa sponsorship"], store: store, backend: emptySpy)
+        XCTAssertEqual(empty["code"] as? String, "bad_request")
+        XCTAssertNil(empty["reading"])
+        XCTAssertTrue(emptySpy.calls.isEmpty)
+
+        try started("Years of experience", "Favorite color")
+        try started("Describe a time you did not agree with the plan", "Favorite color")
+        try started("Favorite color", "Describe a time you did not agree with the plan")
+        try started("Date of birth", "Favorite color")
+        try started("Opt in to receive job alerts", "Link to a white paper you wrote")
+        try started("Cyrillic \u{0430} and Latin a apart", "Favorite color")
+        try started("R\u{00E9}sum\u{00E9} summary", "Favorite color")
+        try started("Tell us about the H-2 pressure sensor you built", "Favorite color")
+        try started("Do you have 10 years of experience?", "Favorite color")
+        try started("passport", "Favorite color")
+        try started("social security", "Favorite color")
+        try started("Describe a blackbox testing project", "Favorite color")
+        // Four entity layers stay undecoded, so this is not a citizenship label.
+        try started("citi&amp;amp;amp;amp;lt;b&amp;amp;amp;amp;gt;zen", "Favorite color")
+
+        let agentSpy = Spy()
+        let skipped = SQ.agentReply(a: "Gender", b: "Years of experience", helper: agentSpy)
+        XCTAssertNil(skipped.error)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(skipped.reply)) as? [String: Any])
+        XCTAssertEqual(object as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertTrue(agentSpy.calls.isEmpty)
+        XCTAssertEqual(SQ.checked(object) as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertTrue(SQ.opDetails.contains("skipped"))
+
+        let marker = try tempDir(self).appendingPathComponent("launched")
+        let binary = try fakeHelper("echo launched > '\(marker.path)'\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"same\"}'")
+        let direct = try compare(FMHelper(binary: binary.url), "I agree to the terms", "Years of experience")
+        XCTAssertEqual(direct as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "vani-fm must not be executed")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: binary.request.path), "stdin must not be written")
+
+        let ran = try fakeHelper(#"echo '{"v":1,"reading":"answered","value":"different"}'"#)
+        let born = try compare(FMHelper(binary: ran.url), "Date of birth", "Favorite color")
+        XCTAssertEqual(born as NSDictionary, ["reading": "answered", "value": "different"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ran.request.path), "a broader-only label still starts vani-fm")
+        let essay = try compare(FMHelper(binary: ran.url), "Describe a time you did not agree with the plan", "LinkedIn profile")
+        XCTAssertEqual(essay as NSDictionary, ["reading": "answered", "value": "different"])
+
+        // labels() turns a format character into a space. FMHelper is also given the unflattened
+        // pair, which only matches after folds drops the character.
+        let joined = try fakeHelper("echo launched > '\(marker.path)'\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"same\"}'")
+        let directLabels = SQ.Labels(a: "citi\u{00AD}zen", b: "Favorite color")
+        XCTAssertEqual(FMHelper(binary: joined.url).compare(directLabels) as NSDictionary,
+                       ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        let agentJoined = Spy()
+        let joinedReply = SQ.agentReply(a: "citi\u{00AD}zen", b: "Favorite color", helper: agentJoined)
+        XCTAssertEqual(try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(joinedReply.reply)) as? [String: Any]) as NSDictionary,
+                       ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertTrue(agentJoined.calls.isEmpty)
+    }
+
+    /// Suggest skips only when Guard and NeverDrafted are both nonempty. The essay exception is consent
+    /// only, and it reads the original label: a fold that creates "describe" does not clear another hit.
+    /// Broader-only labels are not part of the skip. The path is synchronous (no cancellation); a skip
+    /// returns before any helper process is started.
+    func testAdversarialSuggestSkipFollowsGuardAndNeverDrafted() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let marker = try tempDir(self).appendingPathComponent("launched")
+        let trap = try fakeHelper("echo launched > '\(marker.path)'\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"same\"}'")
+        let trapHelper = FMHelper(binary: trap.url)
+        let answer: NSDictionary = ["reading": "answered", "value": "different"]
+        let skipped: NSDictionary = ["reading": "unavailable", "detail": "skipped"]
+        let absent = FMHelper(binary: URL(fileURLWithPath: "/nonexistent/vani-fm-adversarial"))
+
+        func nativeAndAgent(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws -> (native: [String: Any], agent: [String: Any]) {
+            let spy = Spy(reply: ["reading": "answered", "value": "different"])
+            let native = try handle(["op": "sameQuestion", "a": a, "b": b], store: store, backend: spy)
+            let agentSpy = Spy(reply: ["reading": "answered", "value": "different"])
+            let agentRaw = SQ.agentReply(a: a, b: b, helper: agentSpy)
+            XCTAssertNil(agentRaw.error, file: file, line: line)
+            let agent = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(agentRaw.reply)) as? [String: Any], file: file, line: line)
+            XCTAssertEqual(spy.calls.count, agentSpy.calls.count, "native and agent both reach the helper, or neither does", file: file, line: line)
+            XCTAssertLessThanOrEqual(spy.calls.count, 1, file: file, line: line)
+            return (native, agent)
+        }
+        func expectSkip(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws {
+            let got = try nativeAndAgent(a, b, file: file, line: line)
+            XCTAssertEqual(got.native as NSDictionary, skipped, "native \(a) / \(b)", file: file, line: line)
+            XCTAssertEqual(got.agent as NSDictionary, skipped, "agent \(a) / \(b)", file: file, line: line)
+            XCTAssertEqual(got.native.count, 2, file: file, line: line)
+            let direct = trapHelper.compare(SQ.Labels(a: a, b: b))
+            XCTAssertEqual(direct as NSDictionary, skipped, "compare \(a) / \(b)", file: file, line: line)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "skip must not execute vani-fm", file: file, line: line)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: trap.request.path), "skip must not write helper stdin", file: file, line: line)
+        }
+        func expectStart(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws {
+            let got = try nativeAndAgent(a, b, file: file, line: line)
+            XCTAssertEqual(got.native as NSDictionary, answer, "native \(a) / \(b)", file: file, line: line)
+            XCTAssertEqual(got.agent as NSDictionary, answer, "agent \(a) / \(b)", file: file, line: line)
+            // A missing binary answers no_binary only after the skip check. skipped here would be a wrong skip.
+            let direct = absent.compare(SQ.Labels(a: a, b: b))
+            XCTAssertEqual(direct as NSDictionary, ["reading": "unavailable", "detail": "no_binary"], "compare \(a) / \(b)", file: file, line: line)
+        }
+
+        // Either side, both sides, neither. A broader pair is neither for this rule.
+        try expectSkip("Visa sponsorship", "Favorite color")
+        try expectSkip("Favorite color", "Gender")
+        try expectSkip("Gender", "Visa sponsorship")
+        try expectStart("Years of experience", "Favorite color")
+        try expectStart("passport", "Date of birth")
+        try expectSkip("Describe a time you did not agree with the plan", "Gender")
+        try expectStart("Describe a time you did not agree with the plan", "Favorite color")
+
+        // Consent plus an essay starts. The same essay plus work auth or self-id still skips.
+        try expectStart("Describe a time you did not agree with the plan", "LinkedIn profile")
+        try expectStart("How do you agree with a plan", "Favorite color")
+        try expectStart("Tell me about a time you did not agree", "Favorite color")
+        try expectStart("DESCR\u{0130}BE why you agree", "Favorite color")
+        try expectStart("Describe why you ag\u{00AD}ree", "Favorite color")
+        try expectSkip("Describe your visa sponsorship history", "Favorite color")
+        try expectSkip("Explain your gender", "Favorite color")
+        try expectSkip("Descri\u{00AD}be why you agree", "Favorite color")
+        try expectSkip("Descri\u{200B}be why you agree", "Favorite color")
+        try expectSkip("Descri\u{2060}be why you agree", "Favorite color")
+        try expectSkip("Descri<b>be why you agree", "Favorite color")
+        try expectSkip("\u{FF25}\u{FF38}\u{FF30}\u{FF2C}\u{FF21}\u{FF29}\u{FF2E} why you agree", "Favorite color")
+        try expectSkip("DESCRI\u{0307}BE why you agree", "Favorite color")
+        // A format character inside the consent word still starts when the essay word is intact.
+        try expectStart("Describe why you ag\u{200B}ree", "Favorite color")
+
+        // Broader-only, and words that only contain a guard token, start.
+        for label in [
+            "Date of birth", "passport", "dob", "social security", "whitepaper", "snowwhite",
+            "Link to your whiteboard design", "Describe a blackbox testing project",
+            "visas", "visa_status", "visa1", "1visa", "opt", "Opt", "ADOPT", "cpt",
+            "165+", "under 15", "over 66", "page 16", "teenage", "coverage of the service",
+            "Tell us about an agent you built", "National conference talks you gave",
+            "A disagreement about the schedule", "Do you have a citizenry of friends here?",
+            "unisex", "gendered", "Essex office", "h-1", "f1", "vi\u{2C00}sa", "vi\u{A7B5}sa",
+            "qa \u{0430} z",
+        ] {
+            try expectStart(label, "Favorite color")
+        }
+        for label in [
+            "65+", "under 16", "over 65", "H1B", "visa-status", "OPT", "orwhite",
+        ] {
+            try expectSkip(label, "Favorite color")
+        }
+
+        // Format characters, spaces, entities, tags, fullwidth, and a lookalike inside a Latin token.
+        for label in [
+            "citi\u{00AD}zen", "citi\u{2060}zen", "citi\u{200B}zen", "vi\u{200C}sa", "vi\u{200D}sa",
+            "vi\u{FEFF}sa", "vi\u{061C}sa", "vi\u{180E}sa", "authorised to\u{180E}work",
+            "Visa\u{00A0}sponsorship", "citi\u{3164}zen", "citi\u{2800}zen", "citi\u{115F}zen", "citi\u{FFA0}zen",
+            "citi&lt;b&gt;zen", "citi&shy;zen", "Visa&nbsp;sponsorship", "v&iacute;sa",
+            "citi&#173;zen", "citi&#xad;zen", "citi&#xAD;zen", "&#xff56;isa",
+            "citi&amp;amp;shy;zen", "citi&ltb&gtzen", "vi<br>sa", "ｖｉｓａ",
+            "\u{1D42F}\u{1D422}\u{1D42C}\u{1D41A}", "\u{0}visa", "\u{1F600} visa",
+            "vi\u{0430}sa", "q\u{0430}z", "vi\u{03B1}sa", "vi\u{0561}sa", "vi\u{13A0}sa", "vi\u{AB70}sa",
+            "vi\u{2C81}sa", "vi\u{1C90}sa",
+        ] {
+            try expectSkip(label, "Favorite color")
+        }
+        // Three entity layers stay short of a soft hyphen, so this is not a citizenship label.
+        try expectStart("citi&amp;amp;amp;shy;zen", "Favorite color")
+        try expectStart("citi&amp;amp;amp;amp;shy;zen", "Favorite color")
+        // A control kept by folds is not a word boundary suggest would ignore, and it is not a skip.
+        try expectStart("vi\u{0001}sa", "Favorite color")
+
+        let started = Date()
+        try expectSkip("I agree to the terms", "Years of experience")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5, "a skip returns before a process can start")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+
+        let ran = try fakeHelper(#"echo '{"v":1,"reading":"answered","value":"different"}'"#)
+        let live = FMHelper(binary: ran.url)
+        for (a, b) in [
+            ("Date of birth", "passport"),
+            ("Describe a time you did not agree with the plan", "LinkedIn profile"),
+            ("whitepaper", "Favorite color"),
+            ("q", "z"),
+        ] {
+            XCTAssertEqual(live.compare(try XCTUnwrap(SQ.labels(a: a, b: b))) as NSDictionary, answer as NSDictionary, a)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: ran.request.path), "a non-skip still starts vani-fm")
+            try FileManager.default.removeItem(at: ran.request)
+        }
+    }
+
+    /// Length is decided before the skip. Empty and whitespace stay bad_request even beside a guard
+    /// label. 301 scalars is bad_request and does not start the helper; 300 of a guard label skips.
+    func testAdversarialSkipRespectsLabelBounds() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let marker = try tempDir(self).appendingPathComponent("launched")
+        let trap = try fakeHelper("echo launched > '\(marker.path)'\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"same\"}'")
+        func refused(_ a: String, _ b: String, file: StaticString = #filePath, line: UInt = #line) throws {
+            let spy = Spy()
+            let reply = try handle(["op": "sameQuestion", "a": a, "b": b], store: store, backend: spy)
+            XCTAssertEqual(reply["code"] as? String, "bad_request", file: file, line: line)
+            XCTAssertNil(reply["reading"], file: file, line: line)
+            XCTAssertEqual(reply.count, 2, file: file, line: line)
+            XCTAssertTrue(spy.calls.isEmpty, file: file, line: line)
+            let agentSpy = Spy()
+            let agent = SQ.agentReply(a: a, b: b, helper: agentSpy)
+            XCTAssertNil(agent.reply, file: file, line: line)
+            XCTAssertNotNil(agent.error, file: file, line: line)
+            XCTAssertTrue(agentSpy.calls.isEmpty, file: file, line: line)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), file: file, line: line)
+            _ = trap
+        }
+        try refused("", "Visa sponsorship")
+        try refused("   ", "Visa sponsorship")
+        try refused("\n\t", "Gender")
+        try refused("\u{00A0}\u{00A0}", "Gender")
+        try refused("\u{200B}", "Favorite color")
+        try refused("\u{0001}", "Visa sponsorship")
+        let max = SQ.maxLabelScalars
+        let tooLong = "Visa sponsorship " + String(repeating: "q", count: max - "Visa sponsorship ".unicodeScalars.count + 1)
+        XCTAssertEqual(tooLong.unicodeScalars.count, max + 1)
+        try refused(tooLong, "Favorite color")
+        let trimmedTooLong = " " + String(repeating: "q", count: max + 1)
+        try refused(trimmedTooLong, "z")
+
+        let spy = Spy(reply: ["reading": "answered", "value": "different"])
+        let one = try handle(["op": "sameQuestion", "a": "q", "b": "z"], store: store, backend: spy)
+        XCTAssertEqual(one as NSDictionary, ["reading": "answered", "value": "different"])
+        XCTAssertEqual(spy.calls.count, 1)
+
+        let ordinary = String(repeating: "q", count: max)
+        XCTAssertEqual(ordinary.unicodeScalars.count, max)
+        let padded = " " + ordinary
+        XCTAssertEqual(padded.unicodeScalars.count, max + 1, "the raw label is over the cap; trimming brings it back")
+        let start = Spy(reply: ["reading": "answered", "value": "different"])
+        let started = try handle(["op": "sameQuestion", "a": padded, "b": "z"], store: store, backend: start)
+        XCTAssertEqual(started as NSDictionary, ["reading": "answered", "value": "different"])
+        XCTAssertEqual(start.calls.count, 1)
+
+        let head = "Visa sponsorship "
+        let guarded = head + String(repeating: "q", count: max - head.unicodeScalars.count)
+        XCTAssertEqual(guarded.unicodeScalars.count, max)
+        let skipSpy = Spy()
+        let skipped = try handle(["op": "sameQuestion", "a": " " + guarded, "b": "Favorite color"], store: store, backend: skipSpy)
+        XCTAssertEqual(skipped as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertEqual(skipped.count, 2)
+        XCTAssertTrue(skipSpy.calls.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        let direct = FMHelper(binary: trap.url).compare(SQ.Labels(a: guarded, b: "Favorite color"))
+        XCTAssertEqual(direct as NSDictionary, ["reading": "unavailable", "detail": "skipped"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: trap.request.path))
+    }
+
+    /// Dropping a leading or trailing C0/C1 control is not something suggest's Guard does. "White" is
+    /// pinned only at the start or after specific punctuation, so a control glued to it must start.
+    func testAdversarialControlPrefixIsNotASuggestSkip() throws {
+        let store = BankStore(directory: try tempDir(self))
+        let marker = try tempDir(self).appendingPathComponent("launched")
+        let trap = try fakeHelper("echo launched > '\(marker.path)'\necho '{\"v\":1,\"reading\":\"answered\",\"value\":\"different\"}'")
+        let answer: NSDictionary = ["reading": "answered", "value": "different"]
+        let labels = ["\u{0001}White", "White\u{0001}", " \u{0001}White", "\u{0080}White", "\u{007F}White", "\u{0001}black"]
+        for label in labels {
+            let started = Date()
+            let spy = Spy(reply: ["reading": "answered", "value": "different"])
+            let native = try handle(["op": "sameQuestion", "a": label, "b": "Favorite color"], store: store, backend: spy)
+            XCTAssertEqual(native as NSDictionary, answer, label)
+            XCTAssertEqual(native.count, 2, label)
+            XCTAssertFalse(String(describing: native).contains("White") || String(describing: native).contains("black"), label)
+            XCTAssertEqual(spy.calls.count, 1, label)
+            let agentSpy = Spy(reply: ["reading": "answered", "value": "different"])
+            let agentRaw = SQ.agentReply(a: label, b: "Favorite color", helper: agentSpy)
+            let agent = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(agentRaw.reply)) as? [String: Any])
+            XCTAssertEqual(agent as NSDictionary, answer, label)
+            XCTAssertEqual(agentSpy.calls.count, 1, label)
+            let direct = FMHelper(binary: trap.url).compare(SQ.Labels(a: label, b: "Favorite color"))
+            XCTAssertEqual(direct as NSDictionary, answer, label)
+            XCTAssertLessThan(Date().timeIntervalSince(started), 0.5, label)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: trap.request.path), "compare of an unguarded label starts the helper")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     func testReadingsCarryNoLabelText() throws {
         let store = BankStore(directory: try tempDir(self))
         for helperReply in ["unavailable", "failed", "refused"] {
