@@ -87,3 +87,12 @@ export interface Match {
 export function emptyBank(): Bank {
   return { version: 1, answers: {}, settings: { captureSelfId: false, disabledHosts: [] } };
 }
+
+/**
+ * The answer stored under `key`, or undefined. The one keyed read of an answer map: a plain object answers an
+ * absent "constructor" or "toString" with an Object.prototype member, so a read of a page-derived key goes
+ * through own-key semantics here, never `answers[key]`.
+ */
+export function ownAnswer(answers: Record<string, Answer>, key: string): Answer | undefined {
+  return Object.hasOwn(answers, key) ? answers[key] : undefined;
+}

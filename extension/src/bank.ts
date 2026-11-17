@@ -1,7 +1,33 @@
-import { type Answer, type Bank, type FieldInfo, type FieldKind, type Sensitivity, CHOICE_KINDS, emptyBank } from "./types";
+import { type Answer, type Bank, type FieldInfo, type FieldKind, type Sensitivity, CHOICE_KINDS, emptyBank, ownAnswer } from "./types";
 import { autocompleteKey, dialCodeOnly, normalizeLabel, signature, tokens } from "./normalize";
 import { classify, untouchable } from "./classify";
 import { intentOf } from "./intents";
+
+/**
+ * A host as the disabled list compares it: trimmed, lower case, no trailing dot ("Jobs.Example." is "jobs.example").
+ * The browser reports hostnames lower case already; the list is owner-typed or imported, so it is the side that varies.
+ */
+export function normalizeHost(h: string): string {
+  return h.trim().toLowerCase().replace(/\.+$/, "");
+}
+
+/** Whether capture is turned off for `host`. An empty host matches nothing. */
+export function hostDisabled(bank: Bank, host: string): boolean {
+  const want = normalizeHost(host);
+  return want !== "" && bank.settings.disabledHosts.some(h => normalizeHost(h) === want);
+}
+
+/**
+ * The disabled list after the owner ticks (`on`) or unticks `host`, compared as hostDisabled does. Unticking removes
+ * every entry that matches under normalisation ("Example.com" and "example.com." both go); ticking adds the
+ * normalised host only when no entry already matches.
+ */
+export function withHostDisabled(hosts: readonly string[], host: string, on: boolean): string[] {
+  const want = normalizeHost(host);
+  const rest = hosts.filter(h => normalizeHost(h) !== want);
+  if (!on) return rest;
+  return want === "" || rest.length !== hosts.length ? [...hosts] : [...hosts, want];
+}
 
 /** The capture host for answers typed in the popup: never a real site, so no per-site signature is kept. */
 export const BASICS_HOST = "vani-basics";
@@ -9,6 +35,8 @@ export const BASICS_HOST = "vani-basics";
 // Bounds: the bank lives in chrome.storage.local (10 MB quota) or the Mac app,
 // and is exported as JSON, so every list and string is capped.
 export const MAX_ANSWERS = 2000;
+/** Why a new answer was not saved at MAX_ANSWERS, worded for the owner (the toast and the popup status carry it). */
+export const BANK_FULL = `the answer bank is full (${MAX_ANSWERS} answers). Delete some in the popup to make room.`;
 export const MAX_VALUE_CHARS = 10_000;
 export const MAX_LABELS = 20;
 export const MAX_SIGNATURES = 50;
@@ -49,7 +77,7 @@ export function mergeBanks(base: Bank, incoming: Bank): Bank {
     answers[k] = a;
   }
   for (const [k, a] of Object.entries(incoming.answers)) {
-    const have = answers[k];
+    const have = ownAnswer(answers, k);
     if (have) {
       if (a.updatedAt > have.updatedAt) answers[k] = a;
     } else if (Object.keys(answers).length < MAX_ANSWERS) {
@@ -73,6 +101,8 @@ export interface CaptureResult {
   skippedSecret: number;
   skippedSelfId: number;
   skippedEmpty: number;
+  /** Rows refused because the bank already holds MAX_ANSWERS answers (see mergeCapture). Absent from a host that predates it. */
+  skippedFull?: number;
 }
 
 /** The key an answer is stored under: the autocomplete meaning if any, else the label. */
@@ -133,7 +163,7 @@ export function ownerIndex(answers: Record<string, Answer>): OwnerIndex {
   };
   return {
     find(f, sens) {
-      const direct = Object.hasOwn(answers, answerKey(f)) ? answers[answerKey(f)] : undefined;
+      const direct = ownAnswer(answers, answerKey(f));
       if (direct) return direct;
       computed++;
       const want = conceptKey(f.label, f.autocomplete);
@@ -144,7 +174,7 @@ export function ownerIndex(answers: Record<string, Answer>): OwnerIndex {
       }
       let best: Answer | undefined;
       for (const k of byConcept.get(want) ?? []) {
-        const a = Object.hasOwn(answers, k) ? answers[k] : undefined;
+        const a = ownAnswer(answers, k);
         if (!a || a.sensitivity !== sens || !kindsCompatible(a.kind, f.kind)) continue;
         // The stored row is re-classified from its key and every wording joined (parseBank): a
         // wording that would change that reading (to secret, which drops the row, or to self_id)
@@ -228,7 +258,7 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
         const key = answerKey(f);
         const want = intentOf(f.label);
         let removed = false;
-        if (out.answers[key]) {
+        if (ownAnswer(out.answers, key)) {
           delete out.answers[key];
           removed = true;
         }
@@ -264,7 +294,9 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
       continue;
     }
     if (prev && keepsSaved(prev.value, value)) continue;
-    if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedEmpty++; continue; }
+    // The bank-full rule: at MAX_ANSWERS a new question is refused and counted in skippedFull, never evicting an
+    // older answer to make room (which answer is "least wanted" is the owner's call: they delete rows in the popup).
+    if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedFull = (res.skippedFull ?? 0) + 1; continue; }
     const label = normalizeLabel(f.label);
     const sig = signature(host, f);
     // Long free text is job-specific, and a model draft is never a confident
@@ -327,12 +359,12 @@ export function mergeCaptureDelta(bank: Bank, fields: FieldInfo[], host: string,
   const upsert: Answer[] = [];
   const deleteKeys: string[] = [];
   for (const [k, a] of Object.entries(result.bank.answers)) {
-    if (bank.answers[k] !== a) {
+    if (ownAnswer(bank.answers, k) !== a) {
       upsert.push(a);
     }
   }
   for (const k of Object.keys(bank.answers)) {
-    if (!result.bank.answers[k]) {
+    if (!ownAnswer(result.bank.answers, k)) {
       deleteKeys.push(k);
     }
   }
@@ -375,6 +407,10 @@ export function parseBank(json: string): { bank: Bank; droppedSecret: number } {
     if (!a || typeof a !== "object" || a.key !== key || typeof key !== "string" || key.length < 2 || key.length > 200) {
       throw new Error(`answer ${JSON.stringify(key).slice(0, 60)} is malformed`);
     }
+    // Answers live in a plain object. Assigning "__proto__" would swap its prototype, so that one key is refused
+    // (normalizeLabel never produces it). "constructor" and "prototype" are ordinary own keys; readers reach them
+    // through ownAnswer, which never answers an absent key with an Object.prototype member.
+    if (key === "__proto__") throw new Error(`answer key ${JSON.stringify(key)} is not allowed`);
     if (typeof a.kind !== "string" || !KINDS.has(a.kind)) throw new Error(`answer ${key}: unknown kind`);
     if (!isStrArray(a.value, MAX_OPTIONS) || !isStrArray(a.labels, MAX_LABELS) || !isStrArray(a.signatures, MAX_SIGNATURES)) {
       throw new Error(`answer ${key}: value, labels or signatures malformed`);

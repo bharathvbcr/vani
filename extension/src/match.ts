@@ -1,4 +1,4 @@
-import { type Answer, type Bank, type FieldInfo, type Match, CHOICE_KINDS } from "./types";
+import { type Answer, type Bank, type FieldInfo, type Match, CHOICE_KINDS, ownAnswer } from "./types";
 import { autocompleteKey, contactOf, jaccard, normalizeLabel, signature, tokens, withoutDialCode } from "./normalize";
 import { classify, untouchable } from "./classify";
 import { entryReadings, legacyEntryKey } from "./sections";
@@ -202,7 +202,8 @@ function walk(field: FieldInfo, bank: Bank, host: string, now: number, sink?: Re
     }
   }
   const ak = autocompleteKey(field.autocomplete);
-  if (ak && bank.answers[ak] && usable(bank.answers[ak]!)) candidates.push({ a: bank.answers[ak]!, via: "autocomplete", score: 0.95 });
+  const akAnswer = ak ? ownAnswer(bank.answers, ak) : undefined;
+  if (akAnswer && usable(akAnswer)) candidates.push({ a: akAnswer, via: "autocomplete", score: 0.95 });
   if (label && page) {
     const ft = tokens(page.base);
     const exact = new Set(idx.byKeyOrLabel.get(label) ?? []);

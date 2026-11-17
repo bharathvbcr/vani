@@ -23,6 +23,7 @@ import {
 import { isReadableJob, navigationHref, postingKey, readJobInfo } from "./jobinfo";
 import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, draftHelp, maxWordsFor, parseDraftReply } from "./draft";
 import { classify } from "./classify";
+import { BANK_FULL, hostDisabled } from "./bank";
 import { type AppliedFlow, type AppliedUi, createAppliedFlow, isFinalSubmit as appliedFinal, offerSubject, postingKey as applicationKey } from "./applied";
 import {
   DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, OLDER_VANI, SUGGEST_TIMEOUT_MS, type SuggestField, type SuggestRequest,
@@ -94,7 +95,7 @@ async function scanBank(): Promise<Bank | null> {
 }
 
 function disabledHere(b: Bank | null): boolean {
-  return !!b && b.settings.disabledHosts.includes(location.hostname);
+  return !!b && hostDisabled(b, location.hostname);
 }
 
 function coveredByParent(): boolean {
@@ -110,8 +111,10 @@ let tracker: Tracker;
 
 function announce(r: FlushResult): void {
   const saved = r.added + r.updated;
-  if (r.failed) toast("Could not save answers: the extension's storage did not accept them");
-  else if (saved > 0) toast(`Saved ${saved} answers (${r.reason})` + (r.skippedSecret ? `; ${r.skippedSecret} sensitive fields not saved` : "") + (r.notSent ? `; ${r.notSent} more waiting for the next save` : ""));
+  if (r.refused) toast(`Not saved: ${r.refused}`);
+  else if (r.failed) toast("Could not save answers: the extension's storage did not accept them");
+  else if (saved > 0) toast(`Saved ${saved} answers (${r.reason})` + (r.skippedSecret ? `; ${r.skippedSecret} sensitive fields not saved` : "") + (r.skippedFull ? `; ${r.skippedFull} not saved: ${BANK_FULL}` : "") + (r.notSent ? `; ${r.notSent} more waiting for the next save` : ""));
+  else if (r.skippedFull) toast(`Not saved: ${BANK_FULL}`);
   else if (r.reason === "saved") toast(`Nothing new to save (${r.unchanged} answers already saved)`);
 }
 
@@ -1176,14 +1179,19 @@ async function saveOne(ref: FieldRef): Promise<void> {
   }
   bankMemo.invalidate();
   if (!reply || typeof reply !== "object" || !("added" in reply)) {
-    toast("Could not save answers: the extension's storage did not accept them");
+    const why = reply && typeof reply === "object" && typeof reply.error === "string" ? reply.error : "";
+    toast(why ? `Not saved: ${why}` : "Could not save answers: the extension's storage did not accept them");
     return;
   }
   // The background accepted this value. Remember it so a later page-wide Save does not count it again.
   const stored = reply.added + reply.updated > 0;
-  const alreadyHeld = reply.added + reply.updated + reply.skippedSecret + reply.skippedSelfId + reply.skippedEmpty === 0;
+  const alreadyHeld = reply.added + reply.updated + reply.skippedSecret + reply.skippedSelfId + reply.skippedEmpty + (reply.skippedFull ?? 0) === 0;
   if (stored || alreadyHeld) tracker.noteSent(field, lastBank?.settings.captureSelfId === true);
   void scheduleScan();
+  if ((reply.skippedFull ?? 0) > 0) {
+    toast(`Not saved: ${BANK_FULL}`);
+    return;
+  }
   if (reply.skippedSecret > 0) {
     toast("Vani does not save this.");
     return;
@@ -2042,7 +2050,8 @@ if (!window.__vaniApply && !coveredByParent()) {
       const key = applicationKey(location.href);
       const r = await send<CaptureReply | { error: string }>({ type: "capture", host: location.hostname, fields, ...(key ? { postingKey: key } : {}) });
       bankMemo.invalidate(); // the scan that follows must see what was just saved
-      return r && "added" in r ? r : null;
+      if (r && "added" in r) return r;
+      return r && typeof r.error === "string" ? { error: r.error } : null;
     },
     onDom: () => { void scheduleScan(); },
     onResult: r => announce(r),

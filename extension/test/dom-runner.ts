@@ -8,7 +8,7 @@ import { readJobInfo } from "../src/jobinfo";
 import { scrapePageJobs } from "../src/scraper";
 import { mergeCapture } from "../src/bank";
 import { coverageLine, coverageOf } from "../src/coverage";
-import { createTracker } from "../src/tracker";
+import { type TrackerDeps, createTracker as createRealTracker } from "../src/tracker";
 import { type Bank, type FieldInfo, emptyBank } from "../src/types";
 import { intentOf, motivationEssay } from "../src/intents";
 import { BASICS_HOST, basicsFields } from "../src/basics";
@@ -23,6 +23,15 @@ function check(name: string, ok: boolean, detail = ""): void {
   lines.push(`${ok ? "PASS" : "FAIL"} ${name}${ok || !detail ? "" : ` :: ${detail}`}`);
 }
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/**
+ * This page can dispatch only script events, which are never trusted. Every tracker here is told to trust them,
+ * as if each were the user typing (TrackerDeps.isTrusted); the one test that checks a hostile page uses
+ * createRealTracker, whose default is the browser's own isTrusted.
+ */
+const createTracker = (d: TrackerDeps) => createRealTracker({ isTrusted: () => true, ...d });
+/** The user typing in `el`: a script-made input event stands in, which the trusting tracker above accepts. */
+const typed = (el: HTMLElement): void => { el.dispatchEvent(new Event("input", { bubbles: true, composed: true })); };
 
 /** Listen before the frame is inserted. A srcdoc load can finish inside append, and a listener added afterwards never runs. */
 function frameLoaded(frame: HTMLIFrameElement): Promise<void> {
@@ -254,28 +263,30 @@ async function tracking(): Promise<void> {
   check("password never captured or sent", !JSON.stringify(mem).includes("hunter3"));
 
   const r2 = await t.flush("again", true);
-  check("flushing the same page again saves nothing twice", mem.answers["current company"]!.uses === 1 && r2 !== null && r2.added === 0 && r2.updated === 0 && r2.unchanged >= 1, JSON.stringify(r2));
+  // The explicit Save reads every visible field (w3b), so it adds the page's other, untouched answers; what it must
+  // not do is send the answer this page already saved a second time.
+  check("flushing the same page again saves nothing twice", mem.answers["current company"]!.uses === 1 && r2 !== null && r2.unchanged >= 1, JSON.stringify(r2));
 
   const sp4 = q<HTMLInputElement>(document, "#sp4");
-  sp4.value = "120000"; // typed, never blurred, no change event
+  sp4.value = "120000"; typed(sp4); // typed, never blurred, no change event
   const sendsBeforeHide = sends;
   window.dispatchEvent(new Event("pagehide"));
   check("pagehide sends within the event, without awaiting a bank read", sends === sendsBeforeHide + 1, `sends ${sends - sendsBeforeHide}`);
   await sleep(120);
   check("pagehide flushes a value that never fired change", mem.answers["expected salary"]?.value.join() === "120000", JSON.stringify(mem.answers["expected salary"]));
 
-  sp4.value = "130000";
+  sp4.value = "130000"; typed(sp4); // the user typed it: a script-only rewrite before Next is not read (w3b)
   q<HTMLElement>(document, "#wd-next").click(); // "Save and Continue", a button outside any form
   await sleep(120);
   check("advance button outside a form flushes", mem.answers["expected salary"]?.value.join() === "130000");
 
-  sp4.value = "140000";
+  sp4.value = "140000"; typed(sp4);
   sp4.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true }));
   await sleep(300);
   check("Enter flushes", mem.answers["expected salary"]?.value.join() === "140000");
 
   const pron = q(document, "#sh-dst").shadowRoot!.getElementById("sf") as HTMLInputElement;
-  pron.value = "ZED";
+  pron.value = "ZED"; typed(pron);
   pron.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
   await sleep(120);
   await t.flush("check");
@@ -558,6 +569,7 @@ async function oncePerPage(): Promise<void> {
       return counts;
     },
   });
+  typed(q<HTMLInputElement>(box, "#op1")); typed(q<HTMLInputElement>(box, "#op2"));
   await t.flush("first");
   const after1 = sends;
   const r2 = await t.flush("second");
@@ -568,7 +580,7 @@ async function oncePerPage(): Promise<void> {
   check("pagehide after a flush does not send it again", sends === 1 && mem.answers["favourite editor"]?.uses === 1, `sends ${sends} uses ${mem.answers["favourite editor"]?.uses}`);
 
   refuse = true;
-  q<HTMLInputElement>(box, "#op1").value = "emacs";
+  q<HTMLInputElement>(box, "#op1").value = "emacs"; typed(q<HTMLInputElement>(box, "#op1"));
   const refused = await t.flush("refused");
   check("a save the background refused is reported failed", refused?.failed === true, JSON.stringify(refused));
   refuse = false;
@@ -577,6 +589,300 @@ async function oncePerPage(): Promise<void> {
   await t.flush("again");
   check("and then not again", mem.answers["favourite editor"]?.uses === 2, String(mem.answers["favourite editor"]?.uses));
   t.dispose();
+  box.remove();
+}
+
+/**
+ * w3b (ft-bf5e): a hostile page script sets values and dispatches input, change, focusout and click events. This is
+ * the real tracker with the browser's own isTrusted, so none of it is the user. It sends nothing and prompts nothing;
+ * a user's own typing (here, the trusting tracker) is still captured, and so is an explicit Save.
+ */
+async function hostilePage(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML = '<label for="hp1">Favourite editor</label><input id="hp1" value="vim"><label for="hp2">Favourite shell</label><input id="hp2" value="fish">' +
+    '<label for="hp3">Favourite font</label><input id="hp3" value="mono"><button id="hp-go" type="button">Submit application</button>';
+  document.body.append(box);
+  /** The test page holds the whole DOM test document: look only at this test's three questions. */
+  const mine = (sent: FieldInfo[]): string[] => sent.map(f => f.label).filter(l => /^Favourite (editor|shell|font)$/.test(l));
+  const open = (make: typeof createRealTracker) => {
+    const sent: FieldInfo[] = [];
+    let prompts = 0;
+    const t = make({ doc: document, host: "x.example", getBank: async () => emptyBank(), commitMs: 5, onSubmit: () => { prompts++; }, send: async f => { sent.push(...f); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; } });
+    return { sent, t, prompts: () => prompts };
+  };
+  try {
+    const hostile = open(createRealTracker);
+    for (const id of ["hp1", "hp2", "hp3"]) {
+      const el = q<HTMLInputElement>(box, `#${id}`);
+      el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      el.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
+    }
+    q<HTMLElement>(box, "#hp-go").click();
+    window.dispatchEvent(new Event("pagehide"));
+    await sleep(60);
+    await hostile.t.flush("hostile");
+    check("hostile page: synthetic events capture nothing and raise no Applied prompt", mine(hostile.sent).length === 0 && hostile.prompts() === 0, `sent ${JSON.stringify(mine(hostile.sent))} prompts ${hostile.prompts()}`);
+    await hostile.t.flush("saved", true);
+    check("hostile page: an explicit Save still captures the untouched values", mine(hostile.sent).length === 3, `sent ${JSON.stringify(mine(hostile.sent))}`);
+    hostile.t.dispose();
+
+    const user = open(createTracker);
+    typed(q<HTMLInputElement>(box, "#hp1"));
+    await user.t.flush("typed");
+    check("hostile page: the same page, typed in by the user, captures only the typed field", mine(user.sent).length === 1 && mine(user.sent)[0] === "Favourite editor", JSON.stringify(mine(user.sent)));
+    user.t.dispose();
+  } finally {
+    box.remove();
+  }
+}
+
+/**
+ * w3badv (ft-bf5e adversarial): attacks on the touched-field provenance. A "user" event here is a script event carrying
+ * a flag that this test's isTrusted accepts; a "script" event is the same event without it, as a page dispatches it.
+ * The checks marked "control" are expected to hold; the others name a way for a page to get a value captured.
+ */
+async function w3badvProvenance(): Promise<void> {
+  const box = document.createElement("div");
+  document.body.append(box);
+  const mine = (sent: FieldInfo[]): FieldInfo[] => sent.filter(f => /^Adv /.test(f.label));
+  const names = (sent: FieldInfo[]): string => JSON.stringify(mine(sent).map(f => `${f.label}=${f.value.join(",")}`));
+  const user = (el: Element, type: string): void => { const e = new Event(type, { bubbles: true, composed: true }); Object.assign(e, { w3badvUser: true }); el.dispatchEvent(e); };
+  const script = (el: Element, type = "input"): void => { el.dispatchEvent(new Event(type, { bubbles: true, composed: true })); };
+  const open = (doc: Document = document) => {
+    const sent: FieldInfo[] = [];
+    const t = createRealTracker({
+      doc, host: "adv.example", getBank: async () => emptyBank(), commitMs: 5,
+      isTrusted: ev => (ev as Event & { w3badvUser?: boolean }).w3badvUser === true,
+      send: async f => { sent.push(...f); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; },
+    });
+    return { sent, t };
+  };
+  const el = (id: string) => q<HTMLInputElement>(box, `#${id}`);
+  const tiny = "width:1px;height:1px;border:0;padding:0;margin:0";
+  try {
+    // 1. A real click on the form background, a paragraph, the body and a Continue button marks no field; the page then fills five.
+    box.innerHTML = '<div id="adv1-bg"><p id="adv1-p">intro</p>' +
+      [1, 2, 3, 4, 5].map(i => `<label for="a1-${i}">Adv bg ${i}</label><input id="a1-${i}">`).join("") +
+      '<button type="button" id="adv1-go">Continue</button></div>';
+    {
+      const o = open();
+      for (const type of ["pointerdown", "mousedown", "click"]) { user(el("adv1-bg"), type); user(el("adv1-p"), type); user(document.body, type); }
+      for (let i = 1; i <= 5; i++) { el(`a1-${i}`).value = `forged${i}`; script(el(`a1-${i}`)); script(el(`a1-${i}`), "change"); script(el(`a1-${i}`), "focusout"); }
+      user(el("adv1-go"), "click");
+      await sleep(30); await o.t.flush("adv1");
+      check("w3badv control: a real click on the background and a button marks none of the page-filled fields", mine(o.sent).length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 1b. Fields that are containers (role=combobox inside role=combobox): a real click on the innermost marks every ancestor field.
+    box.innerHTML = '<div role="combobox" aria-haspopup="listbox" aria-label="Adv nest A">forged A<div role="combobox" aria-haspopup="listbox" aria-label="Adv nest B">forged B' +
+      '<div id="adv1b-in" role="combobox" aria-haspopup="listbox" aria-label="Adv nest C">forged C</div></div></div>' +
+      '<label for="adv1b-x">Adv nest pad</label><input id="adv1b-x"><label for="adv1b-y">Adv nest pad two</label><input id="adv1b-y">';
+    {
+      const o = open();
+      for (const type of ["pointerdown", "mousedown", "click"]) user(el("adv1b-in"), type);
+      await sleep(30); await o.t.flush("adv1b");
+      check("w3badv nested comboboxes: one real click inside the innermost marks only that field", mine(o.sent).length <= 1, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 2. A page-made role=listbox wrapper with an id, and fields it set itself that name it in aria-controls: any real click inside marks them.
+    box.innerHTML = '<div role="listbox" id="advLB"><p id="adv2-p">any text</p>' +
+      [1, 2, 3, 4, 5].map(i => `<input id="a2-${i}" aria-label="Adv spoof ${i}" aria-controls="advLB" style="${tiny}">`).join("") + '</div>';
+    {
+      const o = open();
+      for (let i = 1; i <= 5; i++) { el(`a2-${i}`).value = `forged${i}`; script(el(`a2-${i}`)); }
+      for (const type of ["pointerdown", "mousedown", "click"]) user(el("adv2-p"), type);
+      await sleep(30); await o.t.flush("adv2");
+      check("w3badv aria-controls: a real click inside a page-made listbox marks no field that merely names its id", mine(o.sent).length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 2b. control: a touched field whose aria-controls names the ids of hidden fields the page filled marks none of them.
+    box.innerHTML = '<label for="a2b-t">Adv owner</label><input id="a2b-t" aria-controls="advH1 advH2">' +
+      `<input id="advH1" aria-label="Adv hidden 1" style="${tiny}"><input id="advH2" aria-label="Adv hidden 2" style="${tiny}">` +
+      '<label for="a2b-p">Adv pad</label><input id="a2b-p">';
+    {
+      const o = open();
+      el("a2b-t").value = "mine"; user(el("a2b-t"), "input");
+      for (const id of ["advH1", "advH2"]) { el(id).value = "forged"; script(el(id)); }
+      await sleep(30); await o.t.flush("adv2b");
+      check("w3badv control: aria-controls on a touched field does not mark the ids it names", names(o.sent) === JSON.stringify(["Adv owner=mine"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 3. The user types in X, then the page rewrites X and dispatches script events: the mark is permanent, so the page's value is read.
+    box.innerHTML = '<label for="a3-x">Adv typed</label><input id="a3-x"><label for="a3-y">Adv pad</label><input id="a3-y"><label for="a3-z">Adv pad two</label><input id="a3-z">';
+    {
+      const o = open();
+      el("a3-x").value = "real"; user(el("a3-x"), "input");
+      el("a3-x").value = "forged"; script(el("a3-x"));
+      await sleep(30); await o.t.flush("adv3");
+      check("w3badv permanent mark: the value the user typed is captured, not the page's later rewrite", names(o.sent) === JSON.stringify(["Adv typed=real"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 3b. The same, but the page also triggers the flush with a script pagehide: the forged value leaves with no user action after typing.
+    {
+      const o = open();
+      el("a3-x").value = "real"; user(el("a3-x"), "input");
+      el("a3-x").value = "forged"; script(el("a3-x"));
+      window.dispatchEvent(new Event("pagehide"));
+      await sleep(30);
+      check("w3badv page-triggered flush: a script pagehide after the page rewrote a touched field sends the user's value or nothing", !JSON.stringify(mine(o.sent).map(f => f.value)).includes("forged"), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 4. A script cannot make an event trusted: isTrusted is an own, non-configurable property of the event.
+    {
+      const ev = new Event("input");
+      let threw = false;
+      try { Object.defineProperty(ev, "isTrusted", { value: true }); } catch { threw = true; }
+      const d = Object.getOwnPropertyDescriptor(ev, "isTrusted");
+      check("w3badv control: a script event's isTrusted is unforgeable", threw && ev.isTrusted === false && d?.configurable === false);
+    }
+
+    // 6. control: form.requestSubmit() from the page runs the form's submit event, which is not trusted, so nothing is flushed.
+    box.innerHTML = '<form id="adv6"><label for="a6-a">Adv rs</label><input id="a6-a"><label for="a6-b">Adv rs two</label><input id="a6-b"><label for="a6-c">Adv rs three</label><input id="a6-c"><button type="submit">Go</button></form>';
+    {
+      const o = open();
+      q<HTMLFormElement>(box, "#adv6").addEventListener("submit", e => e.preventDefault());
+      el("a6-a").value = "mine"; user(el("a6-a"), "input");
+      q<HTMLFormElement>(box, "#adv6").requestSubmit();
+      anySubmit--; // this attack submits on purpose; the run-wide "nothing submitted" check is about the code under test
+      await sleep(30);
+      check("w3badv control: a page's requestSubmit flushes nothing", o.sent.length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7a. control: a custom checkbox, a native input at opacity 0 inside a visible label, clicked by the user.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<label id="a7a-l"><input type="checkbox" id="a7a" style="opacity:0;position:absolute;width:20px;height:20px"><span>Adv agree</span></label>';
+    {
+      const o = open();
+      el("a7a").checked = true; user(el("a7a"), "click");
+      await sleep(30); await o.t.flush("adv7a");
+      check("w3badv control: a clicked opacity:0 checkbox inside a visible label is captured", names(o.sent) === JSON.stringify(["Adv agree=yes"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7b. A display:none TEXT input with a visible label the page made: the label fallback counts it visible, a click on the label marks it.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<label id="a7b-l" for="a7b">Adv hidden text</label><input id="a7b" style="display:none">';
+    {
+      const o = open();
+      el("a7b").value = "forged"; script(el("a7b"));
+      user(q<HTMLElement>(box, "#a7b-l"), "click");
+      await sleep(30); await o.t.flush("adv7b");
+      check("w3badv label fallback: a text input nobody can see is not captured because it has a visible label", mine(o.sent).length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7c. control: a position:fixed modal field on a scrolled page, and a <details> the user opened.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<div style="position:fixed;top:10px;left:10px;background:#fff;z-index:9"><label for="a7c-f">Adv modal</label><input id="a7c-f"></div>' +
+      '<details><summary>more</summary><label for="a7c-d">Adv detail</label><input id="a7c-d"></details>';
+    {
+      const y = window.scrollY;
+      window.scrollTo(0, 300);
+      const o = open();
+      el("a7c-f").value = "m"; user(el("a7c-f"), "input");
+      q<HTMLDetailsElement>(box, "details").open = true;
+      el("a7c-d").value = "d"; user(el("a7c-d"), "input");
+      await sleep(30); await o.t.flush("adv7c");
+      window.scrollTo(0, y);
+      check("w3badv control: a fixed modal field, and an opened <details> field are captured", names(o.sent).includes("Adv modal=m") && names(o.sent).includes("Adv detail=d"), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7c2. A position:fixed field inside an overflow:hidden wrapper that has no height of its own: fixed content is not clipped by it.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<div style="overflow:hidden;height:0"><div style="position:fixed;top:10px;left:10px;background:#fff;z-index:9"><label for="a7c2">Adv drawer</label><input id="a7c2"></div></div>';
+    {
+      const o = open();
+      el("a7c2").value = "m"; user(el("a7c2"), "input");
+      await sleep(30); await o.t.flush("adv7c2");
+      check("w3badv clipping: a visible position:fixed field inside a zero-height overflow:hidden wrapper is captured", names(o.sent) === JSON.stringify(["Adv drawer=m"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7d. An SPA whose app root is the scroller (body overflow:hidden, #root overflow:auto): the document itself is one screen
+    // tall, so every field below or above the visible part of the root is "off the page" to the strict scan. The user filled all
+    // eight, scrolled back up, and pressed Save answers (or Next).
+    {
+      const frame = document.createElement("iframe");
+      frame.style.cssText = "width:600px;height:400px;border:0";
+      frame.srcdoc = '<!doctype html><html style="height:100%"><body style="margin:0;height:100%;overflow:hidden"><div id="root" style="height:100%;overflow:auto">' +
+        [1, 2, 3, 4, 5, 6, 7, 8].map(i => `<div style="height:300px"><label for="a7d-${i}">Adv scroll ${i}</label><input id="a7d-${i}"></div>`).join("") + "</div></body></html>";
+      const loaded = frameLoaded(frame);
+      box.append(frame);
+      await loaded;
+      const fdoc = loadedDocument(frame);
+      if (!fdoc) {
+        check("w3badv inner scroller: the frame loaded", false, "no document");
+      } else {
+        for (const explicit of [true, false]) {
+          const o = open(fdoc);
+          const root = fdoc.getElementById("root")!;
+          for (let i = 1; i <= 8; i++) { const f = fdoc.getElementById(`a7d-${i}`) as HTMLInputElement; root.scrollTop = (i - 1) * 300; f.value = `v${i}`; user(f, "input"); }
+          root.scrollTop = 0;
+          await sleep(30); await o.t.flush(explicit ? "saved" : "next", explicit);
+          check(`w3badv inner scroller: ${explicit ? "an explicit Save" : "a Next flush"} captures all eight fields the user typed in`, mine(o.sent).length === 8, `captured ${mine(o.sent).length}: ${names(o.sent)}`);
+          o.t.dispose();
+        }
+      }
+      frame.remove();
+    }
+
+    // 5b. control: an input mask that rewrites the value after the user's keystroke, synchronously and again later.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q"><label for="a5-m">Adv phone</label><input id="a5-m">';
+    {
+      const o = open();
+      const m = el("a5-m");
+      m.addEventListener("input", () => { const d = m.value.replace(/\D/g, ""); m.value = `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`; setTimeout(() => { m.value = `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 10)}`; }, 10); });
+      m.value = "5551234567"; user(m, "input");
+      await sleep(40); await o.t.flush("adv5b");
+      check("w3badv control: a masked value written by script after the user's keystroke is captured", names(o.sent) === JSON.stringify(["Adv phone=(555) 123-4567"]), names(o.sent));
+      o.t.dispose();
+    }
+  } finally {
+    box.remove();
+  }
+}
+
+/**
+ * w2b (232, round 2 0856e67): a bank this tracker can read and that disables this host (in any case, with a trailing dot)
+ * sends nothing. A bank that cannot be read (null, or a throw) does not stop the tracker sending: the background checks
+ * disabledHosts against a fresh bank and fails closed itself (w2badv-tracker.test.ts asserts the same).
+ */
+async function failClosedCapture(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML = '<label for="fc1">Favourite editor</label><input id="fc1" value="vim"><label for="fc2">Favourite shell</label><input id="fc2" value="fish">' +
+    '<label for="fc3">Favourite font</label><input id="fc3" value="mono">';
+  document.body.append(box);
+  const disabled = (hosts: string[]): Bank => ({ ...emptyBank(), settings: { captureSelfId: false, disabledHosts: hosts } });
+  const run = async (getBank: () => Promise<Bank | null>, host: string, how: "flush" | "pagehide"): Promise<number> => {
+    let sends = 0;
+    const t = createTracker({ doc: document, host, getBank, send: async f => { sends++; return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; }, commitMs: 5 });
+    if (how === "flush") {
+      await t.flush("test", true);
+    } else {
+      q<HTMLInputElement>(box, "#fc1").dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(40); // the commit timer reads the bank, as it does before a real pagehide
+      window.dispatchEvent(new Event("pagehide"));
+      await sleep(30);
+    }
+    t.dispose();
+    return sends;
+  };
+  for (const how of ["flush", "pagehide"] as const) {
+    check(`${how}: a bank read that returns null still sends (the background decides)`, await run(async () => null, "x.example", how) > 0);
+    check(`${how}: a bank read that throws still sends (the background decides)`, await run(async () => { throw new Error("storage down"); }, "x.example", how) > 0);
+    check(`${how}: a disabled host sends nothing`, await run(async () => disabled(["x.example"]), "x.example", how) === 0);
+    check(`${how}: a disabled host listed in other case with a trailing dot sends nothing`, await run(async () => disabled(["X.Example."]), "x.example", how) === 0);
+    check(`${how}: an enabled host still sends`, await run(async () => disabled(["other.example"]), "x.example", how) > 0);
+  }
   box.remove();
 }
 
@@ -844,9 +1150,13 @@ async function resumeAttach(): Promise<void> {
   const group = res.closest<HTMLElement>("[role=group]")!;
   check("resume upload: the visible group is outlined yellow and says which file went in",
     group.getAttribute("data-vani-fill") === "review" && (group.getAttribute("data-vani-why") ?? "").includes("Resume_Test.pdf"), group.outerHTML.slice(0, 200));
+  // 7060b74 (2026-11-08) made a Cover Letter file input "no_cover" when no letter is chosen for the job; any other
+  // attachment stays "untouchable". Neither is filled, and neither is given the resume.
+  const reasonOf = (el: HTMLElement) => out.find((_, i) => refs[i]!.els[0] === el)?.reason;
   check("cover letter and other attachments: never given the resume, no events",
     cover.files?.length === 0 && other.files?.length === 0 && coverEvents === 0 &&
-    out.filter((_, i) => refs[i]!.els[0] === cover || refs[i]!.els[0] === other).every(x => !x.filled && x.reason === "untouchable"), JSON.stringify(out));
+    out.filter((_, i) => refs[i]!.els[0] === cover || refs[i]!.els[0] === other).every(x => !x.filled) &&
+    reasonOf(cover) === "no_cover" && reasonOf(other) === "untouchable", JSON.stringify(out));
   check("the resume source is asked once per fill", asked === 1, String(asked));
 
   // A second fill does not replace a file already there, unless asked to overwrite.
@@ -1305,6 +1615,9 @@ async function main(): Promise<void> {
     ["dates", dates],
     ["typeahead", typeahead],
     ["once per page", oncePerPage],
+    ["fail-closed capture", failClosedCapture],
+    ["hostile page", hostilePage],
+    ["w3badv provenance", w3badvProvenance],
     ["submit signal", submitSignal],
     ["not questions", notQuestions],
     ["dial picker", dialPicker],

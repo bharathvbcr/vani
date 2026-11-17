@@ -1,6 +1,6 @@
 // Popup: act on the current page and manage saved answers.
-import type { Answer, Bank, FieldInfo } from "./types";
-import { MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
+import { type Answer, type Bank, type FieldInfo, ownAnswer } from "./types";
+import { BANK_FULL, MAX_BANK_BYTES, answerKey, bankBytes, exportBank, hostDisabled, withHostDisabled } from "./bank";
 import { ANSWER_KEY_BY_JARVIS, CONTACT_BY_ID, NOT_RUN_NOTE, contactEdits, contactItems, omitContactAnswers, readImport } from "./contacts";
 import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
 import { type FanOut, sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
@@ -319,7 +319,7 @@ function render(): void {
 
   renderBasics();
   ($("#selfid") as HTMLInputElement).checked = current.settings.captureSelfId;
-  ($("#disabled") as HTMLInputElement).checked = current.settings.disabledHosts.includes(host);
+  ($("#disabled") as HTMLInputElement).checked = hostDisabled(current, host);
 }
 
 // --- interactive edit modal -----------------------------------------------------------
@@ -345,7 +345,7 @@ $("#modal-edit-save").onclick = async () => {
   if (!editingKey) return;
   const next = ($("#edit-value") as HTMLTextAreaElement).value.trim();
   const review = ($("#edit-review") as HTMLInputElement).checked;
-  const a = current?.answers[editingKey];
+  const a = current ? ownAnswer(current.answers, editingKey) : undefined;
   const kind = a?.kind ?? "text";
   const val = kind === "checkbox" || kind === "select" || kind === "radio"
     ? next.split(",").map(s => s.trim()).filter(Boolean)
@@ -619,7 +619,7 @@ async function runCopy(): Promise<void> {
   await bg({ type: "contactsCopied", set: true });
   for (const key of imported.stored) {
     const answer = ANSWER_KEY_BY_JARVIS[key];
-    if (answer && current?.answers[answer]) {
+    if (answer && current && ownAnswer(current.answers, answer)) {
       await bg({ type: "deleteAnswer", key: answer });
       delete current.answers[answer];
     }
@@ -1581,7 +1581,7 @@ async function rescanTab(notify = false): Promise<void> {
     renderRelevance(t.relevance);
     renderMissedChecklist(t.audit);
     // The scan only reports "disabled" for frames that found fields; the saved setting says it for the host outright.
-    const off = t.tabCoverage.disabled || (host !== "" && current?.settings?.disabledHosts?.includes(host) === true);
+    const off = t.tabCoverage.disabled || (host !== "" && current !== null && current !== undefined && hostDisabled(current, host));
     const view = homeState({
       found: off ? 0 : t.tabCoverage.total.found,
       disabled: off,
@@ -1692,7 +1692,12 @@ $("#save").onclick = async () => {
   try {
     const r = await toFrames<CaptureReply>({ type: "capture" }, { registered });
     const c = sumCaptures(r);
-    status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + notAnswered(r), "ok");
+    if (c.refused && c.added + c.updated === 0) {
+      status(`Not saved: ${c.refused}` + notAnswered(r), "warn");
+      toast("Not saved");
+      return;
+    }
+    status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + (c.skippedFull ? ` ${c.skippedFull} not saved: ${BANK_FULL}` : "") + notAnswered(r), "ok");
     toast(`Saved ${c.added + c.updated} answers!`);
     await refresh();
   } catch (e) {
@@ -1723,8 +1728,7 @@ $("#selfid").onchange = async () => {
 $("#disabled").onchange = async () => {
   if (!current || !host) return;
   const on = ($("#disabled") as HTMLInputElement).checked;
-  const hosts = current.settings.disabledHosts.filter(h => h !== host);
-  if (on) hosts.push(host);
+  const hosts = withHostDisabled(current.settings.disabledHosts, host, on);
   await bg({ type: "setSettings", settings: { disabledHosts: hosts } });
   await refresh();
 };

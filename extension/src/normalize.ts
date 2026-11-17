@@ -108,7 +108,8 @@ const AUTOCOMPLETE_KEYS: Record<string, string> = {
 export function autocompleteKey(autocomplete: string): string {
   // "section-x shipping given-name" -> last token is the field name.
   const parts = autocomplete.trim().toLowerCase().split(/\s+/);
-  return AUTOCOMPLETE_KEYS[parts[parts.length - 1] ?? ""] ?? "";
+  const token = parts[parts.length - 1] ?? "";
+  return Object.hasOwn(AUTOCOMPLETE_KEYS, token) ? AUTOCOMPLETE_KEYS[token]! : "";
 }
 
 /** The meanings AUTOCOMPLETE_KEYS maps to: the keys a basic or an autocomplete-declared field is stored under. */
