@@ -32,6 +32,21 @@ describe("w3b: provenance of captured fields", () => {
     expect(s.comboHostile, "synthetic pointerdown, click and change on the option capture nothing").toBe(0);
   }, 20_000);
 
+  test("a click in a listbox marks only a combobox that owns it: not a page's plain claims, an ancestor-held one, or one of several", async () => {
+    const s = await scenarios();
+    expect(s.ownerPlain, "controls naming the listbox without a combobox role are not marked").toBe(0);
+    expect(s.ownerAbove, "a combobox inside the listbox is not its owner").toBe(0);
+    expect(s.ownerTwo, "two claimants: none marked").toBe(0);
+    expect(s.ownerWrongPopup, "aria-haspopup=menu is not a listbox owner").toBe(0);
+    expect(s.ownerOneRole, "the single role=combobox owner is marked").toBe(1);
+    expect(s.ownerOnePopup, "the single aria-haspopup=listbox owner is marked").toBe(1);
+  }, 20_000);
+
+  test("a click inside nested fields marks the deepest one only", async () => {
+    const s = await scenarios();
+    expect(s.nestedOnlyInner).toBe(1);
+  }, 20_000);
+
   test("a real click on a label marks the control it names", async () => {
     const s = await scenarios();
     expect(s.labelControl).toBe(1);

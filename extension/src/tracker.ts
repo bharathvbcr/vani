@@ -1,6 +1,7 @@
 // Capture that does not depend on catching the final click. The tracker keeps a
-// per-page set of the answers the user has committed (on change / focus-out /
-// choosing an option, never per keystroke) and flushes it when the page is about
+// per-page set of the answers the user has given (a field is read when a trusted
+// event lands on it, again once the page's handlers have run, and for a short
+// window after it; a value a page script set on its own is never read) and flushes it when the page is about
 // to go away: submit, an advance click, Enter, a route change, pagehide or the
 // tab being hidden. A flush sends only what the bank does not already hold, so
 // flushing the same page twice saves nothing twice. Only a page that has shown
@@ -11,7 +12,7 @@ import type { Bank, FieldInfo } from "./types";
 import { emptyBank } from "./types";
 import { answerKey, hostDisabled, mergeCapture } from "./bank";
 import { classify } from "./classify";
-import { type FieldRef, scanForm } from "./extract";
+import { type FieldRef, type FormScan, scanForm } from "./extract";
 import { fieldDigest, pendingDiff } from "./capture";
 import type { CaptureReply } from "./messages";
 import { isFinalSubmit } from "./applied";
@@ -26,8 +27,10 @@ const MAX_PENDING = 1000;
 /** The background refuses a capture message with more fields than this. */
 const MAX_SEND = 500;
 const MAX_OBSERVED_ROOTS = 64;
-/** How far up from an owning combobox or a label's control a touch climbs. */
+/** How far up from a touched element the search for its field climbs. */
 const TOUCH_DEPTH = 64;
+/** A target that can be a form control: only these cause a rescan when the last scan did not hold the target. */
+const FIELDISH = "input, select, textarea, [contenteditable], [role=combobox], [role=listbox], [role=radiogroup], [role=radio], [role=checkbox], [role=switch], [role=textbox], [role=spinbutton], [role=slider], [role=option]";
 const ADVANCE = /\b(submit|apply|send application|next|continue|save|review)\b/i;
 const ADVANCE_ID = /(next|continue|submit|save)/i;
 
@@ -137,68 +140,135 @@ export function createTracker(d: TrackerDeps): Tracker {
    * the user typed in). A page script can set a value and dispatch events, but cannot make them trusted, so
    * a field it only set never enters this set and is never read by `snapshot`.
    */
-  const touched = new WeakSet<object>();
+  /**
+   * When a trusted event last landed on each control of a field (keyed by the control, so a rescan finds it).
+   * A page script can set a value and dispatch events, but cannot make them trusted, so a field it only set
+   * has no mark and is never read.
+   */
+  const marks = new WeakMap<object, number>();
+  /** The last strict scan, by control: how an event's target is resolved to the field that contains it. */
+  let index = new Map<Element, FieldRef>();
+  /** The DOM changed since `index` was built (see the MutationObserver in wireRoot). */
+  let indexStale = true;
+  /** Targets that were not a field even after a fresh scan; they are not rescanned until the DOM changes. */
+  let missed = new WeakSet<object>();
 
-  /** An element and every ancestor, across shadow boundaries. */
-  function touchUp(start: Element | null | undefined): void {
-    for (let n: Element | null | undefined = start, i = 0; n && i < TOUCH_DEPTH; i++) {
-      touched.add(n);
-      n = n.parentElement ?? (n.getRootNode() as ShadowRoot | undefined)?.host;
+  function rescan(): FormScan {
+    const scan = scanForm(d.doc, { strict: true });
+    wireRoots(scan.roots);
+    index = new Map();
+    for (const r of scan.refs) for (const e of r.els) index.set(e, r);
+    indexStale = false;
+    return scan;
+  }
+
+  /** An element and its ancestors (across shadow boundaries), nearest first. */
+  function ancestorsOf(start: Element): Element[] {
+    const out: Element[] = [];
+    for (let n: Element | null | undefined = start; n && out.length < TOUCH_DEPTH; n = n.parentElement ?? (n.getRootNode?.() as ShadowRoot | undefined)?.host) out.push(n);
+    return out;
+  }
+
+  /** The deepest scanned field that contains `o`: one event marks one field, never the fields around it. */
+  function fieldOf(o: Element): FieldRef | undefined {
+    const ancestors = ancestorsOf(o);
+    const find = (): FieldRef | undefined => { for (const n of ancestors) { const r = index.get(n); if (r) return r; } return undefined; };
+    const hit = find();
+    if (hit) return hit;
+    if (!indexStale && (missed.has(o) || !o.closest?.(FIELDISH))) return undefined;
+    rescan();
+    const r = find();
+    if (!r) missed.add(o);
+    return r;
+  }
+
+  /** What a click on a listbox option stands for: the one combobox that owns the listbox, or nothing. */
+  function popupOwner(first: Element): Element | undefined {
+    const popup = first.closest?.("[role=listbox]");
+    const id = popup?.id;
+    if (!popup || !id) return undefined;
+    const owners: Element[] = [];
+    for (const o of (popup.getRootNode() as ParentNode).querySelectorAll?.("[aria-controls], [aria-owns]") ?? []) {
+      const names = `${o.getAttribute("aria-controls") ?? ""} ${o.getAttribute("aria-owns") ?? ""}`.split(/\s+/);
+      if (!names.includes(id)) continue;
+      // A page can mark anything it likes with aria-controls: only a combobox, outside the listbox, counts.
+      if (o.getAttribute("role") !== "combobox" && o.getAttribute("aria-haspopup") !== "listbox") continue;
+      if (ancestorsOf(o).includes(popup)) continue;
+      owners.push(o);
+    }
+    return owners.length === 1 ? owners[0] : undefined; // several claim it: the user's own touch on the field decides
+  }
+
+  /**
+   * What a user event stands for: its target, the control a clicked label names, and the combobox that owns a
+   * clicked listbox popup (a custom widget moves the value with script events after a real click on another node).
+   */
+  function originsOf(ev: Event): Element[] {
+    const first = ev.composedPath()[0] as Element | undefined;
+    if (first?.nodeType !== 1) return [];
+    const out = [first];
+    const control = (first.closest?.("label") as HTMLLabelElement | null | undefined)?.control;
+    if (control) out.push(control);
+    const owner = popupOwner(first);
+    if (owner) out.push(owner);
+    return out;
+  }
+
+  function markedAt(r: FieldRef): number | undefined {
+    let at: number | undefined;
+    for (const e of r.els) { const t = marks.get(e); if (t !== undefined && (at === undefined || t > at)) at = t; }
+    return at;
+  }
+  const live = (r: FieldRef): boolean => markedAt(r) !== undefined;
+
+  /** Fold one field into the pending set: a sensitive one is counted but never held, an emptied one is dropped. */
+  function fold(f: FieldInfo): void {
+    if (f.kind === "file" || f.kind === "hidden" || f.kind === "other") return;
+    const k = `${answerKey(f)}|${f.kind}`;
+    const kept = forCapture(f);
+    if (f.kind === "password" || classify(f) === "secret") {
+      pending.delete(k);
+      pending.set(k, { ...kept, value: [] });
+    } else if (f.value.every(v => v.trim() === "")) {
+      pending.delete(k); // the user cleared it
+    } else {
+      pending.delete(k);
+      pending.set(k, kept);
+    }
+    if (pending.size > MAX_PENDING) pending.delete(pending.keys().next().value as string);
+  }
+
+  /** A trusted event marks the one field each of its origins resolves to. */
+  function touch(ev: Event): void {
+    if (!isTrusted(ev)) return;
+    for (const o of originsOf(ev)) {
+      const r = fieldOf(o);
+      if (r) for (const e of r.els) marks.set(e, 0);
     }
   }
 
   /**
-   * A user event marks every element on its path. A click on a label also marks the control it names, and one
-   * inside a listbox popup marks the combobox that owns it (aria-controls / aria-owns), because custom widgets
-   * often move the value with script events after a real click or keypress on a different node.
+   * Scan the page (wiring every root it finds) and fold in what may be read: a sensitive field always (so its
+   * count is honest), a field the user touched within TRUST_WINDOW_MS (`window`), or every field (`all`). With
+   * `none` the scan only counts questions: a flush the page can trigger itself reads no DOM.
    */
-  function touch(ev: Event): void {
-    if (!isTrusted(ev)) return;
-    const path = ev.composedPath();
-    for (const n of path) if ((n as Node).nodeType === 1) touched.add(n);
-    const first = path[0] as Element | undefined;
-    if (first?.nodeType !== 1) return;
-    touchUp((first.closest?.("label") as HTMLLabelElement | null | undefined)?.control);
-    const popup = first.closest?.("[role=listbox]");
-    const id = popup?.id;
-    if (!id) return;
-    const root = popup.getRootNode() as ParentNode;
-    for (const o of root.querySelectorAll?.("[aria-controls], [aria-owns]") ?? []) {
-      const owns = `${o.getAttribute("aria-controls") ?? ""} ${o.getAttribute("aria-owns") ?? ""}`.split(/\s+/);
-      if (owns.includes(id)) touchUp(o);
-    }
-  }
-
-  const isTouched = (r: FieldRef): boolean => r.els.some(e => touched.has(e));
-
-  function snapshot(all = false): void {
+  function fromDom(read: "none" | "window" | "all"): void {
     try {
-      const scan = scanForm(d.doc, { strict: true });
-      wireRoots(scan.roots);
+      const scan = rescan();
+      // Whether this is a form must not depend on which questions are visible enough to capture.
       peak = Math.max(peak, scan.refs.length);
+      if (peak < MIN_FORM_FIELDS) peak = Math.max(peak, scanForm(d.doc).refs.length);
       for (const r of scan.refs) {
         const f = r.info;
-        if (f.kind === "file" || f.kind === "hidden" || f.kind === "other") continue;
-        const k = `${answerKey(f)}|${f.kind}`;
-        const kept = forCapture(f);
-        if (f.kind === "password" || classify(f) === "secret") {
-          // Kept so the count of skipped sensitive fields is honest; the value is never held.
-          pending.delete(k);
-          pending.set(k, { ...kept, value: [] });
-        } else if (!all && !isTouched(r)) {
-          continue; // set by the page, not typed or chosen by the user
-        } else if (f.value.every(v => v.trim() === "")) {
-          pending.delete(k); // the user cleared it
-        } else {
-          pending.delete(k);
-          pending.set(k, kept);
-        }
-        if (pending.size > MAX_PENDING) pending.delete(pending.keys().next().value as string);
+        if (f.kind === "password" || classify(f) === "secret") fold(f);
+        else if (read === "all" || (read === "window" && live(r))) fold(f);
       }
     } catch {
       // A page mid-render must not break capture; the next trigger scans again.
     }
   }
+
+  function snapshot(all = false): void { fromDom(all ? "all" : "window"); }
 
   const keyOf = (f: FieldInfo): string => `${answerKey(f)}|${f.kind}`;
 
@@ -268,7 +338,7 @@ export function createTracker(d: TrackerDeps): Tracker {
    * closed). A known bank that disables this host keeps the page from sending.
    */
   function flushNow(): void {
-    snapshot();
+    fromDom("window");
     if (pending.size === 0 || peak < MIN_FORM_FIELDS || (lastBank && hostDisabled(lastBank, d.host))) return;
     const base = lastBank ?? emptyBank();
     const selfId = base.settings.captureSelfId;
@@ -280,12 +350,19 @@ export function createTracker(d: TrackerDeps): Tracker {
     void d.send(batch).then(r => { if (r === null || "error" in r) unmarkSent(batch); }, () => unmarkSent(batch));
   }
 
-  function flush(reason: string, explicit = false): Promise<FlushResult | null> {
-    snapshot(explicit); // before the page moves on: this is the DOM the user filled in
+  /**
+   * `read` is what the flush may read from the page first. A flush the user caused (their click on Next, Enter, a
+   * submit) reads the fields they touched in the last TRUST_WINDOW_MS; one a page can cause (a route change, a
+   * script's pagehide) reads nothing and sends what was held when the user acted; Save reads everything.
+   */
+  function flushWith(reason: string, explicit: boolean, read: "none" | "window" | "all"): Promise<FlushResult | null> {
+    fromDom(read);
     const p = chain.then(() => run(reason, explicit));
     chain = p.catch(() => undefined); // flushes run one at a time, or two would both see an empty bank
     return p;
   }
+  const flush = (reason: string, explicit = false): Promise<FlushResult | null> => flushWith(reason, explicit, explicit ? "all" : "window");
+  const flushByUser = (reason: string): Promise<FlushResult | null> => flush(reason);
 
   function commitSoon(ms = commitMs): void {
     clearTimeout(commitTimer);
@@ -328,7 +405,7 @@ export function createTracker(d: TrackerDeps): Tracker {
     if (!t?.closest) return;
     const adv = t.closest("button, input[type=submit], [role=button], a[role=button]");
     if (adv && isAdvance(adv)) {
-      void flush((adv.textContent || "advance").trim().toLowerCase().slice(0, 40));
+      void flushByUser((adv.textContent || "advance").trim().toLowerCase().slice(0, 40));
       if (isFinalSubmit(controlLabel(adv)) && adv.getAttribute("data-vani-suppress-applied") !== "1") d.onSubmit?.();
       return;
     }
@@ -339,26 +416,27 @@ export function createTracker(d: TrackerDeps): Tracker {
     const k = ev as KeyboardEvent;
     if (!isTrusted(ev) || !once(ev) || k.key !== "Enter" || k.isComposing) return;
     const t = ev.composedPath()[0] as Element | undefined;
-    if (t?.localName === "input") setTimeout(() => { if (!disposed) void flush("enter"); }, 150);
+    if (t?.localName === "input") setTimeout(() => { if (!disposed) void flushByUser("enter"); }, 150);
   }
 
   function wireRoot(root: Document | ShadowRoot): void {
     if (wired.has(root)) return;
     wired.add(root);
-    const on = (type: string, fn: (e: Event) => void) => {
-      root.addEventListener(type, fn, true);
-      cleanups.push(() => root.removeEventListener(type, fn, true));
+    const on = (type: string, fn: (e: Event) => void, capture = true) => {
+      root.addEventListener(type, fn, capture);
+      cleanups.push(() => root.removeEventListener(type, fn, capture));
     };
-    // Provenance first: every user-originated event marks its target (and the ancestors it bubbled through).
+    // Provenance first: a user event marks and reads the one field it landed in; the bubble pass reads it again
+    // once the page's own handlers (an input mask) have run.
     for (const type of ["input", "pointerdown", "mousedown"]) on(type, touch);
-    on("submit", ev => { if (isTrusted(ev) && once(ev)) void flush("submitted"); });
+    on("submit", ev => { if (isTrusted(ev) && once(ev)) void flushByUser("submitted"); });
     on("click", ev => { touch(ev); onClick(ev); });
     on("keydown", ev => { touch(ev); onKey(ev); });
     on("change", ev => { touch(ev); if (isTrusted(ev) && once(ev)) commitSoon(); });   // `change` and `focusout` are separate events, and
     on("focusout", ev => { touch(ev); if (isTrusted(ev) && once(ev)) commitSoon(); }); // only focusout crosses a shadow boundary
     on("load", () => commitSoon(50));                      // an iframe finished loading: scan it, wire it
     if (observers.length < MAX_OBSERVED_ROOTS) {
-      const mo = new MutationObserver(markDom);
+      const mo = new MutationObserver(() => { indexStale = true; missed = new WeakSet(); markDom(); });
       mo.observe(root, { childList: true, subtree: true });
       observers.push(mo);
     }

@@ -11,7 +11,7 @@ type Fake = Record<string, unknown>;
 let fields: Array<{ info: FieldInfo; els: Fake[]; widget: string; manual: string }> = [];
 let strictSeen: boolean[] = [];
 const real = await import("../src/extract");
-mock.module("../src/extract", () => ({ ...real, scanForm: (_r: unknown, o?: { strict?: boolean }) => { strictSeen.push(o?.strict === true); return { roots: [], refs: fields }; } }));
+mock.module("../src/extract", () => ({ ...real, readRefValue: (r: { info: FieldInfo }) => r.info.value, scanForm: (_r: unknown, o?: { strict?: boolean }) => { strictSeen.push(o?.strict === true); return { roots: [], refs: fields }; } }));
 (globalThis as Record<string, unknown>).MutationObserver = class { observe() {} disconnect() {} };
 const { createTracker } = await import("../src/tracker");
 
@@ -28,16 +28,18 @@ const el = (name: string): Fake => ({ nodeType: 1, name, parentElement: null, ge
 const NAMES = ["Favourite colour", "Favourite editor", "Favourite shell"];
 const page = () => { const els = NAMES.map(n => el(n)); fields = NAMES.map((n, i) => ({ info: info(n), els: [els[i]!], widget: "native", manual: "" })); return els; };
 
-interface Run { sends: number; sent: string[]; submits: number; doc: ReturnType<typeof target>; win: ReturnType<typeof target>; t: ReturnType<typeof createTracker> }
+interface Run { sends: number; sent: string[]; values: string[]; submits: number; doc: ReturnType<typeof target>; win: ReturnType<typeof target>; t: ReturnType<typeof createTracker> }
+let vt = 0;
 function make(opts: { trusted?: boolean; bank?: Bank } = {}): Run {
   const win = Object.assign(target(), { location: { href: "https://jobs.example/apply" } });
   const doc = Object.assign(target(), { nodeType: 9, defaultView: win, visibilityState: "visible" });
-  const run = { sends: 0, sent: [] as string[], submits: 0 } as Run;
+  const run = { sends: 0, sent: [] as string[], values: [] as string[], submits: 0 } as Run;
   run.doc = doc; run.win = win;
   run.t = createTracker({
     doc: doc as unknown as Document, host: "jobs.example", getBank: async () => opts.bank ?? emptyBank(), commitMs: 10,
     ...(opts.trusted ? { isTrusted: () => true } : {}),
-    send: async f => { run.sends++; run.sent.push(...f.map(x => x.label)); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; },
+    clock: { now: () => vt, setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: h => clearTimeout(h as ReturnType<typeof setTimeout>) },
+    send: async f => { run.sends++; run.sent.push(...f.map(x => x.label)); run.values.push(...f.map(x => x.value.join(","))); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; },
     onSubmit: () => { run.submits++; },
   });
   return run;
@@ -88,7 +90,7 @@ const out: Record<string, number> = {};
 // The same sequence from a page script: not.
 function comboPage() {
   const wrapper: Fake = { nodeType: 1, name: "wrapper", parentElement: null, getRootNode: () => ({}) };
-  const input: Fake = { nodeType: 1, name: "input", parentElement: wrapper, getAttribute: (a: string) => (a === "aria-controls" ? "lb1" : null) };
+  const input: Fake = { nodeType: 1, name: "input", parentElement: wrapper, getAttribute: (a: string) => (a === "aria-controls" ? "lb1" : a === "role" ? "combobox" : null) };
   const listbox: Fake = { nodeType: 1, name: "listbox", id: "lb1", parentElement: null, getRootNode: () => ({ querySelectorAll: () => [input] }) };
   const option: Fake = { nodeType: 1, name: "option", parentElement: listbox, closest: (s: string) => (s === "[role=listbox]" ? listbox : null) };
   const others = ["Favourite editor", "Favourite shell"].map(n => el(n));
@@ -122,4 +124,43 @@ function comboPage() {
   out.labelControl = r.sent.length === 1 && r.sent[0] === "Favourite colour" ? 1 : 0;
   r.t.dispose();
 }
+// H7: which comboboxes a click in a listbox may mark. `claim` builds one page-made listbox and the elements that name it.
+type Claim = { role?: string; haspopup?: string; inside?: boolean };
+function claimPage(claims: Claim[]) {
+  const listbox: Fake = { nodeType: 1, name: "listbox", id: "lbx", parentElement: null, getRootNode: () => ({ querySelectorAll: () => owners }) };
+  const owners: Fake[] = claims.map((c, i) => ({
+    nodeType: 1, name: `owner${i}`, parentElement: c.inside ? listbox : null, getRootNode: () => ({}),
+    getAttribute: (a: string) => (a === "aria-controls" ? "lbx" : a === "role" ? (c.role ?? null) : a === "aria-haspopup" ? (c.haspopup ?? null) : null),
+  }));
+  const option: Fake = { nodeType: 1, name: "option", parentElement: listbox, closest: (s: string) => (s === "[role=listbox]" ? listbox : null), getRootNode: () => ({}) };
+  fields = [...owners.map((o, i) => ({ info: info(`Owner ${i}`), els: [o], widget: "combobox", manual: "" })),
+    ...["Favourite editor", "Favourite shell"].map(n => ({ info: info(n), els: [el(n)], widget: "native", manual: "" }))];
+  return option;
+}
+async function claimed(claims: Claim[]): Promise<string[]> {
+  const option = claimPage(claims); const r = make({ trusted: true });
+  for (const t of ["pointerdown", "mousedown", "click"]) r.doc.fire(t, [option]);
+  await sleep(40); await r.t.flush("claim");
+  r.t.dispose();
+  return r.sent.sort();
+}
+out.ownerPlain = (await claimed([{}, {}, {}])).length;                                       // no role: a page-made claim
+out.ownerAbove = (await claimed([{ role: "combobox", inside: true }])).length;                // the listbox contains the owner
+out.ownerTwo = (await claimed([{ role: "combobox" }, { haspopup: "listbox" }])).length;       // two claim the popup: none
+out.ownerOneRole = (await claimed([{ role: "combobox" }, {}, {}])).join("|") === "Owner 0" ? 1 : 0;
+out.ownerOnePopup = (await claimed([{ haspopup: "listbox" }])).join("|") === "Owner 0" ? 1 : 0;
+out.ownerWrongPopup = (await claimed([{ haspopup: "menu" }])).length;                         // aria-haspopup=menu is not a listbox
+
+// H8: nested fields. A real click inside the innermost marks it and none of the fields around it.
+{
+  const mk = (name: string, parent: Fake | null): Fake => ({ nodeType: 1, name, parentElement: parent, getRootNode: () => ({}) });
+  const a = mk("A", null), b = mk("B", a), c = mk("C", b);
+  fields = [["Field A", a], ["Field B", b], ["Field C", c], ["Field D", mk("D", null)]].map(([n, e]) => ({ info: info(n as string), els: [e as Fake], widget: "combobox", manual: "" }));
+  const r = make({ trusted: true });
+  r.doc.fire("pointerdown", [c, b, a]); // composedPath: the target, then every ancestor
+  await sleep(40); await r.t.flush("nested");
+  out.nestedOnlyInner = r.sent.join("|") === "Field C" ? 1 : 0;
+  r.t.dispose();
+}
+
 console.log(JSON.stringify(out));
