@@ -374,7 +374,9 @@ dispatch:
 			sum.NotAskedKeys = append(sum.NotAskedKeys, string(r.Key))
 		}
 	}
-	if sum.NotAsked > 0 {
+	// A cancel that landed after every posting was asked (a paid item counts as
+	// asked) is still a stop: the owner stopped it, and the summary says so.
+	if sum.NotAsked > 0 || ctx.Err() != nil {
 		sum.Stopped, sum.Message = b.stop, b.stopMsg
 	}
 	out.event(retriageBatchEvent{Event: "done", Summary: &sum})
