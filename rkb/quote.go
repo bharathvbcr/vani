@@ -76,19 +76,29 @@ func quoteInNorm(t, quote string) bool {
 func quoteHasFigure(quote, found string) bool {
 	q := figuresIn(quote)
 	fs := figuresIn(found)
-	inQuote := make([]bool, len(fs))
+	// seen[i] holds the quote's own figures that stand for fs[i]. A found
+	// "470 -> 94 ms" writes the unit once, so its 470 carries none, but the
+	// quote's "470 ms" does: the operands' kinds are read from the quote.
+	seen := make([][]figure, len(fs))
 	for i, f := range fs {
-		inQuote[i] = figureIn(f, q)
+		seen[i] = figuresHeld(f, q)
 	}
 	for i, f := range fs {
-		if inQuote[i] {
+		if len(seen[i]) > 0 {
 			continue
 		}
 		derived := false
 		for a := range fs {
 			for b := range fs {
-				if a != i && b != i && a != b && inQuote[a] && inQuote[b] && derivedFrom(f, fs[a], fs[b]) {
-					derived = true
+				if a == i || b == i || a == b {
+					continue
+				}
+				for _, x := range seen[a] {
+					for _, y := range seen[b] {
+						if derivedFrom(f, x, y) {
+							derived = true
+						}
+					}
 				}
 			}
 		}
@@ -102,28 +112,37 @@ func quoteHasFigure(quote, found string) bool {
 // figureIn reports whether q holds f: the same quantity, with f's unit when f
 // names one.
 func figureIn(f figure, q []figure) bool {
+	return len(figuresHeld(f, q)) > 0
+}
+
+// figuresHeld returns the figures of q that are f: the same quantity, with f's
+// unit when f names one.
+func figuresHeld(f figure, q []figure) []figure {
+	var out []figure
 	for _, g := range q {
 		if f.Class != "" && g.Class == "" {
 			continue
 		}
 		if sameQuantity(f, g, 1) || sameQuantity(g, f, 1) {
-			return true
+			out = append(out, g)
 		}
 	}
-	return false
+	return out
 }
 
 // derivedFrom reports whether d is the percentage change from `from` to `to`
 // (-80% for 470 -> 94), the percentage `to` is of `from`, or the multiple
 // `to`/`from` or `from`/`to`, to the precision d is written with. The sign is
 // ignored: "-80%" and "80% faster" state the same change. Both operands must
-// be real quantities, not percentages themselves.
+// be real quantities, not percentages themselves, and the same kind of
+// quantity: a change between "5 servers" and "20 ms" is no change at all.
+// Two unit-less figures share the empty class; times scale through TimeScale.
 func derivedFrom(d, from, to figure) bool {
-	if from.Class == "pct" || to.Class == "pct" || (d.Class != "pct" && d.Class != "mult") {
+	if from.Class == "pct" || to.Class == "pct" || from.Class != to.Class || (d.Class != "pct" && d.Class != "mult") {
 		return false
 	}
 	x, y := numVal(from.Tok)*from.Mult, numVal(to.Tok)*to.Mult
-	if from.Class == "time" && to.Class == "time" {
+	if from.Class == "time" {
 		x, y = x*from.TimeScale, y*to.TimeScale
 	}
 	if x == 0 || y == 0 || math.IsNaN(x) || math.IsNaN(y) {
