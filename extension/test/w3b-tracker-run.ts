@@ -163,4 +163,22 @@ out.ownerWrongPopup = (await claimed([{ haspopup: "menu" }])).length;           
   r.t.dispose();
 }
 
+// H9: the trust window. The tracker's clock is `vt`; the field's DOM value is fields[0].info.value (readRefValue is faked to read it).
+// The user types "typed" at t=0; with no event, a script (or a slow widget) sets "rewritten" at t=rewriteAt; something flushes at t=at.
+async function windowRun(rewriteAt: number, at: number, how: "user" | "page"): Promise<string> {
+  const els = page(); const r = make({ trusted: true });
+  vt = 0; fields[0]!.info.value = ["typed"];
+  r.doc.fire("input", [els[0]!]);
+  vt = rewriteAt; fields[0]!.info.value = ["rewritten"];
+  vt = at;
+  if (how === "user") r.doc.fire("click", [clickable("Next")]); else await r.t.flush("route change");
+  await sleep(40);
+  r.t.dispose(); vt = 0;
+  return r.values.filter((_, i) => r.sent[i] === "Favourite colour").join("|");
+}
+out.windowUserInside = (await windowRun(300, 600, "user")) === "rewritten" ? 1 : 0;   // the user's own Next, inside the window: the field is read
+out.windowUserOutside = (await windowRun(1500, 2500, "user")) === "typed" ? 1 : 0;    // outside it: the value held at the keystroke
+out.windowPageInside = (await windowRun(300, 600, "page")) === "typed" ? 1 : 0;       // a flush the page can cause never reads the DOM
+out.windowEdge = (await windowRun(0, 1000, "user")) === "rewritten" ? 1 : 0;          // the window is inclusive of 1000 ms
+out.windowEdgeOver = (await windowRun(0, 1001, "user")) === "typed" ? 1 : 0;          // and ends right after
 console.log(JSON.stringify(out));

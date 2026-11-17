@@ -47,6 +47,15 @@ describe("w3b: provenance of captured fields", () => {
     expect(s.nestedOnlyInner).toBe(1);
   }, 20_000);
 
+  test("a field's DOM value is read only within the trust window of the user's last event on it", async () => {
+    const s = await scenarios();
+    expect(s.windowUserInside, "the user's Next inside the window reads the field").toBe(1);
+    expect(s.windowUserOutside, "outside the window the value held at the keystroke is kept").toBe(1);
+    expect(s.windowPageInside, "a flush the page can trigger reads nothing, even inside the window").toBe(1);
+    expect(s.windowEdge, "1000 ms is inside").toBe(1);
+    expect(s.windowEdgeOver, "1001 ms is outside").toBe(1);
+  }, 20_000);
+
   test("a real click on a label marks the control it names", async () => {
     const s = await scenarios();
     expect(s.labelControl).toBe(1);

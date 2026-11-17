@@ -12,7 +12,7 @@ import type { Bank, FieldInfo } from "./types";
 import { emptyBank } from "./types";
 import { answerKey, hostDisabled, mergeCapture } from "./bank";
 import { classify } from "./classify";
-import { type FieldRef, type FormScan, scanForm } from "./extract";
+import { type FieldRef, type FormScan, readRefValue, scanForm } from "./extract";
 import { fieldDigest, pendingDiff } from "./capture";
 import type { CaptureReply } from "./messages";
 import { isFinalSubmit } from "./applied";
@@ -29,6 +29,12 @@ const MAX_SEND = 500;
 const MAX_OBSERVED_ROOTS = 64;
 /** How far up from a touched element the search for its field climbs. */
 const TOUCH_DEPTH = 64;
+/**
+ * How long after its last trusted event a field's DOM value is still read as the user's. Long enough for a widget
+ * or an input mask to finish setting the value after a real click or keystroke, short enough that a page's later
+ * rewrite is not.
+ */
+export const TRUST_WINDOW_MS = 1000;
 /** A target that can be a form control: only these cause a rescan when the last scan did not hold the target. */
 const FIELDISH = "input, select, textarea, [contenteditable], [role=combobox], [role=listbox], [role=radiogroup], [role=radio], [role=checkbox], [role=switch], [role=textbox], [role=spinbutton], [role=slider], [role=option]";
 const ADVANCE = /\b(submit|apply|send application|next|continue|save|review)\b/i;
@@ -143,7 +149,8 @@ export function createTracker(d: TrackerDeps): Tracker {
   /**
    * When a trusted event last landed on each control of a field (keyed by the control, so a rescan finds it).
    * A page script can set a value and dispatch events, but cannot make them trusted, so a field it only set
-   * has no mark and is never read.
+   * has no mark and is never read. A mark also expires: the DOM is read for a field only within
+   * TRUST_WINDOW_MS of its last trusted event, so a later script rewrite is not taken for the user's answer.
    */
   const marks = new WeakMap<object, number>();
   /** The last strict scan, by control: how an event's target is resolved to the field that contains it. */
@@ -219,7 +226,7 @@ export function createTracker(d: TrackerDeps): Tracker {
     for (const e of r.els) { const t = marks.get(e); if (t !== undefined && (at === undefined || t > at)) at = t; }
     return at;
   }
-  const live = (r: FieldRef): boolean => markedAt(r) !== undefined;
+  const live = (r: FieldRef): boolean => { const at = markedAt(r); return at !== undefined && clock.now() - at <= TRUST_WINDOW_MS; };
 
   /** Fold one field into the pending set: a sensitive one is counted but never held, an emptied one is dropped. */
   function fold(f: FieldInfo): void {
@@ -238,13 +245,30 @@ export function createTracker(d: TrackerDeps): Tracker {
     if (pending.size > MAX_PENDING) pending.delete(pending.keys().next().value as string);
   }
 
-  /** A trusted event marks the one field each of its origins resolves to. */
+  /** The field's value now, as the user's answer. */
+  function absorb(r: FieldRef): void {
+    try { fold({ ...r.info, value: readRefValue(r) }); } catch { /* a control mid-render: the next event reads it again */ }
+  }
+
+  /**
+   * A trusted event, seen before the page's own handlers: the fields it stands for are marked and read at once,
+   * so what the user typed or chose is held before any script can rewrite it.
+   */
   function touch(ev: Event): void {
     if (!isTrusted(ev)) return;
+    const now = clock.now();
     for (const o of originsOf(ev)) {
       const r = fieldOf(o);
-      if (r) for (const e of r.els) marks.set(e, 0);
+      if (!r) continue;
+      for (const e of r.els) marks.set(e, now);
+      absorb(r);
     }
+  }
+
+  /** The same event after the page's own handlers ran: an input mask has finished rewriting the value by now. */
+  function settle(ev: Event): void {
+    if (!isTrusted(ev)) return;
+    for (const o of originsOf(ev)) { const r = fieldOf(o); if (r && live(r)) absorb(r); }
   }
 
   /**
@@ -338,7 +362,7 @@ export function createTracker(d: TrackerDeps): Tracker {
    * closed). A known bank that disables this host keeps the page from sending.
    */
   function flushNow(): void {
-    fromDom("window");
+    fromDom("none"); // a page can fire pagehide itself: only what the user was seen to commit leaves
     if (pending.size === 0 || peak < MIN_FORM_FIELDS || (lastBank && hostDisabled(lastBank, d.host))) return;
     const base = lastBank ?? emptyBank();
     const selfId = base.settings.captureSelfId;
@@ -361,8 +385,8 @@ export function createTracker(d: TrackerDeps): Tracker {
     chain = p.catch(() => undefined); // flushes run one at a time, or two would both see an empty bank
     return p;
   }
-  const flush = (reason: string, explicit = false): Promise<FlushResult | null> => flushWith(reason, explicit, explicit ? "all" : "window");
-  const flushByUser = (reason: string): Promise<FlushResult | null> => flush(reason);
+  const flush = (reason: string, explicit = false): Promise<FlushResult | null> => flushWith(reason, explicit, explicit ? "all" : "none");
+  const flushByUser = (reason: string): Promise<FlushResult | null> => flushWith(reason, false, "window");
 
   function commitSoon(ms = commitMs): void {
     clearTimeout(commitTimer);
@@ -429,6 +453,7 @@ export function createTracker(d: TrackerDeps): Tracker {
     // Provenance first: a user event marks and reads the one field it landed in; the bubble pass reads it again
     // once the page's own handlers (an input mask) have run.
     for (const type of ["input", "pointerdown", "mousedown"]) on(type, touch);
+    for (const type of ["input", "change", "click", "focusout"]) on(type, settle, false);
     on("submit", ev => { if (isTrusted(ev) && once(ev)) void flushByUser("submitted"); });
     on("click", ev => { touch(ev); onClick(ev); });
     on("keydown", ev => { touch(ev); onKey(ev); });
