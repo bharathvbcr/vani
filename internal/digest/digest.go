@@ -57,8 +57,8 @@ type Counts struct {
 	AwaitingTriage int
 	// NotesDeferred is the scored postings whose note is waiting (the notes
 	// budget is spent, or their relevance is unknown). The digest lists explained
-	// roles, so these join it once a later run writes the note; until then the
-	// footer says how many are held back.
+	// roles, so these join it once a run writes the note; until then the footer
+	// says how many are held back.
 	NotesDeferred int
 	// CouldNotCheck is what the run kept without checking, by cause (a check
 	// that could not run is not a check that passed). Causes with no postings
@@ -625,7 +625,7 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
 	}
 	if c.NotesDeferred > 0 {
-		fmt.Fprintf(&b, "\nNotes deferred: %d scored posting(s) (not in this digest; each is listed once a later run writes its note, when the notes budget allows or its relevance is known)\n", c.NotesDeferred)
+		fmt.Fprintf(&b, "\nNotes deferred: %d scored posting(s) (held back, not in this digest until a later run explains them: each waits on the notes budget or on a known relevance)\n", c.NotesDeferred)
 	}
 	if c.ClockBehind > 0 {
 		fmt.Fprintf(&b, "\nNot aged: the ledger holds events stamped ahead of this run's clock, so %d board(s) left the postings they no longer list as they were (none was missed or marked dead) until the clock passes them; the clock is behind, or those events came from a clock that ran ahead\n", c.ClockBehind)
