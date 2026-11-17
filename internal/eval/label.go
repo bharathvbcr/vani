@@ -2,6 +2,7 @@ package eval
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -18,6 +19,15 @@ const DescriptionPreviewRunes = 1500
 // maxInputLine bounds one line of the labeller's input.
 const maxInputLine = 4096
 
+// ErrBodyEvicted is what Label and LabelAudit return for a record whose text
+// was not loaded: a label stores the hash of the text it was shown, and the
+// hash of an empty one would be a false witness. The caller reads the body
+// back first (or skips the posting).
+var ErrBodyEvicted = errors.New("eval: no posting text loaded; refusing to label (and hash) empty text")
+
+// bodyEvictedErr is ErrBodyEvicted naming r.
+func bodyEvictedErr(r ledger.Record) error { return fmt.Errorf("%w: %s", ErrBodyEvicted, r.Key) }
+
 // Label walks recs interactively: for each it shows the posting and the
 // current triage values, then asks each slot in turn (number = option,
 // s = skip, q = quit) and writes one label line for the posting. Invalid input
@@ -31,6 +41,9 @@ func Label(in io.Reader, out io.Writer, recs []ledger.Record, s *Store, names Na
 	sc.Buffer(make([]byte, 0, 1024), maxInputLine)
 	written := 0
 	for i, r := range recs {
+		if r.BodyEvicted {
+			return written, bodyEvictedErr(r)
+		}
 		if err := showPosting(out, i+1, len(recs), r, names, false); err != nil {
 			return written, err
 		}
@@ -84,6 +97,9 @@ func LabelAudit(in io.Reader, out io.Writer, picks []AuditPick, recs []ledger.Re
 	for i, r := range recs {
 		if r.Key != picks[i].Key {
 			return written, fmt.Errorf("eval: pick %d is %s but its posting is %s", i+1, picks[i].Key, r.Key)
+		}
+		if r.BodyEvicted {
+			return written, bodyEvictedErr(r)
 		}
 		if err := showPosting(out, i+1, len(recs), r, names, blind); err != nil {
 			return written, err

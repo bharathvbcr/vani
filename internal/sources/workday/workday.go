@@ -83,6 +83,10 @@ type Options struct {
 	// posting has the row's path (read from its URL) is returned as stored,
 	// with no detail request. Required.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// DropListed reports whether the engine drops a posting before triage
 	// from what a listed row says: its title, the board's company and the
 	// row's location text (no description, no remote flag). A listed row with
@@ -300,8 +304,8 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	}
 	plan := make([]srcutil.DetailRow, len(rows))
 	for i, row := range rows {
-		_, ok := stored[row.ExternalPath]
-		plan[i] = srcutil.DetailRow{ID: row.ExternalPath, Stored: ok}
+		sp, ok := stored[row.ExternalPath]
+		plan[i] = srcutil.DetailRow{ID: row.ExternalPath, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, sp.Key)}
 		if !ok && s.opt != nil && s.opt.DropListed != nil {
 			plan[i].Drop = s.opt.DropListed(listedPosting(b, tenant, row))
 		}
@@ -344,7 +348,7 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	}
 	storedNew := "" // a "new" row whose posting turned out stored
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl,
+		Board: b, Rows: len(rows), Plan: pl,
 		// A missed new row is left out the way a deferred one is, so it needs the
 		// deferred row's guard: every stored posting matched to a path, so a row
 		// with no stored path holds no stored posting.
