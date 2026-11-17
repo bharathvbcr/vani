@@ -18,11 +18,20 @@ import (
 // w4aStaffSeeds are postings the triage read as staff level, with the years
 // their text asks for: fewer than staff (the ranking demotes the staff
 // reading), staff-level, none stated, and a plain posting beside them.
-var w4aStaffSeeds = []struct{ key, title, desc string }{
-	{"gh:co0:01", "Staff Engineer", "Go and Rust on Kubernetes. Requires 3+ years of experience."},
-	{"gh:co1:02", "Staff Engineer", "Go and Rust on Kubernetes. Requires 12+ years of experience."},
-	{"gh:co2:03", "Staff Engineer", "Go and Rust on Kubernetes. No figure stated."},
-	{"gh:co3:04", "Inference Engineer", "Go and Rust on Kubernetes. Requires 6 years of experience."},
+var w4aStaffSeeds = []struct {
+	key, title, desc string
+	status           posting.Status
+	mark             string
+}{
+	{"gh:co0:01", "Staff Engineer", "Go and Rust on Kubernetes. Requires 3+ years of experience.", posting.Digested, ""},
+	{"gh:co1:02", "Staff Engineer", "Go and Rust on Kubernetes. Requires 12+ years of experience.", posting.Digested, ""},
+	{"gh:co2:03", "Staff Engineer", "Go and Rust on Kubernetes. No figure stated.", posting.Digested, ""},
+	{"gh:co3:04", "Inference Engineer", "Go and Rust on Kubernetes. Requires 6 years of experience.", posting.Digested, ""},
+	// Closed postings, whose bodies a resident ledger evicts: one saved (its
+	// text is read for the view) and one unmarked (it is not).
+	{"gh:co4:05", "Staff Engineer", "Go and Rust on Kubernetes. Requires 3+ years of experience.", posting.Dropped, "saved"},
+	{"gh:co5:06", "Staff Engineer", "Go and Rust on Kubernetes. Requires 3+ years of experience.", posting.Dropped, ""},
+	{"gh:co6:07", "Staff Engineer", "Go and Rust on Kubernetes. Requires 3+ years of experience.", posting.Dead, "saved"},
 }
 
 func w4aStaffState(t *testing.T) *env {
@@ -47,11 +56,16 @@ func w4aStaffState(t *testing.T) *env {
 			if s.title == "Staff Engineer" {
 				ann["triage.seniority"], ann["triage.seniority.reading"], ann["triage.seniority.p"] = "staff_plus", "answered", "0.9"
 			}
-			if err := l.Append(context.Background(), ledger.Event{V: 1, At: jobsT0, Key: p.Key, Status: posting.Digested, Posting: &p, Annotations: ann}); err != nil {
+			if err := l.Append(context.Background(), ledger.Event{V: 1, At: jobsT0, Key: p.Key, Status: s.status, Posting: &p, Annotations: ann}); err != nil {
 				t.Fatal(err)
 			}
 		}
 	})
+	for _, s := range w4aStaffSeeds {
+		if s.mark != "" {
+			mustCode(t, 0, "jobs", "mark", s.key, s.mark)
+		}
+	}
 	return &env{stateDir: state, configPath: cfgPath, stdout: &strings.Builder{}, stderr: &strings.Builder{}}
 }
 
@@ -82,8 +96,11 @@ func TestW4aPriorityIsTheSameInListShowAndExport(t *testing.T) {
 	e := w4aStaffState(t)
 	cold := w4aPriorities(t, cliReply(t, e, (*env).jobsList, "--view", "all", "--limit", "5000")) // derives and saves the facts
 	warm := w4aPriorities(t, cliReply(t, e, (*env).jobsList, "--view", "all", "--limit", "5000")) // serves them: no text
-	if len(warm) != len(w4aStaffSeeds) {
-		t.Fatalf("the list holds %d of %d jobs: %v", len(warm), len(w4aStaffSeeds), warm)
+	// Every seed is listed but the closed posting nobody marked: the Jobs views
+	// hold no such row, though `jobs show` still reads it.
+	const unlisted = "gh:co5:06"
+	if _, in := warm[unlisted]; in || len(warm) != len(w4aStaffSeeds)-1 {
+		t.Fatalf("the list holds %d of %d jobs (want all but %s): %v", len(warm), len(w4aStaffSeeds), unlisted, warm)
 	}
 
 	exported := map[string]string{}
@@ -108,6 +125,11 @@ func TestW4aPriorityIsTheSameInListShowAndExport(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := map[string]string{"list (derived)": cold[s.key], "list (stored facts)": warm[s.key], "show": string(show["priority"]), "export": exported[s.key]}
+		if s.key == unlisted {
+			delete(got, "list (derived)")
+			delete(got, "list (stored facts)")
+			delete(got, "export")
+		}
 		for surface, p := range got {
 			if p == "" || p != got["show"] {
 				t.Errorf("%s (%s): priority %s on %s, show says %s (all: %v)", s.key, s.title, p, surface, got["show"], got)
