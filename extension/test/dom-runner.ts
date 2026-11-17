@@ -263,7 +263,9 @@ async function tracking(): Promise<void> {
   check("password never captured or sent", !JSON.stringify(mem).includes("hunter3"));
 
   const r2 = await t.flush("again", true);
-  check("flushing the same page again saves nothing twice", mem.answers["current company"]!.uses === 1 && r2 !== null && r2.added === 0 && r2.updated === 0 && r2.unchanged >= 1, JSON.stringify(r2));
+  // The explicit Save reads every visible field (w3b), so it adds the page's other, untouched answers; what it must
+  // not do is send the answer this page already saved a second time.
+  check("flushing the same page again saves nothing twice", mem.answers["current company"]!.uses === 1 && r2 !== null && r2.unchanged >= 1, JSON.stringify(r2));
 
   const sp4 = q<HTMLInputElement>(document, "#sp4");
   sp4.value = "120000"; typed(sp4); // typed, never blurred, no change event
@@ -600,6 +602,8 @@ async function hostilePage(): Promise<void> {
   box.innerHTML = '<label for="hp1">Favourite editor</label><input id="hp1" value="vim"><label for="hp2">Favourite shell</label><input id="hp2" value="fish">' +
     '<label for="hp3">Favourite font</label><input id="hp3" value="mono"><button id="hp-go" type="button">Submit application</button>';
   document.body.append(box);
+  /** The test page holds the whole DOM test document: look only at this test's three questions. */
+  const mine = (sent: FieldInfo[]): string[] => sent.map(f => f.label).filter(l => /^Favourite (editor|shell|font)$/.test(l));
   const open = (make: typeof createRealTracker) => {
     const sent: FieldInfo[] = [];
     let prompts = 0;
@@ -618,15 +622,15 @@ async function hostilePage(): Promise<void> {
     window.dispatchEvent(new Event("pagehide"));
     await sleep(60);
     await hostile.t.flush("hostile");
-    check("hostile page: synthetic events capture nothing and raise no Applied prompt", hostile.sent.length === 0 && hostile.t.pendingCount() === 0 && hostile.prompts() === 0, `sent ${hostile.sent.length} pending ${hostile.t.pendingCount()} prompts ${hostile.prompts()}`);
+    check("hostile page: synthetic events capture nothing and raise no Applied prompt", mine(hostile.sent).length === 0 && hostile.prompts() === 0, `sent ${JSON.stringify(mine(hostile.sent))} prompts ${hostile.prompts()}`);
     await hostile.t.flush("saved", true);
-    check("hostile page: an explicit Save still captures the untouched values", hostile.sent.length === 3, `sent ${hostile.sent.length}`);
+    check("hostile page: an explicit Save still captures the untouched values", mine(hostile.sent).length === 3, `sent ${JSON.stringify(mine(hostile.sent))}`);
     hostile.t.dispose();
 
     const user = open(createTracker);
     typed(q<HTMLInputElement>(box, "#hp1"));
     await user.t.flush("typed");
-    check("hostile page: the same page, typed in by the user, captures only the typed field", user.sent.length === 1 && user.sent[0]!.label === "Favourite editor", JSON.stringify(user.sent.map(f => f.label)));
+    check("hostile page: the same page, typed in by the user, captures only the typed field", mine(user.sent).length === 1 && mine(user.sent)[0] === "Favourite editor", JSON.stringify(mine(user.sent)));
     user.t.dispose();
   } finally {
     box.remove();

@@ -26,6 +26,17 @@ describe("w3b: provenance of captured fields", () => {
     expect(s.trustedSubmitSends, "and flushes what was typed").toBeGreaterThan(0);
   }, 20_000);
 
+  test("a custom combobox is captured after a real click on its popup option, and not after the same script events", async () => {
+    const s = await scenarios();
+    expect(s.comboTrusted, "a trusted click in the owned listbox marks the combobox").toBe(1);
+    expect(s.comboHostile, "synthetic pointerdown, click and change on the option capture nothing").toBe(0);
+  }, 20_000);
+
+  test("a real click on a label marks the control it names", async () => {
+    const s = await scenarios();
+    expect(s.labelControl).toBe(1);
+  }, 20_000);
+
   test("an explicit Save captures untouched, script-set values, with the strict visibility scan", async () => {
     const s = await scenarios();
     expect(s.explicitSent).toBe(3);

@@ -26,6 +26,8 @@ const MAX_PENDING = 1000;
 /** The background refuses a capture message with more fields than this. */
 const MAX_SEND = 500;
 const MAX_OBSERVED_ROOTS = 64;
+/** How far up from an owning combobox or a label's control a touch climbs. */
+const TOUCH_DEPTH = 64;
 const ADVANCE = /\b(submit|apply|send application|next|continue|save|review)\b/i;
 const ADVANCE_ID = /(next|continue|submit|save)/i;
 
@@ -137,9 +139,34 @@ export function createTracker(d: TrackerDeps): Tracker {
    */
   const touched = new WeakSet<object>();
 
+  /** An element and every ancestor, across shadow boundaries. */
+  function touchUp(start: Element | null | undefined): void {
+    for (let n: Element | null | undefined = start, i = 0; n && i < TOUCH_DEPTH; i++) {
+      touched.add(n);
+      n = n.parentElement ?? (n.getRootNode() as ShadowRoot | undefined)?.host;
+    }
+  }
+
+  /**
+   * A user event marks every element on its path. A click on a label also marks the control it names, and one
+   * inside a listbox popup marks the combobox that owns it (aria-controls / aria-owns), because custom widgets
+   * often move the value with script events after a real click or keypress on a different node.
+   */
   function touch(ev: Event): void {
     if (!isTrusted(ev)) return;
-    for (const n of ev.composedPath()) if ((n as Node).nodeType === 1) touched.add(n);
+    const path = ev.composedPath();
+    for (const n of path) if ((n as Node).nodeType === 1) touched.add(n);
+    const first = path[0] as Element | undefined;
+    if (first?.nodeType !== 1) return;
+    touchUp((first.closest?.("label") as HTMLLabelElement | null | undefined)?.control);
+    const popup = first.closest?.("[role=listbox]");
+    const id = popup?.id;
+    if (!id) return;
+    const root = popup.getRootNode() as ParentNode;
+    for (const o of root.querySelectorAll?.("[aria-controls], [aria-owns]") ?? []) {
+      const owns = `${o.getAttribute("aria-controls") ?? ""} ${o.getAttribute("aria-owns") ?? ""}`.split(/\s+/);
+      if (owns.includes(id)) touchUp(o);
+    }
   }
 
   const isTouched = (r: FieldRef): boolean => r.els.some(e => touched.has(e));

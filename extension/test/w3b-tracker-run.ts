@@ -24,7 +24,7 @@ function target() {
   };
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
-const el = (name: string): Fake => ({ nodeType: 1, name });
+const el = (name: string): Fake => ({ nodeType: 1, name, parentElement: null, getRootNode: () => ({}) });
 const NAMES = ["Favourite colour", "Favourite editor", "Favourite shell"];
 const page = () => { const els = NAMES.map(n => el(n)); fields = NAMES.map((n, i) => ({ info: info(n), els: [els[i]!], widget: "native", manual: "" })); return els; };
 
@@ -82,5 +82,44 @@ const out: Record<string, number> = {};
   await sleep(60);
   out.trustedSubmitPrompts = trusted.submits; out.trustedSubmitSends = trusted.sends;
   trusted.t.dispose();
+}
+// H5: a custom combobox. The field is the wrapper; the user clicks an option in the popup (a listbox elsewhere in the page,
+// owned through aria-controls on the inner input), and the widget then sets the value with script events. Trusted: captured.
+// The same sequence from a page script: not.
+function comboPage() {
+  const wrapper: Fake = { nodeType: 1, name: "wrapper", parentElement: null, getRootNode: () => ({}) };
+  const input: Fake = { nodeType: 1, name: "input", parentElement: wrapper, getAttribute: (a: string) => (a === "aria-controls" ? "lb1" : null) };
+  const listbox: Fake = { nodeType: 1, name: "listbox", id: "lb1", parentElement: null, getRootNode: () => ({ querySelectorAll: () => [input] }) };
+  const option: Fake = { nodeType: 1, name: "option", parentElement: listbox, closest: (s: string) => (s === "[role=listbox]" ? listbox : null) };
+  const others = ["Favourite editor", "Favourite shell"].map(n => el(n));
+  fields = [
+    { info: info("Favourite pet"), els: [wrapper], widget: "combobox", manual: "" },
+    ...others.map((e, i) => ({ info: info(["Favourite editor", "Favourite shell"][i]!), els: [e], widget: "native", manual: "" })),
+  ];
+  return { option, wrapper };
+}
+{
+  const { option } = comboPage(); const r = make({ trusted: true });
+  r.doc.fire("pointerdown", [option]); r.doc.fire("click", [option]);
+  await sleep(60); await r.t.flush("combo");
+  out.comboTrusted = r.sent.length === 1 && r.sent[0] === "Favourite pet" ? 1 : 0;
+  r.t.dispose();
+}
+{
+  const { option } = comboPage(); const r = make();
+  r.doc.fire("pointerdown", [option]); r.doc.fire("click", [option]); r.doc.fire("change", [option]);
+  await sleep(60); await r.t.flush("combo");
+  out.comboHostile = r.sent.length;
+  r.t.dispose();
+}
+// H6: a click on a label marks the control it names (a custom checkbox whose input the page hides).
+{
+  const input = el("Favourite colour"); const lab: Fake = { nodeType: 1, control: input, parentElement: null };
+  input.parentElement = null; input.getRootNode = () => ({});
+  const label: Fake = { ...lab, closest: (s: string) => (s === "label" ? lab : null) };
+  page(); fields[0]!.els = [input]; const r = make({ trusted: true });
+  r.doc.fire("click", [label]); await sleep(60); await r.t.flush("label");
+  out.labelControl = r.sent.length === 1 && r.sent[0] === "Favourite colour" ? 1 : 0;
+  r.t.dispose();
 }
 console.log(JSON.stringify(out));
