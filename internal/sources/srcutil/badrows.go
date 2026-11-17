@@ -45,6 +45,7 @@ func WithBadRowSink(ctx context.Context, sink BadRowSink) context.Context {
 // not safe for concurrent use.
 type Rows struct {
 	sink    BadRowSink
+	count   *listingCounter // the listing's counter (CountBadRows), or nil
 	b       sources.Board
 	total   int
 	prior   int // rows an earlier stage of this listing skipped; counted against the bound, not reported
@@ -56,7 +57,12 @@ type Rows struct {
 // that does not know its total yet passes 0 and calls Add as each page lands.
 func NewRows(ctx context.Context, b sources.Board, total int) *Rows {
 	sink, _ := ctx.Value(badRowsKey{}).(BadRowSink)
-	return &Rows{sink: sink, b: b, total: total}
+	count, _ := ctx.Value(countKey{}).(*listingCounter)
+	if count != nil {
+		count.used.Store(1)
+		count.total.Add(int64(max(total, 0)))
+	}
+	return &Rows{sink: sink, count: count, b: b, total: total}
 }
 
 // NewRowsAfter starts counting for a listing of total rows on b, of which an
@@ -70,25 +76,40 @@ func NewRowsAfter(ctx context.Context, b sources.Board, total, already int) *Row
 	return r
 }
 
-// CountBadRows returns ctx with its BadRowSink wrapped so that the rows an
-// adapter reports are also counted, and the function that reads the count. The
-// wrapped sink forwards every report unchanged. With no sink on ctx it returns
-// ctx and a count of zero: an adapter then fails on its first bad row itself.
-func CountBadRows(ctx context.Context) (context.Context, func() int) {
-	sink, _ := ctx.Value(badRowsKey{}).(BadRowSink)
-	if sink == nil {
-		return ctx, func() int { return 0 }
+// ListingCount is what every Rows an adapter started during one List call saw:
+// the rows it counted (NewRows and Add) and the rows it skipped. Used says
+// whether the adapter used Rows at all; 11 adapters do not, and their counts
+// are zero.
+type ListingCount struct {
+	Total, Skipped int
+	Used           bool
+}
+
+type listingCounter struct{ total, skipped, used atomic.Int64 }
+
+type countKey struct{}
+
+// CountBadRows returns ctx carrying a per-listing counter, and the function
+// that reads it. Every Rows created under the returned ctx adds its rows and
+// skips to the counter as it counts, whether or not a BadRowSink is installed
+// or ever called, so the caller can bound what a paged adapter (a Rows per
+// page) left out across all of its pages. The sink is untouched: each Rows
+// still reports only its own skips, so the sums a sink receives stay exact.
+// The counter belongs to this ctx: another List call has its own.
+func CountBadRows(ctx context.Context) (context.Context, func() ListingCount) {
+	c := &listingCounter{}
+	return context.WithValue(ctx, countKey{}, c), func() ListingCount {
+		return ListingCount{Total: int(c.total.Load()), Skipped: int(c.skipped.Load()), Used: c.used.Load() > 0}
 	}
-	var n atomic.Int64
-	counting := func(b sources.Board, skipped int, first string) {
-		n.Add(int64(skipped))
-		sink(b, skipped, first)
-	}
-	return context.WithValue(ctx, badRowsKey{}, BadRowSink(counting)), func() int { return int(n.Load()) }
 }
 
 // Add counts n more rows of the listing.
-func (r *Rows) Add(n int) { r.total += n }
+func (r *Rows) Add(n int) {
+	r.total += n
+	if r.count != nil {
+		r.count.total.Add(int64(n))
+	}
+}
 
 // Skipped is how many rows Bad has skipped so far. An adapter whose board
 // counts its own rows adds it to the postings it kept, so a skipped row still
@@ -105,6 +126,9 @@ func (r *Rows) Bad(err error) error {
 		return err
 	}
 	r.skipped++
+	if r.count != nil {
+		r.count.skipped.Add(1)
+	}
 	if r.first == "" {
 		r.first = err.Error()
 	}
@@ -123,11 +147,14 @@ func (r *Rows) over(err error) error {
 // otherwise reports the shortfall to the sink. Call it just before returning
 // the postings, so a board that then fails reports nothing.
 func (r *Rows) Done() error {
-	if r.sink == nil || r.skipped == 0 {
+	if r.sink == nil {
 		return nil
 	}
 	if r.skipped+r.prior > MaxGone(r.total) {
 		return r.over(fmt.Errorf("rows could not be read: %s", r.first))
+	}
+	if r.skipped == 0 {
+		return nil
 	}
 	r.sink(r.b, r.skipped, r.first)
 	return nil

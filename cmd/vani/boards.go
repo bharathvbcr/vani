@@ -277,12 +277,12 @@ func listOneBoard(ctx context.Context, src sources.Source, b sources.Board) (lis
 			err = fmt.Errorf("adapter %s/%s panicked: %s", b.ATS, oneLine(b.Token, maxBoardNameRunes), oneLine(panicText(r), maxPanicRunes))
 		}
 	}()
-	listCtx, adapterSkipped := srcutil.CountBadRows(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget))
+	listCtx, counted := srcutil.CountBadRows(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget))
 	listed, err = src.List(listCtx, b)
 	if err != nil {
 		return listed, err
 	}
-	return storableListing(ctx, b, listed, adapterSkipped())
+	return storableListing(ctx, b, listed, counted())
 }
 
 // failsBoardOnBadRow is the adapters that keep failing their board on a row
@@ -308,16 +308,22 @@ var failsBoardOnBadRow = map[posting.ATS]bool{
 // otherwise skipped and counted through the run's BadRowSink, so the listing
 // reconciles as a short one and the stored postings it left out are held, not
 // aged. Without a sink, or past srcutil.MaxGone rows, the board fails. The
-// bound is on the rows the adapter skipped (adapterSkipped) and the rows skipped
-// here together, out of every row the board sent. The sink adds to what the
+// bound is on the rows the adapter skipped and the rows skipped here together,
+// out of every row the adapter's Rows counted, and is checked even when this
+// call skips none. The sink adds to what the
 // adapter itself reported for this listing: the rows are different rows, and
 // this call reports only its own. The error names the row's position and the field, never
 // the value.
-func storableListing(ctx context.Context, b sources.Board, listed []posting.Posting, adapterSkipped int) ([]posting.Posting, error) {
-	if len(listed) == 0 {
+func storableListing(ctx context.Context, b sources.Board, listed []posting.Posting, counted srcutil.ListingCount) ([]posting.Posting, error) {
+	if len(listed) == 0 && counted.Skipped == 0 {
 		return listed, nil
 	}
-	rows := srcutil.NewRowsAfter(ctx, b, len(listed)+adapterSkipped, adapterSkipped)
+	// The total is what the adapter's Rows saw (rows it dropped without
+	// reporting, a prefilter, are in it), and never less than the rows now in
+	// hand plus the ones it skipped. An adapter with no Rows has counted
+	// nothing, so the listing itself is the total.
+	total := max(counted.Total, len(listed)+counted.Skipped)
+	rows := srcutil.NewRowsAfter(ctx, b, total, counted.Skipped)
 	kept := make([]posting.Posting, 0, len(listed))
 	for i, p := range listed {
 		sp, err := srcutil.Storable(b, p)
