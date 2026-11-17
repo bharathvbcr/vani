@@ -277,9 +277,60 @@ func (d *auditDraw) recordOf(k posting.Key) (ledger.Record, bool) {
 // the audit keeps the text of a dropped, closed or duplicate posting out unless
 // it is marked (jobsTextScope), and a card or a label for one needs it, so the
 // bodiless ones are read back from the ledger here. A body that cannot be read
-// is an error naming the posting, never an empty description.
+// is an error naming the posting, never an empty description (one answer, one
+// key: fail closed). A draw of many picks uses readBodies and drops the picks
+// it could not read instead.
 func (e *env) withText(recs []ledger.Record) error {
+	misses, err := e.readBodies(recs)
+	if err != nil {
+		return err
+	}
+	if len(misses) > 0 {
+		return misses[0].err
+	}
+	return nil
+}
+
+// dropUnreadable is picks and recs (aligned, one record per pick) without the
+// picks whose posting text cannot be read back. Each dropped pick is named on
+// stdout with its reason, so a shorter session is never mistaken for the whole
+// draw. The two returned slices stay aligned.
+func (e *env) dropUnreadable(picks []eval.AuditPick, recs []ledger.Record) ([]eval.AuditPick, []ledger.Record, error) {
+	misses, err := e.readBodies(recs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(misses) == 0 {
+		return picks, recs, nil
+	}
+	skip := make(map[int]bool, len(misses))
+	for _, m := range misses {
+		skip[m.i] = true
+		fmt.Fprintf(e.stdout, "pick not shown: %s: %v\n", picks[m.i].Key, m.err)
+	}
+	keptPicks := make([]eval.AuditPick, 0, len(picks)-len(misses))
+	keptRecs := make([]ledger.Record, 0, len(recs)-len(misses))
+	for i := range picks {
+		if !skip[i] {
+			keptPicks, keptRecs = append(keptPicks, picks[i]), append(keptRecs, recs[i])
+		}
+	}
+	return keptPicks, keptRecs, nil
+}
+
+// bodyMiss is the record at recs[i] whose body could not be read back.
+type bodyMiss struct {
+	i   int
+	err error
+}
+
+// readBodies fills in the description of every bodiless record in recs it can
+// read back, and returns, in order, the ones it could not (left bodiless, with
+// BodyEvicted still set; each error names the posting). The error return is for
+// a read that could not start at all.
+func (e *env) readBodies(recs []ledger.Record) ([]bodyMiss, error) {
 	var rd *ledger.Reader
+	var misses []bodyMiss
 	for i := range recs {
 		r := &recs[i]
 		if !r.BodyEvicted {
@@ -289,17 +340,18 @@ func (e *env) withText(recs []ledger.Record) error {
 			var release func()
 			var err error
 			if rd, _, _, release, err = e.jobsReader(); err != nil {
-				return fmt.Errorf("audit: read the posting text of %s: %w", r.Key, err)
+				return nil, fmt.Errorf("audit: read the posting text of %s: %w", r.Key, err)
 			}
 			defer release()
 		}
 		d, err := rd.Body(r.Key)
 		if err != nil {
-			return fmt.Errorf("audit: the posting text of %s cannot be read back: %w", r.Key, err)
+			misses = append(misses, bodyMiss{i, fmt.Errorf("audit: the posting text of %s cannot be read back: %w", r.Key, err)})
+			continue
 		}
 		r.Posting.Description, r.BodyEvicted = d, false
 	}
-	return nil
+	return misses, nil
 }
 
 // checkAuditDraw validates the draw flags the audit commands share.
@@ -738,20 +790,25 @@ func (e *env) cmdAudit(args []string) error {
 		}
 		recs = append(recs, r)
 	}
-	if err := e.withText(recs); err != nil {
+	picks, recs, err := e.dropUnreadable(d.picks, recs)
+	if err != nil {
 		return err
+	}
+	if len(picks) == 0 {
+		fmt.Fprintln(e.stdout, "nothing to audit: no drawn posting's text could be read back")
+		return nil
 	}
 	names, err := e.evalNames()
 	if err != nil {
 		return err
 	}
-	n, err := eval.LabelAudit(stdin, e.stdout, d.picks, recs, d.s, names, *blind)
-	fmt.Fprintf(e.stdout, "audited %d of %d drawn\n", n, len(d.picks))
+	n, err := eval.LabelAudit(stdin, e.stdout, picks, recs, d.s, names, *blind)
+	fmt.Fprintf(e.stdout, "audited %d of %d drawn\n", n, len(picks))
 	// The cards the session showed are impressions: every answered card, and
 	// the one it stopped on unless it ran out of cards. A recording failure
 	// never fails the audit, but it is said.
-	shown := min(n+1, len(d.picks))
-	if ierr := recordAuditCards(context.Background(), e.stateDir, now(), d.seed, d.picks[:shown]); ierr != nil {
+	shown := min(n+1, len(picks))
+	if ierr := recordAuditCards(context.Background(), e.stateDir, now(), d.seed, picks[:shown]); ierr != nil {
 		fmt.Fprintf(e.stderr, "vani: the audit cards' impressions were not recorded: %v\n", ierr)
 	}
 	if errors.Is(err, io.EOF) {
