@@ -36,17 +36,10 @@ func TestW1cMergePlattOnlyDropsTheSharesHeldOutResult(t *testing.T) {
 	if got.Report == nil || got.Report.Weights != nil {
 		t.Errorf("report weights %+v, want dropped", got.Report)
 	}
-	if refusal, unchecked := sharesVerdict(got); refusal != "" || unchecked == "" {
-		t.Errorf("verdict refusal %q unchecked %q, want unchecked", refusal, unchecked)
+	// Unchecked shares stay unused on read, and the message explains why.
+	if g := sharesGate(got); !strings.Contains(g, "does not pass the gate") || !strings.Contains(g, "calibration-only fit") {
+		t.Errorf("gate verdict %q, want the shares unused with a kept-unchecked explanation", g)
 	}
-	if !strings.Contains(w1cUnchecked(got), "calibration-only fit") {
-		t.Errorf("unchecked warning does not explain a kept-unchecked share")
-	}
-}
-
-func w1cUnchecked(f rankfit.File) string {
-	_, u := sharesVerdict(f)
-	return u
 }
 
 // A weights-only fit refuses, writing nothing, when the calibration it was

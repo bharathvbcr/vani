@@ -111,7 +111,8 @@ func TestJobsServeKeptBlendsAnswerAsTheCommand(t *testing.T) {
 	other := cfg
 	weights := filepath.Join(e.stateDir, "rank", "weights.json")
 	if err := rankfit.Write(weights, rankfit.File{V: rankfit.FileVersion, FittedAt: jobsT0,
-		Shares: &rankfit.Shares{Fit: 0.1, Coverage: 0.1, Semantic: 0.05, Keyword: 0.6, Title: 0.05, Employer: 0.05, KBMatch: 0.05}}); err != nil {
+		Shares: &rankfit.Shares{Fit: 0.1, Coverage: 0.1, Semantic: 0.05, Keyword: 0.6, Title: 0.05, Employer: 0.05, KBMatch: 0.05},
+		Report: heldOut(0.7, 0.6, 400)}); err != nil {
 		t.Fatal(err)
 	}
 	other.RankWeightsFile = weights

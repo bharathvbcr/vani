@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -56,49 +56,101 @@ func rankWeights(cfg config.Config) (w *jobinsight.Weights, used, warn string) {
 // use after being checked against the hand weights on the file's own held-out
 // result (sharesChecked), as opposed to used on the file's word alone.
 func rankWeightsChecked(cfg config.Config) (w *jobinsight.Weights, used, warn string, sharesChecked bool) {
+	s := readRankWeights(cfg)
+	return s.w, s.used, s.warn, s.sharesChecked
+}
+
+// rankPart says whether one part of the rank weights file is in use. Reason
+// says why it is not, or notes what was read past while it is.
+type rankPart struct {
+	Part   string `json:"part"`
+	InUse  bool   `json:"in_use"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// rankWeightsRead is what readRankWeights found: the weights (nil for the hand
+// weights), what rankWeights reports of them, and which parts of the file are
+// in use.
+type rankWeightsRead struct {
+	w             *jobinsight.Weights
+	used, warn    string
+	sharesChecked bool
+	parts         []rankPart
+}
+
+// readRankWeights is the one reading of the config's rank_weights_file that
+// rankWeights, rankWeightsChecked and status all answer from.
+func readRankWeights(cfg config.Config) rankWeightsRead {
 	if cfg.RankWeightsFile == "" {
-		return nil, rankWeightsHand, "", false
+		return rankWeightsRead{used: rankWeightsHand}
 	}
 	f, err := rankfit.Load(cfg.RankWeightsFile)
 	if err != nil {
-		return nil, rankWeightsHand, "rank_weights_file could not be used, so the hand weights rank: " + oneLine(err.Error(), 300), false
+		part := "file"
+		var pe *rankfit.PartError
+		if errors.As(err, &pe) {
+			part = pe.Part
+		}
+		return rankWeightsRead{used: rankWeightsHand,
+			warn:  "rank_weights_file could not be used, so the hand weights rank: " + oneLine(err.Error(), 300),
+			parts: []rankPart{{Part: part, Reason: oneLine(err.Error(), 300)}}}
 	}
 	// The date is the file's last fit of any part (a platt-only or weights-only
 	// fit refreshes it; --spare-seniority does not), not the age of the shares.
-	used = "fitted " + f.FittedAt.UTC().Format("2006-01-02")
+	r := rankWeightsRead{used: "fitted " + f.FittedAt.UTC().Format("2006-01-02")}
 	if f.Shares != nil {
-		switch refusal, unchecked := sharesVerdict(f); {
-		case refusal != "":
-			// The file's own held-out result puts the shares below the hand
-			// weights (or is not one): they do not rank. Its calibration is a
-			// separate fit and stays.
-			warn = "rank_weights_file's shares are refused, so the hand shares rank: " + refusal
+		if reason := sharesGate(f); reason != "" {
+			// The shares' held-out result does not pass the write gate (or there
+			// is none): they do not rank. The calibration is a separate fit and
+			// stays.
+			r.warn = reason
+			r.parts = append(r.parts, rankPart{Part: "shares", Reason: reason})
 			f.Shares = nil
-			if len(f.Calibration) == 0 {
-				return nil, rankWeightsHand, warn, false
+			switch {
+			case len(f.Calibration) > 0:
+				r.used += " (calibration only; shares refused)"
+			case len(f.SpareSeniorityMismatch) > 0:
+				r.used += " (shares refused)"
+			default:
+				r.used = rankWeightsHand
+				return r
 			}
-			used += " (calibration only; shares refused)"
-		case unchecked != "":
-			warn = unchecked // used as the file says, but never silently unchecked
-		default:
-			sharesChecked = true
+		} else {
+			r.sharesChecked = true
+			r.parts = append(r.parts, rankPart{Part: "shares", InUse: true})
 		}
 	}
+	if len(f.Calibration) > 0 {
+		r.parts = append(r.parts, rankPart{Part: "calibration", InUse: true})
+	}
+	if len(f.SpareSeniorityMismatch) > 0 {
+		r.parts = append(r.parts, rankPart{Part: "spare_seniority_mismatch", InUse: true})
+	}
+	if f.Report != nil {
+		// The report is provenance; the gate above reads it, ranking does not.
+		p := rankPart{Part: "report", InUse: true}
+		if f.ReportIgnored != "" {
+			p.Reason = "read past what this binary does not know of it: " + oneLine(f.ReportIgnored, 200)
+		}
+		r.parts = append(r.parts, p)
+	}
 	fitted := f.Apply(jobinsight.DefaultWeights())
-	return &fitted, used, warn, sharesChecked
+	r.w = &fitted
+	return r
 }
 
 // rankWeightsFacet is status's answer to "which weights rank, and can I trust
 // them": Used as `vani jobs` reports it ("hand", "fitted <date>", or "fitted
 // <date> (calibration only; shares refused)"), Warning the refusal or the
-// failure (a file that could not be used, shares worse than the hand weights on
-// their own held-out pairs, or used with no recorded result), and SharesChecked
-// whether fitted shares in use were checked against the hand weights.
+// failure (a file that could not be used, or shares whose held-out result does
+// not pass the gate or is missing), SharesChecked whether fitted shares in use
+// passed that gate, and Parts which parts of the file are in use and why not.
 type rankWeightsFacet struct {
 	facet
-	Used          string `json:"used"`
-	Warning       string `json:"warning,omitempty"`
-	SharesChecked bool   `json:"shares_checked"`
+	Used          string     `json:"used"`
+	Warning       string     `json:"warning,omitempty"`
+	SharesChecked bool       `json:"shares_checked"`
+	Parts         []rankPart `json:"parts,omitempty"`
 }
 
 // rankWeightsFacetOf reads the config's rank_weights_file as the ranking does;
@@ -107,10 +159,10 @@ func rankWeightsFacetOf(cfg config.Config) *rankWeightsFacet {
 	if cfg.RankWeightsFile == "" {
 		return nil
 	}
-	_, used, warn, checked := rankWeightsChecked(cfg)
-	f := &rankWeightsFacet{facet: facet{OK: warn == ""}, Used: used, Warning: warn, SharesChecked: checked}
-	if warn != "" {
-		f.Reason = warn
+	r := readRankWeights(cfg)
+	f := &rankWeightsFacet{facet: facet{OK: r.warn == ""}, Used: r.used, Warning: r.warn, SharesChecked: r.sharesChecked, Parts: r.parts}
+	if r.warn != "" {
+		f.Reason = r.warn
 	}
 	return f
 }
@@ -125,30 +177,28 @@ func rankWeightsLines(f *rankWeightsFacet) []string {
 	if f.Warning != "" {
 		out = append(out, "  "+f.Warning)
 	}
+	for _, p := range f.Parts {
+		if p.Part == "report" && p.Reason != "" {
+			out = append(out, "  report: "+p.Reason)
+		}
+	}
 	return out
 }
 
-// sharesVerdict judges a file's fitted shares by the held-out result the file
-// records (rankfit.FitResult: the accuracy of the fitted shares and of the hand
-// weights on the same held-out judged pairs). refusal is non-empty when the
-// shares must not rank: that result puts them below the hand weights, or is not
-// an accuracy over any pair. unchecked is non-empty when the file records no
-// result, so the shares are used on its word alone, and says so. Both are empty
-// for shares at least as good as the hand weights on their own held-out pairs.
-func sharesVerdict(f rankfit.File) (refusal, unchecked string) {
+// sharesGate is the read side of the write gate: it says why a file's fitted
+// shares must not rank, or "" when they may. They may only when the held-out
+// result the file stores for them passes rankfit.FitResult.Beats, the rule a fit
+// had to pass to be written, so a file that could not have been written by the
+// gate is not trusted on read. A file that stores no result (a calibration-only
+// fit drops it, since the calibration it was measured under changed) has shares
+// that were never checked, and they stay unused with the same message.
+func sharesGate(f rankfit.File) string {
+	const lead = "rank_weights_file: shares present but their held-out result does not pass the gate, so the hand shares rank: "
 	if f.Report == nil || f.Report.Weights == nil {
-		return "", "rank_weights_file's shares record no held-out result (a weight fit records one; a calibration-only fit drops it, since the calibration it was measured under changed), so they are used unchecked against the hand weights"
+		return lead + "the file records no held-out result for them (a weight fit records one; a calibration-only fit drops it)"
 	}
-	r := f.Report.Weights
-	unit := func(v float64) bool { return v >= 0 && v <= 1 } // false for NaN
-	switch {
-	case r.HeldOutPairs <= 0:
-		return "its recorded held-out result has no held-out pairs", ""
-	case !unit(r.FitAccuracy) || !unit(r.HandAccuracy):
-		return fmt.Sprintf("its recorded held-out accuracies (%v fitted, %v hand) are not an accuracy", r.FitAccuracy, r.HandAccuracy), ""
-	case r.FitAccuracy < r.HandAccuracy:
-		return fmt.Sprintf("on its own %d held-out pairs the fitted shares rank %.1f%% right, worse than the hand weights' %.1f%%",
-			r.HeldOutPairs, 100*r.FitAccuracy, 100*r.HandAccuracy), ""
+	if reason := f.Report.Weights.NoGainReason(); reason != "" {
+		return lead + reason
 	}
-	return "", ""
+	return ""
 }
