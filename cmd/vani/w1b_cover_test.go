@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +41,19 @@ func (p *w1bCancelProv) Stream(ctx context.Context, req llm.Request) (llm.Stream
 		return nil, err
 	}
 	return &w1bCancelStream{draftStream: *st.(*draftStream), cancel: p.cancel}, nil
+}
+
+// w1bAskedProv closes asked when the model is first called, so a test waits on
+// a channel instead of reading the fake's request slice from another goroutine.
+type w1bAskedProv struct {
+	seqDraft
+	asked chan struct{}
+	once  sync.Once
+}
+
+func (p *w1bAskedProv) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	p.once.Do(func() { close(p.asked) })
+	return p.seqDraft.Stream(ctx, req)
 }
 
 func w1bCoverEnv(t *testing.T, p llm.Provider) (*env, string) {
@@ -76,12 +90,10 @@ func TestW1bPaidLetterIsSavedWhenTheCommandIsStoppedAfterTheModelReturned(t *tes
 
 func TestW1bCancelBeforeTheModelReturnsSavesNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := &seqDraft{texts: []string{"I want this role at Acme."}, block: time.Minute}
+	p := &w1bAskedProv{seqDraft: seqDraft{texts: []string{"I want this role at Acme."}, block: time.Minute}, asked: make(chan struct{})}
 	e, state := w1bCoverEnv(t, p)
 	go func() {
-		for len(p.reqs) == 0 {
-			time.Sleep(time.Millisecond)
-		}
+		<-p.asked
 		cancel()
 	}()
 	out, err := e.coverBuild(ctx, "gh:acme:1")
