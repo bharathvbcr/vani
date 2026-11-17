@@ -62,6 +62,7 @@ var jsonLeaves = []jsonLeaf{
 	{"config check", jsonFlag, ""},
 	{"config motivation", jsonAlways, ""},
 	{"config exclude", jsonAlways, ""},
+	{"config models", jsonAlways, ""},
 	{"watchlist list", jsonFlag, ""},
 	{"watchlist add", jsonFlag, ""},
 	{"watchlist remove", jsonFlag, ""},

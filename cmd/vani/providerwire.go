@@ -13,6 +13,7 @@ import (
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
 	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
 	"github.com/bharathvbcr/Manvi/manvi/llm/transport"
+	"github.com/bharathvbcr/Vani/internal/config"
 )
 
 // budgetClock is the one clock the llm budget day comes from (a seam for tests).
@@ -41,10 +42,22 @@ func (w *wired) provider(ctx context.Context) (llm.Provider, error) {
 	}
 	name := w.cfg.LLM.Provider
 	resolver := credentials.NewResolver()
-	if _, err := resolver.Resolve(name); err != nil {
-		return nil, err
-	}
 	resolve := func() (credentials.Secret, error) { return resolver.Resolve(name) }
+	if _, err := resolver.Resolve(name); err != nil {
+		if name != "gemini" {
+			return nil, err
+		}
+		// The AI Studio key the Mac app keeps in the login Keychain, the one
+		// the Gemini decision model reads too, under the same rules: the
+		// environment first (Manvi just looked), VANI_NO_KEYCHAIN opts out.
+		key, _, why := w.modelKey("gemini", config.GeminiKeyEnvs, config.KeychainGemini)
+		if key == "" {
+			return nil, fmt.Errorf("%w; %s", err, why)
+		}
+		resolve = func() (credentials.Secret, error) {
+			return credentials.NewSecret(key, "login Keychain item "+config.KeychainGemini), nil
+		}
+	}
 	var inner llm.Provider
 	switch name {
 	case "gemini":

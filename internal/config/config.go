@@ -1650,6 +1650,13 @@ func (c Config) Validate() error {
 			add("llm.triage_model %q must be a model id of at most %d bytes with no whitespace", m, MaxModelName)
 		}
 	}
+	// A Claude model under gemini (or the reverse) is refused by Manvi when the
+	// provider is built, after the run has started; say so here instead.
+	for _, f := range []struct{ key, model string }{{"llm.model", c.LLM.Model}, {"llm.triage_model", c.LLM.TriageModel}} {
+		if owner := modelFamilyProvider(f.model); owner != "" && c.LLM.Provider != "" && owner != c.LLM.Provider {
+			add("%s %q belongs to the %s provider, but llm.provider is %s", f.key, f.model, owner, c.LLM.Provider)
+		}
+	}
 	switch c.KBMatch.EffectiveBackend() {
 	case KBMatchLLM:
 		if m := c.KBMatch.Model; m != "" {

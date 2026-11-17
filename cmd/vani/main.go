@@ -49,6 +49,10 @@ commands:
   init [--json]              write a default config (refuses to overwrite)
   config check [--json]      validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
+  config models [--set [--decision P] [--llm P --model M [--triage-model M]]]
+                             print the decision model and llm choices as JSON; --set switches
+                             decide.provider (openrouter, subq, gemini) and/or llm.provider
+                             (anthropic, gemini) with its models and prices in one write
   config exclude [--set [--revision R] | --patch]
                              print the exclusions (titles, title_unless, companies, locations,
                              descriptions) as JSON with their revision; --patch applies
@@ -798,8 +802,11 @@ func (e *env) cmdConfig(args []string) error {
 	if len(args) > 0 && args[0] == "exclude" {
 		return e.cmdConfigExclude(args[1:])
 	}
+	if len(args) > 0 && args[0] == "models" {
+		return e.cmdConfigModels(args[1:])
+	}
 	if len(args) == 0 || args[0] != "check" {
-		return usagef("config: expected subcommand \"check\", \"motivation\" or \"exclude\"")
+		return usagef("config: expected subcommand \"check\", \"motivation\", \"exclude\" or \"models\"")
 	}
 	fs := e.newFlags("config check")
 	asJSON := e.jsonFlag(fs, `{"config","boards","allowed_hosts"} on stdout`)

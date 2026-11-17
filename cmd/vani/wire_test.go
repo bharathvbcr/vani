@@ -24,7 +24,7 @@ import (
 )
 
 func clearKeys(t *testing.T) {
-	for _, k := range []string{"OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"} {
+	for _, k := range []string{"OPENROUTER_API_KEY", "SUBQ_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"} {
 		t.Setenv(k, "")
 	}
 }
