@@ -49,10 +49,14 @@ commands:
   init [--json]              write a default config (refuses to overwrite)
   config check [--json]      validate the config
   config motivation [--set]  print motivation_notes as JSON; --set replaces them with stdin
-  config exclude [--set]     print the exclusions (titles, title_unless, companies, locations,
-                             descriptions) as JSON; --set replaces them with the JSON object on
-                             stdin. The next run drops what they match and reopens what they
-                             no longer match; vani prefilter shows it first
+  config exclude [--set [--revision R] | --patch]
+                             print the exclusions (titles, title_unless, companies, locations,
+                             descriptions) as JSON with their revision; --patch applies
+                             {"add":{...},"remove":{...}} from stdin to what is saved now;
+                             --set replaces them with the JSON object on stdin, refused as
+                             "stale" unless they still have revision R (without --revision it is
+                             last writer wins). The next run drops what they match and reopens
+                             what they no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
   watchlist add [--json] --ats CODE --token T --company C [--allow-host]
                    CODE: gh|lv|ab|wd|az|gg|ap|ef|jb|gm|sr|ib|av|ds|at|oc|rp|wk|rc|pp|bh|ps|bz|tm|hv|hb|tt|tb|fd|pg

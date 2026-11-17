@@ -66,11 +66,34 @@ public struct ExclusionLists: Codable, Equatable, Sendable {
     static func fold(_ s: String) -> String {
         s.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
+
+    static var allLists: [WritableKeyPath<ExclusionLists, [String]>] {
+        [\.titles, \.titleUnless, \.companies, \.locations, \.onlyLocations, \.descriptions]
+    }
+
+    /// What the owner changed, `edited` against the `base` they started from,
+    /// applied to `current`: entries they removed leave it and entries they
+    /// added join it (entries compare as Vani compares them), so what someone
+    /// else saved in between stays. The merge of a stale copy, never its replacement.
+    public static func rebase(_ edited: ExclusionLists, from base: ExclusionLists, onto current: ExclusionLists) -> ExclusionLists {
+        var out = current
+        for list in allLists {
+            let before = Set(base[keyPath: list].map(fold)), after = Set(edited[keyPath: list].map(fold))
+            out[keyPath: list].removeAll { before.contains(fold($0)) && !after.contains(fold($0)) }
+            for entry in edited[keyPath: list] where !before.contains(fold(entry)) {
+                if !out[keyPath: list].contains(where: { fold($0) == fold(entry) }) { out[keyPath: list].append(entry) }
+            }
+        }
+        return out
+    }
 }
 
 /// What `vani config exclude` replies: the saved lists and Vani's bounds.
 public struct Exclusions: Decodable, Equatable, Sendable {
     public var lists: ExclusionLists
+    /// Identifies `lists`; a save that hands it back is refused (`ExclusionsStale`)
+    /// when the config's lists changed since. Nil from a vani that predates it.
+    public var revision: String?
     /// Vani's cap on entries per list, but descriptions.
     public var maxEntries: Int
     /// Vani's cap on description phrases.
@@ -80,6 +103,7 @@ public struct Exclusions: Decodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case lists = "exclude"
+        case revision
         case maxEntries = "max_entries"
         case maxDescriptions = "max_descriptions"
         case maxEntryBytes = "max_entry_bytes"
@@ -108,18 +132,34 @@ public struct ExclusionsClient: Sendable {
 
     /// Replace every list; empty lists clear them. Vani validates the whole
     /// config before it writes, so refused exclusions leave the file as it was.
-    /// The lists travel on stdin as JSON, never as arguments.
-    public func save(_ lists: ExclusionLists) throws -> Exclusions {
+    /// The lists travel on stdin as JSON, never as arguments. With `revision`
+    /// (the one a read replied with) Vani refuses the save, throwing
+    /// `ExclusionsStale`, when the lists changed since; without it the save
+    /// replaces whatever is there.
+    public func save(_ lists: ExclusionLists, revision: String? = nil) throws -> Exclusions {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        return try call(["config", "exclude", "--set"], input: try encoder.encode(lists))
+        return try call(["config", "exclude", "--set"] + (revision.map { ["--revision", $0] } ?? []),
+                        input: try encoder.encode(lists))
     }
 
+    /// Vani's words for a stale save (config.ErrStale), which reach the app as the error text.
+    static let staleMarker = "the exclusions changed since they were read"
+
     private func call(_ args: [String], input: Data?) throws -> Exclusions {
-        try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir, input: input,
-                             timeout: timeout, maxOutputBytes: Self.maxOutputBytes,
-                             tooOld: "this vani is too old for exclusions; rebuild the app")
+        do {
+            return try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir, input: input,
+                                        timeout: timeout, maxOutputBytes: Self.maxOutputBytes,
+                                        tooOld: "this vani is too old for exclusions; rebuild the app")
+        } catch let error as BankError where error.description.contains(Self.staleMarker) {
+            throw ExclusionsStale()
+        }
     }
+}
+
+/// A save was refused because the config's exclusions changed after they were read.
+public struct ExclusionsStale: Error, Equatable, CustomStringConvertible {
+    public var description: String { "the exclusions changed since they were read" }
 }
 
 extension DraftSettings {
@@ -142,8 +182,10 @@ extension DraftSettings {
 public final class ExclusionsEditor {
     /// What Settings shows and edits. Setting it saves.
     public var lists = ExclusionLists() {
-        didSet { if !applying, lists != oldValue { requestSave() } }
+        didSet { if !applying, lists != oldValue { notice = nil; requestSave() } }
     }
+    /// Said when a save was merged with exclusions changed elsewhere; the next edit clears it.
+    public private(set) var notice: String?
     /// The last reply from Vani: the lists in the config and Vani's caps. Nil
     /// until a read succeeds, and editing waits for it.
     public private(set) var saved: Exclusions?
@@ -156,6 +198,7 @@ public final class ExclusionsEditor {
     @ObservationIgnored private let onSaved: @MainActor () -> Void
     @ObservationIgnored private var applying = false
     @ObservationIgnored private var saving: Task<Void, Never>?
+    @ObservationIgnored private var loading: Task<Void, Never>?
 
     /// `onSaved` runs after each save Vani accepts (the app reloads Jobs).
     public init(client: @escaping () -> ExclusionsClient, onSaved: @escaping @MainActor () -> Void = {}) {
@@ -166,19 +209,30 @@ public final class ExclusionsEditor {
     /// The lists differ from the config's: a save is running or was refused.
     public var unsaved: Bool { saved.map { $0.lists != lists } ?? false }
 
-    /// Reads the config's lists, replacing the edited ones. Does nothing while
-    /// a call runs, so it never overtakes a save.
+    /// Reads the config's lists. Does nothing while a call runs, so it never
+    /// overtakes a save. The read replaces the shown lists, except that what
+    /// the owner edited while it ran is kept and merged onto it (`rebase`), then
+    /// saved: an old read never writes old lists back over an edit.
     public func load() async {
         guard !busy else { return }
         busy = true
+        let before = lists // taken here, before anything else can edit
+        let reading = Task { await self.read(startedWith: before) }
+        loading = reading
+        await reading.value
+    }
+
+    private func read(startedWith before: ExclusionLists) async {
         let c = client()
         let result = await BlockingWork.run { try c.load() }
-        busy = false
+        loading = nil
+        busy = saving != nil
         switch result {
         case let .success(x):
             saved = x
             problem = nil
-            apply(x.lists)
+            apply(lists == before ? x.lists : ExclusionLists.rebase(lists, from: before, onto: x.lists))
+            if lists != x.lists { requestSave() }
         case let .failure(err):
             problem = String(describing: err)
         }
@@ -222,21 +276,50 @@ public final class ExclusionsEditor {
         saving = Task { await saveUntilCurrent() }
     }
 
+    /// How many times in a row a save may find the config changed under it
+    /// before the owner is told instead.
+    static let maxStaleRetries = 3
+
     /// Saves until the config holds what the editor shows, or Vani refuses.
+    /// It first waits for a read in flight, so that read's lists are the base
+    /// of the save and never overwrite it. Each save names the revision it is
+    /// built on; when the config changed since (`ExclusionsStale`) it reads
+    /// again, applies the owner's changes to what is there now and saves that,
+    /// so an exclusion added elsewhere is never replaced by this copy.
     private func saveUntilCurrent() async {
         busy = true
         defer { busy = false; saving = nil }
-        while let saved, lists != saved.lists {
+        if let loading { await loading.value }
+        var stale = 0
+        while let base = saved, lists != base.lists {
             let sending = lists
             let c = client()
-            let result = await BlockingWork.run { try c.save(sending) }
+            let result = await BlockingWork.run { try c.save(sending, revision: base.revision) }
             switch result {
             case let .success(x):
+                stale = 0
                 self.saved = x
                 problem = nil
                 // Vani trims what it saves; show that, unless the owner edited meanwhile.
                 if lists == sending { apply(x.lists) }
                 onSaved()
+            case let .failure(err) where err is ExclusionsStale:
+                stale += 1
+                guard stale <= Self.maxStaleRetries else {
+                    problem = "the exclusions keep changing elsewhere; your edit was not saved. Try again."
+                    return
+                }
+                let current = await BlockingWork.run { try c.load() }
+                switch current {
+                case let .success(x):
+                    let merged = ExclusionLists.rebase(lists, from: base.lists, onto: x.lists)
+                    saved = x
+                    apply(merged)
+                    notice = "The exclusions were changed elsewhere; your edit was merged with them."
+                case let .failure(err):
+                    problem = String(describing: err)
+                    return
+                }
             case let .failure(err):
                 problem = String(describing: err)
                 return

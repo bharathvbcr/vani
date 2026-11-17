@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/indexutil"
 	"github.com/bharathvbcr/Vani/internal/lca"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -41,6 +42,7 @@ const (
 	codeUnsupported = "unsupported" // the global --json on a command with no JSON form
 	codeBusy        = "busy"        // another vani holds the ledger or an index; retry when it is done
 	codeShrinks     = "shrinks"     // lca import would replace a bigger fiscal year; --replace allows it
+	codeStale       = "stale"       // a save built on a copy another writer has since changed; read again
 )
 
 // jsonLeaf is one leaf command: the words that name it, as usageTemplate
@@ -318,6 +320,8 @@ func envelopeCode(err error) string {
 		return codeBusy
 	case errors.Is(err, lca.ErrShrinks):
 		return codeShrinks
+	case errors.Is(err, config.ErrStale):
+		return codeStale
 	default:
 		return codeRuntime
 	}
