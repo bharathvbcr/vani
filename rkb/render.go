@@ -51,12 +51,15 @@ type StatementView struct {
 }
 
 type ClaimsFile struct {
-	Generated  string                    `json:"generated"`
-	ResumeHash string                    `json:"resume_hash"`
-	Selection  string                    `json:"selection"`
-	VMReport   map[string]string         `json:"vm_report"`
-	Claims     map[string]*ClaimView     `json:"claims"`
-	Statements map[string]*StatementView `json:"statements"`
+	Generated  string `json:"generated"`
+	ResumeHash string `json:"resume_hash"`
+	// ClaimsTexHash is claimsTexHash() at export: the Claims.tex files the
+	// verification state was read from. Empty means an older rkb wrote it.
+	ClaimsTexHash string                    `json:"claims_tex_sha256,omitempty"`
+	Selection     string                    `json:"selection"`
+	VMReport      map[string]string         `json:"vm_report"`
+	Claims        map[string]*ClaimView     `json:"claims"`
+	Statements    map[string]*StatementView `json:"statements"`
 	// Guards: the export records refuted sentences (RefutedSentences,
 	// StatementView.Refuted). 0 means an older rkb wrote it and the
 	// refuted-wording check cannot run on it.

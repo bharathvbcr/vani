@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -294,13 +295,25 @@ func sha1hex(s string) string {
 	return hex.EncodeToString(h[:])[:12]
 }
 
+// sha256File hashes a regular file of at most maxQuoteFile bytes, streaming
+// it. "" means unreadable, not a regular file (a directory, a device, a FIFO)
+// or over the cap: callers treat that as a source that cannot be vouched for.
 func sha256File(p string) string {
-	b, err := os.ReadFile(p)
+	f, err := os.Open(p)
 	if err != nil {
 		return ""
 	}
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
+	defer func() { _ = f.Close() }() // read-only handle
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Size() > maxQuoteFile {
+		return ""
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, maxQuoteFile+1)) // the file may grow after Stat
+	if err != nil || n > maxQuoteFile {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func nowISO() string { return time.Now().Format(time.RFC3339) }

@@ -59,6 +59,22 @@ func parseClaims() map[string]*Claim {
 	return out
 }
 
+// claimsTexHash is the content hash of every configured Claims file, in
+// config order, each tagged with its configured name. A file that cannot be
+// hashed contributes "-", so a missing or oversized file never hashes like an
+// empty one. Export records it; finalize compares it.
+func claimsTexHash() string {
+	var b strings.Builder
+	for _, rel := range cfg.ClaimsTex {
+		sum := sha256File(inRoot(rel))
+		if sum == "" {
+			sum = "-"
+		}
+		b.WriteString(rel + "\x00" + sum + "\n")
+	}
+	return sha256Bytes([]byte(b.String()))
+}
+
 // cautionRe flags a claim whose notes say it must not be used as written.
 var cautionRe = regexp.MustCompile(`\b(CAUTION|DO NOT USE|WITHDRAWN|RETRACTED)\b`)
 
@@ -365,10 +381,18 @@ func evaluate(cl *Claim, log VerifyLog, vm map[string]vmResult, sentences []stri
 		r.P1, r.P1Verdict = true, vmr.Verdict
 	}
 	if !r.P1 {
+		var stale []string
 		for _, e := range current {
-			if e.Pass == 1 && e.Verdict == "CONFIRMED" && e.Found != "" && e.SourcePath != "" && (fileExists(inRoot(e.SourcePath)) || isUnmountedSibling(codeRoot(), e.SourcePath)) && !circularSource(e.SourcePath) {
+			if e.Pass == 1 && e.Verdict == "CONFIRMED" && e.Found != "" && e.SourcePath != "" && !circularSource(e.SourcePath) {
+				if why := manualSourceProblem(e); why != "" {
+					stale = append(stale, fmt.Sprintf("%s: manual pass 1 refused, %s", cl.ID, why))
+					continue
+				}
 				r.P1, r.P1Verdict = true, "MANUAL"
 			}
+		}
+		if !r.P1 {
+			r.Problems = append(r.Problems, stale...)
 		}
 	}
 	if hasVM && (vmr.Verdict == "FAIL" || vmr.Verdict == "UNBACKED") {
@@ -425,6 +449,25 @@ func evaluate(cl *Claim, log VerifyLog, vm map[string]vmResult, sentences []stri
 		r.Problems = append(r.Problems, fmt.Sprintf("%d logged pass(es) void: value changed since", voided))
 	}
 	return r
+}
+
+// manualSourceProblem says why a manual pass 1 no longer holds, "" when it
+// does: the source must still be a readable regular file (within the read
+// cap) that hashes to what the reader saw. An entry that recorded no hash
+// (written before rkb did) is taken on the path alone, as pass 2 does; a
+// source under an unmounted sibling root cannot be read here and keeps the
+// pass it had.
+func manualSourceProblem(e LogEntry) string {
+	if sum := sha256File(inRoot(e.SourcePath)); sum != "" {
+		if e.SourceSHA != "" && sum != e.SourceSHA {
+			return "the source changed since it was read: " + e.SourcePath
+		}
+		return ""
+	}
+	if isUnmountedSibling(codeRoot(), e.SourcePath) {
+		return ""
+	}
+	return fmt.Sprintf("the source is missing, not a regular file, or over %d MiB: %s", maxQuoteFile>>20, e.SourcePath)
 }
 
 func evalStatement(key, text string, sources []string, attested string, log VerifyLog) *StatementView {
@@ -510,7 +553,7 @@ func claimsExport(a *args) {
 	claims := parseClaims()
 	log := loadLog()
 	vm, vmTime := parseVM(a.get("vm-report", ""))
-	cf := ClaimsFile{Generated: nowISO(), Claims: map[string]*ClaimView{}, Statements: map[string]*StatementView{}, Guards: 1}
+	cf := ClaimsFile{Generated: nowISO(), ClaimsTexHash: claimsTexHash(), Claims: map[string]*ClaimView{}, Statements: map[string]*StatementView{}, Guards: 1}
 	usage := map[string][]string{}
 	if u := a.get("used-in", ""); u != "" {
 		c := loadResume(u)
@@ -932,8 +975,9 @@ func claimsAdd(a *args) {
 	if found == "" || sp == "" {
 		die("a manual pass 1 needs --found \"<value as the source states it>\" and --source-path <file under code_root>")
 	}
-	if !fileExists(inRoot(sp)) {
-		die("source file not found: %s", sp)
+	sha := sha256File(inRoot(sp))
+	if sha == "" {
+		die("source file not found, not a regular file, or over %d MiB: %s", maxQuoteFile>>20, sp)
 	}
 	if circularSource(sp) {
 		die("%s restates claims (CV folder, knowledge.json, dossiers); cite the artifact that produced the figure", sp)
@@ -943,7 +987,7 @@ func claimsAdd(a *args) {
 	}
 	appendLog(VerifyLog{id: {LogEntry{Pass: 1, Kind: "figure", Verdict: "CONFIRMED", Method: "manual-read",
 		By: a.get("by", "author"), At: nowISO(), Value: cl.Value, Found: found, SourcePath: sp,
-		Evidence: a.get("evidence", ""), SourceSHA: sha256File(inRoot(sp))}}})
+		Evidence: a.get("evidence", ""), SourceSHA: sha}}})
 	fmt.Printf("logged manual pass 1 for %s\n", id)
 }
 

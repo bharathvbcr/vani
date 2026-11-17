@@ -128,6 +128,12 @@ func cmdFinalize(a *args) {
 		os.Exit(1)
 	}
 
+	switch {
+	case cf.ClaimsTexHash == "":
+		stop("claims export", []string{cfPath + " records no Claims.tex hash (an older rkb wrote it), so rkb cannot tell whether Claims.tex changed after it was verified; re-verify required: run `rkb claims export --used-in <resume>` again"})
+	case cf.ClaimsTexHash != claimsTexHash():
+		stop("claims export", []string{fmt.Sprintf("%v Claims.tex changed since %s was exported (%s); re-verify and export again", cfg.ClaimsTex, cfPath, cf.Generated)})
+	}
 	R := lint(c, cf, true, eco)
 	if len(R.Errors) > 0 {
 		stop("lint --final", R.Errors)
