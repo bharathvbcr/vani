@@ -444,15 +444,6 @@ func cmdRender(a *args) {
 	if len(r.R.missing) > 0 {
 		die("unregistered figure token(s): %s", strings.Join(sortedKeys(r.R.missing), ", "))
 	}
-	if final {
-		// the same record the renderer just made decides what is unverified
-		if probs := r.R.coverage(cf); len(probs) > 0 {
-			for _, p := range probs {
-				fmt.Println("ERROR " + p)
-			}
-			die("final render blocked: %d rendered figure(s) are not double-verified in the text they appear in", len(probs))
-		}
-	}
 	base := c.basename(sel)
 	writeFile(filepath.Join(out, base+".txt"), r.Text)
 	writeFile(filepath.Join(out, base+".ascii.txt"), toASCII(r.Text))

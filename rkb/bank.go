@@ -882,10 +882,12 @@ func cmdCompose(a *args) {
 	if out == "" {
 		out = strings.TrimSuffix(sel, ".json") + ".composed.json"
 	}
-	writeJSON(out, c)
+	// The printed hash covers the claim values, so without them it could never
+	// match an export: stop rather than print a hash that only looks real.
 	vals, err := currentClaimValues()
 	if err != nil {
-		vals = nil // Claims.tex unreadable: the hash then marks every figure absent
+		die("compose: Claims.tex unreadable, so the resume hash cannot be computed: %v", err)
 	}
+	writeJSON(out, c)
 	fmt.Printf("wrote %s (%d bullets, hash %s)\n", out, len(c.allBullets()), c.resumeHash(vals))
 }

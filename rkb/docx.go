@@ -361,21 +361,9 @@ func docxPages(docx string) int {
 }
 
 // exportDocx writes the .docx, stepping the font down (to 9.5pt) if Word
-// layout runs past the target page count.
-//
-// The Word file prints figures bold with no unverified marker, so a final
-// export (final=true: `rkb docx`, finalize) is refused while any rendered
-// figure is unverified, by the same check as render --final. A draft build
-// passes final=false.
-func exportDocx(c *Composed, cf *ClaimsFile, out string, pages int, fs float64, final bool) (float64, int) {
-	if final {
-		if probs := renderResume(c, cf, true).R.coverage(cf); len(probs) > 0 {
-			for _, p := range probs {
-				fmt.Println("ERROR " + p)
-			}
-			die("docx blocked: %d rendered figure(s) are not double-verified in the text they appear in (use `rkb build` for a draft)", len(probs))
-		}
-	}
+// layout runs past the target page count. It does not gate on figure
+// verification: `rkb docx` does (cmdDocx), finalize through lint --final.
+func exportDocx(c *Composed, cf *ClaimsFile, out string, pages int, fs float64) (float64, int) {
 	if fs == 0 {
 		fs = 10
 	}
@@ -397,7 +385,16 @@ func cmdDocx(a *args) {
 	pages := a.intFlag("pages", max(c.Meta.Pages, 1), 1, 20)
 	fs := a.floatFlag("font-pt", 10, 6, 16)
 	out := a.get("out", filepath.Join(a.get("out-dir", "."), c.basename(sel)+".docx"))
-	fs, n := exportDocx(c, cf, out, pages, fs, true)
+	// The Word file prints figures bold with no unverified marker, so a
+	// standalone export is refused while any rendered figure is unverified,
+	// by the same check as render --final.
+	if probs := renderResume(c, cf, true).R.coverage(cf); len(probs) > 0 {
+		for _, p := range probs {
+			fmt.Println("ERROR " + p)
+		}
+		die("docx blocked: %d rendered figure(s) are not double-verified in the text they appear in (use `rkb build` for a draft)", len(probs))
+	}
+	fs, n := exportDocx(c, cf, out, pages, fs)
 	msg := fmt.Sprintf("wrote %s (Times New Roman %.1fpt", out, fs)
 	if n >= 0 {
 		msg += fmt.Sprintf(", %d page(s) in LibreOffice", n)

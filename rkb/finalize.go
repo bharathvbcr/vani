@@ -55,7 +55,7 @@ func outputsFor(c *Composed, cf *ClaimsFile, sel, outDir, texDir string, final, 
 		fs, _ = strconv.ParseFloat(strings.TrimSuffix(v, "pt"), 64)
 	}
 	docx := filepath.Join(outDir, base+".docx")
-	dfs, dpages := exportDocx(c, cf, docx, pages, fs, final)
+	dfs, dpages := exportDocx(c, cf, docx, pages, fs)
 	tex := filepath.Join(texDir, base+".tex")
 	writeFile(tex, buildLatex(c, sel))
 
