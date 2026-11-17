@@ -2146,8 +2146,20 @@ Left open:
     challenge for its career sitemap and `/careers/details/{slug}/` pages; `citadelsecurities.com`
     challenges even robots.txt. Lightpanda loaded `/careers/open-opportunities/` (200, 10 roles).
   - **Aurora** is not custom: it is Ashby `aurora-operations-inc` (`ab`), live since 2026-11-17.
-  - Not yet located: Applied Materials, Lam Research and NetApp (Eightfold), Dell, Cadence, KLA,
-    Western Digital, Seagate, HP, Akamai, Nutanix (careers pages named no ATS).
+  - Hardware companies, 2026-11-17: Cadence (`wd cadence/External_Careers`, wd1), KLA
+    (`wd kla/Search`, wd1), HP (`wd hp/ExternalCareerSite`, wd5) and Western Digital
+    (`sr WesternDigital`) on existing adapters; Dell (`oc dell/CX_1001`, host
+    `enterpriseplatform.dell.com`, needed the own-domain Oracle host rule and lettered ids) and
+    Nutanix (`jv nutanix`, the new Jobvite adapter; its own site is behind a Cloudflare challenge).
+  - **Seagate** (`seagatecareers.com`) is SAP SuccessFactors Career Site Builder, not TalentBrew:
+    sitemap of 310 `/job/{city-title}/{id}/` pages that redirect to `/job/{…}/{req}-en_US/`, no
+    JSON-LD, labelled fields (title, posting date, requisition id, description) but no location
+    field (only free text in the description and the slug's first words); the search list is
+    rendered in the browser from `/services/`, which robots disallows. No adapter yet.
+  - **Akamai** (`jobs.akamai.com`, Oracle HCM `CX_1`) answers 403 from its own edge to every
+    plain request, robots.txt included. Not built.
+  - Not yet located: Applied Materials, Lam Research and NetApp (Eightfold; Lam and NetApp also
+    show SuccessFactors markers).
   - Added 2026-11-17 after a scratch dry run (1,542 postings, all with description and location):
     Riot Games, Pure Storage (board name "Everpure"), PagerDuty, New Relic, Fastly, YugabyteDB,
     Zscaler, SoFi, Samsung Semiconductor, PlayStation, Netlify (gh) and Fly.io (lv `fly`).
