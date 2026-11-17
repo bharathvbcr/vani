@@ -272,7 +272,63 @@ func listOneBoard(ctx context.Context, src sources.Source, b sources.Board) (lis
 			err = fmt.Errorf("adapter %s/%s panicked: %s", b.ATS, oneLine(b.Token, maxBoardNameRunes), oneLine(panicText(r), maxPanicRunes))
 		}
 	}()
-	return src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
+	listed, err = src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
+	if err != nil {
+		return listed, err
+	}
+	return storableListing(ctx, b, listed)
+}
+
+// failsBoardOnBadRow is the adapters that keep failing their board on a row
+// they pass that cannot be stored. They are the ones docs/FOLLOWUPS.md
+// ("Skip-and-count bad rows: which listings convert") lists as not converted
+// to skip-and-count: workable, bamboohr, apple and eightfold, avature,
+// workday, smartrecruiters, oraclehcm, rippling, talentbrew and page. A row
+// they list is already one they read a detail for or relocated from a stored
+// posting, so it is not a malformed payload row to leave out. Ashby is not
+// here: its main path converts, and its GraphQL fallback cannot be told apart
+// at this seam, so an unstorable Ashby row is skipped and counted (held), which
+// is the safe reading of either path.
+var failsBoardOnBadRow = map[posting.ATS]bool{
+	posting.Workable: true, posting.BambooHR: true, posting.Apple: true, posting.Eightfold: true,
+	posting.Avature: true, posting.Workday: true, posting.SmartRecruiters: true, posting.OracleHCM: true,
+	posting.Rippling: true, posting.TalentBrew: true, posting.Page: true,
+}
+
+// storableListing is the one check every listed row passes before it can reach
+// the ledger (srcutil.Storable). Fixes with one safe value (a title cleaned, a
+// time outside years 1..9999 made unknown) are applied; a row that cannot be
+// stored fails the board when its adapter is in failsBoardOnBadRow, and is
+// otherwise skipped and counted through the run's BadRowSink, so the listing
+// reconciles as a short one and the stored postings it left out are held, not
+// aged. Without a sink, or past srcutil.MaxGone rows, the board fails. The
+// sink adds to anything the adapter itself reported for this listing: the rows
+// are different rows. The error names the row's position and the field, never
+// the value.
+func storableListing(ctx context.Context, b sources.Board, listed []posting.Posting) ([]posting.Posting, error) {
+	if len(listed) == 0 {
+		return listed, nil
+	}
+	rows := srcutil.NewRows(ctx, b, len(listed))
+	kept := make([]posting.Posting, 0, len(listed))
+	for i, p := range listed {
+		sp, err := srcutil.Storable(b, p)
+		if err == nil {
+			kept = append(kept, sp)
+			continue
+		}
+		err = fmt.Errorf("row %d of %d: %w", i+1, len(listed), err)
+		if failsBoardOnBadRow[b.ATS] {
+			return nil, err
+		}
+		if err := rows.Bad(err); err != nil {
+			return nil, err
+		}
+	}
+	if err := rows.Done(); err != nil {
+		return nil, err
+	}
+	return kept, nil
 }
 
 // launchBoardFetches starts each board's List as slots allow and sends one
