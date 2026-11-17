@@ -137,6 +137,10 @@ func TikTokKey(board, postID string) (Key, error) { return build(TikTok, board, 
 // in its JSON-LD identifier.
 func TalentBrewKey(board, jobID string) (Key, error) { return build(TalentBrew, board, jobID) }
 
+// MetaKey is mt:{board}:{id}, the numeric id of a metacareers.com job page
+// (/profile/job_details/{id}/).
+func MetaKey(board, jobID string) (Key, error) { return build(Meta, board, jobID) }
+
 // FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
 // cosmetic change to the apply URL does not split one role into two.
 func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
@@ -198,7 +202,7 @@ func (k Key) ATS() ATS {
 	}
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
-		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, OracleHCM, Rippling, Workable,
+		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, Meta, OracleHCM, Rippling, Workable,
 		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, TikTok, TalentBrew, Feed, Page, Other:
 		return a
 	}

@@ -879,6 +879,8 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.deshaw.com", true
 	case posting.Atlassian:
 		return "www.atlassian.com", true
+	case posting.Meta:
+		return "www.metacareers.com", true
 	case posting.Workday, posting.Eightfold, posting.Jibe, posting.Avature, posting.OracleHCM, posting.TalentBrew:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
@@ -1009,7 +1011,7 @@ var talentBrewToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
 func SingleBoardATS(a posting.ATS) bool {
-	return a == posting.Amazon || a == posting.Google || a == posting.Apple || a == posting.DEShaw || a == posting.Atlassian
+	return a == posting.Amazon || a == posting.Google || a == posting.Apple || a == posting.DEShaw || a == posting.Atlassian || a == posting.Meta
 }
 
 func cleanText(s string) bool {
@@ -1082,11 +1084,11 @@ func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
-		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.OracleHCM,
+		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.Meta, posting.OracleHCM,
 		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
 		posting.TikTok, posting.TalentBrew, posting.Feed, posting.Page, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb, mt", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)

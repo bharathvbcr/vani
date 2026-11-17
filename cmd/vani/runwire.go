@@ -42,6 +42,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
+	"github.com/bharathvbcr/Vani/internal/sources/meta"
 	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/teamtailor"
 	"github.com/bharathvbcr/Vani/internal/sources/tiktok"
@@ -358,6 +359,21 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.TalentBrew] = tb
+	// Meta's sitemap names only job pages of about 560 KB each: bounded the
+	// same way, at meta.MaxDetails pages a run. A listed row has no title, so
+	// there is no DropListed.
+	mt, err := meta.NewWith(d, meta.Options{
+		Stored:   storedFor,
+		Unusable: unusable.has,
+		Report: func(b sources.Board, st meta.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, metaFetch(st))
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.Meta] = mt
 	// Eightfold costs a detail request per position too: stored postings are
 	// reused (re-read on their turn) and new ones the title rule drops are
 	// never fetched, so a run asks for its search pages and the new details.
@@ -871,6 +887,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.Avature:         avature.New(d),
 		posting.DEShaw:          deshaw.New(d),
 		posting.Atlassian:       atlassian.New(d),
+		posting.Meta:            meta.New(d),
 		posting.OracleHCM:       oraclehcm.New(d),
 		posting.Rippling:        rippling.New(d),
 		posting.Workable:        workable.New(d),

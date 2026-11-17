@@ -12,6 +12,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
+	"github.com/bharathvbcr/Vani/internal/sources/meta"
 	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
@@ -166,6 +167,10 @@ func workableFetch(st workable.Stats) boardFetch {
 
 func talentBrewFetch(st talentbrew.Stats) boardFetch {
 	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Unanswered: st.Unanswered}
+}
+
+func metaFetch(st meta.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Unanswered: st.Unanswered}
 }
 
 func eightfoldFetch(st eightfold.Stats) boardFetch {

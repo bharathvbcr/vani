@@ -298,7 +298,7 @@ func listOneBoard(ctx context.Context, src sources.Source, b sources.Board) (lis
 var failsBoardOnBadRow = map[posting.ATS]bool{
 	posting.Workable: true, posting.BambooHR: true, posting.Apple: true, posting.Eightfold: true,
 	posting.Avature: true, posting.Workday: true, posting.SmartRecruiters: true, posting.OracleHCM: true,
-	posting.Rippling: true, posting.TalentBrew: true, posting.Page: true,
+	posting.Rippling: true, posting.TalentBrew: true, posting.Meta: true, posting.Page: true,
 }
 
 // storableListing is the one check every listed row passes before it can reach

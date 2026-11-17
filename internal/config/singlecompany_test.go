@@ -20,6 +20,7 @@ func TestSingleCompanyBoards(t *testing.T) {
 	}{
 		{posting.DEShaw, "deshaw", "D. E. Shaw", "www.deshaw.com"},
 		{posting.Atlassian, "atlassian", "Atlassian", "www.atlassian.com"},
+		{posting.Meta, "meta", "Meta", "www.metacareers.com"},
 	} {
 		b := sources.Board{ATS: tc.ats, Token: tc.token, Company: tc.company}
 		if err := ValidBoard(b); err != nil {

@@ -42,6 +42,8 @@ const (
 	DEShaw ATS = "ds"
 	// Atlassian is Atlassian's own careers endpoint (atlassian.com/careers).
 	Atlassian ATS = "at"
+	// Meta is Meta's own careers site (www.metacareers.com).
+	Meta ATS = "mt"
 	// OracleHCM is an Oracle Recruiting Cloud candidate-experience site.
 	OracleHCM ATS = "oc"
 	// Rippling is a Rippling board (api.rippling.com). The token is the

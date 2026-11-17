@@ -79,6 +79,7 @@ func TestSearchSiteKeys(t *testing.T) {
 		{HiBobKey, "Corlytics", "D1C264EA-1AB6-4FF8-BE27-227FA82F179A", "hb:corlytics:d1c264ea-1ab6-4ff8-be27-227fa82f179a", HiBob},
 		{TikTokKey, "TikTok", "7680987768009754885", "tt:tiktok:7680987768009754885", TikTok},
 		{TalentBrewKey, "Intuit", "102521439872", "tb:intuit:102521439872", TalentBrew},
+		{MetaKey, "Meta", "2486789151677735", "mt:meta:2486789151677735", Meta},
 		{FeedKey, "Shopify", "1AFFB074-F055-4F5A-A97E-80D97D77DA6E", "fd:shopify:1affb074-f055-4f5a-a97e-80d97d77da6e", Feed},
 	} {
 		k, err := tc.mk(tc.a, tc.b)
