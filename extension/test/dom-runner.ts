@@ -637,6 +637,219 @@ async function hostilePage(): Promise<void> {
   }
 }
 
+/**
+ * w3badv (ft-bf5e adversarial): attacks on the touched-field provenance. A "user" event here is a script event carrying
+ * a flag that this test's isTrusted accepts; a "script" event is the same event without it, as a page dispatches it.
+ * The checks marked "control" are expected to hold; the others name a way for a page to get a value captured.
+ */
+async function w3badvProvenance(): Promise<void> {
+  const box = document.createElement("div");
+  document.body.append(box);
+  const mine = (sent: FieldInfo[]): FieldInfo[] => sent.filter(f => /^Adv /.test(f.label));
+  const names = (sent: FieldInfo[]): string => JSON.stringify(mine(sent).map(f => `${f.label}=${f.value.join(",")}`));
+  const user = (el: Element, type: string): void => { const e = new Event(type, { bubbles: true, composed: true }); Object.assign(e, { w3badvUser: true }); el.dispatchEvent(e); };
+  const script = (el: Element, type = "input"): void => { el.dispatchEvent(new Event(type, { bubbles: true, composed: true })); };
+  const open = (doc: Document = document) => {
+    const sent: FieldInfo[] = [];
+    const t = createRealTracker({
+      doc, host: "adv.example", getBank: async () => emptyBank(), commitMs: 5,
+      isTrusted: ev => (ev as Event & { w3badvUser?: boolean }).w3badvUser === true,
+      send: async f => { sent.push(...f); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; },
+    });
+    return { sent, t };
+  };
+  const el = (id: string) => q<HTMLInputElement>(box, `#${id}`);
+  const tiny = "width:1px;height:1px;border:0;padding:0;margin:0";
+  try {
+    // 1. A real click on the form background, a paragraph, the body and a Continue button marks no field; the page then fills five.
+    box.innerHTML = '<div id="adv1-bg"><p id="adv1-p">intro</p>' +
+      [1, 2, 3, 4, 5].map(i => `<label for="a1-${i}">Adv bg ${i}</label><input id="a1-${i}">`).join("") +
+      '<button type="button" id="adv1-go">Continue</button></div>';
+    {
+      const o = open();
+      for (const type of ["pointerdown", "mousedown", "click"]) { user(el("adv1-bg"), type); user(el("adv1-p"), type); user(document.body, type); }
+      for (let i = 1; i <= 5; i++) { el(`a1-${i}`).value = `forged${i}`; script(el(`a1-${i}`)); script(el(`a1-${i}`), "change"); script(el(`a1-${i}`), "focusout"); }
+      user(el("adv1-go"), "click");
+      await sleep(30); await o.t.flush("adv1");
+      check("w3badv control: a real click on the background and a button marks none of the page-filled fields", mine(o.sent).length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 1b. Fields that are containers (role=combobox inside role=combobox): a real click on the innermost marks every ancestor field.
+    box.innerHTML = '<div role="combobox" aria-haspopup="listbox" aria-label="Adv nest A">forged A<div role="combobox" aria-haspopup="listbox" aria-label="Adv nest B">forged B' +
+      '<div id="adv1b-in" role="combobox" aria-haspopup="listbox" aria-label="Adv nest C">forged C</div></div></div>' +
+      '<label for="adv1b-x">Adv nest pad</label><input id="adv1b-x"><label for="adv1b-y">Adv nest pad two</label><input id="adv1b-y">';
+    {
+      const o = open();
+      for (const type of ["pointerdown", "mousedown", "click"]) user(el("adv1b-in"), type);
+      await sleep(30); await o.t.flush("adv1b");
+      check("w3badv nested comboboxes: one real click inside the innermost marks only that field", mine(o.sent).length <= 1, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 2. A page-made role=listbox wrapper with an id, and fields it set itself that name it in aria-controls: any real click inside marks them.
+    box.innerHTML = '<div role="listbox" id="advLB"><p id="adv2-p">any text</p>' +
+      [1, 2, 3, 4, 5].map(i => `<input id="a2-${i}" aria-label="Adv spoof ${i}" aria-controls="advLB" style="${tiny}">`).join("") + '</div>';
+    {
+      const o = open();
+      for (let i = 1; i <= 5; i++) { el(`a2-${i}`).value = `forged${i}`; script(el(`a2-${i}`)); }
+      for (const type of ["pointerdown", "mousedown", "click"]) user(el("adv2-p"), type);
+      await sleep(30); await o.t.flush("adv2");
+      check("w3badv aria-controls: a real click inside a page-made listbox marks no field that merely names its id", mine(o.sent).length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 2b. control: a touched field whose aria-controls names the ids of hidden fields the page filled marks none of them.
+    box.innerHTML = '<label for="a2b-t">Adv owner</label><input id="a2b-t" aria-controls="advH1 advH2">' +
+      `<input id="advH1" aria-label="Adv hidden 1" style="${tiny}"><input id="advH2" aria-label="Adv hidden 2" style="${tiny}">` +
+      '<label for="a2b-p">Adv pad</label><input id="a2b-p">';
+    {
+      const o = open();
+      el("a2b-t").value = "mine"; user(el("a2b-t"), "input");
+      for (const id of ["advH1", "advH2"]) { el(id).value = "forged"; script(el(id)); }
+      await sleep(30); await o.t.flush("adv2b");
+      check("w3badv control: aria-controls on a touched field does not mark the ids it names", names(o.sent) === JSON.stringify(["Adv owner=mine"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 3. The user types in X, then the page rewrites X and dispatches script events: the mark is permanent, so the page's value is read.
+    box.innerHTML = '<label for="a3-x">Adv typed</label><input id="a3-x"><label for="a3-y">Adv pad</label><input id="a3-y"><label for="a3-z">Adv pad two</label><input id="a3-z">';
+    {
+      const o = open();
+      el("a3-x").value = "real"; user(el("a3-x"), "input");
+      el("a3-x").value = "forged"; script(el("a3-x"));
+      await sleep(30); await o.t.flush("adv3");
+      check("w3badv permanent mark: the value the user typed is captured, not the page's later rewrite", names(o.sent) === JSON.stringify(["Adv typed=real"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 3b. The same, but the page also triggers the flush with a script pagehide: the forged value leaves with no user action after typing.
+    {
+      const o = open();
+      el("a3-x").value = "real"; user(el("a3-x"), "input");
+      el("a3-x").value = "forged"; script(el("a3-x"));
+      window.dispatchEvent(new Event("pagehide"));
+      await sleep(30);
+      check("w3badv page-triggered flush: a script pagehide after the page rewrote a touched field sends the user's value or nothing", !JSON.stringify(mine(o.sent).map(f => f.value)).includes("forged"), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 4. A script cannot make an event trusted: isTrusted is an own, non-configurable property of the event.
+    {
+      const ev = new Event("input");
+      let threw = false;
+      try { Object.defineProperty(ev, "isTrusted", { value: true }); } catch { threw = true; }
+      const d = Object.getOwnPropertyDescriptor(ev, "isTrusted");
+      check("w3badv control: a script event's isTrusted is unforgeable", threw && ev.isTrusted === false && d?.configurable === false);
+    }
+
+    // 6. control: form.requestSubmit() from the page runs the form's submit event, which is not trusted, so nothing is flushed.
+    box.innerHTML = '<form id="adv6"><label for="a6-a">Adv rs</label><input id="a6-a"><label for="a6-b">Adv rs two</label><input id="a6-b"><label for="a6-c">Adv rs three</label><input id="a6-c"><button type="submit">Go</button></form>';
+    {
+      const o = open();
+      q<HTMLFormElement>(box, "#adv6").addEventListener("submit", e => e.preventDefault());
+      el("a6-a").value = "mine"; user(el("a6-a"), "input");
+      q<HTMLFormElement>(box, "#adv6").requestSubmit();
+      await sleep(30);
+      check("w3badv control: a page's requestSubmit flushes nothing", o.sent.length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7a. control: a custom checkbox, a native input at opacity 0 inside a visible label, clicked by the user.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<label id="a7a-l"><input type="checkbox" id="a7a" style="opacity:0;position:absolute;width:20px;height:20px"><span>Adv agree</span></label>';
+    {
+      const o = open();
+      el("a7a").checked = true; user(el("a7a"), "click");
+      await sleep(30); await o.t.flush("adv7a");
+      check("w3badv control: a clicked opacity:0 checkbox inside a visible label is captured", names(o.sent) === JSON.stringify(["Adv agree=yes"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7b. A display:none TEXT input with a visible label the page made: the label fallback counts it visible, a click on the label marks it.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<label id="a7b-l" for="a7b">Adv hidden text</label><input id="a7b" style="display:none">';
+    {
+      const o = open();
+      el("a7b").value = "forged"; script(el("a7b"));
+      user(q<HTMLElement>(box, "#a7b-l"), "click");
+      await sleep(30); await o.t.flush("adv7b");
+      check("w3badv label fallback: a text input nobody can see is not captured because it has a visible label", mine(o.sent).length === 0, names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7c. control: a position:fixed modal field on a scrolled page, and a <details> the user opened.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<div style="position:fixed;top:10px;left:10px;background:#fff;z-index:9"><label for="a7c-f">Adv modal</label><input id="a7c-f"></div>' +
+      '<details><summary>more</summary><label for="a7c-d">Adv detail</label><input id="a7c-d"></details>';
+    {
+      const y = window.scrollY;
+      window.scrollTo(0, 300);
+      const o = open();
+      el("a7c-f").value = "m"; user(el("a7c-f"), "input");
+      q<HTMLDetailsElement>(box, "details").open = true;
+      el("a7c-d").value = "d"; user(el("a7c-d"), "input");
+      await sleep(30); await o.t.flush("adv7c");
+      window.scrollTo(0, y);
+      check("w3badv control: a fixed modal field, and an opened <details> field are captured", names(o.sent).includes("Adv modal=m") && names(o.sent).includes("Adv detail=d"), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7c2. A position:fixed field inside an overflow:hidden wrapper that has no height of its own: fixed content is not clipped by it.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q">' +
+      '<div style="overflow:hidden;height:0"><div style="position:fixed;top:10px;left:10px;background:#fff;z-index:9"><label for="a7c2">Adv drawer</label><input id="a7c2"></div></div>';
+    {
+      const o = open();
+      el("a7c2").value = "m"; user(el("a7c2"), "input");
+      await sleep(30); await o.t.flush("adv7c2");
+      check("w3badv clipping: a visible position:fixed field inside a zero-height overflow:hidden wrapper is captured", names(o.sent) === JSON.stringify(["Adv drawer=m"]), names(o.sent));
+      o.t.dispose();
+    }
+
+    // 7d. An SPA whose app root is the scroller (body overflow:hidden, #root overflow:auto): the document itself is one screen
+    // tall, so every field below or above the visible part of the root is "off the page" to the strict scan. The user filled all
+    // eight, scrolled back up, and pressed Save answers (or Next).
+    {
+      const frame = document.createElement("iframe");
+      frame.style.cssText = "width:600px;height:400px;border:0";
+      frame.srcdoc = '<!doctype html><html style="height:100%"><body style="margin:0;height:100%;overflow:hidden"><div id="root" style="height:100%;overflow:auto">' +
+        [1, 2, 3, 4, 5, 6, 7, 8].map(i => `<div style="height:300px"><label for="a7d-${i}">Adv scroll ${i}</label><input id="a7d-${i}"></div>`).join("") + "</div></body></html>";
+      const loaded = frameLoaded(frame);
+      box.append(frame);
+      await loaded;
+      const fdoc = loadedDocument(frame);
+      if (!fdoc) {
+        check("w3badv inner scroller: the frame loaded", false, "no document");
+      } else {
+        for (const explicit of [true, false]) {
+          const o = open(fdoc);
+          const root = fdoc.getElementById("root")!;
+          for (let i = 1; i <= 8; i++) { const f = fdoc.getElementById(`a7d-${i}`) as HTMLInputElement; root.scrollTop = (i - 1) * 300; f.value = `v${i}`; user(f, "input"); }
+          root.scrollTop = 0;
+          await sleep(30); await o.t.flush(explicit ? "saved" : "next", explicit);
+          check(`w3badv inner scroller: ${explicit ? "an explicit Save" : "a Next flush"} captures all eight fields the user typed in`, mine(o.sent).length === 8, `captured ${mine(o.sent).length}: ${names(o.sent)}`);
+          o.t.dispose();
+        }
+      }
+      frame.remove();
+    }
+
+    // 5b. control: an input mask that rewrites the value after the user's keystroke, synchronously and again later.
+    box.innerHTML = '<label for="a7-p">Adv pad</label><input id="a7-p"><label for="a7-q">Adv pad two</label><input id="a7-q"><label for="a5-m">Adv phone</label><input id="a5-m">';
+    {
+      const o = open();
+      const m = el("a5-m");
+      m.addEventListener("input", () => { const d = m.value.replace(/\D/g, ""); m.value = `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`; setTimeout(() => { m.value = `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6, 10)}`; }, 10); });
+      m.value = "5551234567"; user(m, "input");
+      await sleep(40); await o.t.flush("adv5b");
+      check("w3badv control: a masked value written by script after the user's keystroke is captured", names(o.sent) === JSON.stringify(["Adv phone=(555) 123-4567"]), names(o.sent));
+      o.t.dispose();
+    }
+  } finally {
+    box.remove();
+  }
+}
+
 /** w2b (232): a bank that cannot be read, or one that disables this host (in any case, with a trailing dot), sends nothing. */
 async function failClosedCapture(): Promise<void> {
   const box = document.createElement("div");
@@ -1395,6 +1608,7 @@ async function main(): Promise<void> {
     ["once per page", oncePerPage],
     ["fail-closed capture", failClosedCapture],
     ["hostile page", hostilePage],
+    ["w3badv provenance", w3badvProvenance],
     ["submit signal", submitSignal],
     ["not questions", notQuestions],
     ["dial picker", dialPicker],
