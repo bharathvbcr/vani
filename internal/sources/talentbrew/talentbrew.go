@@ -119,11 +119,8 @@ const (
 	// maxLocLen bounds one job <loc>. The sitemap protocol's own limit is 2048.
 	// Citi's longest on 2026-11-02 was 392: a percent-encoded Japanese title.
 	maxLocLen = 2048
-	// maxLDBlocks bounds the JSON-LD blocks read from one page, maxTagLen the
-	// opening tag of a script, maxPlaces the places joined into a location.
-	maxLDBlocks = 8
-	maxTagLen   = 1024
-	maxPlaces   = 50
+	// maxPlaces bounds the places joined into a location.
+	maxPlaces = 50
 )
 
 var (

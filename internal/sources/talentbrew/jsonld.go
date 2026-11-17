@@ -2,87 +2,36 @@ package talentbrew
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"math"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/htmltext"
+	"github.com/bharathvbcr/Vani/internal/sources/jsonld"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
-// ldBlocks returns the bodies of the <script type="application/ld+json">
-// blocks of a page, at most maxLDBlocks of them, in document order. It is a
-// small tokenizer, not a parser (page.scanHTML is the same idea; that one is
-// private to the page board and gathers every anchor of the page too): it
-// finds each <script> opening tag, reads at most maxTagLen bytes of it, takes
-// the text up to the next </script>, and resumes after it, so a "<script" inside
-// another script's text is never read as a tag. An opening tag or script that
-// never ends stops the scan rather than being guessed at. The page is untrusted
-// and nothing in it is executed.
-func ldBlocks(doc string) []string {
-	var out []string
-	for i := 0; i < len(doc) && len(out) < maxLDBlocks; {
-		j := htmltext.IndexFold(doc[i:], "<script")
-		if j < 0 {
-			break
-		}
-		k := i + j + len("<script")
-		if k >= len(doc) {
-			break
-		}
-		if c := doc[k]; c != '>' && c != '/' && c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f' {
-			i = k // "<scripts", not a script tag
-			continue
-		}
-		gt := strings.IndexByte(doc[k:min(len(doc), k+maxTagLen)], '>')
-		if gt < 0 {
-			break
-		}
-		tag := htmltext.LowerASCII(doc[k : k+gt])
-		bodyAt := k + gt + 1
-		end := htmltext.IndexFold(doc[bodyAt:], "</script")
-		if end < 0 {
-			break
-		}
-		if strings.Contains(tag, "application/ld+json") {
-			out = append(out, doc[bodyAt:bodyAt+end])
-		}
-		i = bodyAt + end
-	}
-	return out
-}
+// The page scan, the schema.org shapes and the date and pay readers are
+// package jsonld's, shared with the Meta source. These names keep this
+// package's own spelling of them.
+type (
+	stringList = jsonld.StringList
+	ldPlace    = jsonld.Place
+)
 
-// stringList is a JSON string or an array of strings, as schema.org allows
-// for @type and employmentType.
-type stringList []string
+const (
+	maxLDBlocks = jsonld.MaxBlocks
+	maxTagLen   = jsonld.MaxTagLen
+)
 
-func (l *stringList) UnmarshalJSON(b []byte) error {
-	var one string
-	if err := json.Unmarshal(b, &one); err == nil {
-		*l = stringList{one}
-		return nil
-	}
-	var many []string
-	if err := json.Unmarshal(b, &many); err != nil {
-		return errors.New("not a string or an array of strings")
-	}
-	*l = stringList(many)
-	return nil
-}
-
-type ldPlace struct {
-	Address struct {
-		Locality string `json:"addressLocality"`
-		Region   string `json:"addressRegion"`
-		Country  string `json:"addressCountry"`
-	} `json:"address"`
-}
+func ldBlocks(doc string) []string          { return jsonld.Blocks(doc) }
+func controlToSpace(s string) string        { return jsonld.ControlToSpace(s) }
+func isJobPosting(t stringList) bool        { return jsonld.IsJobPosting(t) }
+func parseDate(s string) (time.Time, error) { return jsonld.ParseDate(s) }
+func payLine(raw json.RawMessage) string    { return jsonld.PayLine(raw) }
 
 // ldJob is the part of a schema.org JobPosting that this source reads, every
 // field seen on a live page (Intuit and Citi, 2026-10-28) except where payLine
@@ -114,7 +63,7 @@ type ldJob struct {
 func findJobPosting(page, host, company, id string) (ldJob, bool) {
 	for _, raw := range ldBlocks(page) {
 		var j ldJob
-		if err := json.Unmarshal([]byte(controlToSpace(strings.TrimSpace(raw))), &j); err != nil {
+		if err := jsonld.Decode(raw, &j); err != nil {
 			continue
 		}
 		if !isJobPosting(j.Type) || !sameJob(j.URL, host, company, id) {
@@ -123,30 +72,6 @@ func findJobPosting(page, host, company, id string) (ldJob, bool) {
 		return j, true
 	}
 	return ldJob{}, false
-}
-
-// controlToSpace replaces the raw control characters (U+0000 to U+001F) of a
-// JSON-LD block with spaces. Citi's pages write a raw tab inside the
-// description string ("<p>●\tDesign and configure API proxies…", job
-// 102455422752, 2026-10-28), which is not JSON, so the block was passed over and
-// the board failed every run. Outside strings these characters are whitespace
-// or invalid, and inside them the text is HTML, where a space reads the same.
-func controlToSpace(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r < 0x20 {
-			return ' '
-		}
-		return r
-	}, s)
-}
-
-func isJobPosting(t stringList) bool {
-	for _, s := range t {
-		if s == "JobPosting" {
-			return true
-		}
-	}
-	return false
 }
 
 // sameJob reports whether raw is the address of job id of company on host.
@@ -228,86 +153,4 @@ func region(s string) string {
 		return ""
 	}
 	return r
-}
-
-// parseDate reads datePosted: a date ("2026-10-27", what every page seen
-// wrote, taken as midnight UTC) or an RFC 3339 time; empty is the zero time.
-func parseDate(s string) (time.Time, error) {
-	if s == "" {
-		return time.Time{}, nil
-	}
-	if t, err := time.Parse(time.DateOnly, s); err == nil {
-		return t, nil
-	}
-	t, err := time.Parse(time.RFC3339, s)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("datePosted %q is neither a date nor an RFC 3339 time", s)
-	}
-	return t.UTC(), nil
-}
-
-// amount is a JSON number or a numeric string.
-type amount struct {
-	v  float64
-	ok bool
-}
-
-func (a *amount) UnmarshalJSON(b []byte) error {
-	s := strings.Trim(strings.TrimSpace(string(b)), `"`)
-	if s == "" || s == "null" {
-		return nil
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return err
-	}
-	a.v, a.ok = v, true
-	return nil
-}
-
-// payLine is the pay line for a schema.org baseSalary (MonetaryAmount: a
-// currency and a QuantitativeValue with minValue, maxValue or value and a
-// unitText), or "" when there is none or it is not well formed. Every page
-// sampled carried the empty template (currency "", no amount, unitText ""), so
-// a range was never seen in it live: the amount fields are schema.org's, read
-// as unverified here. srcutil.PayLine refuses a currency that is not three
-// letters, a non-positive amount and a bottom above the top.
-func payLine(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s struct {
-		Currency string `json:"currency"`
-		Value    struct {
-			Min      amount `json:"minValue"`
-			Max      amount `json:"maxValue"`
-			Value    amount `json:"value"`
-			UnitText string `json:"unitText"`
-		} `json:"value"`
-	}
-	if err := json.Unmarshal(raw, &s); err != nil {
-		return ""
-	}
-	v := s.Value
-	// srcutil.PayLine reads a bad bottom as a missing one and keeps the top;
-	// here an amount that is given and unusable makes the whole range unwell
-	// formed.
-	for _, a := range []amount{v.Min, v.Max, v.Value} {
-		if a.ok && (a.v <= 0 || math.IsInf(a.v, 0) || math.IsNaN(a.v)) {
-			return ""
-		}
-	}
-	var lo, hi *float64
-	pick := func(a amount) *float64 {
-		if a.ok {
-			return &a.v
-		}
-		return nil
-	}
-	if v.Min.ok || v.Max.ok {
-		lo, hi = pick(v.Min), pick(v.Max)
-	} else {
-		lo = pick(v.Value)
-	}
-	return srcutil.PayLine(s.Currency, lo, hi, v.UnitText)
 }
