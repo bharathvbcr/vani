@@ -74,7 +74,9 @@ func (e *env) employerImport(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(employerIndexPath(e.stateDir)), 0o700); err != nil {
 		return err
 	}
-	x, err := employer.Update(employerIndexPath(e.stateDir), part)
+	ctx, stop := signalContext()
+	defer stop()
+	x, err := employer.UpdateContext(ctx, employerIndexPath(e.stateDir), part, e.importWaiting)
 	if err != nil {
 		return fmt.Errorf("employer index: %w", err)
 	}

@@ -337,11 +337,19 @@ type UpdateOptions struct {
 	// Replace allows a replacement that shrinks the fiscal year
 	// (`vani lca import --replace`).
 	Replace bool
+	// Waiting, when set, is called once (from another goroutine) with the
+	// index path if the lock is still held after indexutil.NoticeAfter.
+	Waiting func(index string)
 }
 
-// UpdateWith is Update with options.
+// UpdateWith is UpdateContext without a context to cancel the lock wait.
 func UpdateWith(path string, p Partial, opts UpdateOptions) (*Index, []SourceMeta, error) {
-	path, release, err := indexutil.Lock(context.Background(), path)
+	return UpdateContext(context.Background(), path, p, opts)
+}
+
+// UpdateContext is Update with options; ctx ending stops the wait for the lock.
+func UpdateContext(ctx context.Context, path string, p Partial, opts UpdateOptions) (*Index, []SourceMeta, error) {
+	path, release, err := indexutil.LockNotify(ctx, path, opts.Waiting)
 	if err != nil {
 		return nil, nil, err
 	}

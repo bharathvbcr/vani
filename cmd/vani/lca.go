@@ -66,6 +66,12 @@ func (e *env) cmdLCA(args []string) error {
 	return usagef("lca: unknown subcommand %q", args[0])
 }
 
+// importWaiting is the one line an import prints when another import of the
+// same index still holds its lock after a couple of seconds.
+func (e *env) importWaiting(index string) {
+	fmt.Fprintf(e.stderr, "waiting for another import of %s to finish…\n", index)
+}
+
 func (e *env) lcaImport(args []string) error {
 	fs := e.newFlags("lca import")
 	asJSON := e.jsonFlag(fs, `{"file","employers","fiscal_years","replaced"} on stdout; replaced lists the earlier files this one replaced, and is omitted when none`)
@@ -86,7 +92,9 @@ func (e *env) lcaImport(args []string) error {
 	if err != nil {
 		return fmt.Errorf("lca import %s: %w", path, err)
 	}
-	x, replaced, err := lca.UpdateWith(lcaIndexPath(e.stateDir), part, lca.UpdateOptions{Replace: *replace})
+	ctx, stop := signalContext()
+	defer stop()
+	x, replaced, err := lca.UpdateContext(ctx, lcaIndexPath(e.stateDir), part, lca.UpdateOptions{Replace: *replace, Waiting: e.importWaiting})
 	if err != nil {
 		if errors.Is(err, lca.ErrShrinks) {
 			return fmt.Errorf("lca import %s: %w (nothing changed; pass --replace to replace it anyway)", path, err)
