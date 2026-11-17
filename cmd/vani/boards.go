@@ -259,12 +259,17 @@ type listFetch struct {
 // rune, so 512 bytes.
 const maxPanicRunes = 128
 
-// listOneBoard is one board's List, and the point where an adapter's panic
-// stops: it becomes that board's error, so the other boards finish and the
-// caller still sends its one listFetch and releases the board's slots. The
-// error carries the board and the panic value, bounded and on one line. The
-// value is the adapter's own panic text, which may echo a row; it is bounded
-// and never stored beyond the run report.
+// listOneBoard is one board's List, and the point where a panic on the
+// adapter's own goroutine stops: it becomes that board's error, so the other
+// boards finish and the caller still sends its one listFetch and releases the
+// board's slots. The error carries the board and the panic value, bounded and
+// on one line. The value is the adapter's own panic text, which may echo a row;
+// it is bounded and never stored beyond the run report.
+//
+// What this does not cover: a panic in a goroutine the adapter itself starts
+// cannot be recovered here (recover sees only its own goroutine) and ends the
+// process. runtime.Goexit in List runs no recover; the caller's deferred send
+// answers for it.
 func listOneBoard(ctx context.Context, src sources.Source, b sources.Board) (listed []posting.Posting, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -427,11 +432,24 @@ func launchBoardFetches(ctx context.Context, watchlist []sources.Board, srcs map
 			progressed = true
 			go func(i int, b sources.Board, src sources.Source, release func()) {
 				defer fetchWG.Done()
+				// The one send and the release come from this defer when List
+				// ended the goroutine (runtime.Goexit: a test's t.FailNow, an
+				// adapter that exits) and never returned, so the consumer is not
+				// left waiting on a listFetch that will not come.
+				sent := false
+				defer func() {
+					if sent {
+						return
+					}
+					release()
+					results[i] <- listFetch{kind: fetchDone, err: fmt.Errorf("adapter %s/%s exited without returning", b.ATS, oneLine(b.Token, maxBoardNameRunes))}
+				}()
 				listed, err := listOneBoard(ctx, src, b)
 				canceled := ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 				if gate.parallel > 1 && !canceled {
 					release()
 				}
+				sent = true
 				results[i] <- listFetch{kind: fetchDone, listed: listed, err: err, canceled: canceled, release: release}
 			}(i, b, srcs[b.ATS], release)
 		}
