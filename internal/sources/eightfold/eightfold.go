@@ -577,6 +577,12 @@ func (s *source) search(ctx context.Context, a api, domain, term string, filters
 				added++
 			}
 		}
+		if pg == 0 {
+			// A page cannot list more positions than the search counts.
+			if err := srcutil.TotalCoversRows(count, len(ids)); err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrShape, err)
+			}
+		}
 		if len(ids) >= count {
 			return ids, nil
 		}

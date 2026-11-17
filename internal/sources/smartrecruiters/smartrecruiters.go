@@ -440,6 +440,12 @@ func (s *source) list(ctx context.Context, pace *srcutil.Pacer, company, country
 		if added == 0 {
 			return nil, requests, 0, fmt.Errorf("%w: the board served a page with nothing new at offset %d, after %d postings (a wrap to the first page or a stuck offset)", errIncomplete, read, len(rows))
 		}
+		if pg == 0 {
+			// A page cannot list more postings than the board counts.
+			if err := srcutil.TotalCoversRows(count, len(rows)); err != nil {
+				return nil, requests, 0, fmt.Errorf("%w: %w", ErrShape, err)
+			}
+		}
 		read += len(lr.Content)
 		ended = read >= count
 	}
