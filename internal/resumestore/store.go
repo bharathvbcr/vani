@@ -172,8 +172,11 @@ func busy(err error) error {
 // --- folder bound ------------------------------------------------------
 
 type folder struct {
-	name  string
-	saved time.Time
+	name string
+	// saved is lastSaved when the folder was listed; newest is the newest
+	// vN.json time then (zero when it held none). They order the candidates, and
+	// newest is what makeRoom re-reads under the folder's lock.
+	saved, newest time.Time
 }
 
 // jobFolders lists the job folders: real directories named by a 64-hex hash.
@@ -200,6 +203,18 @@ func (s *Store) jobFolders() ([]folder, error) {
 // when it holds none), so reading or moving a pointer does not make a job look
 // recently saved.
 func lastSaved(dir string) time.Time {
+	if newest := newestVersion(dir); !newest.IsZero() {
+		return newest
+	}
+	if st, err := os.Stat(dir); err == nil {
+		return st.ModTime()
+	}
+	return time.Time{}
+}
+
+// newestVersion is the newest vN.json modification time in dir, zero when it
+// holds none.
+func newestVersion(dir string) time.Time {
 	var newest time.Time
 	if ents, err := os.ReadDir(dir); err == nil {
 		for _, e := range ents {
@@ -212,33 +227,33 @@ func lastSaved(dir string) time.Time {
 			}
 		}
 	}
-	if newest.IsZero() {
-		if st, err := os.Stat(dir); err == nil {
-			return st.ModTime()
-		}
-	}
 	return newest
 }
 
+// beforePruneLock is called by makeRoom just before it tries a candidate's job
+// lock, with the folder's path. Tests set it to play another process in that
+// window; nothing else does.
+var beforePruneLock func(dir string)
+
 // makeRoom deletes least-recently-saved job folders that have no used version
-// until there is room for one more, or returns ErrFull. A folder whose job
-// lock is held is skipped. The caller holds the store lock.
+// until there is room for one more, or returns ErrFull. The listing only orders
+// the candidates: whether one may go is decided under its job lock, from disk,
+// because a holder that took the folder after the listing (to apply a version
+// or commit a save) has by then released it. A folder whose job lock is held,
+// that has a used version or that was saved since the listing is skipped. The
+// caller holds the store lock.
 func (s *Store) makeRoom() error {
-	fs, err := s.jobFolders()
+	cands, err := s.jobFolders()
 	if err != nil {
 		return err
 	}
-	if len(fs) < MaxJobs {
+	if len(cands) < MaxJobs {
 		return nil
 	}
-	var cands []folder
-	for _, f := range fs {
-		dir := filepath.Join(s.root, f.name)
-		if _, err := os.Lstat(filepath.Join(dir, usedFile)); err == nil {
-			continue // a used version is what the owner applied with; never deleted
-		}
-		f.saved = lastSaved(dir)
-		cands = append(cands, f)
+	for i := range cands {
+		dir := filepath.Join(s.root, cands[i].name)
+		cands[i].newest = newestVersion(dir)
+		cands[i].saved = lastSaved(dir)
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if !cands[i].saved.Equal(cands[j].saved) {
@@ -246,14 +261,23 @@ func (s *Store) makeRoom() error {
 		}
 		return cands[i].name < cands[j].name
 	})
-	have := len(fs)
+	have := len(cands)
 	for _, c := range cands {
 		if have < MaxJobs {
 			break
 		}
 		dir := filepath.Join(s.root, c.name)
+		if beforePruneLock != nil {
+			beforePruneLock(dir)
+		}
 		l, err := filelock.TryAcquire(filepath.Join(dir, lockFile))
 		if err != nil {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(dir, usedFile)); err == nil || !newestVersion(dir).Equal(c.newest) {
+			// A used version is what the owner applied with: never deleted. A
+			// changed newest version is a save that landed after the listing.
+			_ = l.Release()
 			continue
 		}
 		rerr := os.RemoveAll(dir)
