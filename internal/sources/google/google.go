@@ -221,7 +221,12 @@ func (s *source) readTerm(ctx context.Context, term string, filters map[string][
 	if err != nil {
 		return nil, err
 	}
-	if first.total <= len(first.jobs) {
+	// A page cannot list more jobs than the search matches; a total under the
+	// rows served cannot vouch that page 1 holds every match.
+	if err := srcutil.TotalCoversRows(first.total, len(first.jobs)); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrShape, err)
+	}
+	if first.total == len(first.jobs) {
 		return first.jobs, nil
 	}
 	// Two views of page 1 hold at most twice the rows page 1 sent, so a larger
