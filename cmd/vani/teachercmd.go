@@ -729,7 +729,13 @@ func teacherPrices(cfg config.Config, model string) (budget.Prices, string, erro
 	if err != nil {
 		return budget.Prices{}, "", err
 	}
-	p := budget.Prices{Rates: budget.Rates{Input: in, Output: out, CacheWrite: in, CacheRead: in}}
+	var table budget.Prices
+	var known bool
+	if cfg.LLM.Provider == "anthropic" {
+		table, known = anthropic.PriceOf(model)
+		known = known && table.Validate() == nil
+	}
+	p := configuredPrices(in, out, table, known)
 	return p, "the configured llm prices", p.Validate()
 }
 
