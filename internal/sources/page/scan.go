@@ -1,6 +1,7 @@
 package page
 
 import (
+	"fmt"
 	"html"
 	"strings"
 
@@ -27,6 +28,12 @@ type scanned struct {
 	// as HTML uses it: relative links resolve against it, not the page URL.
 	baseHref string
 	hasBase  bool
+	// truncated says why the scan stopped before the end of the document: an
+	// unterminated comment, tag or quoted value, or a script, style, textarea or
+	// title with no closing tag. Empty means the scan read the whole document. Every
+	// other field then holds only what came before the stop, so a caller that needs
+	// every link must not use them as complete.
+	truncated string
 }
 
 const (
@@ -38,7 +45,8 @@ const (
 // anchors, JSON-LD blocks and the title in a DOM dump, and to never mistake
 // the inside of a script, style or comment for markup. Page content is
 // untrusted: nothing here is executed, and an unterminated construct ends the
-// scan rather than being guessed at. Work is linear in len(doc).
+// scan rather than being guessed at, with scanned.truncated saying so (a scan
+// that stopped early is never a complete one). Work is linear in len(doc).
 func scanHTML(doc string) scanned {
 	var out scanned
 	for i := 0; i < len(doc); {
@@ -50,6 +58,7 @@ func scanHTML(doc string) scanned {
 		if strings.HasPrefix(doc[i:], "<!--") {
 			end := strings.Index(doc[i+4:], "-->")
 			if end < 0 {
+				out.truncated = fmt.Sprintf("unterminated comment at byte %d", i)
 				break
 			}
 			i += 4 + end + 3
@@ -66,7 +75,9 @@ func scanHTML(doc string) scanned {
 		name := htmltext.LowerASCII(doc[i+1 : k])
 		attrs, end, ok := parseAttrs(doc, k, name == "a" || name == "base" || name == "script")
 		if !ok {
-			break // unterminated tag or quote: stop rather than guess
+			// Unterminated tag or quote: stop rather than guess.
+			out.truncated = fmt.Sprintf("unterminated <%s> tag at byte %d", name, i)
+			break
 		}
 		switch name {
 		case "body":
@@ -92,6 +103,7 @@ func scanHTML(doc string) scanned {
 		case "script", "style", "textarea", "title":
 			closeAt := htmltext.IndexFold(doc[end:], "</"+name)
 			if closeAt < 0 {
+				out.truncated = fmt.Sprintf("<%s> at byte %d has no closing tag", name, i)
 				return out
 			}
 			body := doc[end : end+closeAt]

@@ -114,6 +114,13 @@ func (s *source) list(ctx context.Context, b sources.Board, listURL, docURL stri
 		return nil, err
 	}
 	sc := scanHTML(doc)
+	if sc.truncated != "" {
+		// The link list stops where the markup does: listing from it would drop
+		// every posting past the stop and age the healthy ones as absent. Like a
+		// document over the size limit (ErrOutputTooLarge), it is an error, not a
+		// short list.
+		return nil, fmt.Errorf("page: scanning %s: %w: %s", listURL, ErrTruncatedDocument, sc.truncated)
+	}
 	base, err := documentBase(docURL, sc)
 	if err != nil {
 		return nil, err
@@ -242,6 +249,12 @@ func (s *source) fetchOnce(ctx context.Context, rawURL string) (string, error) {
 // is then a bare "<!DOCTYPE html>"). Accepting that would turn a posting into
 // an empty one, so it fails the board.
 var ErrEmptyDocument = errors.New("page: lightpanda loaded an empty document (the page did not load in time)")
+
+// ErrTruncatedDocument is a listing document that ends inside markup (an
+// unterminated comment, tag, quoted value, or script/style/textarea/title): its
+// link list stops where the markup does. It fails the board, as a document over
+// the size limit does, rather than listing a prefix as if it were the board.
+var ErrTruncatedDocument = errors.New("page: the listing document is cut off inside markup; refusing a partial link list")
 
 // hasElement reports whether doc holds any markup past a leading doctype.
 func hasElement(doc string) bool {
