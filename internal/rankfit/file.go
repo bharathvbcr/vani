@@ -232,18 +232,49 @@ const updateLockWait = 10 * time.Second
 // atomically, so two writers each replacing their own part both survive. A
 // missing file reaches fn as a zero File with exists false; a file that cannot
 // be read or fails Load's checks is refused with an error and left as it is.
-// An error from fn, a cancelled ctx or an invalid result writes nothing.
-func Update(ctx context.Context, path string, fn func(cur *File, exists bool) error) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// An error from fn, a cancelled ctx (checked once the lock is held and again
+// after fn) or an invalid result writes nothing and returns that error. An
+// Update that created the directory in this call and then wrote nothing removes
+// the lock file and every directory it created that is empty, never one that
+// existed before.
+//
+// path is resolved once, leaf link included (atomicfile.Resolve), and that one
+// path names the lock, the read and the write, so a link and its target are one
+// file with one lock and a write goes through the link, keeping it.
+func Update(ctx context.Context, path string, fn func(cur *File, exists bool) error) (err error) {
+	path, err = atomicfile.Resolve(path)
+	if err != nil {
 		return fmt.Errorf("rankfit: %w", err)
 	}
+	made, err := mkdirAllNew(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("rankfit: %w", err)
+	}
+	locked, wrote := false, false
+	defer func() {
+		// Runs after the lock is released (deferred before it), so the lock file
+		// can be removed on every platform.
+		if wrote || len(made) == 0 {
+			return
+		}
+		if locked {
+			_ = os.Remove(path + ".lock")
+		}
+		for _, d := range made { // deepest first; Remove refuses a non-empty directory
+			_ = os.Remove(d)
+		}
+	}()
 	wctx, cancel := context.WithTimeout(ctx, updateLockWait)
 	defer cancel()
 	lk, err := filelock.Acquire(wctx, path+".lock")
 	if err != nil {
 		return fmt.Errorf("rankfit: lock %s: %w", path, err)
 	}
+	locked = true
 	defer func() { _ = lk.Release() }()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("rankfit: %w", err)
+	}
 	cur, exists := File{}, true
 	if cur, err = Load(path); errors.Is(err, fs.ErrNotExist) {
 		cur, exists = File{}, false
@@ -253,5 +284,33 @@ func Update(ctx context.Context, path string, fn func(cur *File, exists bool) er
 	if err := fn(&cur, exists); err != nil {
 		return err
 	}
-	return Write(path, cur)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("rankfit: %w", err)
+	}
+	if err := Write(path, cur); err != nil {
+		return err
+	}
+	wrote = true
+	return nil
+}
+
+// mkdirAllNew is os.MkdirAll that also returns the directories it had to
+// create, deepest first.
+func mkdirAllNew(dir string) ([]string, error) {
+	var made []string
+	for d := dir; ; {
+		if _, err := os.Stat(d); err == nil || !errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		made = append(made, d)
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	return made, nil
 }
