@@ -102,7 +102,9 @@ func TestW4dIgnoredNoteIsNotSerialized(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(p)
-	if strings.Contains(string(b), "new_field") || strings.Contains(string(b), "ignored") {
+	// The ignored-field note is Load's, never the file's; the newer field itself
+	// is the file's and survives an unchanged report (w4dpreserve_test.go).
+	if strings.Contains(string(b), "ignored") || strings.Contains(string(b), "?") {
 		t.Errorf("note leaked into the file:\n%s", b)
 	}
 }

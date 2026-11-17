@@ -103,6 +103,14 @@ type File struct {
 	// the probe saw but could not place.
 	ReportIgnored      string   `json:"-"`
 	ReportIgnoredPaths []string `json:"-"`
+	// rawReport is the report exactly as read when it carried unknown fields,
+	// and knownReport what this binary re-encodes the decoded report to. Write
+	// puts rawReport back while the report is still the one that was read
+	// (re-encodes to knownReport), so an older vani's rewrite of another part
+	// does not drop what a newer one recorded; a report that was replaced is
+	// written as it is.
+	rawReport   json.RawMessage
+	knownReport []byte
 }
 
 // ReportIgnoredIn reports whether an ignored report field lies inside the
@@ -243,6 +251,8 @@ func decodeFile(path string, b []byte) (File, error) {
 		if len(paths) > 0 {
 			f.ReportIgnoredPaths = paths
 			f.ReportIgnored = "unknown field " + strings.Join(paths, ", ")
+			f.rawReport = slices.Clone(w.Report)
+			f.knownReport, _ = json.Marshal(f.Report)
 		}
 	}
 	return f, nil
@@ -374,12 +384,35 @@ func checkSpareSeniority(levels []string) error {
 	return nil
 }
 
+// fileEnc is File as written: File's fields in File's order, with the report
+// held raw so Write can put back one that carried fields this binary dropped.
+type fileEnc struct {
+	V                      int                               `json:"v"`
+	FittedAt               time.Time                         `json:"fitted_at"`
+	Shares                 *Shares                           `json:"shares,omitempty"`
+	Calibration            map[string]jobinsight.Calibration `json:"calibration,omitempty"`
+	SpareSeniorityMismatch []string                          `json:"spare_seniority_mismatch,omitempty"`
+	Report                 json.RawMessage                   `json:"report,omitempty"`
+}
+
 // Write validates f and writes it to path atomically, creating its directory.
 func Write(path string, f File) error {
 	if err := f.Validate(); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(f, "", "  ")
+	out := fileEnc{V: f.V, FittedAt: f.FittedAt, Shares: f.Shares, Calibration: f.Calibration,
+		SpareSeniorityMismatch: f.SpareSeniorityMismatch}
+	if f.Report != nil {
+		rep, err := json.Marshal(f.Report)
+		if err != nil {
+			return fmt.Errorf("rankfit: encode: %w", err)
+		}
+		if len(f.rawReport) > 0 && bytes.Equal(rep, f.knownReport) {
+			rep = f.rawReport
+		}
+		out.Report = rep
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("rankfit: encode: %w", err)
 	}
