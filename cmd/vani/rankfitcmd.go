@@ -1,13 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"maps"
 	"math"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -171,7 +171,10 @@ func (e *env) cmdRankfit(args []string) error {
 		return e.reply(*asJSON, jr, fmt.Errorf("rankfit %s; nothing written", strings.Join(notRun, "; ")), nil)
 	}
 
-	base := jobinsight.DefaultWeights()
+	base, calBefore, err := rankfitFitBase(path, doPlatt)
+	if err != nil {
+		return err
+	}
 	f := rankfit.File{V: rankfit.FileVersion, FittedAt: now().UTC(), Report: &rep}
 	if doPlatt {
 		rep.Platt, rep.PlattRefused = map[string]rankfit.PlattFit{}, map[string]int{}
@@ -226,12 +229,82 @@ func (e *env) cmdRankfit(args []string) error {
 		}
 		f.Shares = &res.Shares
 	}
-	if err := rankfit.Write(path, f); err != nil {
+	if err := rankfit.Update(context.Background(), path, func(cur *rankfit.File, exists bool) error {
+		merged, err := mergeRankfitPart(*cur, exists, f, doPlatt, doWeights, calBefore)
+		*cur = merged
+		return err
+	}); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "wrote %s\nto rank by it, set rank_weights_file to that path in the config\n", path)
 	jr.Written = true
 	return e.reply(*asJSON, jr, nil, func() {})
+}
+
+// rankfitFitBase is the weights a fit is evaluated under, and the calibration
+// the file held when it was read. A fit that refits the calibration starts from
+// the hand weights and applies its own calibration once fitted. A weights-only
+// fit keeps the file's calibration, so it is evaluated under the calibration it
+// will be written beside: the file at path is read here (one that cannot be
+// read is refused) and the calibration seen goes to mergeRankfitPart, which
+// checks it against what is on disk under the lock.
+func rankfitFitBase(path string, doPlatt bool) (jobinsight.Weights, map[string]jobinsight.Calibration, error) {
+	base := jobinsight.DefaultWeights()
+	if doPlatt {
+		return base, nil, nil
+	}
+	cur, err := rankfit.Load(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return base, nil, nil
+	case err != nil:
+		return base, nil, fmt.Errorf("rankfit: %s exists and cannot be read, so it is left as it is: %w", path, err)
+	}
+	return rankfit.File{Calibration: cur.Calibration}.Apply(base), cur.Calibration, nil
+}
+
+// mergeRankfitPart lays the part a fit just ran (fitted) over the weights file
+// already on disk (cur, when exists): the run's own calibration and shares
+// replace the old ones, and the part it did not run, the spared seniority and
+// every other field stay as they were. The report keeps the old Platt
+// provenance for a weights-only run. A platt-only run drops the old held-out
+// result for the shares (Report.Weights): it was measured under the calibration
+// this run replaced, so the kept shares read as unchecked until a weight fit
+// checks them again. FittedAt is the last fit of any part. With no file there
+// is nothing to keep and the result is the fit alone. A platt-only run that
+// fitted no backend is refused rather than refreshing the file's date over
+// unchanged numbers. A weights-only run was evaluated under calBefore, the
+// calibration read before it ran (rankfitFitBase); if the file's calibration is
+// no longer that, the run is refused and nothing is written.
+func mergeRankfitPart(cur rankfit.File, exists bool, fitted rankfit.File, doPlatt, doWeights bool, calBefore map[string]jobinsight.Calibration) (rankfit.File, error) {
+	if !doPlatt && !maps.Equal(cur.Calibration, calBefore) {
+		return cur, errors.New("rankfit: the weights file's calibration changed while the fit ran, so the fit was evaluated under another one; nothing written")
+	}
+	if !exists {
+		return fitted, nil
+	}
+	if doPlatt && !doWeights && len(fitted.Calibration) == 0 {
+		return cur, errors.New("rankfit: no backend could be calibrated; nothing written")
+	}
+	out := cur
+	out.V, out.FittedAt = fitted.V, fitted.FittedAt
+	if doPlatt && len(fitted.Calibration) > 0 {
+		out.Calibration = fitted.Calibration
+	}
+	if doWeights {
+		out.Shares = fitted.Shares
+	}
+	rep := rankfit.Report{}
+	if fitted.Report != nil {
+		rep = *fitted.Report
+	}
+	if old := cur.Report; old != nil {
+		if !doPlatt {
+			rep.Platt, rep.PlattRefused = old.Platt, old.PlattRefused
+		}
+	}
+	out.Report = &rep
+	return out, nil
 }
 
 // rankfitSpareSeniority sets the weights file's spared seniority levels
@@ -251,17 +324,15 @@ func (e *env) rankfitSpareSeniority(path, list string, dry, asJSON bool) error {
 			return usagef("rankfit: --spare-seniority wants a comma list of seniority readings, or none")
 		}
 	}
-	f := rankfit.File{V: rankfit.FileVersion, FittedAt: now().UTC()}
-	if _, err := os.Stat(path); err == nil {
-		if f, err = rankfit.Load(path); err != nil {
-			return fmt.Errorf("rankfit: %s exists and cannot be read, so it is left as it is: %w", path, err)
+	setLevels := func(cur *rankfit.File, exists bool) error {
+		if !exists {
+			*cur = rankfit.File{V: rankfit.FileVersion, FittedAt: now().UTC()}
 		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("rankfit: %w", err)
-	}
-	f.SpareSeniorityMismatch = levels
-	if err := f.Validate(); err != nil {
-		return usagef("%v", err)
+		cur.SpareSeniorityMismatch = levels
+		if err := cur.Validate(); err != nil {
+			return usagef("%v", err)
+		}
+		return nil
 	}
 	reply := struct {
 		Path    string   `json:"path"`
@@ -269,8 +340,22 @@ func (e *env) rankfitSpareSeniority(path, list string, dry, asJSON bool) error {
 		DryRun  bool     `json:"dry_run"`
 		Written bool     `json:"written"`
 	}{Path: path, Spared: nonNil(levels), DryRun: dry}
-	if !dry {
-		if err := rankfit.Write(path, f); err != nil {
+	if dry {
+		// A dry run checks the same file the same way, under no lock and with no write.
+		f, err := rankfit.Load(path)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			err = setLevels(&f, false)
+		case err != nil:
+			err = fmt.Errorf("rankfit: %s exists and cannot be read, so it is left as it is: %w", path, err)
+		default:
+			err = setLevels(&f, true)
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		if err := rankfit.Update(context.Background(), path, setLevels); err != nil {
 			return err
 		}
 		reply.Written = true

@@ -27,7 +27,10 @@ func gateFile(t *testing.T, name string, f rankfit.File) config.Config {
 }
 
 func heldOut(fit, hand float64, pairs int) *rankfit.Report {
-	return &rankfit.Report{Weights: &rankfit.FitResult{Shares: gateShares, FitAccuracy: fit, HandAccuracy: hand, HeldOutPairs: pairs}}
+	// The gain interval sits half way below to a little above the accuracy gain,
+	// so a result that gains clears 0 and one that does not (equal, worse) cannot.
+	return &rankfit.Report{Weights: &rankfit.FitResult{Shares: gateShares, FitAccuracy: fit, HandAccuracy: hand, HeldOutPairs: pairs,
+		GainLo: (fit - hand) / 2, GainHi: fit - hand + 0.05, Resamples: 1000}}
 }
 
 // Fitted shares are used only while the file's own held-out result does not
@@ -40,16 +43,13 @@ func TestRankWeightsRefusesSharesThatScoreWorseThanTheHandWeights(t *testing.T) 
 		refused  bool
 		warnPart string
 	}{
-		"worse":            {heldOut(0.55, 0.60, 400), true, "worse than the hand weights"},
-		"slightly worse":   {heldOut(0.5999, 0.6, 400), true, "worse than the hand weights"},
+		"worse":            {heldOut(0.55, 0.60, 400), true, "does not clear 0"},
+		"slightly worse":   {heldOut(0.5999, 0.6, 400), true, "does not clear 0"},
 		"better":           {heldOut(0.62, 0.60, 400), false, ""},
-		"equal":            {heldOut(0.60, 0.60, 400), false, ""},
-		"no pairs":         {heldOut(0.9, 0.5, 0), true, "no held-out pairs"},
-		"above one":        {heldOut(1.5, 0.5, 400), true, "not an accuracy"},
-		"negative":         {heldOut(-0.2, 0.5, 400), true, "not an accuracy"},
-		"hand above one":   {heldOut(0.9, 1.5, 400), true, "not an accuracy"},
-		"no recorded fit":  {&rankfit.Report{Labels: 200}, false, "record no held-out result"},
-		"no report at all": {nil, false, "record no held-out result"},
+		"equal":            {heldOut(0.60, 0.60, 400), true, "does not clear 0"},
+		"no pairs":         {heldOut(0.9, 0.5, 0), true, "only 0 held-out pairs"},
+		"no recorded fit":  {&rankfit.Report{Labels: 200}, true, "records no held-out result"},
+		"no report at all": {nil, true, "records no held-out result"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := gateFile(t, "w.json", rankfit.File{Shares: &gateShares, Report: tc.rep})
@@ -84,7 +84,7 @@ func TestRankWeightsRefusedSharesKeepTheCalibration(t *testing.T) {
 	if _, ok := w.Calibration["d1-ultra"]; !ok {
 		t.Errorf("the calibration was dropped with the shares: %+v", w.Calibration)
 	}
-	if used != "fitted 2026-10-18 (calibration only; shares refused)" || !strings.Contains(warn, "worse than the hand weights") {
+	if used != "fitted 2026-10-18 (calibration only; shares refused)" || !strings.Contains(warn, "does not pass the gate") {
 		t.Errorf("used %q warn %q", used, warn)
 	}
 	// A file with only calibration has no shares to check and says nothing.
@@ -123,13 +123,13 @@ func TestStatusSaysWhichRankWeightsRankAndWhetherTheyWereChecked(t *testing.T) {
 	}
 	refused := gateFile(t, "refused.json", rankfit.File{Shares: &gateShares, Report: heldOut(0.4, 0.6, 500)})
 	f, txt := statusOf(withWeights(base, refused))
-	if f.OK || f.Used != "hand" || f.SharesChecked || !strings.Contains(f.Warning, "worse than the hand weights") ||
-		!strings.Contains(txt, "rank weights: hand") || !strings.Contains(txt, "worse than the hand weights") {
+	if f.OK || f.Used != "hand" || f.SharesChecked || !strings.Contains(f.Warning, "does not pass the gate") ||
+		!strings.Contains(txt, "rank weights: hand") || !strings.Contains(txt, "does not pass the gate") {
 		t.Errorf("refused: %+v\n%s", f, txt)
 	}
 	unchecked := gateFile(t, "unchecked.json", rankfit.File{Shares: &gateShares})
 	f, txt = statusOf(withWeights(base, unchecked))
-	if f.OK || f.SharesChecked || f.Used != "fitted 2026-10-18" || !strings.Contains(txt, "unchecked") {
+	if f.OK || f.SharesChecked || f.Used != "hand" || !strings.Contains(txt, "records no held-out result") {
 		t.Errorf("unchecked: %+v\n%s", f, txt)
 	}
 	checked := gateFile(t, "checked.json", rankfit.File{Shares: &gateShares, Report: heldOut(0.7, 0.6, 500)})
@@ -167,13 +167,13 @@ func TestJobsAndDigestSayWhenFittedSharesWereRefused(t *testing.T) {
 	}
 	seedScores(t, stateDir, scoreSeed{key: "gh:a:one", company: "Acme", title: "Engineer", fit: "adjacent", cov: "60", posted: day, seenAgo: day})
 	l := listJSON(t)
-	if l.Insight.Weights != "hand" || !strings.Contains(l.Insight.Warning, "worse than the hand weights") {
+	if l.Insight.Weights != "hand" || !strings.Contains(l.Insight.Warning, "does not pass the gate") {
 		t.Errorf("insight %+v", l.Insight)
 	}
-	if o, _ := mustCode(t, 0, "jobs", "list"); !strings.Contains(o, "worse than the hand weights") {
+	if o, _ := mustCode(t, 0, "jobs", "list"); !strings.Contains(o, "does not pass the gate") {
 		t.Errorf("the text listing does not show the refusal:\n%s", o)
 	}
-	if _, warn := digestOptions(cfg, stateDir); !strings.Contains(warn, "worse than the hand weights") {
+	if _, warn := digestOptions(cfg, stateDir); !strings.Contains(warn, "does not pass the gate") {
 		t.Errorf("digest warning %q", warn)
 	}
 	if opts, _ := digestOptions(cfg, stateDir); opts.Weights != nil {
