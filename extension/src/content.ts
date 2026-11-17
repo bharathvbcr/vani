@@ -23,6 +23,7 @@ import {
 import { isReadableJob, navigationHref, postingKey, readJobInfo } from "./jobinfo";
 import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, draftHelp, maxWordsFor, parseDraftReply } from "./draft";
 import { classify } from "./classify";
+import { hostDisabled } from "./bank";
 import { type AppliedFlow, type AppliedUi, createAppliedFlow, isFinalSubmit as appliedFinal, offerSubject, postingKey as applicationKey } from "./applied";
 import {
   DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, OLDER_VANI, SUGGEST_TIMEOUT_MS, type SuggestField, type SuggestRequest,
@@ -94,7 +95,7 @@ async function scanBank(): Promise<Bank | null> {
 }
 
 function disabledHere(b: Bank | null): boolean {
-  return !!b && b.settings.disabledHosts.includes(location.hostname);
+  return !!b && hostDisabled(b, location.hostname);
 }
 
 function coveredByParent(): boolean {
@@ -1176,7 +1177,8 @@ async function saveOne(ref: FieldRef): Promise<void> {
   }
   bankMemo.invalidate();
   if (!reply || typeof reply !== "object" || !("added" in reply)) {
-    toast("Could not save answers: the extension's storage did not accept them");
+    const why = reply && typeof reply === "object" && typeof reply.error === "string" ? reply.error : "";
+    toast(why ? `Not saved: ${why}` : "Could not save answers: the extension's storage did not accept them");
     return;
   }
   // The background accepted this value. Remember it so a later page-wide Save does not count it again.

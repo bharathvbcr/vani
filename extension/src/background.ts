@@ -2,7 +2,7 @@
 // keyboard shortcut. It makes no network requests.
 import { createLock } from "./guards";
 import type { Answer, Bank } from "./types";
-import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, mergeCapture, mergeCaptureDelta, parseBank } from "./bank";
+import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, hostDisabled, mergeCapture, mergeCaptureDelta, parseBank } from "./bank";
 import {
   logActivity,
   loadBank,
@@ -374,6 +374,28 @@ function senderOrigin(sender: chrome.runtime.MessageSender): string | null {
   }
 }
 
+/** A message from a page's content script, not the popup or another extension page (the same test messages.ts applies to SENDER_POLICY). */
+function isPageSender(sender: chrome.runtime.MessageSender): boolean {
+  const own = ownURL();
+  return sender.tab !== undefined && sender.tab !== null && !(own !== "" && typeof sender.url === "string" && sender.url.startsWith(own));
+}
+
+/**
+ * The hosts whose disabled setting governs a page's capture, from the browser's own sender (never the message body):
+ * the sending frame's host, plus the tab's top-level host when that is a different frame and the browser reports it.
+ * Disabling a site turns capture off for everything embedded in it, so either one disabled refuses. null when the
+ * frame's host cannot be read: unknown is refused, not allowed.
+ */
+function senderHosts(sender: chrome.runtime.MessageSender): string[] | null {
+  const hostOf = (u: string | undefined): string | null => {
+    try { return new URL(u ?? "").hostname || null; } catch { return null; }
+  };
+  const frame = hostOf(sender.url);
+  if (frame === null) return null;
+  const top = sender.frameId === 0 ? null : hostOf(sender.tab?.url);
+  return top === null ? [frame] : [frame, top];
+}
+
 /** The tab a message acts for. A content script is always its own tab, whatever it claims; the popup is no tab and names one. */
 function actingTab(sender: chrome.runtime.MessageSender, named: unknown): number | undefined {
   if (sender.tab) return sender.tab.id;
@@ -454,6 +476,19 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     }
     case "capture": {
       if (!Array.isArray(msg.fields) || msg.fields.length > 500 || typeof msg.host !== "string") return { error: "bad capture" };
+      // A page's capture is checked here as well as on the page: a page script or a stale content script
+      // cannot talk the background out of the owner's disabled list. The popup (no tab) saves what the owner typed.
+      if (isPageSender(sender)) {
+        const hosts = senderHosts(sender);
+        if (hosts === null) return { error: "capture refused: the page's host could not be determined", code: "bad_request" };
+        let held: Bank;
+        try {
+          held = await loadBank({ fresh: true });
+        } catch {
+          return { error: "capture refused: the answer bank could not be read to check the disabled sites", code: "bank_unreadable" };
+        }
+        if (hosts.some(h => hostDisabled(held, h))) return { error: "capture is turned off for this site", code: "host_disabled" };
+      }
       let result: Omit<CaptureResult, "bank"> | undefined;
       const mode = await storageMode();
       try {

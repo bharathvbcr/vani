@@ -8,8 +8,7 @@
 // (a search page) only an explicit Save saves. The DOM and the chrome
 // messaging are injected so the DOM test page can drive it.
 import type { Bank, FieldInfo } from "./types";
-import { emptyBank } from "./types";
-import { answerKey, mergeCapture } from "./bank";
+import { answerKey, hostDisabled, mergeCapture } from "./bank";
 import { classify } from "./classify";
 import { scanForm } from "./extract";
 import { fieldDigest, pendingDiff } from "./capture";
@@ -184,12 +183,13 @@ export function createTracker(d: TrackerDeps): Tracker {
   async function run(reason: string, explicit: boolean): Promise<FlushResult | null> {
     if (pending.size === 0) return null;
     if (!explicit && peak < MIN_FORM_FIELDS) return null; // not a form: only Save keeps it
-    const bank = await d.getBank();
+    const bank = await d.getBank().catch(() => null);
     lastBank = bank;
-    if (bank?.settings.disabledHosts.includes(d.host)) return null;
-    const selfId = bank?.settings.captureSelfId ?? false;
+    // Fail closed: a bank that could not be read cannot say whether this host is disabled, so nothing is sent.
+    if (!bank || hostDisabled(bank, d.host)) return null;
+    const selfId = bank.settings.captureSelfId;
     const { fields, skipped } = unsent(selfId);
-    const diff = pendingDiff(bank ?? emptyBank(), fields, d.host, explicit);
+    const diff = pendingDiff(bank, fields, d.host, explicit);
     const batch = diff.send.slice(0, MAX_SEND);
     const reply = batch.length > 0 ? await d.send(batch) : null;
     if (reply) markSent(batch, selfId);
@@ -204,12 +204,13 @@ export function createTracker(d: TrackerDeps): Tracker {
   /**
    * On pagehide the page may be gone before an awaited bank read returns, so
    * decide from the last bank this tracker saw and send without waiting. If no
-   * bank was ever read the whole pending set is sent (the background merges it).
+   * bank was ever read (or the last read failed) nothing is sent: it is not
+   * known whether this host is disabled.
    */
   function flushNow(): void {
     snapshot();
-    if (pending.size === 0 || peak < MIN_FORM_FIELDS || lastBank?.settings.disabledHosts.includes(d.host)) return;
-    const base = lastBank ?? emptyBank();
+    if (pending.size === 0 || peak < MIN_FORM_FIELDS || !lastBank || hostDisabled(lastBank, d.host)) return;
+    const base = lastBank;
     const selfId = base.settings.captureSelfId;
     const batch = pendingDiff(base, unsent(selfId).fields, d.host, false).send.slice(0, MAX_SEND);
     if (batch.length === 0) return;

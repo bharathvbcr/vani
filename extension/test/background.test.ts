@@ -1,6 +1,6 @@
 // The background worker's message router, loaded for real behind a fake chrome:
 // every message gets an answer, and one it does not know is an error object, never undefined.
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { MAX_BANK_BYTES } from "../src/bank";
 import { SENDER_POLICY, type ToBackground, TO_BACKGROUND, checkToBackground, checkToContent } from "../src/messages";
 import { MAX_RESUME_BYTES, toBase64 } from "../src/resume";
@@ -13,6 +13,8 @@ let listener: Listener | undefined;
 let local: Record<string, unknown> = {};
 /** When set, chrome.storage.local.set rejects with this message (a browser whose extension storage cannot be written). */
 let localSetFails: string | null = null;
+/** When set, chrome.storage.local.get rejects with this message (a bank that cannot be read). */
+let localGetFails: string | null = null;
 const removed: Array<(tabId: number) => void> = [];
 const updated: Array<(tabId: number, info: { status?: string }) => void> = [];
 /** What the background asked the (absent) Mac app, in order. */
@@ -51,7 +53,7 @@ beforeAll(async () => {
     },
     storage: {
       local: {
-        get: async (k: string | string[]) => Object.fromEntries((Array.isArray(k) ? k : [k]).filter(x => x in local).map(x => [x, local[x]])),
+        get: async (k: string | string[]) => localGetFails ? Promise.reject(new Error(localGetFails)) : Object.fromEntries((Array.isArray(k) ? k : [k]).filter(x => x in local).map(x => [x, local[x]])),
         set: async (items: Record<string, unknown>) => {
           if (localSetFails) throw new Error(localSetFails);
           local = { ...local, ...items };
@@ -965,5 +967,79 @@ describe("Mac app bank round trips", () => {
     await reset();
     expect((await ask({ type: "filled", keys: ["deleted-meanwhile"] }, content)).replies).toEqual([{ ok: true }]);
     expect(ops().includes("patch")).toBe(false);
+  });
+});
+
+// Slice w2b (232): the background checks the owner's disabled sites itself. The host comes from the browser's
+// sender (the frame's URL, and the tab's top URL for a sub-frame), never from the message body.
+describe("capture from a page honours disabledHosts", () => {
+  const field = { ...cityBasic };
+  const bankWith = (hosts: string[]) => ({ version: 1, answers: {}, settings: { captureSelfId: false, disabledHosts: hosts } });
+  const page = (url: string) => ({ tab: { id: 9, url }, frameId: 0, url });
+  const stored = () => (local.vaniBank as { answers: Record<string, unknown> } | undefined)?.answers ?? {};
+  beforeEach(async () => {
+    // The browser-storage path: the Mac-app describe above leaves a host behind, and the store keeps trying it
+    // until one read fails. Burn that failure here so the first test reads the browser bank.
+    nativeReply = undefined;
+    await ask({ type: "getBank", fresh: true });
+  });
+
+  test("a disabled host's capture is refused and stores nothing, whatever host the body claims", async () => {
+    local = { vaniBank: bankWith(["jobs.example"]) };
+    const r = (await ask({ type: "capture", host: "elsewhere.example", fields: [field] }, page("https://jobs.example/apply"))).replies[0];
+    expect(r).toMatchObject({ code: "host_disabled" });
+    expect(Object.keys(stored())).toEqual([]);
+  });
+
+  test("an enabled host still saves, and a body host that is on the list cannot block it", async () => {
+    local = { vaniBank: bankWith(["jobs.example"]) };
+    const ok = (await ask({ type: "capture", host: "jobs.example", fields: [field] }, page("https://other.example/apply"))).replies[0];
+    expect(ok).toMatchObject({ added: 1 });
+  });
+
+  test("the list matches in any case and with a trailing dot, on either side", async () => {
+    for (const [listed, url] of [["JOBS.Example", "https://jobs.example/a"], ["jobs.example.", "https://jobs.example/a"], [" jobs.example", "https://JOBS.EXAMPLE./a"]] as const) {
+      local = { vaniBank: bankWith([listed]) };
+      const r = (await ask({ type: "capture", host: "x", fields: [field] }, page(url))).replies[0];
+      expect(r, `${listed} vs ${url}`).toMatchObject({ code: "host_disabled" });
+      expect(Object.keys(stored())).toEqual([]);
+    }
+  });
+
+  test("rule: an iframe is refused when its own host or its tab's top host is disabled", async () => {
+    const frame = (top: string) => ({ tab: { id: 9, url: top }, frameId: 4, url: "https://boards.embed.example/form" });
+    local = { vaniBank: bankWith(["company.example"]) };
+    expect((await ask({ type: "capture", host: "x", fields: [field] }, frame("https://company.example/careers"))).replies[0]).toMatchObject({ code: "host_disabled" });
+    expect(Object.keys(stored())).toEqual([]);
+    local = { vaniBank: bankWith(["boards.embed.example"]) };
+    expect((await ask({ type: "capture", host: "x", fields: [field] }, frame("https://company.example/careers"))).replies[0]).toMatchObject({ code: "host_disabled" });
+    local = { vaniBank: bankWith(["unrelated.example"]) };
+    expect((await ask({ type: "capture", host: "x", fields: [field] }, frame("https://company.example/careers"))).replies[0]).toMatchObject({ added: 1 });
+  });
+
+  test("a bank that cannot be read refuses the capture instead of allowing it", async () => {
+    local = { vaniBank: bankWith([]) };
+    localGetFails = "storage unavailable";
+    try {
+      const r = (await ask({ type: "capture", host: "x", fields: [field] }, page("https://jobs.example/apply"))).replies[0];
+      expect(r).toMatchObject({ code: "bank_unreadable" });
+    } finally {
+      localGetFails = null;
+    }
+    expect(Object.keys(stored())).toEqual([]);
+  });
+
+  test("a page sender whose URL has no host is refused", async () => {
+    local = { vaniBank: bankWith([]) };
+    for (const url of [undefined, "", "not a url", "about:blank"]) {
+      const r = (await ask({ type: "capture", host: "x", fields: [field] }, { tab: { id: 9 }, frameId: 0, ...(url === undefined ? {} : { url }) })).replies[0];
+      expect(r, String(url)).toMatchObject({ code: "bad_request" });
+    }
+    expect(Object.keys(stored())).toEqual([]);
+  });
+
+  test("the popup (no tab) is not subject to the page rule: the owner's own save lands", async () => {
+    local = { vaniBank: bankWith(["vani-basics"]) };
+    expect((await ask({ type: "capture", host: "vani-basics", fields: [field] })).replies[0]).toMatchObject({ added: 1 });
   });
 });

@@ -3,6 +3,20 @@ import { autocompleteKey, dialCodeOnly, normalizeLabel, signature, tokens } from
 import { classify, untouchable } from "./classify";
 import { intentOf } from "./intents";
 
+/**
+ * A host as the disabled list compares it: trimmed, lower case, no trailing dot ("Jobs.Example." is "jobs.example").
+ * The browser reports hostnames lower case already; the list is owner-typed or imported, so it is the side that varies.
+ */
+export function normalizeHost(h: string): string {
+  return h.trim().toLowerCase().replace(/\.+$/, "");
+}
+
+/** Whether capture is turned off for `host`. An empty host matches nothing. */
+export function hostDisabled(bank: Bank, host: string): boolean {
+  const want = normalizeHost(host);
+  return want !== "" && bank.settings.disabledHosts.some(h => normalizeHost(h) === want);
+}
+
 /** The capture host for answers typed in the popup: never a real site, so no per-site signature is kept. */
 export const BASICS_HOST = "vani-basics";
 

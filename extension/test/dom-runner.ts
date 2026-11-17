@@ -580,6 +580,37 @@ async function oncePerPage(): Promise<void> {
   box.remove();
 }
 
+/** w2b (232): a bank that cannot be read, or one that disables this host (in any case, with a trailing dot), sends nothing. */
+async function failClosedCapture(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML = '<label for="fc1">Favourite editor</label><input id="fc1" value="vim"><label for="fc2">Favourite shell</label><input id="fc2" value="fish">' +
+    '<label for="fc3">Favourite font</label><input id="fc3" value="mono">';
+  document.body.append(box);
+  const disabled = (hosts: string[]): Bank => ({ ...emptyBank(), settings: { captureSelfId: false, disabledHosts: hosts } });
+  const run = async (getBank: () => Promise<Bank | null>, host: string, how: "flush" | "pagehide"): Promise<number> => {
+    let sends = 0;
+    const t = createTracker({ doc: document, host, getBank, send: async f => { sends++; return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; }, commitMs: 5 });
+    if (how === "flush") {
+      await t.flush("test", true);
+    } else {
+      q<HTMLInputElement>(box, "#fc1").dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(40); // the commit timer reads the bank, as it does before a real pagehide
+      window.dispatchEvent(new Event("pagehide"));
+      await sleep(30);
+    }
+    t.dispose();
+    return sends;
+  };
+  for (const how of ["flush", "pagehide"] as const) {
+    check(`${how}: a bank read that returns null sends nothing`, await run(async () => null, "x.example", how) === 0);
+    check(`${how}: a bank read that throws sends nothing`, await run(async () => { throw new Error("storage down"); }, "x.example", how) === 0);
+    check(`${how}: a disabled host sends nothing`, await run(async () => disabled(["x.example"]), "x.example", how) === 0);
+    check(`${how}: a disabled host listed in other case with a trailing dot sends nothing`, await run(async () => disabled(["X.Example."]), "x.example", how) === 0);
+    check(`${how}: an enabled host still sends`, await run(async () => disabled(["other.example"]), "x.example", how) > 0);
+  }
+  box.remove();
+}
+
 // The tracker tells the page script when a button that sends the application is pressed, so it can
 // offer to mark the job Applied. Steps along the way (Next, Save, Review) and Apply do not count.
 // The buttons are type=button: nothing here may submit a form.
@@ -1305,6 +1336,7 @@ async function main(): Promise<void> {
     ["dates", dates],
     ["typeahead", typeahead],
     ["once per page", oncePerPage],
+    ["fail-closed capture", failClosedCapture],
     ["submit signal", submitSignal],
     ["not questions", notQuestions],
     ["dial picker", dialPicker],
