@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,8 @@ var w2aTokenFields = map[string]string{
 	"clmTitle": "entry e1 title",
 }
 
+const w2aBullet = "**Faster:** cut latency by {{clmA}}"
+
 func w2aResume() *Composed {
 	return &Composed{
 		Composed: true,
@@ -29,29 +32,56 @@ func w2aResume() *Composed {
 			{Title: "Skills", Kind: "lines", Lines: []Line{{Label: "Tools", Text: "Go, {{clmLine}} jobs"}}},
 			{Title: "Projects", Kind: "entries", Entries: []*Entry{{
 				ID: "e1", Title: "Engine {{clmTitle}}", Org: "Acme {{clmOrg}}", Dates: "{{clmDates}} months", Stack: "{{clmStack}} nodes",
-				Bullets: []*Bullet{{ID: "b0", Text: "**Faster:** cut latency by {{clmA}}"}},
+				Bullets: []*Bullet{{ID: "b0", Text: w2aBullet}},
 			}}},
 		},
 	}
 }
 
+// w2aEnv writes a synthetic Claims.tex (one distinct value per claim) under a
+// fresh code root and points rkb at it, in this process and, through the
+// returned root, in child processes. It returns the root and the claim values.
+func w2aEnv(t *testing.T) (string, map[string]string) {
+	t.Helper()
+	root := t.TempDir()
+	vals := map[string]string{}
+	var tex strings.Builder
+	for i, id := range append(sortedKeys(w2aTokenFields), "clmA") {
+		v := fmt.Sprintf("%d ms", 11+i)
+		vals[id] = v
+		fmt.Fprintf(&tex, "%% src.txt [chk.%d]\n\\newcommand{\\%s}{%s}\n", i, id, v)
+	}
+	p := filepath.Join(root, cfg.ClaimsTex[0])
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(tex.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := codeRootFlag
+	codeRootFlag = root
+	t.Cleanup(func() { codeRootFlag = old })
+	return root, vals
+}
+
 // w2aClaims: every claim is double-verified and the only confirmed sentence is
 // the bullet's, which is what the pre-fix export could ever produce.
-func w2aClaims(c *Composed) *ClaimsFile {
-	cf := &ClaimsFile{Generated: nowISO(), ResumeHash: c.resumeHash(), VMReport: map[string]string{"mtime": nowISO()},
+func w2aClaims(c *Composed, vals map[string]string) *ClaimsFile {
+	cf := &ClaimsFile{Generated: nowISO(), ResumeHash: c.resumeHash(vals), VMReport: map[string]string{"mtime": nowISO()},
 		Claims: map[string]*ClaimView{}, Statements: map[string]*StatementView{}, Guards: 1}
-	for _, id := range append(sortedKeys(w2aTokenFields), "clmA") {
-		cf.Claims[id] = &ClaimView{Value: "40%", Kind: "pct", DoubleVerified: true}
+	for id, v := range vals {
+		cf.Claims[id] = &ClaimView{Value: v, Kind: "time", DoubleVerified: true}
 	}
-	cf.Claims["clmA"].ConfirmedSentences = []string{sentenceHash("**Faster:** cut latency by {{clmA}}", "clmA")}
+	cf.Claims["clmA"].ConfirmedSentences = []string{sentenceHash(w2aBullet, "clmA")}
 	return cf
 }
 
 func w2aJoin(xs []string) string { return strings.Join(xs, "\n") }
 
 func TestW2AFinalGateNamesEveryUncoveredField(t *testing.T) {
+	_, vals := w2aEnv(t)
 	c := w2aResume()
-	cf := w2aClaims(c)
+	cf := w2aClaims(c, vals)
 	errs := w2aJoin(finalPreconditions(c, cf, ""))
 	for id, field := range w2aTokenFields {
 		if !strings.Contains(errs, id) || !strings.Contains(errs, field) {
@@ -80,8 +110,9 @@ func TestW2AClaimUsageCoversEveryRenderedField(t *testing.T) {
 }
 
 func TestW2ACoveredFieldsPass(t *testing.T) {
+	_, vals := w2aEnv(t)
 	c := w2aResume()
-	cf := w2aClaims(c)
+	cf := w2aClaims(c, vals)
 	for id := range w2aTokenFields {
 		for _, s := range claimUsage(c)[id] {
 			cv := cf.Claims[id]
@@ -94,9 +125,9 @@ func TestW2ACoveredFieldsPass(t *testing.T) {
 }
 
 func TestW2ARenderFinalExitsNonZero(t *testing.T) {
-	root := t.TempDir()
+	root, vals := w2aEnv(t)
 	c := w2aResume()
-	cf := w2aClaims(c)
+	cf := w2aClaims(c, vals)
 	sel := filepath.Join(root, "r.composed.json")
 	writeJSON(sel, c)
 	cfp := filepath.Join(root, "claims.json")
@@ -120,12 +151,12 @@ func TestW2ARenderFinalExitsNonZero(t *testing.T) {
 }
 
 func TestW2ADocxFinalIsGated(t *testing.T) {
-	root := t.TempDir()
+	root, vals := w2aEnv(t)
 	c := w2aResume()
 	sel := filepath.Join(root, "r.composed.json")
 	writeJSON(sel, c)
 	cfp := filepath.Join(root, "claims.json")
-	writeJSON(cfp, w2aClaims(c))
+	writeJSON(cfp, w2aClaims(c, vals))
 	docxOut := filepath.Join(root, "r.docx")
 	if out, code := runSample(t, root, "docx", sel, "--claims", cfp, "--out", docxOut); code == 0 {
 		t.Fatalf("docx is always final and must fail while figures are unverified:\n%s", out)

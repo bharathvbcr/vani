@@ -775,8 +775,10 @@ func finalPreconditions(c *Composed, cf *ClaimsFile, ecoPath string) []string {
 			errs = append(errs, "the composed resume was made from an older bank.json (reviews or wording changed since); re-compose it")
 		}
 	}
-	if cf.ResumeHash != c.resumeHash() {
-		errs = append(errs, "claims.json was exported for different content; re-run `rkb claims export --used-in` on this resume")
+	if cur, err := currentClaimValues(); err != nil {
+		errs = append(errs, "Claims.tex cannot be read, so claims.json could not be checked against the current claim values: "+err.Error())
+	} else if cf.ResumeHash != c.resumeHash(cur) {
+		errs = append(errs, "claims.json was exported for different content (a rendered field or a Claims.tex value changed since); re-run `rkb claims export --used-in` on this resume")
 	}
 	errs = append(errs, renderResume(c, cf, true).R.coverage(cf)...)
 	if h := ageHours(cf.Generated); h > cfg.FreshHours {
@@ -889,7 +891,7 @@ func writeSheet(c *Composed, cf *ClaimsFile, p, round string) {
 	if err != nil || rnd < 1 || rnd > 2 {
 		die("--round %q: expected 1 or 2", round)
 	}
-	sh := Sheet{Round: rnd, Target: c.Meta.Target, ResumeHash: c.resumeHash(),
+	sh := Sheet{Round: rnd, Target: c.Meta.Target, ResumeHash: c.resumeHash(claimViewValues(cf)),
 		Instructions: "See references/validation-protocol.md, 'Reader validation'. Set top-level reviewer to your name. Fill ONLY your persona's object (hr or hm) on every item, never both: verdict 'pass' or 'revise'; on revise a one-sentence note and a rewrite that keeps every figure exactly as written. Judge whether the text conveys the need, reading it in the context of the whole page (page_text). " + readerOwnerRules}
 	// The whole page goes on every round: a reader judges a bullet in context
 	// (repetition, what the section already said), not as an isolated line.

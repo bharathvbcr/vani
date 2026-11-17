@@ -118,7 +118,7 @@ func cmdFinalize(a *args) {
 	eco := a.get("eco", "")
 	pages := a.intFlag("pages", max(c.Meta.Pages, 1), 1, 20)
 	out := a.get("out-dir", filepath.Join(inRoot(cfg.HTMLOutDir), slug(c.basename(sel), 60)))
-	m := Manifest{Resume: sel, ResumeHash: c.resumeHash(), Checks: map[string]string{},
+	m := Manifest{Resume: sel, ResumeHash: c.resumeHash(claimViewValues(cf)), Checks: map[string]string{},
 		Inputs: map[string]string{}, Outputs: map[string]string{}}
 	stop := func(step string, problems []string) {
 		fmt.Printf("FINALIZE STOPPED at %s:\n", step)

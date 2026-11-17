@@ -514,7 +514,7 @@ func claimsExport(a *args) {
 	usage := map[string][]string{}
 	if u := a.get("used-in", ""); u != "" {
 		c := loadResume(u)
-		cf.ResumeHash, cf.Selection = c.resumeHash(), u
+		cf.ResumeHash, cf.Selection = c.resumeHash(claimValues(claims)), u
 		usage = claimUsage(c)
 		for _, r := range c.allBullets() {
 			cf.Statements[r.B.ID] = evalStatement(r.B.ID, r.B.Text, r.B.Sources, r.B.Attested, log)

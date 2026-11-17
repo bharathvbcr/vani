@@ -29,7 +29,8 @@ func TestW2AUnregisteredTokenInField(t *testing.T) {
 // as used are exactly the ones coverage and claimUsage see.
 func TestW2ARecordMatchesResolvedTokens(t *testing.T) {
 	c := w2aResume()
-	cf := w2aClaims(c)
+	_, vals := w2aEnv(t)
+	cf := w2aClaims(c, vals)
 	R := renderResume(c, cf, true).R
 	seen := map[string]bool{}
 	for _, u := range R.uses {
