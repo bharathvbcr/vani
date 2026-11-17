@@ -1,7 +1,7 @@
 // Slice w2b adversarial (w2badv): page-derived strings must not be able to poison the bank, and the disabled-host
 // comparison must agree with every other reader of the list. Each test here fails against e62f5de.
 import { describe, expect, test } from "bun:test";
-import { exportBank, hostDisabled, mergeCapture, parseBank } from "../src/bank";
+import { exportBank, hostDisabled, mergeCapture, parseBank, withHostDisabled } from "../src/bank";
 import { type LocalArea, createStore } from "../src/store";
 import { type FieldInfo, emptyBank } from "../src/types";
 import { readFileSync } from "node:fs";
@@ -47,10 +47,19 @@ describe("w2badv: disabledHosts comparison drift (popup.ts / AppModel.swift comp
     expect(exact, "popup.ts still compares disabledHosts case-sensitively").toEqual([]);
   });
 
+  test("withHostDisabled: tick adds the normalised host once, untick removes every matching entry", () => {
+    expect(withHostDisabled([], " Jobs.Example. ", true)).toEqual(["jobs.example"]);
+    expect(withHostDisabled(["Jobs.Example"], "jobs.example", true)).toEqual(["Jobs.Example"]);
+    expect(withHostDisabled(["a.com", "Example.com", "example.com."], "EXAMPLE.com", false)).toEqual(["a.com"]);
+    expect(withHostDisabled(["a.com"], "", true)).toEqual(["a.com"]);
+    expect(withHostDisabled(["a.com"], "b.com", false)).toEqual(["a.com"]);
+  });
+
   test("the exact comparison leaves 'Example.com' unremovable from the popup while capture still refuses it", () => {
     const bank = { ...emptyBank(), settings: { captureSelfId: false, disabledHosts: ["Example.com"] } };
-    // popup.ts #disabled onchange (off): hosts = disabledHosts.filter(h => h !== host) with host = "example.com"
-    const afterUntick = bank.settings.disabledHosts.filter(h => h !== "example.com");
+    // popup.ts #disabled onchange (off) now calls withHostDisabled (the original drove the exact filter itself, which
+    // could never pass against any fix: this is the same assertion routed through the code the popup runs).
+    const afterUntick = withHostDisabled(bank.settings.disabledHosts, "example.com", false);
     expect(hostDisabled({ ...bank, settings: { ...bank.settings, disabledHosts: afterUntick } }, "example.com")).toBe(false);
   });
 });

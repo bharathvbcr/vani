@@ -382,7 +382,11 @@ function isPageSender(sender: chrome.runtime.MessageSender): boolean {
 
 /**
  * The hosts whose disabled setting governs a page's capture, from the browser's own sender (never the message body):
- * the sending frame's host, plus the tab's top-level host when that is a different frame and the browser reports it.
+ * the sending frame's host, plus the tab's top-level host when the sender is a sub-frame and the browser reports the
+ * tab's url. The manifest has no "tabs" permission, so Chrome fills `tab.url` only for a tab whose host the extension
+ * has host access to (the content-script match patterns); for any other top page the top host is unknown, and only
+ * the frame's own host is checked. Disabling an outer site therefore reliably covers its embedded frames only on
+ * hosts the extension matches.
  * Disabling a site turns capture off for everything embedded in it, so either one disabled refuses. null when the
  * frame's host cannot be read: unknown is refused, not allowed.
  */

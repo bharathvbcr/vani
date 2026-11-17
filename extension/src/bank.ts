@@ -17,6 +17,18 @@ export function hostDisabled(bank: Bank, host: string): boolean {
   return want !== "" && bank.settings.disabledHosts.some(h => normalizeHost(h) === want);
 }
 
+/**
+ * The disabled list after the owner ticks (`on`) or unticks `host`, compared as hostDisabled does. Unticking removes
+ * every entry that matches under normalisation ("Example.com" and "example.com." both go); ticking adds the
+ * normalised host only when no entry already matches.
+ */
+export function withHostDisabled(hosts: readonly string[], host: string, on: boolean): string[] {
+  const want = normalizeHost(host);
+  const rest = hosts.filter(h => normalizeHost(h) !== want);
+  if (!on) return rest;
+  return want === "" || rest.length !== hosts.length ? [...hosts] : [...hosts, want];
+}
+
 /** The capture host for answers typed in the popup: never a real site, so no per-site signature is kept. */
 export const BASICS_HOST = "vani-basics";
 
