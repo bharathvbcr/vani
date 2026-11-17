@@ -108,13 +108,17 @@ func writeAtomic(p string, b []byte) error {
 	tmp := filepath.Join(dir, "."+filepath.Base(p)+".rkb-tmp-"+strconv.Itoa(os.Getpid())+"-"+strconv.FormatInt(time.Now().UnixNano(), 36))
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		// Some mounts refuse new dotfiles or O_EXCL; fall back to a direct write
-		// rather than failing the command (still never truncates on error paths
-		// before the bytes are ready).
-		return os.WriteFile(p, b, mode)
+		// No fallback to a direct write: that would truncate p in place and lose
+		// the atomicity every caller relies on.
+		return fmt.Errorf("create temp file for %s: %v", p, err)
 	}
-	// On each failure below the write error is what is reported; closing and
-	// removing the temp file are best-effort cleanup (p itself was never touched).
+	// A signal or die() ends the process through exitNow, which skips defers:
+	// register the temp file so it is removed then too, and withdraw it once it
+	// is gone. On each failure below the write error is what is reported;
+	// closing and removing the temp file are best-effort cleanup (p itself was
+	// never touched).
+	withdraw := addExitCleanup(func() { _ = os.Remove(tmp) })
+	defer withdraw()
 	if _, err := f.Write(b); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)

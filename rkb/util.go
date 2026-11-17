@@ -454,6 +454,25 @@ func exitNow(code int) {
 	os.Exit(code)
 }
 
+// addExitCleanup registers fn to run from exitNow and returns a function that
+// withdraws it once the resource is gone.
+func addExitCleanup(fn func()) (remove func()) {
+	exitMu.Lock()
+	exitCleanups = append(exitCleanups, fn)
+	idx := len(exitCleanups) - 1
+	exitMu.Unlock()
+	return func() {
+		exitMu.Lock()
+		switch {
+		case idx == len(exitCleanups)-1:
+			exitCleanups = exitCleanups[:idx] // the common case: nothing registered after it
+		case idx < len(exitCleanups):
+			exitCleanups[idx] = func() {}
+		}
+		exitMu.Unlock()
+	}
+}
+
 // scratchDir makes a private temp folder and returns it with its cleanup. The
 // cleanup is idempotent and also runs from exitNow, so the folder is removed
 // on a normal return (defer cleanup()), a panic, a die and a stop alike. Use
