@@ -131,7 +131,8 @@ Everything else is an edit of the JSON file. Unknown fields are refused. `config
 
 A model set with `decide.daily_usd.openrouter` of 0 is refused
 (`decide.daily_usd.openrouter must be above 0 when decide.openrouter_model is set`). The cap is at
-most 50 (`MaxDailyUSD`); above that the error is `decide.daily_usd.openrouter <value> must be within 0..50`.
+most 100 (`MaxDailyUSD`), and so is `decide.daily_usd.llm`; above that the error is
+`decide.daily_usd.openrouter <value> must be within 0..100`.
 While the model is set, `allowed_hosts` must include `openrouter.ai`. `vani init` already does.
 
 ### 4. OpenRouter

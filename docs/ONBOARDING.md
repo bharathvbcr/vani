@@ -56,7 +56,7 @@ VANI_CONFIG=/abs/path/config.json VANI_STATE_DIR=/abs/path/state \
 What `vani init` writes (`config.Default()`, mode `0600`):
 - `decide.openrouter_model`: `liquid/d1.2-ultra`
 - `decide.openrouter_key_env`: `OPENROUTER_API_KEY`
-- `decide.daily_usd.openrouter`: `0.25` (must be in `(0, 50]` while model is set)
+- `decide.daily_usd.openrouter`: `0.25` (must be in `(0, 100]` while model is set)
 - `allowed_hosts`: `["openrouter.ai"]`
 - `schedule`: `08:30` `America/Los_Angeles`
 - `watchlist`: empty; `llm` and `devprism`: present with empty values (off); `kb`, `semantic`: absent

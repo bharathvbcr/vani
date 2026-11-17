@@ -38,6 +38,21 @@ func TestDefaultIsValid(t *testing.T) {
 	}
 }
 
+// TestDailyUSDCeilingIsHundred: the owner runs both caps at $100 a day
+// (2026-11-17), so exactly 100 must validate for each and the ceiling must
+// not drift back below it.
+func TestDailyUSDCeilingIsHundred(t *testing.T) {
+	if MaxDailyUSD != 100 {
+		t.Fatalf("MaxDailyUSD = %v, want 100", MaxDailyUSD)
+	}
+	c := valid()
+	c.Decide.DailyUSD.OpenRouter = 100
+	c.Decide.DailyUSD.LLM = 100
+	if err := c.Validate(); err != nil {
+		t.Fatalf("both caps at 100 refused: %v", err)
+	}
+}
+
 func TestValidateRules(t *testing.T) {
 	cases := []struct {
 		name string
@@ -55,7 +70,8 @@ func TestValidateRules(t *testing.T) {
 		{"bad zone", func(c *Config) { c.Schedule.Timezone = "Mars/Base" }, "timezone"},
 		{"local zone", func(c *Config) { c.Schedule.Timezone = "Local" }, "explicit IANA"},
 		{"negative usd", func(c *Config) { c.Decide.DailyUSD.OpenRouter = -1 }, "daily_usd.openrouter"},
-		{"huge usd", func(c *Config) { c.Decide.DailyUSD.LLM = 50.01 }, "daily_usd.llm"},
+		{"huge usd", func(c *Config) { c.Decide.DailyUSD.LLM = MaxDailyUSD + 0.01 }, "daily_usd.llm"},
+		{"huge openrouter usd", func(c *Config) { c.Decide.DailyUSD.OpenRouter = MaxDailyUSD + 0.01 }, "daily_usd.openrouter"},
 		{"bad provider", func(c *Config) { c.LLM.Provider = "openai" }, "llm.provider"},
 		{"workday without host", func(c *Config) { c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext"}} }, "needs host"},
 		{"workday host of another tenant", func(c *Config) {
