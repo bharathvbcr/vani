@@ -501,7 +501,7 @@ func (s *source) detail(ctx context.Context, base, host, tenant, site string, ro
 		return posting.Posting{}, err
 	}
 	var d detailResponse
-	if err := srcutil.GetJSON(ctx, s.d, base+path, &d); err != nil {
+	if err := srcutil.GetJSONLimit(ctx, s.d, base+path, srcutil.MaxDetailBody, &d); err != nil {
 		var se *egress.StatusError
 		if errors.Is(err, srcutil.ErrBoardNotFound) || (errors.As(err, &se) && se.Code == http.StatusForbidden) {
 			// The board exists (its listing answered); only this posting is

@@ -33,6 +33,10 @@ const (
 	MaxDescription = 64 << 10
 	// MaxBody is the byte cap on one API response body.
 	MaxBody = 64 << 20
+	// MaxDetailBody is the byte cap on one posting's detail document, for the
+	// adapters that read a detail per posting. A detail is a few KB to a few
+	// hundred KB; MaxBody is a whole board's allowance and far too much for one.
+	MaxDetailBody = 2 << 20
 )
 
 // maxBody is MaxBody; a variable only so the test can exercise the cap
