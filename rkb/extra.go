@@ -66,15 +66,22 @@ func miscased(key string, names []string) error {
 
 // checkKeyCase applies miscased to every object in data that decodes into a
 // struct of type t, at any depth.
-func checkKeyCase(data []byte, t reflect.Type) error {
+func checkKeyCase(data []byte, t reflect.Type) error { return checkKeys(data, t, false) }
+
+// checkKnownKeys is checkKeyCase that also refuses a key the struct does not
+// declare, naming it. A key starting with "_" is an annotation ("_about") and
+// is allowed.
+func checkKnownKeys(data []byte, t reflect.Type) error { return checkKeys(data, t, true) }
+
+func checkKeys(data []byte, t reflect.Type, strict bool) error {
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
 		return err
 	}
-	return walkKeyCase(v, t, "$")
+	return walkKeyCase(v, t, "$", strict)
 }
 
-func walkKeyCase(v any, t reflect.Type, path string) error {
+func walkKeyCase(v any, t reflect.Type, path string, strict bool) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
@@ -88,11 +95,13 @@ func walkKeyCase(v any, t reflect.Type, path string) error {
 		names := sortedKeys(fields)
 		for _, k := range sortedKeys(obj) {
 			if ft, ok := fields[k]; ok {
-				if err := walkKeyCase(obj[k], ft, path+"."+k); err != nil {
+				if err := walkKeyCase(obj[k], ft, path+"."+k, strict); err != nil {
 					return err
 				}
 			} else if err := miscased(k, names); err != nil {
 				return fmt.Errorf("%s: %v", path, err)
+			} else if strict && !strings.HasPrefix(k, "_") {
+				return fmt.Errorf("%s: unknown key %q (not a setting rkb reads; check the spelling)", path, k)
 			}
 		}
 	case reflect.Slice, reflect.Array:
@@ -101,7 +110,7 @@ func walkKeyCase(v any, t reflect.Type, path string) error {
 			return nil
 		}
 		for i, e := range arr {
-			if err := walkKeyCase(e, t.Elem(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+			if err := walkKeyCase(e, t.Elem(), fmt.Sprintf("%s[%d]", path, i), strict); err != nil {
 				return err
 			}
 		}
@@ -111,7 +120,7 @@ func walkKeyCase(v any, t reflect.Type, path string) error {
 			return nil
 		}
 		for _, k := range sortedKeys(obj) {
-			if err := walkKeyCase(obj[k], t.Elem(), path+"."+k); err != nil {
+			if err := walkKeyCase(obj[k], t.Elem(), path+"."+k, strict); err != nil {
 				return err
 			}
 		}

@@ -157,19 +157,90 @@ func loadConfigFrom(path string) (string, error) {
 		return "", fmt.Errorf("embedded config.json: %v", err)
 	}
 	if path == "" {
+		if err := cfg.Validate(); err != nil {
+			return "", fmt.Errorf("embedded config.json: %v", err)
+		}
 		return "embedded default", nil
 	}
 	b, err = os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
-	if err := checkKeyCase(b, reflect.TypeOf(cfg)); err != nil {
+	// A key the file spells wrongly is refused, not ignored: the setting it
+	// meant would silently stay at the default.
+	if err := checkKnownKeys(b, reflect.TypeOf(cfg)); err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return "", fmt.Errorf("config %s: %v", path, err)
+	}
 	return path + " (over the embedded default)", nil
+}
+
+// termsRe is `(?i)\b(?:t1|t2|…)\b` over regexp terms, the one constructor for
+// the testing_terms and number_words checks, so Validate and lint compile the
+// same pattern.
+func termsRe(terms []string) (*regexp.Regexp, error) {
+	return regexp.Compile(`(?i)\b(?:` + strings.Join(terms, "|") + `)\b`)
+}
+
+// configTermsRe is termsRe for a list Validate has already accepted; a list
+// that was set without validating stops rkb with the compile error instead of
+// panicking.
+func configTermsRe(key string, terms []string) *regexp.Regexp {
+	re, err := termsRe(terms)
+	if err != nil {
+		die("config.json: bullet_rules.%s does not compile: %v", key, err)
+	}
+	return re
+}
+
+// Validate refuses a config value that would fail or panic later: a pattern
+// that does not compile, or a density range that is not [number, number,
+// unit-string]. Every regexp the config feeds is compiled here, once, so no
+// check can meet a bad one at run time. Unknown keys are refused earlier, at
+// decode.
+func (c *Config) Validate() error {
+	r := &c.Rules
+	for _, l := range []struct {
+		key   string
+		terms []string
+	}{{"testing_terms", r.TestingTerms}, {"number_words", r.NumberWords}} {
+		if _, err := termsRe(l.terms); err != nil {
+			return fmt.Errorf("bullet_rules.%s does not compile: %v", l.key, err)
+		}
+		for i, t := range l.terms {
+			if _, err := regexp.Compile(t); err != nil {
+				return fmt.Errorf("bullet_rules.%s[%d] %q does not compile: %v", l.key, i, t, err)
+			}
+		}
+	}
+	for _, l := range []struct {
+		key  string
+		pats []string
+	}{{"extra_banned", r.ExtraBanned}, {"dup_phrases", r.DupPhrases}, {"parity_differentiators", r.ParityDifferentiators}} {
+		for i, p := range l.pats {
+			if _, err := regexp.Compile(`(?i)\b(?:` + p + `)\b`); err != nil {
+				return fmt.Errorf("bullet_rules.%s[%d] %q does not compile: %v", l.key, i, p, err)
+			}
+		}
+	}
+	if _, err := compileMechanisms(r.Mechanisms); err != nil {
+		return err
+	}
+	for _, k := range sortedKeys(c.Layout.DensityRanges) {
+		rg := c.Layout.DensityRanges[k]
+		_, loOK := rg[0].(float64)
+		_, hiOK := rg[1].(float64)
+		unit, hasUnit := rg[2], rg[2] != nil
+		if _, isStr := unit.(string); !loOK || !hiOK || (hasUnit && !isStr) {
+			return fmt.Errorf("layout.density_range.%s must be [number, number, \"unit\"], got %v", k, rg)
+		}
+	}
+	return nil
 }
 
 func templateHTML() string {

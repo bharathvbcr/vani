@@ -332,7 +332,7 @@ var compareRe = regexp.MustCompile(`(?i)→|×|\bvs\.?\s|\bversus\b|\bthan\b|\bf
 func hasComparison(plain string) bool { return compareRe.MatchString(plain) }
 
 func testingCentric(raw, plain string, cv map[string]*ClaimView) string {
-	pat := regexp.MustCompile(`(?i)\b(?:` + strings.Join(cfg.Rules.TestingTerms, "|") + `)\b`)
+	pat := configTermsRe("testing_terms", cfg.Rules.TestingTerms)
 	if m := regexp.MustCompile(`^\s*\*\*(.+?)\*\*`).FindStringSubmatch(raw); m != nil {
 		lead := tokenRe.ReplaceAllStringFunc(m[1], func(t string) string {
 			if c := cv[tokenRe.FindStringSubmatch(t)[1]]; c != nil {
@@ -396,7 +396,7 @@ func lint(c *Composed, cf *ClaimsFile, final bool, ecoPath string) *lintResult {
 	var testing, uncompared []string
 	ids := map[string]bool{}
 	var allText []string
-	numWord := regexp.MustCompile(`(?i)\b(` + strings.Join(rules.NumberWords, "|") + `)\b`)
+	numWord := configTermsRe("number_words", rules.NumberWords)
 
 	for _, ref := range c.allBullets() {
 		b := ref.B

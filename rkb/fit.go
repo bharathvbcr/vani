@@ -180,7 +180,11 @@ func pageFills(pdf, paper string) ([]float64, float64, error) {
 func densityVars(t float64) map[string]string {
 	out := map[string]string{}
 	for k, r := range cfg.Layout.DensityRanges {
-		lo, hi := r[0].(float64), r[1].(float64)
+		lo, loOK := r[0].(float64)
+		hi, hiOK := r[1].(float64)
+		if !loOK || !hiOK { // Config.Validate refuses this at load; never panic if it was set without
+			continue
+		}
 		unit, _ := r[2].(string)
 		out[k] = fmt.Sprintf("%.3f%s", lo+(hi-lo)*t, unit)
 	}
