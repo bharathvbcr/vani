@@ -38,6 +38,30 @@ type Manifest struct {
 	Attested map[string]string `json:"attested,omitempty"`
 }
 
+// manifestInputs hashes the inputs that exist (an unset or absent optional
+// input is skipped). One that exists but cannot be hashed (over the cap, not a
+// regular file, unreadable) is a problem naming the reason: the manifest must
+// not record an empty hash as if the input had been checked.
+func manifestInputs(paths []string) (map[string]string, []string) {
+	in := map[string]string{}
+	var probs []string
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		h, err := sha256FileErr(p)
+		if err != nil {
+			probs = append(probs, "cannot hash input: "+err.Error())
+			continue
+		}
+		in[p] = h
+	}
+	return in, probs
+}
+
 // outputsFor renders every format into outDir (and the LaTeX into texDir).
 func outputsFor(c *Composed, cf *ClaimsFile, sel, outDir, texDir string, final, strict bool, pages int) (rendered, FitReport, string, float64, int, string) {
 	r := renderResume(c, cf, final)
@@ -194,12 +218,12 @@ func cmdFinalize(a *args) {
 	}
 	// The inputs must not have changed while rendering (another agent editing
 	// the bank or the log mid-finalize would make the manifest lie).
-	for _, p := range []string{sel, c.BankPath, cfPath, eco, inRoot(cfg.VerifyLog)} {
-		if p != "" && fileExists(p) {
-			m.Inputs[p] = sha256File(p)
-		}
+	inputs, probs := manifestInputs([]string{sel, c.BankPath, cfPath, eco, inRoot(cfg.VerifyLog)})
+	if len(probs) > 0 {
+		stop("inputs", probs)
 	}
-	if c.BankSHA != "" && m.Inputs[c.BankPath] != "" && m.Inputs[c.BankPath] != c.BankSHA {
+	m.Inputs = inputs
+	if c.BankSHA != "" && c.BankPath != "" && m.Inputs[c.BankPath] != c.BankSHA {
 		stop("inputs", []string{c.BankPath + " changed while finalize was running; re-run it"})
 	}
 	base := filepath.Join(out, c.basename(sel))

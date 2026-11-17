@@ -370,22 +370,39 @@ func sha1hex(s string) string {
 // sha256File hashes a regular file of at most maxQuoteFile bytes, streaming
 // it. "" means unreadable, not a regular file (a directory, a device, a FIFO)
 // or over the cap: callers treat that as a source that cannot be vouched for.
+// A caller that must not carry on without the hash uses sha256FileErr, which
+// says why there is none.
 func sha256File(p string) string {
+	h, _ := sha256FileErr(p)
+	return h
+}
+
+// sha256FileErr is sha256File with the reason: the hash, or "" and an error.
+func sha256FileErr(p string) (string, error) {
 	f, err := os.Open(p)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer func() { _ = f.Close() }() // read-only handle
 	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Size() > maxQuoteFile {
-		return ""
+	if err != nil {
+		return "", err
+	}
+	if !st.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", p)
+	}
+	if st.Size() > maxQuoteFile {
+		return "", fmt.Errorf("%s is over the %d MiB hashing limit", p, maxQuoteFile>>20)
 	}
 	h := sha256.New()
 	n, err := io.Copy(h, io.LimitReader(f, maxQuoteFile+1)) // the file may grow after Stat
-	if err != nil || n > maxQuoteFile {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	if n > maxQuoteFile {
+		return "", fmt.Errorf("%s grew past the %d MiB hashing limit while it was read", p, maxQuoteFile>>20)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func nowISO() string { return time.Now().Format(time.RFC3339) }

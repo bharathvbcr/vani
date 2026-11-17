@@ -771,7 +771,11 @@ func lint(c *Composed, cf *ClaimsFile, final bool, ecoPath string) *lintResult {
 func finalPreconditions(c *Composed, cf *ClaimsFile, ecoPath string) []string {
 	var errs []string
 	if c.BankSHA != "" && c.BankPath != "" {
-		if cur := sha256File(c.BankPath); cur != "" && cur != c.BankSHA {
+		// A bank that cannot be hashed is not a bank that matches: say so
+		// rather than pass the check unrun.
+		if cur, err := sha256FileErr(c.BankPath); err != nil {
+			errs = append(errs, "bank.json cannot be hashed, so the composed resume cannot be checked against it: "+err.Error())
+		} else if cur != c.BankSHA {
 			errs = append(errs, "the composed resume was made from an older bank.json (reviews or wording changed since); re-compose it")
 		}
 	}
