@@ -191,8 +191,9 @@ type Shown struct {
 	// would_apply label records.
 	Source  string
 	PSelect float64
-	// NotScored is an Explore row whose text could not be read back, so it was
-	// listed without a score (Result is zero and means nothing). Impressions
+	// NotScored is a row whose text could not be read back (an Explore pick, or a
+	// saved closed role), so it was listed without a score (Result is zero and
+	// means nothing). Impressions
 	// leave it out: a zero would read as a measured priority of 0.
 	NotScored bool
 }
@@ -472,8 +473,15 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	sel := selectWith(recs, m, sc)
 	var shown []Shown
 	show := func(r ledger.Record, section string) {
-		shown = append(shown, Shown{Key: r.Key, Section: section, Position: len(shown) + 1, Status: r.Status,
-			DropClass: DropClass(r, o.Rules), Result: sc.score(r)})
+		// A record still without its text (a saved closed role whose body could
+		// not be read back) is listed, but its score would be one computed on an
+		// empty description, so none is recorded.
+		s := Shown{Key: r.Key, Section: section, Position: len(shown) + 1, Status: r.Status,
+			DropClass: DropClass(r, o.Rules), NotScored: r.BodyEvicted}
+		if !r.BodyEvicted {
+			s.Result = sc.score(r)
+		}
+		shown = append(shown, s)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Vani digest %s\n\n", date.Format("2006-01-02"))

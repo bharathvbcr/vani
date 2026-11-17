@@ -7,6 +7,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/ledger"
+	"github.com/bharathvbcr/Vani/internal/marks"
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
@@ -95,6 +96,25 @@ func TestW4aExploreHydrationIsBounded(t *testing.T) {
 	_, _, shown := RenderShown(recs, nil, day, Counts{}, o)
 	if len(shown) != MaxExplore || calls > MaxExplore {
 		t.Fatalf("%d rows shown, %d hydrations; each at most %d", len(shown), calls, MaxExplore)
+	}
+}
+
+// A saved closed role whose body could not be read back is listed under Saved
+// without a recorded score; a resident one keeps its score. (The order within
+// Saved still sorts on the ranking, which has no text for the evicted one.)
+func TestW4aSavedEvictedRowIsNotScored(t *testing.T) {
+	lost := w4aEvicted("gh:d:lost")
+	kept := dropped("gh:d:kept", "title", "role_fit", "mismatch_domain")
+	m := map[posting.Key]marks.Mark{"gh:d:lost": marks.Saved, "gh:d:kept": marks.Saved}
+	_, _, shown := RenderShown([]ledger.Record{lost, kept}, m, day, Counts{}, Options{Rules: rules})
+	got := map[posting.Key]Shown{}
+	for _, s := range shown {
+		if s.Section == SectionSaved {
+			got[s.Key] = s
+		}
+	}
+	if len(got) != 2 || !got["gh:d:lost"].NotScored || got["gh:d:kept"].NotScored {
+		t.Fatalf("saved rows: %+v", got)
 	}
 }
 
