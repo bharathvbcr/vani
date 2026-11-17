@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -47,8 +48,16 @@ func runCmd(timeout time.Duration, o runOpts, name string, args ...string) ([]by
 	ownGroup(cmd)
 	cmd.WaitDelay = killGrace
 	err := cmd.Run()
+	// Whatever the outcome, nothing the command started may outlive it:
+	// Chrome and soffice leave helpers in the group after the leader exits.
+	killGroup(cmd)
 	if ctx.Err() == context.DeadlineExceeded {
 		return out.Bytes(), fmt.Errorf("%s did not finish within %s; it and its helpers were killed", filepath.Base(name), timeout)
+	}
+	if ctx.Err() == nil && errors.Is(err, exec.ErrWaitDelay) {
+		// The leader exited 0 but a helper held the output pipe open until
+		// WaitDelay ran out. The command succeeded; the helper is killed above.
+		err = nil
 	}
 	return out.Bytes(), err
 }
