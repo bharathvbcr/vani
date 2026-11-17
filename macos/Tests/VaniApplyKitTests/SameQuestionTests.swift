@@ -371,6 +371,25 @@ final class SameQuestionTests: XCTestCase {
     /// only, and it reads the original label: a fold that creates "describe" does not clear another hit.
     /// Broader-only labels are not part of the skip. The path is synchronous (no cancellation); a skip
     /// returns before any helper process is started.
+    /// The Kelvin sign (U+212A) is where ICU's case-insensitive classes and RE2's ASCII `\b` part ways.
+    /// Expected values are Go's own `fieldtriage.Guard != "" && draft.NeverDrafted != ""` on these
+    /// labels (run 2026-11-17 against main 32cf0db).
+    func testKelvinSignSkipsExactlyAsGoDoes() {
+        let goSkips: [(String, Bool)] = [
+            ("visa\u{212A}", true),
+            ("\u{212A}gender", true),
+            ("\u{212A}agree", true),
+            ("Work authorization status\u{212A}", true),
+            ("authorized to wor\u{212A}", false),
+            ("blac\u{212A}", false),
+            ("Do you need visa sponsorship?", true),
+            ("Preferred name", false),
+        ]
+        for (label, skip) in goSkips {
+            XCTAssertEqual(SQ.preModelSkip(rawA: label, rawB: "Start date") != nil, skip, "\(label.unicodeScalars.map { String($0.value, radix: 16) })")
+        }
+    }
+
     func testAdversarialSuggestSkipFollowsGuardAndNeverDrafted() throws {
         let store = BankStore(directory: try tempDir(self))
         let marker = try tempDir(self).appendingPathComponent("launched")
@@ -527,6 +546,12 @@ final class SameQuestionTests: XCTestCase {
         try refused(tooLong, "Favorite color")
         let trimmedTooLong = " " + String(repeating: "q", count: max + 1)
         try refused(trimmedTooLong, "z")
+        // A short label padded past the raw ceiling is refused before the skip reads it.
+        let bloated = String(repeating: " ", count: SQ.maxRawLabelBytes) + "I agree"
+        try refused(bloated, "Favorite color")
+        try refused("Favorite color", bloated)
+        let atCeiling = String(repeating: " ", count: SQ.maxRawLabelBytes - "Notice period".utf8.count) + "Notice period"
+        XCTAssertNotNil(SQ.labels(a: atCeiling, b: "Start date"), "a padded label at the ceiling is still read")
 
         let spy = Spy(reply: ["reading": "answered", "value": "different"])
         let one = try handle(["op": "sameQuestion", "a": "q", "b": "z"], store: store, backend: spy)

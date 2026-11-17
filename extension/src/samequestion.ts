@@ -44,7 +44,9 @@ export function parseSameQuestion(x: unknown): Reading {
   if (!isRecord(x)) return "down";
   if (typeof x.error === "string" || x.ok === false) return "down";
   if (x.reading === "answered") return x.value === "same" || x.value === "different" ? x.value : "abstained";
-  if (x.reading === "unavailable") return "down";
+  // "skipped" is the host declining this pair because a label is one suggest would not send to a model:
+  // the next pair can still be asked, so it is not a down host.
+  if (x.reading === "unavailable") return x.detail === "skipped" ? "abstained" : "down";
   if (x.reading === "abstained" || x.reading === "refused" || x.reading === "failed") return "abstained";
   return "down";
 }

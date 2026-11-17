@@ -122,6 +122,17 @@ describe("settleAmbiguous", () => {
     expect(asks).toBeLessThanOrEqual(SAME_CONCURRENCY);
   });
 
+  test("a pair the host skips (a label suggest would not send) is abstained, not a down host: the rest are still asked", async () => {
+    expect(parseSameQuestion({ reading: "unavailable", detail: "skipped" })).toBe("abstained");
+    const rs = Array.from({ length: 8 }, (_, i) => field(`f${i}`, `Question ${i}`));
+    const { matches } = setup(rs);
+    const before = rs.map(r => matches.get(r));
+    let asks = 0;
+    await settleAmbiguous(rs, matches, async () => { asks++; return asks === 1 ? { reading: "unavailable", detail: "skipped" } : { reading: "abstained", detail: "unsure" }; });
+    expect(asks).toBe(8);
+    expect(rs.map(r => matches.get(r))).toEqual(before);
+  });
+
   test("one pair the model abstains on does not stop the others", async () => {
     const rs = refs3();
     const { matches } = setup(rs);

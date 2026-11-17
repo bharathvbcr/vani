@@ -26,6 +26,9 @@ import Foundation
 /// a model is `unavailable/skipped` and does not start the helper (`SuggestSkip`).
 public enum SameQuestion {
     public static let maxLabelScalars = 300
+    /// Ceiling on a label as sent, padding included: four times the most a 300-scalar label can take
+    /// in UTF-8. The extension clips labels to 300 characters, so a real label never reaches it.
+    public static let maxRawLabelBytes = 4 * 4 * maxLabelScalars
     /// Ceiling on the op as the extension sees it, helper stop and XPC hop included.
     public static let overallSeconds: TimeInterval = 6
     /// The helper's deadline when the Chrome host runs it (VaniProcess adds at most
@@ -78,7 +81,9 @@ public enum SameQuestion {
     }
 
     static func label(_ raw: Any?) -> String? {
-        guard let s = raw as? String else { return nil }
+        // The raw string is bounded before anything reads it: the pre-model skip runs on the page
+        // string, and a short label padded with megabytes of whitespace would pass the trimmed check.
+        guard let s = raw as? String, s.utf8.count <= maxRawLabelBytes else { return nil }
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...maxLabelScalars).contains(trimmed.unicodeScalars.count) else { return nil }
         var flat = String.UnicodeScalarView()
@@ -2605,7 +2610,10 @@ vsupne; 228B FE00
     }
 
     private static func re2(_ pattern: String) -> NSRegularExpression {
-        let boundary = #"(?:(?<![A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<=[A-Za-z0-9_])(?![A-Za-z0-9_]))"#
+        // RE2's `\b` is ASCII whatever `(?i)` says, but `(?i)` widens an ICU class to the Kelvin sign
+        // (U+212A), so the boundary's class is case-sensitive. `(?i)\w` does match U+212A in RE2 too,
+        // so the `\w` rewrite stays under the pattern's flags.
+        let boundary = #"(?:(?<!(?-i:[A-Za-z0-9_]))(?=(?-i:[A-Za-z0-9_]))|(?<=(?-i:[A-Za-z0-9_]))(?!(?-i:[A-Za-z0-9_])))"#
         let rewritten = pattern
             .replacingOccurrences(of: #"\w"#, with: "[A-Za-z0-9_]")
             .replacingOccurrences(of: #"\b"#, with: boundary)
