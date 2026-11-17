@@ -363,8 +363,12 @@ func (rc *Reconciler) reconcileIn(ctx context.Context, g ledger.Ledger, b source
 			// held: the stored posting takes the listing, so the body is
 			// readable again, and keeps its status and annotations (no
 			// re-triage). Unlike a re-render this includes a dropped record;
-			// its event is the only way the body comes back.
-			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
+			// its event is the only way the body comes back. The event is stamped
+			// with the record's own last event, not now: a heal is not a status
+			// change, and moving LastEvent would date a dropped record's drop to
+			// today (the digest footer counts Dropped by LastEvent, countsFor).
+			// The ledger takes an equal stamp (validate checks only that it is set).
+			e := ledger.Event{V: ledger.SchemaVersion, At: rec.LastEvent, Key: p.Key, Status: rec.Status, Posting: &relist,
 				Reason: "refreshed"}
 			if err := l.Append(ctx, e); err != nil {
 				return s, err
