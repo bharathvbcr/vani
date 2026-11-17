@@ -447,7 +447,9 @@ func (b *retriageBatch) one(ctx context.Context, r ledger.Record, pr retriagePro
 	defer cancel()
 	rd, cost, re := b.ask.read(actx, b.p, b.dir, r, pr)
 	if re != nil {
-		if re.code == rtCancelled {
+		// Stopped before anything was paid: not asked, so not an item. A call that was
+		// paid for before the stop is an item that carries its cost.
+		if re.code == rtCancelled && re.cost == nil {
 			return ev, false
 		}
 		ev.Error, ev.Code, ev.Cost = re.msg, re.code, re.cost

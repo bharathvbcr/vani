@@ -574,14 +574,11 @@ func (a *retriageAsker) read(ctx context.Context, p llm.Provider, dir string, r 
 			USD: a.usd(int64(use.InputTokens), int64(use.OutputTokens))}
 	}
 	if askErr != nil {
-		re := mapProviderErr(ctx, askErr, "asking "+a.model)
-		if re.code != rtCancelled {
-			re.cost = cost
-		}
-		return manualtriage.Reading{}, nil, re
+		return manualtriage.Reading{}, nil, withPaidCost(mapProviderErr(ctx, askErr, "asking "+a.model), cost)
 	}
 	if ctx.Err() != nil {
-		return manualtriage.Reading{}, nil, mapProviderErr(ctx, ctx.Err(), "asking "+a.model)
+		// The reply arrived and was paid for; the stop discards it, not its cost.
+		return manualtriage.Reading{}, nil, withPaidCost(mapProviderErr(ctx, ctx.Err(), "asking "+a.model), cost)
 	}
 	slots, re := readingSlots(ans, stop, a.model)
 	if re != nil {
@@ -654,6 +651,20 @@ func mapProviderErr(ctx context.Context, err error, doing string) *retriageError
 		return rtErr(rtProvider, "the provider did not answer in time while %s", doing)
 	}
 	return rtErr(rtProvider, "the provider could not be reached or refused the request while %s: %s", doing, oneLine(err.Error(), 200))
+}
+
+// withPaidCost attaches the cost of a call that completed to the error that
+// ended it, so money spent is never hidden. A stop (rtCancelled) says so in its
+// words too, since a person reading the text sees no JSON cost.
+func withPaidCost(re *retriageError, cost *retriageCost) *retriageError {
+	if cost == nil {
+		return re
+	}
+	re.cost = cost
+	if re.code == rtCancelled {
+		re.msg = fmt.Sprintf("stopped after the call was paid for (cost $%.4f); nothing was kept", cost.USD)
+	}
+	return re
 }
 
 func storeErr(err error, cost *retriageCost) *retriageError {
