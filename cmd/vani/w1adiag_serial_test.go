@@ -35,21 +35,14 @@ func TestW1adiagSerialLaunchKeepsWatchlistOrder(t *testing.T) {
 	prev := runtime.GOMAXPROCS(8)
 	defer runtime.GOMAXPROCS(prev)
 	for round := 0; round < 20; round++ {
-		done := make(chan error, 1)
-		go func() {
-			rep, err := listBoards(context.Background(), watchlist, srcs, nil, reconcile, func(string, ...any) {}, "")
-			if err == nil && rep.Read != n {
-				err = fmt.Errorf("read %d of %d", rep.Read, n)
-			}
-			done <- err
-		}()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("round %d: %v", round, err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatalf("round %d: listBoards hangs: a later board holds the only slot while the caller waits for an earlier one", round)
+		rep, err := w1aListBoardsWatched(context.Background(), t, 30*time.Second,
+			fmt.Sprintf("round %d: listBoards hangs: a later board holds the only slot while the caller waits for an earlier one", round),
+			watchlist, srcs, reconcile, func(string, ...any) {})
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		if rep.Read != n {
+			t.Fatalf("round %d: read %d of %d", round, rep.Read, n)
 		}
 	}
 }

@@ -70,14 +70,7 @@ func TestW1aadvGoexitInListDoesNotHangTheRun(t *testing.T) {
 		}},
 	}
 	var warn warnLog
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_, _ = listBoards(context.Background(), []sources.Board{b}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, "")
-	}()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("listBoards hangs: the board whose List called runtime.Goexit never sends its listFetch")
-	}
+	_, _ = w1aListBoardsWatched(context.Background(), t, 3*time.Second,
+		"listBoards hangs: the board whose List called runtime.Goexit never sends its listFetch",
+		[]sources.Board{b}, srcs, tempReconciler(t).Reconcile, warn.warnf)
 }

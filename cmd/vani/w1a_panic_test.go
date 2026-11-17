@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -36,46 +37,48 @@ func TestW1aPanickingAdapterFailsOnlyItsOwnBoard(t *testing.T) {
 		{"printing panics", w1aStringer{}, "String panicked"},
 	}
 	for _, parallel := range []int{1, 4} {
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				withBoardListParallel(t, parallel)
-				bad := sources.Board{ATS: posting.Lever, Token: "badco", Company: "Bad"}
-				good := sources.Board{ATS: posting.Greenhouse, Token: "goodco", Company: "Good"}
-				after := sources.Board{ATS: posting.Ashby, Token: "afterco", Company: "After"}
-				srcs := map[posting.ATS]sources.Source{
-					posting.Lever: fakeSource{posting.Lever, func(context.Context, sources.Board) ([]posting.Posting, error) {
-						panic(tc.value)
-					}},
-					posting.Greenhouse: fakeSource{posting.Greenhouse, func(_ context.Context, b sources.Board) ([]posting.Posting, error) {
-						return boardPostings(b, 2), nil
-					}},
-					posting.Ashby: fakeSource{posting.Ashby, func(_ context.Context, b sources.Board) ([]posting.Posting, error) {
-						return boardPostings(b, 1), nil
-					}},
-				}
-				var warn warnLog
-				rep, err := listBoards(context.Background(), []sources.Board{good, bad, after}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, "")
-				if err != nil {
-					t.Fatalf("the run ended on one board's panic: %v", err)
-				}
-				if rep.Read != 2 || rep.Failed != 1 || len(rep.Items) != 3 {
-					t.Fatalf("totals: %+v", rep)
-				}
-				if rep.Items[0].Outcome != boardRead || rep.Items[2].Outcome != boardRead {
-					t.Errorf("the boards around the panic were not read: %+v", rep.Items)
-				}
-				f := rep.Items[1]
-				if f.Outcome != boardFailed || f.endedRun {
-					t.Fatalf("panicking board: %+v", f)
-				}
-				if !strings.Contains(f.Error, "lv/badco") || !strings.Contains(f.Error, tc.want) {
-					t.Errorf("error %q lacks the board or the panic value %q", f.Error, tc.want)
-				}
-				if strings.ContainsAny(f.Error, "\n\r") {
-					t.Errorf("error spans lines: %q", f.Error)
-				}
-			})
-		}
+		t.Run(fmt.Sprintf("parallel=%d", parallel), func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					withBoardListParallel(t, parallel)
+					bad := sources.Board{ATS: posting.Lever, Token: "badco", Company: "Bad"}
+					good := sources.Board{ATS: posting.Greenhouse, Token: "goodco", Company: "Good"}
+					after := sources.Board{ATS: posting.Ashby, Token: "afterco", Company: "After"}
+					srcs := map[posting.ATS]sources.Source{
+						posting.Lever: fakeSource{posting.Lever, func(context.Context, sources.Board) ([]posting.Posting, error) {
+							panic(tc.value)
+						}},
+						posting.Greenhouse: fakeSource{posting.Greenhouse, func(_ context.Context, b sources.Board) ([]posting.Posting, error) {
+							return boardPostings(b, 2), nil
+						}},
+						posting.Ashby: fakeSource{posting.Ashby, func(_ context.Context, b sources.Board) ([]posting.Posting, error) {
+							return boardPostings(b, 1), nil
+						}},
+					}
+					var warn warnLog
+					rep, err := listBoards(context.Background(), []sources.Board{good, bad, after}, srcs, nil, tempReconciler(t).Reconcile, warn.warnf, "")
+					if err != nil {
+						t.Fatalf("the run ended on one board's panic: %v", err)
+					}
+					if rep.Read != 2 || rep.Failed != 1 || len(rep.Items) != 3 {
+						t.Fatalf("totals: %+v", rep)
+					}
+					if rep.Items[0].Outcome != boardRead || rep.Items[2].Outcome != boardRead {
+						t.Errorf("the boards around the panic were not read: %+v", rep.Items)
+					}
+					f := rep.Items[1]
+					if f.Outcome != boardFailed || f.endedRun {
+						t.Fatalf("panicking board: %+v", f)
+					}
+					if !strings.Contains(f.Error, "lv/badco") || !strings.Contains(f.Error, tc.want) {
+						t.Errorf("error %q lacks the board or the panic value %q", f.Error, tc.want)
+					}
+					if strings.ContainsAny(f.Error, "\n\r") {
+						t.Errorf("error spans lines: %q", f.Error)
+					}
+				})
+			}
+		})
 	}
 }
 

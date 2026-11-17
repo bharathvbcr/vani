@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -83,58 +84,60 @@ func TestW1aOneUnstorableRowDoesNotStopTheRun(t *testing.T) {
 		{"oversized row fails a fail-the-board adapter", posting.Workday, func(p *posting.Posting) { p.Location = huge }, boardFailed, 0, 0},
 	}
 	for _, parallel := range []int{1, 4} {
-		for _, tc := range cases {
-			t.Run(tc.name, func(t *testing.T) {
-				withBoardListParallel(t, parallel)
-				l, reconcile := w1aLedger(t)
-				var sk w1aSink
-				a := sources.Board{ATS: tc.ats, Token: "aco", Company: "A"}
-				if tc.ats == posting.Workday {
-					a.Token, a.Host = "aco/Ext", "aco.wd1.myworkdayjobs.com"
-				}
-				bd := sources.Board{ATS: posting.Greenhouse, Token: "bco", Company: "B"}
-				cd := sources.Board{ATS: posting.Ashby, Token: "cco", Company: "C"}
-				srcs := map[posting.ATS]sources.Source{
-					tc.ats: w1aSrc(tc.ats, func(b sources.Board) []posting.Posting {
-						rows := boardPostings(b, 3)
-						tc.bad(&rows[1])
-						return rows
-					}),
-					posting.Greenhouse: w1aSrc(posting.Greenhouse, func(b sources.Board) []posting.Posting { return boardPostings(b, 2) }),
-					posting.Ashby:      w1aSrc(posting.Ashby, func(b sources.Board) []posting.Posting { return boardPostings(b, 1) }),
-				}
-				var warn warnLog
-				ctx := srcutil.WithBadRowSink(context.Background(), sk.sink)
-				rep, err := listBoards(ctx, []sources.Board{a, bd, cd}, srcs, nil, reconcile, warn.warnf, "")
-				if err != nil {
-					t.Fatalf("one board's row ended the run: %v\n%s", err, warn.String())
-				}
-				if len(rep.Items) != 3 || rep.Items[0].Outcome != tc.wantOutcome || rep.Items[1].Outcome != boardRead || rep.Items[2].Outcome != boardRead {
-					t.Fatalf("outcomes: %+v", rep.Items)
-				}
-				if got := len(w1aStoredKeys(l, "gh:bco:")); got != 2 {
-					t.Errorf("board B stored %d postings, want 2", got)
-				}
-				if got := len(w1aStoredKeys(l, "ab:cco:")); got != 1 {
-					t.Errorf("the board after A stored %d postings, want 1", got)
-				}
-				if tc.wantOutcome == boardFailed {
-					if !strings.Contains(rep.Items[0].Error, "row 2 of 3") || !strings.Contains(rep.Items[0].Error, "location") {
-						t.Errorf("error does not name the row and field: %q", rep.Items[0].Error)
+		t.Run(fmt.Sprintf("parallel=%d", parallel), func(t *testing.T) {
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					withBoardListParallel(t, parallel)
+					l, reconcile := w1aLedger(t)
+					var sk w1aSink
+					a := sources.Board{ATS: tc.ats, Token: "aco", Company: "A"}
+					if tc.ats == posting.Workday {
+						a.Token, a.Host = "aco/Ext", "aco.wd1.myworkdayjobs.com"
 					}
-					if strings.Contains(rep.Items[0].Error, "xxxxxxxx") {
-						t.Errorf("error echoes the value")
+					bd := sources.Board{ATS: posting.Greenhouse, Token: "bco", Company: "B"}
+					cd := sources.Board{ATS: posting.Ashby, Token: "cco", Company: "C"}
+					srcs := map[posting.ATS]sources.Source{
+						tc.ats: w1aSrc(tc.ats, func(b sources.Board) []posting.Posting {
+							rows := boardPostings(b, 3)
+							tc.bad(&rows[1])
+							return rows
+						}),
+						posting.Greenhouse: w1aSrc(posting.Greenhouse, func(b sources.Board) []posting.Posting { return boardPostings(b, 2) }),
+						posting.Ashby:      w1aSrc(posting.Ashby, func(b sources.Board) []posting.Posting { return boardPostings(b, 1) }),
 					}
-					return
-				}
-				if got := len(w1aStoredKeys(l, a.KeyPrefix())); got != tc.wantStored {
-					t.Errorf("board A stored %d postings, want %d", got, tc.wantStored)
-				}
-				if sk.skipped["aco"] != tc.wantSkip {
-					t.Errorf("sink saw %d skipped rows for A, want %d", sk.skipped["aco"], tc.wantSkip)
-				}
-			})
-		}
+					var warn warnLog
+					ctx := srcutil.WithBadRowSink(context.Background(), sk.sink)
+					rep, err := listBoards(ctx, []sources.Board{a, bd, cd}, srcs, nil, reconcile, warn.warnf, "")
+					if err != nil {
+						t.Fatalf("one board's row ended the run: %v\n%s", err, warn.String())
+					}
+					if len(rep.Items) != 3 || rep.Items[0].Outcome != tc.wantOutcome || rep.Items[1].Outcome != boardRead || rep.Items[2].Outcome != boardRead {
+						t.Fatalf("outcomes: %+v", rep.Items)
+					}
+					if got := len(w1aStoredKeys(l, "gh:bco:")); got != 2 {
+						t.Errorf("board B stored %d postings, want 2", got)
+					}
+					if got := len(w1aStoredKeys(l, "ab:cco:")); got != 1 {
+						t.Errorf("the board after A stored %d postings, want 1", got)
+					}
+					if tc.wantOutcome == boardFailed {
+						if !strings.Contains(rep.Items[0].Error, "row 2 of 3") || !strings.Contains(rep.Items[0].Error, "location") {
+							t.Errorf("error does not name the row and field: %q", rep.Items[0].Error)
+						}
+						if strings.Contains(rep.Items[0].Error, "xxxxxxxx") {
+							t.Errorf("error echoes the value")
+						}
+						return
+					}
+					if got := len(w1aStoredKeys(l, a.KeyPrefix())); got != tc.wantStored {
+						t.Errorf("board A stored %d postings, want %d", got, tc.wantStored)
+					}
+					if sk.skipped["aco"] != tc.wantSkip {
+						t.Errorf("sink saw %d skipped rows for A, want %d", sk.skipped["aco"], tc.wantSkip)
+					}
+				})
+			}
+		})
 	}
 }
 
