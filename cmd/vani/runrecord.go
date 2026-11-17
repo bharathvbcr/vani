@@ -185,6 +185,10 @@ type runDetail struct {
 	Explain *explainNote `json:"explain,omitempty"`
 	// LogDropped counts lines the per-run log did not keep after maxRunLogBytes.
 	LogDropped int `json:"log_dropped,omitempty"`
+	// ChargeErrors totals the backends' ChargeErrors (backendStat): answered calls
+	// whose cost was not recorded against the daily cap, so the cap undercounts
+	// by up to that many calls. Zero is omitted. Additive.
+	ChargeErrors int `json:"charge_errors,omitempty"`
 }
 
 // maxStageNote bounds one example or error kept on a stage summary.

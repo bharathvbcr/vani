@@ -70,6 +70,33 @@ type errorLogged struct {
 	// backendStat.FellThrough so the run record and notice show what the
 	// outage handed to the paid tiers.
 	fallback bool
+
+	// charged is how much of the backend's own ChargeErrors counter the sink has
+	// been told about (chargeCounter); the counter only grows.
+	charged int64
+}
+
+// chargeCounter is a backend that counts the answered calls whose cost it could
+// not record against its cap (decide/jev's Backend.ChargeErrors).
+type chargeCounter interface{ ChargeErrors() int64 }
+
+// reportCharges tells the sink about charges the backend failed to record since
+// the last call. A backend with no counter reports nothing.
+func (e *errorLogged) reportCharges(name string) {
+	cc, ok := e.Backend.(chargeCounter)
+	if !ok {
+		return
+	}
+	n := cc.ChargeErrors()
+	e.mu.Lock()
+	delta := n - e.charged
+	if delta > 0 {
+		e.charged = n
+	}
+	e.mu.Unlock()
+	if delta > 0 {
+		e.sink.chargeErrors(name, delta)
+	}
 }
 
 // allUnavailable reports whether every slot q asked read Unavailable in a: the
@@ -201,6 +228,7 @@ func (e *errorLogged) Decide(ctx context.Context, q decide.Question) (decide.Ans
 	}()
 	a, err := e.Backend.Decide(ctx, q)
 	returned = true
+	e.reportCharges(name)
 
 	o := callOK
 	switch {
@@ -311,6 +339,10 @@ type backendStat struct {
 	// the next backend in the chain, the paid one, whose daily cap is the hard
 	// bound on what that costs.
 	FellThrough int `json:"fell_through,omitempty"`
+	// ChargeErrors counts answered calls whose cost the backend could not record
+	// against its daily cap (decide/jev Backend.ChargeErrors): money was spent
+	// that the cap does not know about. Additive.
+	ChargeErrors int `json:"charge_errors,omitempty"`
 	// Readings counts slot readings by kind (decide.Reading), from calls that
 	// returned an answer.
 	Readings map[string]int `json:"readings,omitempty"`
@@ -426,6 +458,30 @@ func (b *backendErrors) fellThrough(backend string) {
 	b.mu.Lock()
 	b.stat(backend).FellThrough++
 	b.mu.Unlock()
+}
+
+// chargeErrors counts n answered calls whose cost the backend could not record.
+func (b *backendErrors) chargeErrors(backend string, n int64) {
+	if b == nil || n <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	st := b.stat(backend)
+	if sum := int64(st.ChargeErrors) + n; sum <= math.MaxInt32 {
+		st.ChargeErrors = int(sum)
+	} else {
+		st.ChargeErrors = math.MaxInt32
+	}
+}
+
+// totalChargeErrors sums the charge errors over the backends of one run.
+func totalChargeErrors(stats map[string]backendStat) int {
+	var n int64
+	for _, st := range stats {
+		n += int64(st.ChargeErrors)
+	}
+	return int(min(n, math.MaxInt32))
 }
 
 // opened counts one opening of the backend's breaker.

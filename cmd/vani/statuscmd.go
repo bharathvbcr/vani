@@ -206,6 +206,18 @@ type lastRunFacet struct {
 	Progress *progressFacet `json:"progress,omitempty"`
 }
 
+// chargeErrorLine is the status text for a last run whose decision backends
+// answered calls they could not record against the daily cap (decide/jev
+// ChargeErrors), or "" when there were none. The run's spend, and so the cap's
+// remaining room, is understated by that many calls.
+func chargeErrorLine(f lastRunFacet) string {
+	n := f.ChargeErrors
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("spend: the last run answered %d call(s) whose cost could not be recorded against the daily cap, so today's spend is understated", n)
+}
+
 // skipFacet is one skipped daily slot (a history row, not last.json).
 type skipFacet struct {
 	facet

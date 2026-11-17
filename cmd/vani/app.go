@@ -848,6 +848,9 @@ func (e *env) printStatus(recs []ledger.Record, cfg config.Config) error {
 	if line := progressLine(last); line != "" {
 		fmt.Fprintln(e.stdout, line)
 	}
+	if line := chargeErrorLine(last); line != "" {
+		fmt.Fprintln(e.stdout, line)
+	}
 	for _, l := range boardHealthLines(e.boardHealthFacet(cfg, at), at) {
 		fmt.Fprintln(e.stdout, l)
 	}
