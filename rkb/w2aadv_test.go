@@ -63,11 +63,56 @@ func TestW2AAdvSpacedWordMultiplier(t *testing.T) {
 // finds (unitTail.Replace(s[loc[1]:])): quadratic. 40,000 numbers (80 KB, a
 // pasted quote or a verifier's found_value) take seconds; the old numbersIn
 // took milliseconds.
+//
+// The test compares growth, not an absolute time, so a loaded host or -race
+// slows both sizes alike: quadrupling the input must multiply the time by
+// less than growthLimit (linear is about 4, quadratic about 16). A doubling
+// with a 3.5 limit sat on the edge for the quadratic copy (measured 3.2-4.1).
+const growthLimit = 8
+
 func TestW2AAdvFiguresInIsLinear(t *testing.T) {
-	s := strings.Repeat("1 ", 40000)
-	st := time.Now()
-	n := len(figuresIn(s))
-	if d := time.Since(st); d > time.Second {
-		t.Errorf("figuresIn on %d numbers (%d bytes) took %v; want well under 1s (linear)", n, len(s), d)
+	r := w2aadvGrowth(figuresIn, 20000, 7)
+	t.Logf("figuresIn: quadrupling multiplied the time by %.2f", r)
+	if r >= growthLimit {
+		t.Errorf("figuresIn: quadrupling 20k to 80k numbers multiplied the time by %.2f; want < %d (linear)", r, growthLimit)
 	}
+}
+
+// w2aadvFiguresInQuadratic is figuresIn as it was: the unit tail is the whole
+// remainder of the string, normalized again for every number.
+func w2aadvFiguresInQuadratic(s string) []figure {
+	s = normalizeNumsKeep(s, true)
+	var out []figure
+	for _, loc := range reNum.FindAllStringIndex(s, -1) {
+		f := figure{Tok: s[loc[0]:loc[1]], Mult: 1, TimeScale: 1}
+		_ = unitTail.Replace(s[loc[1]:])
+		out = append(out, f)
+	}
+	return out
+}
+
+// The ratio test must be able to fail: it flags the quadratic copy.
+func TestW2AAdvGrowthRatioCatchesQuadratic(t *testing.T) {
+	r := w2aadvGrowth(w2aadvFiguresInQuadratic, 4000, 2)
+	t.Logf("quadratic copy: quadrupling multiplied the time by %.2f", r)
+	if r < growthLimit {
+		t.Errorf("the quadratic copy grew by only %.2f when quadrupled; the ratio test cannot catch a quadratic figuresIn", r)
+	}
+}
+
+// w2aadvGrowth is min-of-reps time of f on 4n numbers over the same for n.
+func w2aadvGrowth(f func(string) []figure, n, reps int) float64 {
+	best := func(n int) time.Duration {
+		s := strings.Repeat("1 ", n)
+		m := time.Duration(1<<63 - 1)
+		for i := 0; i < reps; i++ {
+			st := time.Now()
+			f(s)
+			if d := time.Since(st); d < m {
+				m = d
+			}
+		}
+		return m
+	}
+	return float64(best(4*n)) / float64(best(n))
 }
