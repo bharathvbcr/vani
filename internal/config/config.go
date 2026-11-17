@@ -882,6 +882,8 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "www.atlassian.com", true
 	case posting.Meta:
 		return "www.metacareers.com", true
+	case posting.Jobvite:
+		return "jobs.jobvite.com", true
 	case posting.Workday, posting.Eightfold, posting.Jibe, posting.Avature, posting.OracleHCM, posting.TalentBrew:
 		if h := strings.ToLower(strings.TrimSpace(b.Host)); h != "" {
 			return h, true
@@ -1081,11 +1083,11 @@ func ValidBoard(b sources.Board) error {
 	switch b.ATS {
 	case posting.Greenhouse, posting.Lever, posting.Ashby, posting.Workday,
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
-		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.Meta, posting.OracleHCM,
+		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.Meta, posting.Jobvite, posting.OracleHCM,
 		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
 		posting.TikTok, posting.TalentBrew, posting.Feed, posting.Page, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb, mt", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb, mt, jv", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)

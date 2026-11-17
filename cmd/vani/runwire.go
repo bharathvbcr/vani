@@ -42,6 +42,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
+	"github.com/bharathvbcr/Vani/internal/sources/jobvite"
 	"github.com/bharathvbcr/Vani/internal/sources/meta"
 	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/teamtailor"
@@ -374,6 +375,21 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.Meta] = mt
+	// A Jobvite list names title and place but no text: a page per new job,
+	// the title rule first, at most jobvite.MaxDetails a run.
+	jv, err := jobvite.NewWith(d, jobvite.Options{
+		Stored:     storedFor,
+		Unusable:   unusable.has,
+		DropListed: w.listedDrops(policy),
+		Report: func(b sources.Board, st jobvite.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, jobviteFetch(st))
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.Jobvite] = jv
 	// Eightfold costs a detail request per position too: stored postings are
 	// reused (re-read on their turn) and new ones the title rule drops are
 	// never fetched, so a run asks for its search pages and the new details.
@@ -888,6 +904,7 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.DEShaw:          deshaw.New(d),
 		posting.Atlassian:       atlassian.New(d),
 		posting.Meta:            meta.New(d),
+		posting.Jobvite:         jobvite.New(d),
 		posting.OracleHCM:       oraclehcm.New(d),
 		posting.Rippling:        rippling.New(d),
 		posting.Workable:        workable.New(d),

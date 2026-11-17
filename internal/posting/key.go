@@ -141,6 +141,22 @@ func TalentBrewKey(board, jobID string) (Key, error) { return build(TalentBrew, 
 // (/profile/job_details/{id}/).
 func MetaKey(board, jobID string) (Key, error) { return build(Meta, board, jobID) }
 
+// JobviteKey is jv:{board}:{id}, the id in a Jobvite job page's path
+// (/{company}/job/{id}). Those ids are mixed case ("ohorAfwq") and build
+// lower-cases every part, so each upper-case letter is written as "_" and the
+// letter ("ohor_afwq"): two ids that differ only in case keep two keys. Jobvite
+// ids are letters and digits, so "_" cannot come from the id itself.
+func JobviteKey(board, jobID string) (Key, error) {
+	var b strings.Builder
+	for _, r := range jobID {
+		if r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(r)
+	}
+	return build(Jobvite, board, b.String())
+}
+
 // FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
 // cosmetic change to the apply URL does not split one role into two.
 func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
@@ -202,7 +218,7 @@ func (k Key) ATS() ATS {
 	}
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
-		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, Meta, OracleHCM, Rippling, Workable,
+		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, Meta, Jobvite, OracleHCM, Rippling, Workable,
 		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, TikTok, TalentBrew, Feed, Page, Other:
 		return a
 	}

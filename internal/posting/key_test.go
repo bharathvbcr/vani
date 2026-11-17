@@ -80,6 +80,8 @@ func TestSearchSiteKeys(t *testing.T) {
 		{TikTokKey, "TikTok", "7680987768009754885", "tt:tiktok:7680987768009754885", TikTok},
 		{TalentBrewKey, "Intuit", "102521439872", "tb:intuit:102521439872", TalentBrew},
 		{MetaKey, "Meta", "2486789151677735", "mt:meta:2486789151677735", Meta},
+		{JobviteKey, "nutanix", "ohorAfwq", "jv:nutanix:ohor_afwq", Jobvite},
+		{JobviteKey, "nutanix", "ohorafwq", "jv:nutanix:ohorafwq", Jobvite},
 		{FeedKey, "Shopify", "1AFFB074-F055-4F5A-A97E-80D97D77DA6E", "fd:shopify:1affb074-f055-4f5a-a97e-80d97d77da6e", Feed},
 	} {
 		k, err := tc.mk(tc.a, tc.b)

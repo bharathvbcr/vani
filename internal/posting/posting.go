@@ -44,6 +44,8 @@ const (
 	Atlassian ATS = "at"
 	// Meta is Meta's own careers site (www.metacareers.com).
 	Meta ATS = "mt"
+	// Jobvite is a Jobvite careers site (jobs.jobvite.com/{company}).
+	Jobvite ATS = "jv"
 	// OracleHCM is an Oracle Recruiting Cloud candidate-experience site.
 	OracleHCM ATS = "oc"
 	// Rippling is a Rippling board (api.rippling.com). The token is the
