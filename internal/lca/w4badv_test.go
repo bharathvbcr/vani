@@ -1,6 +1,9 @@
 package lca
 
 import (
+	"bytes"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -34,17 +37,39 @@ func TestW4badvSmallerFileDoesNotSilentlyDropBiggerYear(t *testing.T) {
 }
 
 // A file that straddles two fiscal years evenly is replaced wholesale by a
-// later file of its earlier year, taking the other year's cases with it.
+// later file of its earlier year, taking the other year's cases with it. The
+// import must either keep both years, or be refused with ErrShrinks and leave
+// the index file byte-identical; silently losing FY2024 is the failure.
 func TestW4badvTieFileLosesNeighbourYear(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.json")
 	w4bImport(t, path, w4bRows(3, "2023-03-01", "Acme Inc")+strings.TrimPrefix(w4bRows(3, "2024-03-01", "Acme Inc"), hdr), "span.csv")
-	w4bImport(t, path, w4bRows(10, "2023-03-01", "Acme Inc"), "fy2023.csv")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := Import(strings.NewReader(w4bRows(10, "2023-03-01", "Acme Inc")), "fy2023.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, uerr := Update(path, p)
+	if uerr != nil {
+		if !errors.Is(uerr, ErrShrinks) {
+			t.Fatalf("import failed with %v, want success or ErrShrinks", uerr)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Fatalf("a refused import changed the index file:\nbefore %s\nafter  %s", before, after)
+		}
+	}
 	x, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := w4badvTotal(x, 2024); got != 3 {
-		t.Fatalf("FY2024 cases = %d, want the 3 the spanning file carried", got)
+		t.Fatalf("FY2024 cases = %d (import err = %v), want the 3 the spanning file carried", got, uerr)
 	}
 }
 
