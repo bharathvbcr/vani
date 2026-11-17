@@ -762,6 +762,9 @@ func countsFor(recs []ledger.Record, date time.Time, loc *time.Location) digest.
 		if same(r.FirstSeen) {
 			c.New++
 		}
+		if pipeline.NotesDeferred(r) {
+			c.NotesDeferred++
+		}
 		switch r.Status {
 		case posting.Live:
 			c.AwaitingTriage++
