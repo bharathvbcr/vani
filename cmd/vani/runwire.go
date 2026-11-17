@@ -326,6 +326,22 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.Rippling] = rp
+	// Workable's widget has no description either: the same bounds again (stored
+	// postings reused, listed rows prefiltered, at most workable.MaxDetails
+	// requests a board a run).
+	wk, err := workable.NewWith(d, workable.Options{
+		Stored:     storedFor,
+		Unusable:   unusable.has,
+		DropListed: w.listedDrops(policy),
+		Report: func(b sources.Board, st workable.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, workableFetch(st))
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.Workable] = wk
 	// A TalentBrew job page is up to 700 KB and the sitemap names nothing else,
 	// so every posting costs one: bounded as Rippling's is, at
 	// talentbrew.MaxDetails pages a board a run.
