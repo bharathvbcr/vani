@@ -19,6 +19,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -94,11 +95,25 @@ type File struct {
 	// fit; it only loosens.
 	SpareSeniorityMismatch []string `json:"spare_seniority_mismatch,omitempty"`
 	Report                 *Report  `json:"report,omitempty"`
-	// ReportIgnored is what Load ignored of the report: the unknown field a
+	// ReportIgnored is what Load ignored of the report: the unknown fields a
 	// newer vani wrote there, which an older one reads past (the report is
 	// provenance, and no part of ranking reads it). It is "" for a clean report
-	// and never written.
-	ReportIgnored string `json:"-"`
+	// and never written. ReportIgnoredPaths says where each ignored field was,
+	// relative to the report ("weights.newer", "platt.d1.extra"); "?" is a field
+	// the probe saw but could not place.
+	ReportIgnored      string   `json:"-"`
+	ReportIgnoredPaths []string `json:"-"`
+}
+
+// ReportIgnoredIn reports whether an ignored report field lies inside the
+// report's section (its "weights" held-out result, say), or could not be placed.
+func (f File) ReportIgnoredIn(section string) bool {
+	for _, p := range f.ReportIgnoredPaths {
+		if p == "?" || p == section || strings.HasPrefix(p, section+".") || strings.HasPrefix(p, section+"[") {
+			return true
+		}
+	}
+	return false
 }
 
 // PartError is a refusal that names the part of the file at fault: "shares",
@@ -218,14 +233,87 @@ func decodeFile(path string, b []byte) (File, error) {
 		return File{}, err
 	}
 	if f.Report != nil {
+		paths := unknownPaths(w.Report, reflect.TypeFor[Report](), "")
 		strict := json.NewDecoder(bytes.NewReader(w.Report))
 		strict.DisallowUnknownFields()
 		var probe *Report
-		if err := strict.Decode(&probe); err != nil {
-			f.ReportIgnored = err.Error()
+		if err := strict.Decode(&probe); err != nil && len(paths) == 0 {
+			paths = []string{"?"}
+		}
+		if len(paths) > 0 {
+			f.ReportIgnoredPaths = paths
+			f.ReportIgnored = "unknown field " + strings.Join(paths, ", ")
 		}
 	}
 	return f, nil
+}
+
+// unknownPaths lists, in document order within each object (sorted by key),
+// the JSON fields of raw that t does not name, as dotted paths under prefix.
+// Names match case-insensitively, as encoding/json decodes them; a field named
+// by no struct tag falls back to the Go field name.
+func unknownPaths(raw json.RawMessage, t reflect.Type, prefix string) []string {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	var out []string
+	switch t.Kind() {
+	case reflect.Struct:
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil {
+			return nil
+		}
+		keys := slices.Sorted(maps.Keys(obj))
+		for _, k := range keys {
+			path := k
+			if prefix != "" {
+				path = prefix + "." + k
+			}
+			ft, ok := fieldByJSONName(t, k)
+			if !ok {
+				out = append(out, path)
+				continue
+			}
+			out = append(out, unknownPaths(obj[k], ft, path)...)
+		}
+	case reflect.Map:
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil {
+			return nil
+		}
+		for _, k := range slices.Sorted(maps.Keys(obj)) {
+			out = append(out, unknownPaths(obj[k], t.Elem(), prefix+"."+k)...)
+		}
+	case reflect.Slice:
+		var arr []json.RawMessage
+		if json.Unmarshal(raw, &arr) != nil {
+			return nil
+		}
+		for _, e := range arr {
+			out = append(out, unknownPaths(e, t.Elem(), prefix+"[]")...)
+		}
+	}
+	return slices.Compact(out)
+}
+
+func fieldByJSONName(t reflect.Type, name string) (reflect.Type, bool) {
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+		if !sf.IsExported() {
+			continue
+		}
+		n, _, _ := strings.Cut(sf.Tag.Get("json"), ",")
+		if n == "-" {
+			continue
+		}
+		if n == "" {
+			n = sf.Name
+		}
+		if strings.EqualFold(n, name) {
+			return sf.Type, true
+		}
+	}
+	return nil, false
 }
 
 // decodePart decodes one raw part into v, strictly (unknown fields refused) or

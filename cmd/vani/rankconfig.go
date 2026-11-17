@@ -2,6 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"math"
+	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
@@ -197,8 +200,22 @@ func sharesGate(f rankfit.File) string {
 	if f.Report == nil || f.Report.Weights == nil {
 		return lead + "the file records no held-out result for them (a weight fit records one; a calibration-only fit drops it)"
 	}
-	if reason := f.Report.Weights.NoGainReason(); reason != "" {
+	if f.ReportIgnoredIn("weights") {
+		return lead + "the held-out result carries fields this vani does not know (" + oneLine(strings.Join(f.ReportIgnoredPaths, ", "), 120) + "); refit or upgrade"
+	}
+	r := f.Report.Weights
+	if reason := r.NoGainReason(); reason != "" {
 		return lead + reason
+	}
+	// No fit that passed the gate writes accuracies outside [0,1], a fitted
+	// accuracy of 0 (absent in a damaged file) or one below the hand accuracy it
+	// was measured against, so such a result is a damaged or hand-edited file;
+	// NoGainReason reads none of these.
+	if !unitInterval(r.FitAccuracy) || !unitInterval(r.HandAccuracy) || !(r.FitAccuracy > 0) || r.FitAccuracy < r.HandAccuracy {
+		return lead + fmt.Sprintf("the held-out result's accuracies (fit %v, hand %v) are not a result any fit writes; the file is damaged or edited", r.FitAccuracy, r.HandAccuracy)
 	}
 	return ""
 }
+
+// unitInterval reports whether v is finite and within [0,1].
+func unitInterval(v float64) bool { return !math.IsNaN(v) && v >= 0 && v <= 1 }
