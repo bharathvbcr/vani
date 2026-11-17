@@ -86,6 +86,7 @@ func watchSignals() {
 		go func() {
 			s := <-ch
 			code := signalExitCode(s)
+			interrupted.Store(int32(code)) // before cancel: callers racing on the kill must exit with it
 			go func() { // a second signal during cleanup must not wait for it
 				s2 := <-ch
 				os.Exit(signalExitCode(s2))

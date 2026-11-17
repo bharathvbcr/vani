@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -423,18 +424,32 @@ func die(f string, a ...interface{}) {
 var (
 	exitMu       sync.Mutex
 	exitCleanups []func()
+
+	// exitRun serialises exitNow: the first caller runs the cleanups and exits,
+	// every other caller blocks until that exit.
+	exitRun sync.Mutex
+	// interrupted holds the exit code of the signal that interrupted the
+	// process (130 or 143), or 0. The watcher sets it before it cancels
+	// anything, so a caller that dies on the killed command's error still
+	// exits with the signal's code.
+	interrupted atomic.Int32
 )
 
 // exitNow ends the process after running the cleanups scratchDir registered:
 // os.Exit skips deferred calls, so a folder made with scratchDir would
-// otherwise survive every die() and stop.
+// otherwise survive every die() and stop. After a signal the exit code is the
+// signal's, whoever calls.
 func exitNow(code int) {
+	exitRun.Lock() // never unlocked: this path ends in os.Exit
 	exitMu.Lock()
 	fns := exitCleanups
 	exitCleanups = nil
 	exitMu.Unlock()
 	for i := len(fns) - 1; i >= 0; i-- {
 		fns[i]()
+	}
+	if c := interrupted.Load(); c != 0 {
+		code = int(c)
 	}
 	os.Exit(code)
 }
