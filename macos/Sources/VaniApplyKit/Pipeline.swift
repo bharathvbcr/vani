@@ -58,16 +58,20 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
             public var enabled: Bool
             public var keyEnv: String?
             public var reason: String?
+            /// The login Keychain item holding the configured provider's key; nil from a
+            /// daemon that predates the field (it was always openrouter-api-key).
+            public var service: String?
 
             enum CodingKeys: String, CodingKey {
-                case enabled, reason
+                case enabled, reason, service
                 case keyEnv = "key_env"
             }
 
-            public init(enabled: Bool, keyEnv: String? = nil, reason: String? = nil) {
+            public init(enabled: Bool, keyEnv: String? = nil, reason: String? = nil, service: String? = nil) {
                 self.enabled = enabled
                 self.keyEnv = keyEnv
                 self.reason = reason
+                self.service = service
             }
         }
 
@@ -1781,7 +1785,23 @@ public struct PipelineStatus: Decodable, Equatable, Sendable {
         public var ok: Bool
         public var reason: String?
         public var name: String
+        /// "llm", or the decision provider ("openrouter", "subq", "gemini") with its "_notes" cap.
         public var kind: String
+
+        /// The kind as the Pipeline tab names it. An unknown kind is shown as itself, never as
+        /// another provider's.
+        public var kindLabel: String {
+            let notes = kind.hasSuffix("_notes")
+            let base = notes ? String(kind.dropLast("_notes".count)) : kind
+            let name = switch base {
+            case "llm": "LLM"
+            case "openrouter": "OpenRouter"
+            case "subq": "SubQ"
+            case "gemini": "Gemini Decision"
+            default: base
+            }
+            return notes ? name + " notes" : name
+        }
         public var capUSD: Double
         /// Absent (with `ok` false) when the spend could not be read.
         public var spentUSD: Double?

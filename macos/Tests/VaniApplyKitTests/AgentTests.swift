@@ -111,13 +111,16 @@ final class AgentTests: XCTestCase {
             let obj = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
             return try XCTUnwrap((obj["fields"] as? [[String: Any]])?.first)
         }
-        let runner = DraftRunner(vaniBinary: vani, key: { nil }, decisionKey: { "or-test" })
+        // A config path that does not exist reads as decide.provider openrouter, whatever the
+        // owner's own config chooses, so the key travels as OPENROUTER_API_KEY.
+        let noConfig = "/nonexistent/vani-agent-test/config.json"
+        let runner = DraftRunner(vaniBinary: vani, configPath: noConfig, key: { nil }, decisionKey: { "or-test" })
         let suggest = try first(runner.runJob(.suggest, input: Data(#"{"fields":[]}"#.utf8)))
         XCTAssertEqual(suggest["sub"] as? String, "suggest")
         XCTAssertEqual(suggest["or"] as? String, "match", "suggest gets the decision model's key")
         XCTAssertEqual(try first(runner.runJob(.draft, input: Data("{}".utf8)))["or"] as? String, "unset", "a draft never gets it")
         // A Keychain refusal for the decision key is not fatal: vani falls back to Claude.
-        let denied = DraftRunner(vaniBinary: vani, key: { nil }, decisionKey: { throw BankError("denied") })
+        let denied = DraftRunner(vaniBinary: vani, configPath: noConfig, key: { nil }, decisionKey: { throw BankError("denied") })
         XCTAssertEqual(try first(denied.runJob(.suggest, input: Data("{}".utf8)))["or"] as? String, "unset")
 
         let garbage = try fakeVani(self, body: "#!/bin/sh\ncat >/dev/null\necho nope\n")

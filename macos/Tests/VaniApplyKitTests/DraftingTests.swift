@@ -126,7 +126,10 @@ final class DraftingTests: XCTestCase {
         for cfg in [try vaniConfig(self, provider: "gemini"), try vaniConfig(self, provider: nil), try vaniConfig(self, provider: "Anthropic"),
                     "/nonexistent/config.json", oversized.path, malformed.path, wrongType.path, dir.path] {
             let launcher = try fakeLauncher(self)
-            let reply = DraftRunner(vaniBinary: vani, configPath: cfg, keys: .anthropicAccount(launcher.url), account: "org500")
+            // A gemini config's launch carries the AI Studio key (injected: no test reads the
+            // real Keychain); the other configs never ask for it.
+            let reply = DraftRunner(vaniBinary: vani, configPath: cfg, keys: .anthropicAccount(launcher.url), account: "org500",
+                                    aiStudioKey: { "test-ai-studio-key" })
                 .run(DraftRequest(question: "q"))
             XCTAssertEqual(reply.draft, "key=unset cfg=\(cfg) state=none ws=none inherited=none", cfg)
             XCTAssertNil(launcher.recordedArguments, "\(cfg): the launcher must not run")
@@ -199,8 +202,9 @@ final class DraftingTests: XCTestCase {
         XCTAssertTrue(notInstalled.error?.contains("/opt/homebrew/bin/anthropic-account") == true, notInstalled.error ?? "")
         let gone = DraftRunner(vaniBinary: vani, configPath: cfg, keys: .anthropicAccount(URL(fileURLWithPath: "/nonexistent/anthropic-account")))
         XCTAssertEqual(gone.run(DraftRequest(question: "q")).code, "account")
-        // A gemini config needs no launcher, installed or not.
-        XCTAssertNil(DraftRunner(vaniBinary: vani, configPath: try vaniConfig(self, provider: "gemini"), keys: .anthropicAccount(nil))
+        // A gemini config needs no launcher, installed or not: it needs the AI Studio key instead.
+        XCTAssertNil(DraftRunner(vaniBinary: vani, configPath: try vaniConfig(self, provider: "gemini"), keys: .anthropicAccount(nil),
+                                 aiStudioKey: { "test-ai-studio-key" })
             .run(DraftRequest(question: "q")).error)
     }
 

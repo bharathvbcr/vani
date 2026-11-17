@@ -179,7 +179,7 @@ public struct DraftSettings: Codable, Equatable, Sendable {
     public func runner(vaniBinary: URL,
                        keys: DraftRunner.KeySource = .anthropicAccount(AnthropicAccount.locate()),
                        keychainTimeout: TimeInterval = DraftRunner.keychainTimeout,
-                       decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) -> DraftRunner {
+                       decisionKey: KeyLookup? = nil) -> DraftRunner {
         DraftRunner(vaniBinary: vaniBinary,
                     configPath: vaniConfig.isEmpty ? nil : vaniConfig,
                     stateDir: vaniStateDir.isEmpty ? nil : vaniStateDir,

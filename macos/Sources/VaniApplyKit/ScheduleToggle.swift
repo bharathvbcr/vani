@@ -94,7 +94,7 @@ public struct ScheduleToggle: Equatable, Sendable {
             if let model = daemon.model, !model.enabled {
                 return result(on: true, "Keeping the schedule, with the decision model off\(pid)",
                               (model.reason ?? "The decision key did not reach the daemon.")
-                                  + " Add it to the login Keychain (service \(Keychain.openRouterService)). A key that was missing is picked up by a restart the agent makes by itself; after a refused or unanswered Keychain read, turn this off and on.",
+                                  + " Add it to the login Keychain (service \(model.service ?? Keychain.openRouterService)); Settings can paste it there. A key that was missing is picked up by a restart the agent makes by itself; after a refused or unanswered Keychain read, turn this off and on.",
                               tone: .warning)
             }
             return result(on: true, "Keeping the schedule\(pid)", nil)

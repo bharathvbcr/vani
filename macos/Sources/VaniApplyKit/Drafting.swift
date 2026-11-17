@@ -182,16 +182,50 @@ public enum VaniConfig {
     static let maxBytes = 1 << 20
 
     public static func llmProvider(configPath: String?) -> String? {
+        providers(configPath: configPath)?.llm?.provider
+    }
+
+    /// `decide.provider`: "openrouter" (also for an absent key or an unreadable config, as
+    /// vani reads it), "subq" or "gemini".
+    public static func decisionProvider(configPath: String?) -> String {
+        guard let p = providers(configPath: configPath)?.decide?.provider, !p.isEmpty else { return "openrouter" }
+        return p
+    }
+
+    /// The Keychain item and variable that carry the configured decision model's key into a
+    /// vani the app starts (cmd/vani decisionwire.go reads the same variables). An unknown
+    /// provider gets OpenRouter's, and vani then refuses the config with its own message.
+    public static func decisionKeyRoute(configPath: String?) -> ModelKeyRoute {
+        switch decisionProvider(configPath: configPath) {
+        case "subq": ModelKeyRoute(service: Keychain.subqService, envVar: "SUBQ_API_KEY")
+        case "gemini": ModelKeyRoute.aiStudio
+        default: ModelKeyRoute(service: Keychain.openRouterService, envVar: "OPENROUTER_API_KEY")
+        }
+    }
+
+    private struct ProvidersFile: Decodable {
+        struct Named: Decodable { let provider: String? }
+        let llm: Named?
+        let decide: Named?
+    }
+
+    private static func providers(configPath: String?) -> ProvidersFile? {
         let path = configPath.flatMap { $0.isEmpty ? nil : $0 } ?? VaniProcess.defaultConfigPath
         guard let h = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? h.close() }
         guard let data = try? h.read(upToCount: maxBytes + 1), data.count <= maxBytes else { return nil }
-        struct File: Decodable {
-            struct LLM: Decodable { let provider: String? }
-            let llm: LLM?
-        }
-        return (try? JSONDecoder().decode(File.self, from: data))?.llm?.provider
+        return try? JSONDecoder().decode(ProvidersFile.self, from: data)
     }
+}
+
+/// Where a model key lives in the login Keychain and the variable a vani the app starts
+/// receives it in. Never the key.
+public struct ModelKeyRoute: Equatable, Sendable {
+    public let service: String
+    public let envVar: String
+
+    /// The Google AI Studio key: the gemini llm provider and the Gemini decision model.
+    public static let aiStudio = ModelKeyRoute(service: Keychain.geminiService, envVar: "GEMINI_API_KEY")
 }
 
 /// Where an injected key lookup comes from.
@@ -201,6 +235,64 @@ public enum Keychain {
     public static let anthropicService = "anthropic-api-key"
     /// The decision model's key (OpenRouter), passed to `vani suggest` as OPENROUTER_API_KEY.
     public static let openRouterService = "openrouter-api-key"
+    /// SubQ's key (subq-snap), passed as SUBQ_API_KEY when decide.provider is subq.
+    public static let subqService = "subq-api-key"
+    /// The Google AI Studio key, passed as GEMINI_API_KEY to the gemini llm provider and the
+    /// Gemini decision model.
+    public static let geminiService = "gemini-api-key"
+    /// The items Settings may write or remove: the model keys vani's vault.ModelKey reads.
+    /// The Anthropic key stays with anthropic-account.
+    public static let modelKeyServices = [openRouterService, subqService, geminiService]
+    /// A pasted key longer than this is not a key.
+    public static let maxModelKeyBytes = 4096
+
+    /// A pasted key as it will be stored: trimmed, one line, printable ASCII, bounded. The
+    /// error never repeats the value.
+    public static func validatedModelKey(_ raw: String) throws -> String {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { throw BankError("The key is empty") }
+        guard key.utf8.count <= maxModelKeyBytes else { throw BankError("The key is longer than \(maxModelKeyBytes) bytes") }
+        guard key.unicodeScalars.allSatisfy({ $0.value > 0x20 && $0.value < 0x7F }) else {
+            throw BankError("The key holds a space, line break or character a key does not have; paste only the key")
+        }
+        return key
+    }
+
+    /// Saves a model key for (service, current user), replacing any earlier one. Only the
+    /// model-key services may be written. The value goes to the Keychain only: never to a file,
+    /// an argument or a log.
+    public static func setModelKey(_ raw: String, service: String, account: String = NSUserName()) throws {
+        guard modelKeyServices.contains(service) else { throw BankError("\(service) is not a model-key item") }
+        let key = try validatedModelKey(raw)
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let data = Data(key.utf8)
+        var status = SecItemUpdate(match as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = match
+            add[kSecValueData as String] = data
+            add[kSecAttrLabel as String] = service
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw BankError("The Keychain refused to save \(service) (status \(status))") }
+    }
+
+    /// Removes the model key for (service, current user); removing an absent one is not an error.
+    public static func removeModelKey(service: String, account: String = NSUserName()) throws {
+        guard modelKeyServices.contains(service) else { throw BankError("\(service) is not a model-key item") }
+        let match: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(match as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw BankError("The Keychain refused to remove \(service) (status \(status))")
+        }
+    }
 
     /// Whether an item for (service, current user) exists, without reading its value: an
     /// attributes-only query is never an access prompt. Nil when the Keychain cannot say.
@@ -257,6 +349,8 @@ public struct DraftRunner: Sendable {
     public let workspace: String?
     let key: KeyLookup
     let decisionKey: KeyLookup
+    /// The Google AI Studio key, read when the config's llm.provider is gemini.
+    let aiStudioKey: KeyLookup
     let timeout: TimeInterval
     public static let keychainTimeout: TimeInterval = 60
     let keychainTimeout: TimeInterval
@@ -281,7 +375,8 @@ public struct DraftRunner: Sendable {
                 timeout: TimeInterval = DraftRunner.timeout,
                 keychainTimeout: TimeInterval = DraftRunner.keychainTimeout,
                 key: @escaping KeyLookup = { nil },
-                decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) },
+                decisionKey: KeyLookup? = nil,
+                aiStudioKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.geminiService) },
                 refusal: DraftReply? = nil) {
         self.refusal = refusal
         self.vaniBinary = vaniBinary
@@ -293,7 +388,12 @@ public struct DraftRunner: Sendable {
         self.timeout = timeout
         self.keychainTimeout = keychainTimeout
         self.key = key
-        self.decisionKey = decisionKey
+        // nil reads the configured provider's item (VaniConfig.decisionKeyRoute), so switching
+        // decide.provider in Settings switches the key every launch carries.
+        self.decisionKey = decisionKey ?? { [configPath] in
+            try Keychain.genericPassword(service: VaniConfig.decisionKeyRoute(configPath: configPath).service)
+        }
+        self.aiStudioKey = aiStudioKey
     }
 
     /// Validate a request given as Foundation JSON objects (from a browser) into a DraftRequest.
@@ -498,6 +598,22 @@ public struct DraftRunner: Sendable {
             }
         }
         if let workspace, !workspace.isEmpty { env["ANTHROPIC_WORKSPACE_ID"] = workspace }
+        // A gemini llm needs the AI Studio key: without it every model call fails, so the launch
+        // is refused here with the fix rather than started keyless. The app is its one reader,
+        // as for the decision key below. `.noKey` (the host's --no-keychain) reads no Keychain
+        // item for the llm, as it reads none for Anthropic.
+        if keys != .noKey, VaniConfig.llmProvider(configPath: configPath) == "gemini" {
+            env["VANI_NO_KEYCHAIN"] = "1"
+            do {
+                guard let k = try Self.bounded(aiStudioKey, seconds: keychainTimeout),
+                      !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return .failure("keychain", "Vani's config uses Google AI Studio (llm.provider gemini), and there is no AI Studio key in the login Keychain (\(Keychain.geminiService)). Paste one in Settings.")
+                }
+                env[ModelKeyRoute.aiStudio.envVar] = k
+            } catch {
+                return .failure("keychain", String(describing: error))
+            }
+        }
         // The decision key is optional for a launch (the model is just off without it), but
         // never silently so: the outcome says which of absent, refused or unanswered it was.
         if withDecisionKey {
@@ -506,10 +622,14 @@ public struct DraftRunner: Sendable {
             // ask the Keychain again behind it (a second prompt, from another binary, after a
             // refusal; cmd/vani/keychain.go honours the variable).
             env["VANI_NO_KEYCHAIN"] = "1"
+            let route = VaniConfig.decisionKeyRoute(configPath: configPath)
             do {
-                if let k = try Self.bounded(decisionKey, seconds: keychainTimeout),
+                if let held = env[route.envVar], !held.isEmpty {
+                    // The Gemini decision model shares the AI Studio key just read for the llm.
+                    outcome = .present
+                } else if let k = try Self.bounded(decisionKey, seconds: keychainTimeout),
                    !k.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    env["OPENROUTER_API_KEY"] = k
+                    env[route.envVar] = k
                     outcome = .present
                 } else {
                     outcome = .notFound

@@ -214,3 +214,25 @@ func TestEveryQuestionFitsEachProvidersLimits(t *testing.T) {
 		}
 	}
 }
+
+// The Mac app reads each provider's key from the same Keychain item and hands
+// it over in the same variable vani reads first (Drafting.swift's
+// Keychain/ModelKeyRoute); a rename on one side alone would launch every vani
+// keyless.
+func TestSwiftKeyRoutesMatchTheProviderTable(t *testing.T) {
+	src, err := os.ReadFile("../../macos/Sources/VaniApplyKit/Drafting.swift")
+	if err != nil {
+		t.Fatalf("the Swift launcher could not be read, so the routes were not compared: %v", err)
+	}
+	for _, p := range config.DecisionProviders() {
+		env := "OPENROUTER_API_KEY"
+		if len(p.KeyEnvs) > 0 {
+			env = p.KeyEnvs[0]
+		}
+		for _, want := range []string{`"` + p.KeychainService + `"`, `"` + env + `"`} {
+			if !strings.Contains(string(src), want) {
+				t.Errorf("%s: Drafting.swift does not name %s", p.ID, want)
+			}
+		}
+	}
+}

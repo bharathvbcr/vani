@@ -193,7 +193,7 @@ public enum ScheduleAgent {
     public static func attempt(settingsDir: URL, vaniBinary: URL,
                                keys: DraftRunner.KeySource = .anthropicAccount(AnthropicAccount.locate()),
                                keychainTimeout: TimeInterval = ScheduleAgentConstants.keychainTimeout,
-                               decisionKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.openRouterService) }) -> ScheduleAttempt {
+                               decisionKey: KeyLookup? = nil) -> ScheduleAttempt {
         let settings: DraftSettings
         do { settings = try DraftSettings.load(from: settingsDir).validated() } catch {
             return .cannotStart(String(describing: error), log: nil)
@@ -212,12 +212,20 @@ public enum ScheduleAgent {
         }
     }
 
+    /// The Keychain item the configured decision provider's key is kept in, for the settings
+    /// saved in `settingsDir`: OpenRouter's when they cannot be read, as a launch would then
+    /// be refused anyway.
+    public static func decisionKeyService(settingsDir: URL) -> String {
+        guard let s = try? DraftSettings.load(from: settingsDir).validated() else { return Keychain.openRouterService }
+        return VaniConfig.decisionKeyRoute(configPath: resolve(s).configPath).service
+    }
+
     /// What the log says about the key: a fixed phrase, never a value.
     public static func describe(_ key: DraftRunner.KeyOutcome) -> String {
         switch key {
         case .present: "decision key read from the Keychain"
         case .notRequested: "decision key not requested"
-        case .notFound: "no decision key in the Keychain (\(Keychain.openRouterService)); the daemon runs with the model disabled"
+        case .notFound: "no decision key in the Keychain (the item for the configured decision provider); the daemon runs with the model disabled"
         case let .failed(why): "decision key not read (\(why)); the daemon runs with the model disabled"
         }
     }

@@ -37,7 +37,7 @@ do {
 let supervisor = ScheduleSupervisor(
     attempt: { ScheduleAgent.attempt(settingsDir: storeDir, vaniBinary: vaniBinary) },
     currentFingerprint: { ScheduleAgent.currentFingerprint(settingsDir: storeDir) },
-    keyExists: { Keychain.itemExists(service: Keychain.openRouterService) },
+    keyExists: { Keychain.itemExists(service: ScheduleAgent.decisionKeyService(settingsDir: storeDir)) },
     fallbackLog: ScheduleAgent.logURL(stateDir: VaniProcess.defaultStateDir))
 
 // SIGTERM and SIGINT end the daemon, wait for it, then exit. launchd's ExitTimeOut (60 s in

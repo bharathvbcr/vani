@@ -101,6 +101,8 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            ModelSettingsSection(client: model.draftSettings.modelSwitchClient(vaniBinary: model.vaniBinary))
+
             Section("What you care about (for \u{201C}Why this company?\u{201D} drafts)") {
                 TextEditor(text: $notes)
                     .font(.body)
