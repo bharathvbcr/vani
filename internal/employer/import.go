@@ -103,7 +103,20 @@ type SourceMeta struct {
 type Partial struct {
 	Source SourceMeta
 	Names  map[string]attr
+	// SkippedRows lists the first maxSkippedRows rows dropped for a name that
+	// normalises to nothing, with their line numbers. Not stored in the index.
+	SkippedRows []SkippedRow
 }
+
+// SkippedRow is one row dropped because its name normalises to nothing.
+type SkippedRow struct {
+	Line   int    `json:"line"` // 1-based line of the file, the header being line 1
+	Reason string `json:"reason"`
+}
+
+// maxSkippedRows bounds Partial.SkippedRows; the counts in Source.Skipped are
+// complete.
+const maxSkippedRows = 20
 
 // columns of either kind; -1 when absent.
 type columns struct {
@@ -164,6 +177,10 @@ func field(rec []string, i int) string {
 	}
 	return strings.TrimSpace(s)
 }
+
+// usableKey reports whether key is a name the index accepts: non-empty and
+// unchanged by Normalize (validatePartial's rule).
+func usableKey(key string) bool { return key != "" && lca.Normalize(key) == key }
 
 func nineDigits(s string) bool {
 	if len(s) != 9 {
@@ -249,8 +266,14 @@ func ImportWithLimits(r io.Reader, source string, lim Limits) (Partial, error) {
 			continue
 		}
 		key := lca.Normalize(field(rec, cols.name))
-		if key == "" {
+		// A key that Normalize would shrink again ("THE THE" -> "THE" -> "")
+		// is not a normalised key, and the index refuses such a name whole.
+		if !usableKey(key) {
 			skip(SkipEmpty)
+			if len(p.SkippedRows) < maxSkippedRows {
+				line, _ := cr.FieldPos(cols.name)
+				p.SkippedRows = append(p.SkippedRows, SkippedRow{Line: line, Reason: SkipEmpty})
+			}
 			continue
 		}
 		switch cols.kind {
@@ -293,7 +316,7 @@ func ImportWithLimits(r io.Reader, source string, lim Limits) (Partial, error) {
 					ak := lca.Normalize(al)
 					// A one-token alias ("UC", "MIT") is too short to tell
 					// employers apart; only the full name stands alone.
-					if ak == "" || len(strings.Fields(ak)) < 2 || n >= maxAliasesPerRow {
+					if !usableKey(ak) || len(strings.Fields(ak)) < 2 || n >= maxAliasesPerRow {
 						skip(SkipBadAliasList)
 						continue
 					}
@@ -309,7 +332,10 @@ func ImportWithLimits(r io.Reader, source string, lim Limits) (Partial, error) {
 	// Rows read but none counted means the file's codes or layout are not
 	// what this build expects (an IPEDS code change, the wrong HD variant):
 	// an empty index would look like "no employer matches", so refuse.
-	if p.Source.RowsRead > 0 && p.Source.RowsCounted == 0 {
+	if p.Source.RowsRead == 0 {
+		return Partial{}, errors.New("employer: no data rows after the header; nothing to import")
+	}
+	if p.Source.RowsCounted == 0 {
 		return Partial{}, fmt.Errorf("employer: %d rows read and none counted (skipped: %v); the file's layout or codes are not the documented ones", p.Source.RowsRead, p.Source.Skipped)
 	}
 	p.Source.SHA256 = hex.EncodeToString(h.Sum(nil))

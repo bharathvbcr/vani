@@ -74,7 +74,9 @@ func (e *env) employerImport(args []string) error {
 	if err := os.MkdirAll(filepath.Dir(employerIndexPath(e.stateDir)), 0o700); err != nil {
 		return err
 	}
-	x, err := employer.Update(employerIndexPath(e.stateDir), part)
+	ctx, stop := signalContext()
+	defer stop()
+	x, err := employer.UpdateContext(ctx, employerIndexPath(e.stateDir), part, e.importWaiting)
 	if err != nil {
 		return fmt.Errorf("employer index: %w", err)
 	}
@@ -83,9 +85,14 @@ func (e *env) employerImport(args []string) error {
 		Source employer.SourceMeta `json:"source"`
 		Names  int                 `json:"names"`
 		Files  int                 `json:"files"`
-	}{s, x.Names(), len(x.Sources())}, nil, func() {
+		// SkippedRows are the rows dropped for a name that normalises to nothing.
+		SkippedRows []employer.SkippedRow `json:"skipped_rows,omitempty"`
+	}{s, x.Names(), len(x.Sources()), part.SkippedRows}, nil, func() {
 		fmt.Fprintf(e.stdout, "imported %s (%s): %d of %d rows counted, skipped %v; index now %d names from %d files\n",
 			s.Name, s.Kind, s.RowsCounted, s.RowsRead, s.Skipped, x.Names(), len(x.Sources()))
+		for _, r := range part.SkippedRows {
+			fmt.Fprintf(e.stdout, "  skipped line %d: %s\n", r.Line, r.Reason)
+		}
 	})
 }
 

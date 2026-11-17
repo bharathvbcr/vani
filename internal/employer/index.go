@@ -2,6 +2,7 @@ package employer
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,9 @@ import (
 	"github.com/bharathvbcr/Vani/internal/indexutil"
 	"github.com/bharathvbcr/Vani/internal/lca"
 )
+
+// ErrBusy means another import held the index for longer than the wait bound.
+var ErrBusy = indexutil.ErrBusy
 
 // SchemaVersion is the on-disk index schema.
 const SchemaVersion = 1
@@ -188,8 +192,22 @@ func readIndexFile(path string) ([]byte, error) {
 // Update is the import path: it merges p into the index at path (an absent
 // file is an empty index) and saves the index and its view. The merged view
 // is built once, for the result; the index as loaded never gets one. A refused
-// partial or a corrupt index leaves both files as they were.
+// partial or a corrupt index leaves both files as they were. It runs under the
+// index's lock, so two imports never overwrite each other's sources; a lock
+// held past indexutil.LockWait is ErrBusy.
 func Update(path string, p Partial) (*Index, error) {
+	return UpdateContext(context.Background(), path, p, nil)
+}
+
+// UpdateContext is Update where ctx ending stops the wait for the lock, and
+// waiting, when non-nil, is called once (from another goroutine) with the index
+// path if the lock is still held after indexutil.NoticeAfter.
+func UpdateContext(ctx context.Context, path string, p Partial, waiting func(index string)) (*Index, error) {
+	path, release, err := indexutil.LockNotify(ctx, path, waiting)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	sources := map[string]Partial{}
 	data, err := readIndexFile(path)
 	switch {

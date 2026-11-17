@@ -49,7 +49,7 @@ whether a binary has them.
   any other command.
 - **Failure:** `{"error","code"}`. `code` is `usage` (bad flags or arguments), `unsupported`
   (the command has no JSON form), `runtime`, or a command's own code (`busy`, `timeout`,
-  `budget_exhausted`, `ineligible`, ...). A command that fails after producing something
+  `budget_exhausted`, `ineligible`, `shrinks`, ...). A command that fails after producing something
   useful keeps it beside `error` and `code`: a refused `track use` keeps its check, a failed
   `run-once` keeps the run's record, a stopped `kbmatch run` keeps what it asked, and a
   `jobs export` refused with `already_exported` keeps the count of roles exported before. Re-run

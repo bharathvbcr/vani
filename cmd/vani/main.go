@@ -173,7 +173,7 @@ commands:
                              from vani audit, plus marks and impressions) to a rank weights file;
                              refuses below the thresholds and writes nothing. Use it by setting
                              rank_weights_file
-  lca import [--json] FILE.csv
+  lca import [--json] [--replace] FILE.csv
                              import a DOL LCA disclosure file (docs/LCA.md)
   lca lookup [--json] COMPANY
                              show the sponsorship-history badge for a company

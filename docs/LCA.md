@@ -55,9 +55,32 @@ itself. Record layout (field names) for each year is linked on the same page,
 for example
 <https://www.dol.gov/sites/dolgov/files/ETA/oflc/pdfs/LCA_Record_Layout_FY2025_Q4.pdf>.
 
-Import one file per fiscal year. Quarterly files are cumulative within the
-year, so importing Q3 and Q4 of the same year double counts: Vani de-duplicates
-only byte-identical files (by sha256), not overlapping ones.
+Import one file per fiscal year. An import replaces the earlier files for the
+same fiscal year, so a corrected file or a later quarter never double counts.
+
+- **Which year a file belongs to.** The fiscal year holding most of its counted
+  cases (H-1B, H-1B withdrawn, H1B1, E-3). A few cases of a neighbouring year
+  (a decision date just past Oct 1) do not make a file belong to that year.
+  On an exact tie the earlier year wins.
+- **Cumulative quarters.** DOL's quarterly files are cumulative within the
+  year, so Q2 replaces Q1 and Q4 replaces Q3, with no flag. Re-importing a
+  byte-identical file (same sha256) replaces its own earlier contribution.
+- **A smaller file is refused.** If the files it would replace hold more
+  counted cases than it does in any fiscal year (importing Q1 after Q4, or a
+  truncated download), the import fails with code `shrinks`, names the year,
+  the files and both totals, and changes nothing. `vani lca import --replace
+  FILE` allows it. The same guard covers a file that spans two fiscal years:
+  a later file of its first year is refused when it would drop the second
+  year's cases, because replacement is by whole file, not by year inside a
+  file. Import such a file after the later ones, or pass `--replace`.
+- **Concurrent imports.** Each import holds `index.json.lock` beside the
+  index, so two imports never overwrite each other. A second import waits up
+  to 30 seconds (printing a "waiting for another import" line after 2
+  seconds, and stopping on Ctrl-C), then fails with code `busy`; nothing is
+  written and running it again is safe.
+
+`--json` reports `replaced`, the names of the files that import replaced (left
+out when there were none).
 
 ## Convert .xlsx to CSV (no Python)
 
@@ -70,7 +93,7 @@ Keep dates as dates; `YYYY-MM-DD`, `M/D/YYYY` and ISO timestamps are all read.
 ## Import
 
 ```
-vani lca import <file.csv>
+vani lca import [--replace] <file.csv>
 ```
 
 Re-importing the same file replaces its earlier contribution and never double
