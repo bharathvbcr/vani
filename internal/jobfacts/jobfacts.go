@@ -34,6 +34,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
+	"github.com/bharathvbcr/Vani/internal/expyears"
 	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/manualtriage"
@@ -48,6 +49,11 @@ type Facts struct {
 	ManualText string           // manualtriage.TextSHA256(posting)
 	Pay        []jobinsight.Pay // jobinsight.PostingPay(posting)
 	KBText     []byte           // kbmatch.TextPrefix(posting)
+	// StaffLevel is the level expyears.BelowStaff gives the description ("" when
+	// the text states no years, or years at staff level): the ranking's
+	// staff-level penalty, read from here so a record held without its text
+	// ranks as one held whole.
+	StaffLevel string
 }
 
 // Input is everything Facts depend on: the description by fingerprint, and
@@ -65,7 +71,9 @@ func InputOf(p posting.Posting, fp [16]byte) Input {
 
 // Derive computes p's facts. p must carry its description.
 func Derive(v *jobinsight.Vocab, p posting.Posting) Facts {
+	level, _ := expyears.BelowStaff(p.Description)
 	return Facts{
+		StaffLevel: level,
 		Hits:       v.Extract(p.Title + "\n" + p.Description),
 		TextHash:   semantic.TextHash(p.Title, p.Description),
 		ManualText: manualtriage.TextSHA256(p),
@@ -75,7 +83,7 @@ func Derive(v *jobinsight.Vocab, p posting.Posting) Facts {
 }
 
 // format changes whenever the stored layout, or what a field means, does.
-const format = 1
+const format = 2
 
 // Version identifies the derivers: the vocabulary, and each deriver's answers
 // over a probe that exercises them (titles, locations, pay forms, odd text).
@@ -97,6 +105,7 @@ var probe = []posting.Posting{
 	{Title: "ML Platform Engineer", Location: "Toronto, ON", Remote: true, Description: "Remote in Canada. CAD 140k–170k. Terraform, AWS, Spark, Airflow, k8s, MLOps."},
 	{Title: "Staff Engineer", Location: "Berlin, Germany", Description: "€90.000 – €120.000 brutto pro Jahr. TypeScript, React, PostgreSQL. Ünïcödé — 工程师 🚀"},
 	{Title: "Contractor", Location: "Remote - US", Remote: true, Description: "USD 60-85/hour, W2. Java, Spring, Kafka.\n\nBenefits: 401(k)."},
+	{Title: "Staff Engineer", Location: "Remote - US", Remote: true, Description: "Requires 3+ years of experience in Go."},
 	{Title: "", Location: "", Description: ""},
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
+	"github.com/bharathvbcr/Vani/internal/expyears"
 	"github.com/bharathvbcr/Vani/internal/jobfacts"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 	"github.com/bharathvbcr/Vani/internal/jobview"
@@ -383,6 +384,21 @@ func (in *insight) hitsOf(r ledger.Record) []jobinsight.Hit {
 		return f.Hits
 	}
 	return in.vocab.Extract(r.Posting.Title + "\n" + r.Posting.Description)
+}
+
+// belowStaffOf is the level r's stated years imply under a staff reading
+// (jobinsight.RankContext.BelowStaff), from the stored fact when there is one,
+// so a record read without its text ranks as the same record read whole.
+// Without a fact it derives from the text the record carries, which is empty
+// only for a lean record without facts, and that is noted as missing.
+func (in *insight) belowStaffOf(r ledger.Record) (string, bool) {
+	if f, ok := in.storedFacts(r); ok {
+		return f.StaffLevel, f.StaffLevel != ""
+	}
+	if r.BodyEvicted {
+		return "", false
+	}
+	return expyears.BelowStaff(r.Posting.Description)
 }
 
 // payOf is r's stated pay.

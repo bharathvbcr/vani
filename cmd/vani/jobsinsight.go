@@ -513,6 +513,7 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 	}
 	in.rc = jobinsight.NewRankContext(snap.Records, marked, in.now)
 	in.rc.HalfLifeDays, in.rc.Target, in.rc.Hits = halfLife, in.target != nil, in.targetHits
+	in.rc.BelowStaff = in.belowStaffOf
 	in.info.Weights = rankWeightsHand
 	// kb identifies the kbmatch reads for the kept Blends; kbOK is false when
 	// the store changed while it was read.
