@@ -9,10 +9,12 @@ package rankfit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"math"
 	"os"
@@ -24,6 +26,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
+	"github.com/bharathvbcr/Vani/internal/filelock"
 	"github.com/bharathvbcr/Vani/internal/jobinsight"
 )
 
@@ -215,4 +218,37 @@ func Write(path string, f File) error {
 		return fmt.Errorf("rankfit: %w", err)
 	}
 	return atomicfile.Write(path, append(b, '\n'))
+}
+
+// updateLockWait bounds how long Update waits for another writer.
+const updateLockWait = 10 * time.Second
+
+// Update is the one read-modify-write of a rank weights file. It takes the
+// file's lock (path + ".lock", the convention filelock's other users follow),
+// loads what is there, hands it to fn, validates the result and writes it
+// atomically, so two writers each replacing their own part both survive. A
+// missing file reaches fn as a zero File with exists false; a file that cannot
+// be read or fails Load's checks is refused with an error and left as it is.
+// An error from fn, a cancelled ctx or an invalid result writes nothing.
+func Update(ctx context.Context, path string, fn func(cur *File, exists bool) error) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("rankfit: %w", err)
+	}
+	wctx, cancel := context.WithTimeout(ctx, updateLockWait)
+	defer cancel()
+	lk, err := filelock.Acquire(wctx, path+".lock")
+	if err != nil {
+		return fmt.Errorf("rankfit: lock %s: %w", path, err)
+	}
+	defer func() { _ = lk.Release() }()
+	cur, exists := File{}, true
+	if cur, err = Load(path); errors.Is(err, fs.ErrNotExist) {
+		cur, exists = File{}, false
+	} else if err != nil {
+		return fmt.Errorf("rankfit: %s exists and cannot be read, so it is left as it is: %w", path, err)
+	}
+	if err := fn(&cur, exists); err != nil {
+		return err
+	}
+	return Write(path, cur)
 }
