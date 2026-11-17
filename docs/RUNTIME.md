@@ -108,9 +108,42 @@ can read it, once the user allows the `vani` binary at the Keychain prompt; an u
 is a new binary and prompts again. The read is bounded (60 s), `VANI_NO_KEYCHAIN` disables it
 and the environment overrides it. The value is never logged or put in an error, and it is only
 ever sent to `openrouter.ai` (decide's jev client calls the lookup only for that endpoint).
-Spend stays capped by `decide.daily_usd.openrouter`. Nothing else is widened: only the
-`openrouter-api-key` service is readable (the Anthropic key is not, and `vani` has no
-Keychain write).
+Spend stays capped by `decide.daily_usd.openrouter`. `vani` reads only the three model-key
+items below (never the Anthropic key) and has no Keychain write.
+
+### Switching the decision model and the language model (`vani config models`)
+
+`decide.provider` picks which provider's decision model answers (`internal/config/decision.go`):
+
+| provider | model setting (default) | endpoint | key variable(s), then Keychain item | price |
+|---|---|---|---|---|
+| `openrouter` (or absent) | `decide.openrouter_model` (`liquid/d1.2-ultra`) | OpenRouter Decisions | `decide.openrouter_key_env`, then `openrouter-api-key` | reported by OpenRouter |
+| `subq` | `decide.subq_model` (`subq-snap-1.2`) | `https://api.subq.ai/v1/systemone` | `SUBQ_API_KEY`, then `subq-api-key` | $0.04 per 1M input tokens |
+| `gemini` | `decide.gemini_model` (`gemini-decision-1`) | `https://generativelanguage.googleapis.com/v1beta/decisions` | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, then `gemini-api-key` | $0.10 per 1M input tokens (paid tier) |
+
+Every provider answers under its model's backend name and spends from the one decision cap,
+`decide.daily_usd.openrouter`; SubQ and Gemini report tokens, not cost, so vani prices them at
+the rates above (decide/jev `InputUSDPerMTok`). The other providers' settings stay in the file,
+and the default writes no `provider` key, so a config switched back to Liquid is readable by an
+older `vani`. The provider's host must be in `allowed_hosts`; the switch adds it. The drop
+floor (`min_openrouter_prob`, 0.9) was tuned on Liquid's probabilities and applies to whichever
+model is chosen: read `vani eval` after a switch before trusting drops.
+
+`llm.provider` is `anthropic` (Claude through Manvi and anthropic-account) or `gemini` (Google
+AI Studio: `GEMINI_API_KEY` / `GOOGLE_API_KEY`, then the same `gemini-api-key` item; Gemini 4
+Hydrogen). `vani config models --set --llm P --model M [--triage-model T]` writes the provider,
+both models and both prices together, and `Validate` refuses a `claude-` model under `gemini`
+or a `gemini-` model under `anthropic`.
+
+The Mac app's Settings → Models drives `vani config models` and saves pasted keys to the three
+items above (validated, one line; the Keychain only, never vani's argv, stdin or a file). Each
+launch carries the configured provider's key in that provider's variable; a `gemini` llm with
+no AI Studio key is refused with the fix rather than started keyless.
+
+Security impact: two more Keychain items (`subq-api-key`, `gemini-api-key`) are readable by
+`vani` under the rules above (environment first, `VANI_NO_KEYCHAIN`, bounded, never logged), and
+each key is sent only to its own provider's host. The app can now write and delete the three
+model-key items for the current user when asked to in Settings.
 
 ### Claude (Anthropic)
 
