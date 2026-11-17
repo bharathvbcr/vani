@@ -62,8 +62,8 @@ func TestW4badvLegacyTwoSourcesBothDropped(t *testing.T) {
 	if err := x.Save(path); err != nil {
 		t.Fatal(err)
 	}
-	_, replaced, err := Update(path, Partial{Source: SourceMeta{Name: "c.csv", SHA256: "c", RowsRead: 1, RowsCounted: 1},
-		Employers: map[string]map[int]Counts{"ACME": {2024: {H1B: 7}}}})
+	_, replaced, err := UpdateWith(path, Partial{Source: SourceMeta{Name: "c.csv", SHA256: "c", RowsRead: 1, RowsCounted: 1},
+		Employers: map[string]map[int]Counts{"ACME": {2024: {H1B: 7}}}}, UpdateOptions{Replace: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -68,7 +68,8 @@ func (e *env) cmdLCA(args []string) error {
 
 func (e *env) lcaImport(args []string) error {
 	fs := e.newFlags("lca import")
-	asJSON := e.jsonFlag(fs, `{"file","employers","fiscal_years"} on stdout`)
+	asJSON := e.jsonFlag(fs, `{"file","employers","fiscal_years","replaced"} on stdout; replaced lists the earlier files this one replaced, and is omitted when none`)
+	replace := fs.Bool("replace", false, "allow this file to replace earlier files for its fiscal year that hold more cases than it does (refused otherwise)")
 	if err := parsePositional(fs, args); err != nil {
 		return err
 	}
@@ -85,8 +86,11 @@ func (e *env) lcaImport(args []string) error {
 	if err != nil {
 		return fmt.Errorf("lca import %s: %w", path, err)
 	}
-	x, replaced, err := lca.Update(lcaIndexPath(e.stateDir), part)
+	x, replaced, err := lca.UpdateWith(lcaIndexPath(e.stateDir), part, lca.UpdateOptions{Replace: *replace})
 	if err != nil {
+		if errors.Is(err, lca.ErrShrinks) {
+			return fmt.Errorf("lca import %s: %w (nothing changed; pass --replace to replace it anyway)", path, err)
+		}
 		return fmt.Errorf("lca index: %w", err)
 	}
 	var replacedNames []string

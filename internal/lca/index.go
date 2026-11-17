@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
@@ -50,7 +51,7 @@ func NewIndex() *Index {
 // replaces the earlier one, so re-importing a file never double-counts. The
 // index takes ownership of p's maps.
 func (x *Index) Merge(p Partial) error {
-	_, err := x.merge(p, false)
+	_, err := x.merge(p, replaceNone)
 	return err
 }
 
@@ -58,12 +59,74 @@ func (x *Index) Merge(p Partial) error {
 // whose fiscal year (see PrimaryFY) is p's, because DOL publishes one file per
 // fiscal year, so a different file for the same year is a correction or a
 // later cumulative quarter of it, and adding both would double its counts. It
-// returns the sources it dropped.
+// returns the sources it dropped. It refuses with ErrShrinks, changing nothing,
+// when the dropped sources hold more counted cases in any fiscal year than p
+// does: an earlier quarter replaces nothing, a cumulative later one does.
 func (x *Index) MergeReplacingYear(p Partial) ([]SourceMeta, error) {
-	return x.merge(p, true)
+	return x.merge(p, replaceGuarded)
 }
 
-func (x *Index) merge(p Partial, replaceYear bool) ([]SourceMeta, error) {
+// MergeReplacingYearAnyway is MergeReplacingYear without the ErrShrinks guard,
+// for an import the person asked to shrink the year (`vani lca import --replace`).
+func (x *Index) MergeReplacingYearAnyway(p Partial) ([]SourceMeta, error) {
+	return x.merge(p, replaceAnyway)
+}
+
+// ErrShrinks means an import would replace files holding more counted cases
+// than itself. The error names the fiscal year, the files and both totals.
+var ErrShrinks = errors.New("lca: the file would shrink the fiscal year")
+
+type replaceMode int
+
+const (
+	replaceNone    replaceMode = iota // Merge: add, never drop
+	replaceGuarded                    // drop same-year sources unless that loses cases
+	replaceAnyway                     // drop same-year sources whatever they hold
+)
+
+// yearTotals is the counted cases of a source per fiscal year, the sum
+// PrimaryFY ranks by.
+func yearTotals(p Partial) map[int]int {
+	total := map[int]int{}
+	for _, byFY := range p.Employers {
+		for fy, c := range byFY {
+			total[fy] += c.H1B + c.H1BWithdrawn + c.H1B1 + c.E3
+		}
+	}
+	return total
+}
+
+// shrinkError is ErrShrinks naming what the replacement would lose, or nil when
+// no fiscal year ends with fewer cases than the dropped sources held.
+func shrinkError(fy int, dropped []Partial, p Partial) error {
+	gain, lost := yearTotals(p), map[int]int{}
+	var names []string
+	var droppedAll, newAll int
+	for _, d := range dropped {
+		names = append(names, d.Source.Name)
+		for y, n := range yearTotals(d) {
+			lost[y] += n
+			droppedAll += n
+		}
+	}
+	for _, n := range gain {
+		newAll += n
+	}
+	var years []int
+	for y, n := range lost {
+		if n > gain[y] {
+			years = append(years, y)
+		}
+	}
+	if len(years) == 0 {
+		return nil
+	}
+	sort.Ints(years)
+	return fmt.Errorf("%w: fiscal year %d would be replaced: %s hold %d counted cases, %s holds %d (fiscal years short: %v)",
+		ErrShrinks, fy, strings.Join(names, ", "), droppedAll, p.Source.Name, newAll, years)
+}
+
+func (x *Index) merge(p Partial, mode replaceMode) ([]SourceMeta, error) {
 	if p.Source.SHA256 == "" {
 		return nil, errors.New("lca: partial has no source sha256")
 	}
@@ -76,12 +139,21 @@ func (x *Index) merge(p Partial, replaceYear bool) ([]SourceMeta, error) {
 		x.sources = map[string]Partial{}
 	}
 	var dropped []SourceMeta
-	if fy := PrimaryFY(p); replaceYear && fy != 0 {
+	if fy := PrimaryFY(p); mode != replaceNone && fy != 0 {
+		var olds []Partial
 		for _, old := range sortedSources(x.sources) {
 			if old.Source.SHA256 != p.Source.SHA256 && PrimaryFY(old) == fy {
-				dropped = append(dropped, old.Source)
-				delete(x.sources, old.Source.SHA256)
+				olds = append(olds, old)
 			}
+		}
+		if mode == replaceGuarded {
+			if err := shrinkError(fy, olds, p); err != nil {
+				return nil, err
+			}
+		}
+		for _, old := range olds {
+			dropped = append(dropped, old.Source)
+			delete(x.sources, old.Source.SHA256)
 		}
 	}
 	x.sources[p.Source.SHA256] = p
@@ -94,12 +166,7 @@ func (x *Index) merge(p Partial, replaceYear bool) ([]SourceMeta, error) {
 // of neighbouring years (a decision date just past a boundary), which must not
 // make it replace those years' own files.
 func PrimaryFY(p Partial) int {
-	total := map[int]int{}
-	for _, byFY := range p.Employers {
-		for fy, c := range byFY {
-			total[fy] += c.H1B + c.H1BWithdrawn + c.H1B1 + c.E3
-		}
-	}
+	total := yearTotals(p)
 	best, bestN := 0, 0
 	for _, fy := range sortedKeys(total) {
 		if total[fy] > bestN {
@@ -260,7 +327,20 @@ var ErrBusy = indexutil.ErrBusy
 // overwrite each other's rows. A corrupt index or a refused partial leaves the
 // file as it was; a lock held past indexutil.LockWait is ErrBusy. The sources
 // that p replaced, a corrected file for the same fiscal year, are returned.
+// A replacement that would lose cases is ErrShrinks; Update never allows it.
 func Update(path string, p Partial) (*Index, []SourceMeta, error) {
+	return UpdateWith(path, p, UpdateOptions{})
+}
+
+// UpdateOptions are the import's choices beyond the file itself.
+type UpdateOptions struct {
+	// Replace allows a replacement that shrinks the fiscal year
+	// (`vani lca import --replace`).
+	Replace bool
+}
+
+// UpdateWith is Update with options.
+func UpdateWith(path string, p Partial, opts UpdateOptions) (*Index, []SourceMeta, error) {
 	path, release, err := indexutil.Lock(context.Background(), path)
 	if err != nil {
 		return nil, nil, err
@@ -273,7 +353,11 @@ func Update(path string, p Partial) (*Index, []SourceMeta, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	dropped, err := x.MergeReplacingYear(p)
+	merge := x.MergeReplacingYear
+	if opts.Replace {
+		merge = x.MergeReplacingYearAnyway
+	}
+	dropped, err := merge(p)
 	if err != nil {
 		return nil, nil, err
 	}
