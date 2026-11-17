@@ -976,12 +976,8 @@ func validOracleHCM(b sources.Board) error {
 		return fmt.Errorf("oc token %q must be tenant/site, each of letters, digits, '-' and '_'", b.Token)
 	}
 	tenant, _, _ := strings.Cut(strings.ToLower(b.Token), "/")
-	label, ok := sources.OracleHCMHostTenant(b.Host)
-	if !ok {
-		return fmt.Errorf("oc board %s needs host {tenant}.fa.oraclecloud.com or {tenant}.fa.{region}.oraclecloud.com, got %q", b.Token, b.Host)
-	}
-	if label != tenant {
-		return fmt.Errorf("oc host %q does not belong to tenant %q", b.Host, tenant)
+	if why := sources.OracleHCMHostProblem(b.Host, tenant); why != "" {
+		return fmt.Errorf("oc board %s needs host {tenant}.fa.oraclecloud.com, {tenant}.fa.{region}.oraclecloud.com or a host on the company's own domain {tenant}.{tld}: %q %s", b.Token, b.Host, why)
 	}
 	// The adapter quotes a term into the finder, where a quote ends it and a
 	// backslash escapes the next character, so it refuses both.

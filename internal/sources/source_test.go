@@ -91,3 +91,47 @@ func TestOracleHCMHostTenant(t *testing.T) {
 		}
 	}
 }
+
+// An Oracle Recruiting site is served from {tenant}.fa[.{region}].oraclecloud.com
+// or from the company's own domain in front of the same API (Dell,
+// enterpriseplatform.dell.com, 2026-11-17); every other host is refused.
+func TestOracleHCMHostProblem(t *testing.T) {
+	for _, tc := range []struct{ host, tenant string }{
+		{"jpmc.fa.oraclecloud.com", "jpmc"},
+		{"eeho.fa.us2.oraclecloud.com", "EEHO"},
+		{"enterpriseplatform.dell.com", "dell"},
+		{" Enterpriseplatform.Dell.com ", "dell"},
+		{"dell.com", "dell"},
+		{"jobs.akamai.com", "akamai"},
+	} {
+		if why := OracleHCMHostProblem(tc.host, tc.tenant); why != "" {
+			t.Errorf("%q for %q refused: %s", tc.host, tc.tenant, why)
+		}
+	}
+	for _, tc := range []struct{ host, tenant string }{
+		{"", "dell"},
+		{"chase.fa.oraclecloud.com", "jpmc"},
+		{"jpmc.fa.oraclecloud.com.evil.test", "jpmc"},
+		{"evil.jpmc.fa.oraclecloud.com", "jpmc"},
+		{"jpmc.oraclecloud.com", "jpmc"},
+		{"oraclecloud.com", "oraclecloud"},
+		{"jpmc.fa.example.com", "jpmc"},
+		{"jpmc.wd5.myworkdayjobs.com", "jpmc"},
+		{"dell.evil.com", "dell"},
+		{"enterpriseplatform.dell.com.evil.test", "dell"},
+		{"enterpriseplatform.dell.co.uk", "dell"},
+		{"dell", "dell"},
+		{"10.0.0.1", "10"},
+		{"enterpriseplatform.dell.com:443", "dell"},
+		{"x@enterpriseplatform.dell.com", "dell"},
+		{"enterpriseplatform.dell.com/x", "dell"},
+		{"enterpriseplatform.dell.com.", "dell"},
+		{"-x.dell.com", "dell"},
+		// a label over 63 bytes
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.dell.com", "dell"},
+	} {
+		if why := OracleHCMHostProblem(tc.host, tc.tenant); why == "" {
+			t.Errorf("%q for %q accepted", tc.host, tc.tenant)
+		}
+	}
+}

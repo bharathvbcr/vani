@@ -168,6 +168,49 @@ func OracleHCMHostTenant(host string) (tenant string, ok bool) {
 	return m[1], true
 }
 
+// vanityHost is a bare lower-case host name of two or more labels: no IP
+// literal (the last label starts with a letter), port, path or userinfo.
+var vanityHost = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// OracleHCMHostProblem says why host cannot serve tenant's Oracle Recruiting
+// site, or "" when it can. Two layouts are accepted, each tied to the tenant so
+// a board cannot send its requests to a host its token does not name:
+//   - "{tenant}.fa[.{region}].oraclecloud.com" (OracleHCMHostTenant), and
+//   - the company's own host in front of the same API, whose registrable name
+//     (the label before the top-level domain) is the tenant: Dell serves it at
+//     enterpriseplatform.dell.com (tenant "dell", 592 jobs on 2026-11-17).
+//
+// Any other oraclecloud.com host is refused, as are IP literals, one-label
+// names, and a host where the tenant is only some other label
+// ("jpmc.fa.oraclecloud.com.evil.test", "jpmc.wd5.myworkdayjobs.com"). A
+// registrable name under a two-part suffix ("dell.co.uk") is refused too:
+// fail closed. The host must still be in allowed_hosts for a request to go
+// out.
+func OracleHCMHostProblem(host, tenant string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	tenant = strings.ToLower(tenant)
+	if host == "" {
+		return "is empty"
+	}
+	if label, ok := OracleHCMHostTenant(host); ok {
+		if label != tenant {
+			return fmt.Sprintf("does not belong to tenant %q", tenant)
+		}
+		return ""
+	}
+	if host == "oraclecloud.com" || strings.HasSuffix(host, ".oraclecloud.com") {
+		return "is not {tenant}.fa[.{region}].oraclecloud.com"
+	}
+	if len(host) > 253 || !vanityHost.MatchString(host) {
+		return "is not a bare host name"
+	}
+	labels := strings.Split(host, ".")
+	if labels[len(labels)-2] != tenant {
+		return fmt.Sprintf("is not on the domain %s.{tld} of tenant %q", tenant, tenant)
+	}
+	return ""
+}
+
 // Board is one watchlist entry: a company's job board on one ATS, or its own
 // careers page.
 type Board struct {

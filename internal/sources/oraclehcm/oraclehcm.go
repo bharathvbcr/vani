@@ -117,7 +117,9 @@ const (
 )
 
 var (
-	idRE = regexp.MustCompile(`^[0-9]{1,20}$`)
+	// idRE is a requisition id: digits ("210791916", JPMorgan Chase), or digits
+	// after a short upper-case prefix ("R286084", Dell, 2026-11-17).
+	idRE = regexp.MustCompile(`^[A-Z]{0,4}[0-9]{1,20}$`)
 	// tombstoneRE is the id of a deleted requisition the index still lists:
 	// "210260943_300015306973757_ORA_DELETED" (two at the oldest end of
 	// jpmc/CX_1001's "software engineer" search, 2026-10-27). The requisition
@@ -589,21 +591,18 @@ func validName(s string) bool {
 	return true
 }
 
-// checkHost requires a bare hostname "{tenant}.fa.oraclecloud.com" or
-// "{tenant}.fa.{region}.oraclecloud.com" (sources.OracleHCMHostTenant, the one
-// definition config and the ingest read too) whose first label is the tenant,
-// so a board cannot send its requests to a host its token does not name.
+// checkHost requires a host that serves tenant's site
+// (sources.OracleHCMHostProblem, the one definition config reads too):
+// "{tenant}.fa[.{region}].oraclecloud.com", or the company's own host with the
+// tenant as one of its labels, so a board cannot send its requests to a host
+// its token does not name.
 func checkHost(host, tenant string) (string, error) {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
 		return "", errors.New("board host is empty")
 	}
-	label, ok := sources.OracleHCMHostTenant(host)
-	if !ok {
-		return "", fmt.Errorf("board host %q is not {tenant}.fa[.{region}].oraclecloud.com", host)
-	}
-	if label != strings.ToLower(tenant) {
-		return "", fmt.Errorf("board host %q does not start with tenant %q", host, tenant)
+	if why := sources.OracleHCMHostProblem(host, tenant); why != "" {
+		return "", fmt.Errorf("board host %q %s", host, why)
 	}
 	return host, nil
 }
