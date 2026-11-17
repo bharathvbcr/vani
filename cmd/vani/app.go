@@ -669,7 +669,19 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 	if err != nil {
 		return published{}, fmt.Errorf("%w: read the Jobs marks in %s: %w", errDigestHeldBack, dir, err)
 	}
-	recs := app.Ledger.All()
+	// All() leaves a closed posting's text out of memory. A marked one (a saved
+	// role the digest sorts by score) is read back here, and an Explore pick,
+	// which the digest chooses itself, through opts.Hydrate: a role is scored on
+	// its text or listed unscored, never scored on an empty description.
+	recs := withMarkedText(app.Ledger, app.Ledger.All(), m)
+	opts.Hydrate = func(r ledger.Record) (ledger.Record, bool) {
+		p, ok := storedPosting(app.Ledger, r)
+		if !ok {
+			return r, false
+		}
+		r.Posting, r.BodyEvicted = p, false
+		return r, true
+	}
 	var adv *pipeline.AdvanceReport
 	var stats map[string]backendStat
 	var boards *boardsReport

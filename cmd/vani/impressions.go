@@ -27,6 +27,9 @@ const (
 func recordImpressions(ctx context.Context, stateDir string, at time.Time, slate string, shown []digest.Shown) error {
 	rows := make([]feedback.Impression, 0, len(shown))
 	for _, s := range shown {
+		if s.NotScored {
+			continue // no score was computed: a zero would be logged as a measured priority
+		}
 		rows = append(rows, feedback.Impression{At: at, SlateID: slate, Surface: feedback.SurfaceDigest, Section: s.Section,
 			Key: s.Key, Position: s.Position, Status: string(s.Status), DropReason: s.DropClass,
 			Source: s.Source, PSelect: s.PSelect, Scores: feedback.ScoresOf(s.Result)})

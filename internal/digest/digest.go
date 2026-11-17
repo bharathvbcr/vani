@@ -157,6 +157,12 @@ type Options struct {
 	// postings the ranking and the drop rules would never show. Zero lists
 	// none. Each at most MaxExplore.
 	ExploreBelowFold, ExploreDropped int
+	// Hydrate reads back the text of an Explore pick whose body is evicted from
+	// memory (ledger.Record.BodyEvicted; All() leaves it empty for a closed or
+	// dropped posting). It returns the record with its text, or false when the
+	// text cannot be read. nil reads nothing back. At most 2*MaxExplore records
+	// are asked for.
+	Hydrate func(ledger.Record) (ledger.Record, bool)
 }
 
 // Bounds on Options' extra sections.
@@ -180,6 +186,10 @@ type Shown struct {
 	// would_apply label records.
 	Source  string
 	PSelect float64
+	// NotScored is an Explore row whose text could not be read back, so it was
+	// listed without a score (Result is zero and means nothing). Impressions
+	// leave it out: a zero would read as a measured priority of 0.
+	NotScored bool
 }
 
 // Section names Shown carries; they match the feedback package's.
@@ -552,6 +562,17 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 		b.WriteString("Picked at random from roles ranked lower and roles that were dropped, so Vani can learn what it misses. Judge one with `vani audit answer --key KEY --verdict yes|maybe|no --source STRATUM --p-select P`, using the stratum and p_select on its row.\n\n")
 		for _, x := range ex {
 			r := x.rec
+			if r.BodyEvicted {
+				full, ok := o.hydrate(r)
+				if !ok {
+					writeUnscored(&b, r, DropClass(r, o.Rules))
+					fmt.Fprintf(&b, "  - Drawn: stratum `%s` · p_select %s\n", x.source, strconv.FormatFloat(x.p, 'g', 6, 64))
+					shown = append(shown, Shown{Key: r.Key, Section: SectionExplore, Position: len(shown) + 1, Status: r.Status,
+						DropClass: DropClass(r, o.Rules), Source: x.source, PSelect: x.p, NotScored: true})
+					continue
+				}
+				r = full
+			}
 			writeBrief(&b, r, sc.score(r), DropClass(r, o.Rules))
 			fmt.Fprintf(&b, "  - Drawn: stratum `%s` · p_select %s\n", x.source, strconv.FormatFloat(x.p, 'g', 6, 64))
 			shown = append(shown, Shown{Key: r.Key, Section: SectionExplore, Position: len(shown) + 1, Status: r.Status,
@@ -633,6 +654,31 @@ func writeBrief(b *strings.Builder, r ledger.Record, res jobinsight.Result, drop
 	fmt.Fprintf(b, "- **%s** at %s (%s): %s\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes), Where(p), linkLine(p.URL))
 	fmt.Fprintf(b, "  - Relevance %s · priority %s · key `%s`\n", strconv.FormatFloat(res.Relevance, 'f', 0, 64),
 		strconv.FormatFloat(res.Score, 'f', 1, 64), codeSpan(string(r.Key)))
+	if dropClass != "" {
+		fmt.Fprintf(b, "  - Dropped: %s\n", Escape(dropClass, 80))
+	}
+}
+
+// hydrate is Options.Hydrate for a record whose text must be read back: the
+// record with its text, or false when it cannot be.
+func (o Options) hydrate(r ledger.Record) (ledger.Record, bool) {
+	if o.Hydrate == nil {
+		return r, false
+	}
+	full, ok := o.Hydrate(r)
+	if !ok || full.BodyEvicted {
+		return r, false
+	}
+	return full, true
+}
+
+// writeUnscored is writeBrief for a role whose text was not loaded: it names
+// the role and says it was not scored, rather than showing a score computed on
+// an empty description.
+func writeUnscored(b *strings.Builder, r ledger.Record, dropClass string) {
+	p := r.Posting
+	fmt.Fprintf(b, "- **%s** at %s (%s): %s\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes), Where(p), linkLine(p.URL))
+	fmt.Fprintf(b, "  - not scored: text not loaded · key `%s`\n", codeSpan(string(r.Key)))
 	if dropClass != "" {
 		fmt.Fprintf(b, "  - Dropped: %s\n", Escape(dropClass, 80))
 	}
