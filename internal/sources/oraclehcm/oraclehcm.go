@@ -414,7 +414,7 @@ func (s *source) details(ctx context.Context, b sources.Board, t target, rows []
 	}
 	st.Deferred = pl.Deferred
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
+		Board: b, Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			p, err := s.detail(ctx, b, t, rows[i], seen)
 			return &p, err

@@ -216,7 +216,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		defer func() { s.opt.Report(b, st) }()
 	}
 	res, err := srcutil.DetailStep{
-		Rows: len(uniq), Plan: pl, CanDefer: s.opt != nil,
+		Board: b, Rows: len(uniq), Plan: pl, CanDefer: s.opt != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			j := uniq[i]
 			var d detail

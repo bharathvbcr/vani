@@ -185,7 +185,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		defer func() { s.opt.Report(b, st) }()
 	}
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
+		Board: b, Rows: len(rows), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			p, err := s.detail(ctx, b, rows[i], seen)
 			return &p, err

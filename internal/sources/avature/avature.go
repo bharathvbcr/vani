@@ -334,7 +334,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	pl := srcutil.PlanDetails(plan, srcutil.Day(seen), limit)
 	stats.Deferred, stats.Prefiltered = pl.Deferred, pl.Prefiltered
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
+		Board: b, Rows: len(rows), Plan: pl, CanDefer: s.opt != nil && s.opt.Stored != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			p, err := s.detail(ctx, st, b, token, rows[i], seen)
 			return &p, err

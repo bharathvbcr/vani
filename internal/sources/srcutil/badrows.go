@@ -47,6 +47,7 @@ type Rows struct {
 	b       sources.Board
 	total   int
 	skipped int
+	held    int
 	first   string
 }
 
@@ -84,6 +85,31 @@ func (r *Rows) Bad(err error) error {
 	return nil
 }
 
+// CanHold is whether a caller that can hold what a listing leaves out installed
+// a sink, so Hold and Bad can report a shortfall rather than fail the board.
+func (r *Rows) CanHold() bool { return r.sink != nil }
+
+// Hold counts n stored postings the listing leaves out on purpose and must not
+// age (their re-read was not made or did not answer), so the listing reads as
+// short: the caller holds them. Unlike Bad it has no bound of its own: how many
+// may be held is the caller's (the detail step's miss bound and request cap), and
+// held rows do not count toward the bad-row bound. why is the one-line reason the
+// sink receives when no row was skipped by Bad; it is constant text, never row
+// content. Without a sink it holds nothing and returns false, and the caller must
+// fail the board.
+func (r *Rows) Hold(n int, why string) bool {
+	if r.sink == nil {
+		return false
+	}
+	if n > 0 {
+		r.held += n
+		if r.first == "" {
+			r.first = why
+		}
+	}
+	return true
+}
+
 func (r *Rows) over(err error) error {
 	return fmt.Errorf("%w (%d bad rows of %d, over the %d the board may leave out)", err, r.skipped, r.total, MaxGone(r.total))
 }
@@ -93,12 +119,12 @@ func (r *Rows) over(err error) error {
 // otherwise reports the shortfall to the sink. Call it just before returning
 // the postings, so a board that then fails reports nothing.
 func (r *Rows) Done() error {
-	if r.sink == nil || r.skipped == 0 {
+	if r.sink == nil || r.skipped+r.held == 0 {
 		return nil
 	}
 	if r.skipped > MaxGone(r.total) {
 		return r.over(fmt.Errorf("rows could not be read: %s", r.first))
 	}
-	r.sink(r.b, r.skipped, r.first)
+	r.sink(r.b, r.skipped+r.held, r.first)
 	return nil
 }

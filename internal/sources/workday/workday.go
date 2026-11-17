@@ -348,7 +348,7 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	}
 	storedNew := "" // a "new" row whose posting turned out stored
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl,
+		Board: b, Rows: len(rows), Plan: pl,
 		// A missed new row is left out the way a deferred one is, so it needs the
 		// deferred row's guard: every stored posting matched to a path, so a row
 		// with no stored path holds no stored posting.

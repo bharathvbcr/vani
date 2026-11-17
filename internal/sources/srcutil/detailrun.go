@@ -3,9 +3,21 @@ package srcutil
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
+
+// heldWhy is the reason a listing reports when it leaves out stored postings
+// whose unusable text was not re-read (Rows.Hold).
+const heldWhy = "stored posting text unreadable and not re-read this run; held for a later run"
+
+// ErrCannotHold is a detail step that must leave out stored postings it could
+// not re-read (unusable text past the request limit) with no BadRowSink to
+// report them as a shortfall: listing them unread would store an empty text,
+// and omitting them quietly would age them as absent.
+var ErrCannotHold = errors.New("stored postings with unreadable text could not be re-read within the detail limit, and the caller cannot hold a short listing")
 
 // DetailStep is the loop every bounded-detail adapter runs over a DetailPlan:
 // reuse the stored rows, request each row of Plan.Fetch in order, bound the
@@ -16,6 +28,9 @@ import (
 // accepted posting must also satisfy, and how errors read) stays in the
 // adapter, behind these fields.
 type DetailStep struct {
+	// Board is the board being listed: where the step reports the stored
+	// postings it holds (Rows.Hold).
+	Board sources.Board
 	// Rows is how many rows were listed; Plan indexes into them.
 	Rows int
 	Plan DetailPlan
@@ -65,6 +80,11 @@ type DetailResult struct {
 	// Unanswered rows missed transiently; LeftOut of them were new rows
 	// (not listed), the rest stored rows returned as stored.
 	Unanswered, LeftOut int
+	// Held unusable stored rows were not listed, being past the request limit
+	// (Plan.Held) or missed on their re-read. They were reported to the
+	// BadRowSink as a shortfall, so the listing reads as short and their stored
+	// postings are kept, not aged.
+	Held int
 }
 
 // Run does the step. ctx is checked before every request. The error is the
@@ -80,7 +100,13 @@ func (d DetailStep) Run(ctx context.Context) (DetailResult, error) {
 		reuse(i)
 		res.Reused++
 	}
+	bad := NewRows(ctx, d.Board, d.Rows)
+	if len(d.Plan.Held) > 0 && !bad.CanHold() {
+		return res, fmt.Errorf("%w (%d held)", ErrCannotHold, len(d.Plan.Held))
+	}
+	res.Held = len(d.Plan.Held)
 	misses := NewDetailMisses(d.Plan, d.CanDefer)
+	misses.canHold = bad.CanHold()
 	allowed := MaxGone(len(d.Plan.Fetch))
 	for n, i := range d.Plan.Fetch {
 		if err := ctx.Err(); err != nil {
@@ -106,7 +132,9 @@ func (d DetailStep) Run(ctx context.Context) (DetailResult, error) {
 				}
 				return res, err
 			}
-			if n >= d.Plan.New {
+			if d.Plan.unusableAt(n) {
+				res.Held++
+			} else if n >= d.Plan.New {
 				reuse(i)
 			} else {
 				res.LeftOut++
@@ -136,6 +164,11 @@ func (d DetailStep) Run(ctx context.Context) (DetailResult, error) {
 	err := misses.Done(res.Fetched + res.Refreshed + res.Skipped)
 	if err != nil && d.DoneErr != nil {
 		err = d.DoneErr(err)
+	}
+	if err == nil {
+		// Reported last, so a step that fails reports nothing (Rows.Done).
+		bad.Hold(res.Held, heldWhy)
+		err = bad.Done()
 	}
 	return res, err
 }

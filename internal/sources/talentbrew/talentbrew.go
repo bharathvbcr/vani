@@ -514,7 +514,7 @@ func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Boa
 	}
 	st.Deferred, st.Prefiltered = pl.Deferred, pl.Prefiltered
 	res, err := srcutil.DetailStep{
-		Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
+		Board: b, Rows: len(rows), Plan: pl, CanDefer: s.opt != nil,
 		Fetch: func(ctx context.Context, i int) (*posting.Posting, error) {
 			p, err := s.detail(ctx, pace, b, host, company, rows[i], keys[i], seen)
 			return &p, err

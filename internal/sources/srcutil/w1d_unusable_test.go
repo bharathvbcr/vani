@@ -11,7 +11,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
-// A stored row whose text is unusable is always read again, never reused,
+// A stored row whose text is unusable is read again ahead of the other stored rows, up to the limit (the rest are held), never reused,
 // deferred or dropped, whatever its refresh turn, the limit or the new rows.
 func TestW1dPlanDetailsUnusable(t *testing.T) {
 	const day = 100
@@ -33,23 +33,24 @@ func TestW1dPlanDetailsUnusable(t *testing.T) {
 		newN  int
 		unus  int
 		defrd int
+		held  []int
 	}{
-		{"alone, off turn", []DetailRow{{ID: off, Stored: true, Unusable: true}}, 5, []int{0}, nil, 0, 1, 0},
-		{"alone, on turn", []DetailRow{{ID: on, Stored: true, Unusable: true}}, 5, []int{0}, nil, 0, 1, 0},
-		{"zero limit still reads it", []DetailRow{{ID: off, Stored: true, Unusable: true}, {ID: "n"}}, 0, []int{0}, nil, 0, 1, 1},
-		{"takes room from new rows", []DetailRow{{ID: "n1"}, {ID: "n2"}, {ID: off, Stored: true, Unusable: true}}, 2, []int{0, 2}, nil, 1, 1, 1},
-		{"more unusable than the limit", []DetailRow{{ID: "n"}, {ID: "u1", Stored: true, Unusable: true}, {ID: "u2", Stored: true, Unusable: true}, {ID: off, Stored: true}}, 1, []int{1, 2}, []int{3}, 0, 2, 1},
-		{"dropped listing does not drop it", []DetailRow{{ID: off, Stored: true, Unusable: true, Drop: true}}, 5, []int{0}, nil, 0, 1, 0},
-		{"changed rows get what is left", []DetailRow{{ID: "u", Stored: true, Unusable: true}, {ID: "c", Stored: true, Changed: true}}, 1, []int{0}, []int{1}, 0, 1, 0},
-		{"unusable but not stored is a new row", []DetailRow{{ID: "n", Unusable: true}}, 5, []int{0}, nil, 1, 0, 0},
+		{"alone, off turn", []DetailRow{{ID: off, Stored: true, Unusable: true}}, 5, []int{0}, nil, 0, 1, 0, nil},
+		{"alone, on turn", []DetailRow{{ID: on, Stored: true, Unusable: true}}, 5, []int{0}, nil, 0, 1, 0, nil},
+		{"zero limit holds it, reads nothing", []DetailRow{{ID: off, Stored: true, Unusable: true}, {ID: "n"}}, 0, nil, nil, 0, 0, 1, []int{0}},
+		{"takes room from new rows", []DetailRow{{ID: "n1"}, {ID: "n2"}, {ID: off, Stored: true, Unusable: true}}, 2, []int{0, 2}, nil, 1, 1, 1, nil},
+		{"more unusable than the limit", []DetailRow{{ID: "n"}, {ID: "u1", Stored: true, Unusable: true}, {ID: "u2", Stored: true, Unusable: true}, {ID: off, Stored: true}}, 1, []int{1}, []int{3}, 0, 1, 1, []int{2}},
+		{"dropped listing does not drop it", []DetailRow{{ID: off, Stored: true, Unusable: true, Drop: true}}, 5, []int{0}, nil, 0, 1, 0, nil},
+		{"changed rows get what is left", []DetailRow{{ID: "u", Stored: true, Unusable: true}, {ID: "c", Stored: true, Changed: true}}, 1, []int{0}, []int{1}, 0, 1, 0, nil},
+		{"unusable but not stored is a new row", []DetailRow{{ID: "n", Unusable: true}}, 5, []int{0}, nil, 1, 0, 0, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pl := PlanDetails(tc.rows, day, tc.limit)
-			if !slices.Equal(pl.Fetch, tc.fetch) || !slices.Equal(pl.Reuse, tc.reuse) || pl.New != tc.newN || pl.Unusable != tc.unus || pl.Deferred != tc.defrd {
-				t.Fatalf("plan %+v, want fetch %v reuse %v new %d unusable %d deferred %d", pl, tc.fetch, tc.reuse, tc.newN, tc.unus, tc.defrd)
+			if !slices.Equal(pl.Fetch, tc.fetch) || !slices.Equal(pl.Reuse, tc.reuse) || pl.New != tc.newN || pl.Unusable != tc.unus || pl.Deferred != tc.defrd || !slices.Equal(pl.Held, tc.held) {
+				t.Fatalf("plan %+v, want fetch %v reuse %v new %d unusable %d deferred %d held %v", pl, tc.fetch, tc.reuse, tc.newN, tc.unus, tc.defrd, tc.held)
 			}
-			if len(pl.Fetch)+len(pl.Reuse)+pl.Deferred+pl.Prefiltered != len(tc.rows) {
+			if len(pl.Fetch)+len(pl.Reuse)+len(pl.Held)+pl.Deferred+pl.Prefiltered != len(tc.rows) {
 				t.Fatalf("plan %+v does not place every row exactly once", pl)
 			}
 		})
