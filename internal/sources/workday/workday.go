@@ -93,7 +93,8 @@ type Options struct {
 	// no stored posting that DropListed drops is neither fetched nor returned
 	// (it would be dropped before triage anyway). Nil drops nothing.
 	DropListed func(p posting.Posting) bool
-	// Report, when set, receives each listed board's counts.
+	// Report, when set, receives each listed board's counts, once, whether the
+	// board then succeeded or failed on a detail.
 	Report func(sources.Board, Stats)
 }
 
@@ -228,12 +229,14 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		}
 	}
 	st := Stats{Listed: len(w.rows), Queries: w.queries, Requests: w.requests, Stubs: w.stubs, Short: w.short}
+	if s.opt != nil && s.opt.Report != nil {
+		// Once, whether the board then succeeds or fails on a detail, as the other
+		// bounded-detail adapters report: the counts of a failed board say what ran.
+		defer func() { s.opt.Report(b, st) }()
+	}
 	out, err := s.details(ctx, b, base, host, tenant, site, w.rows, &st)
 	if err != nil {
 		return nil, fmt.Errorf("workday %q: %w", b.Token, err)
-	}
-	if s.opt != nil && s.opt.Report != nil {
-		s.opt.Report(b, st)
 	}
 	return out, nil
 }

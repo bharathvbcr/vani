@@ -430,8 +430,11 @@ func (s *source) get(ctx context.Context, pace *srcutil.Pacer, u string, v any) 
 	if err := srcutil.GetJSON(ctx, s.d, u, &env); err != nil {
 		return err
 	}
-	if env.Status == nil || *env.Status != 200 {
-		return fmt.Errorf("%w: envelope status %v, error %s", ErrShape, env.Status, env.Error)
+	if env.Status == nil {
+		return fmt.Errorf("%w: envelope has no status, error %s", ErrShape, env.Error)
+	}
+	if *env.Status != 200 {
+		return fmt.Errorf("%w: envelope status %d, error %s", ErrShape, *env.Status, env.Error)
 	}
 	if len(env.Data) == 0 || string(env.Data) == "null" {
 		return fmt.Errorf("%w: no data", ErrShape)
