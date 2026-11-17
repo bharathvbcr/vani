@@ -750,6 +750,7 @@ async function w3badvProvenance(): Promise<void> {
       q<HTMLFormElement>(box, "#adv6").addEventListener("submit", e => e.preventDefault());
       el("a6-a").value = "mine"; user(el("a6-a"), "input");
       q<HTMLFormElement>(box, "#adv6").requestSubmit();
+      anySubmit--; // this attack submits on purpose; the run-wide "nothing submitted" check is about the code under test
       await sleep(30);
       check("w3badv control: a page's requestSubmit flushes nothing", o.sent.length === 0, names(o.sent));
       o.t.dispose();
@@ -850,7 +851,11 @@ async function w3badvProvenance(): Promise<void> {
   }
 }
 
-/** w2b (232): a bank that cannot be read, or one that disables this host (in any case, with a trailing dot), sends nothing. */
+/**
+ * w2b (232, round 2 0856e67): a bank this tracker can read and that disables this host (in any case, with a trailing dot)
+ * sends nothing. A bank that cannot be read (null, or a throw) does not stop the tracker sending: the background checks
+ * disabledHosts against a fresh bank and fails closed itself (w2badv-tracker.test.ts asserts the same).
+ */
 async function failClosedCapture(): Promise<void> {
   const box = document.createElement("div");
   box.innerHTML = '<label for="fc1">Favourite editor</label><input id="fc1" value="vim"><label for="fc2">Favourite shell</label><input id="fc2" value="fish">' +
@@ -872,8 +877,8 @@ async function failClosedCapture(): Promise<void> {
     return sends;
   };
   for (const how of ["flush", "pagehide"] as const) {
-    check(`${how}: a bank read that returns null sends nothing`, await run(async () => null, "x.example", how) === 0);
-    check(`${how}: a bank read that throws sends nothing`, await run(async () => { throw new Error("storage down"); }, "x.example", how) === 0);
+    check(`${how}: a bank read that returns null still sends (the background decides)`, await run(async () => null, "x.example", how) > 0);
+    check(`${how}: a bank read that throws still sends (the background decides)`, await run(async () => { throw new Error("storage down"); }, "x.example", how) > 0);
     check(`${how}: a disabled host sends nothing`, await run(async () => disabled(["x.example"]), "x.example", how) === 0);
     check(`${how}: a disabled host listed in other case with a trailing dot sends nothing`, await run(async () => disabled(["X.Example."]), "x.example", how) === 0);
     check(`${how}: an enabled host still sends`, await run(async () => disabled(["other.example"]), "x.example", how) > 0);
@@ -1145,9 +1150,13 @@ async function resumeAttach(): Promise<void> {
   const group = res.closest<HTMLElement>("[role=group]")!;
   check("resume upload: the visible group is outlined yellow and says which file went in",
     group.getAttribute("data-vani-fill") === "review" && (group.getAttribute("data-vani-why") ?? "").includes("Resume_Test.pdf"), group.outerHTML.slice(0, 200));
+  // 7060b74 (2026-11-08) made a Cover Letter file input "no_cover" when no letter is chosen for the job; any other
+  // attachment stays "untouchable". Neither is filled, and neither is given the resume.
+  const reasonOf = (el: HTMLElement) => out.find((_, i) => refs[i]!.els[0] === el)?.reason;
   check("cover letter and other attachments: never given the resume, no events",
     cover.files?.length === 0 && other.files?.length === 0 && coverEvents === 0 &&
-    out.filter((_, i) => refs[i]!.els[0] === cover || refs[i]!.els[0] === other).every(x => !x.filled && x.reason === "untouchable"), JSON.stringify(out));
+    out.filter((_, i) => refs[i]!.els[0] === cover || refs[i]!.els[0] === other).every(x => !x.filled) &&
+    reasonOf(cover) === "no_cover" && reasonOf(other) === "untouchable", JSON.stringify(out));
   check("the resume source is asked once per fill", asked === 1, String(asked));
 
   // A second fill does not replace a file already there, unless asked to overwrite.
