@@ -396,7 +396,10 @@ func (e *env) runRequestFacet(at time.Time) runRequestFacet {
 func (e *env) ledgerFacet() ledgerFacet {
 	dir := filepath.Join(e.stateDir, "ledger")
 	f := ledgerFacet{Path: dir, ByStatus: map[string]int{}}
-	snap, err := ledger.ReadSnapshot(dir)
+	// Status reports counts, never text: the scoped read folds the heads and
+	// loads no description (a nil scope hydrates nothing), where ReadSnapshot
+	// would materialise every body of a ledger the daemon holds lean.
+	snap, err := ledger.ReadSnapshotScoped(dir, nil)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		f.facet = facet{OK: true, Reason: "no ledger yet: no run has created it"}
