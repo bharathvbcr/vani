@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------- TeX value -> text
@@ -138,7 +139,7 @@ var (
 	// A letter multiplier (3k, 1.2M, 2B) must touch its number; a word
 	// multiplier may follow a space ("1.2 million"), so it reads as the same
 	// value as "1.2M".
-	reMultSfx = regexp.MustCompile(`^(?:(?:[kK]|M|B|[bB]n)|\s*(?i:thousand|million|billion))\b`)
+	reMultSfx = regexp.MustCompile(`^(?:(?:[kK]|M|B|[bB]n)|\s{0,4}(?i:thousand|million|billion))\b`)
 	reUnitSfx = regexp.MustCompile(`^\s?(%|×|(?i:percentage points?|percent|pp\b|x\b|ns\b|us\b|ms\b|seconds?\b|secs?\b|s\b|minutes?\b|mins?\b|hours?\b|hrs?\b|h\b|days?\b|weeks?\b))`)
 	unitTail  = strings.NewReplacer("µ", "u", "μ", "u")
 )
@@ -171,6 +172,20 @@ func multiplierOf(sfx string) float64 {
 	return 1
 }
 
+// maxUnitTail bounds how far past a number its multiplier and unit are read:
+// the longest ("thousand percentage points") is 26 bytes, plus the spaces.
+const maxUnitTail = 48
+
+// tailAfter is s[i:] cut to maxUnitTail bytes at a rune boundary, so reading
+// a unit never re-scans the rest of a long string once per number.
+func tailAfter(s string, i int) string {
+	end := min(len(s), i+maxUnitTail)
+	for end < len(s) && end > i && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[i:end]
+}
+
 // figuresIn is numbersIn with the unit each number is written with.
 func figuresIn(s string) []figure {
 	s = normalizeNumsKeep(s, true)
@@ -185,7 +200,7 @@ func figuresIn(s string) []figure {
 		if i > 0 && s[i-1] == '$' || i > 1 && s[i-1] == '-' && s[i-2] == '$' {
 			f.Class = "usd"
 		}
-		tail := unitTail.Replace(s[loc[1]:])
+		tail := unitTail.Replace(tailAfter(s, loc[1]))
 		if m := reMultSfx.FindString(tail); m != "" {
 			f.Mult = multiplierOf(m)
 			tail = tail[len(m):]
