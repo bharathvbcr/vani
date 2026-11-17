@@ -318,21 +318,18 @@ func statementText(text string) string {
 
 func textHash(text string) string { return sha1hex(squash(text)) }
 
-// usage: claim id -> sentences on this resume that use it
+// usage: claim id -> texts on this resume that use it. It reads the renderer's
+// own record of the tokens it resolves (every field: header, skills lines,
+// entry titles, orgs, dates, stacks, leads and bullets), so a figure printed
+// anywhere gets a blind pass and a gate, not only the ones in bullets.
 func claimUsage(c *Composed) map[string][]string {
 	u := map[string][]string{}
-	add := func(t string) {
-		for _, m := range tokenRe.FindAllStringSubmatch(t, -1) {
-			if !contains(u[m[1]], t) {
-				u[m[1]] = append(u[m[1]], t)
+	for _, f := range renderResume(c, &ClaimsFile{Claims: map[string]*ClaimView{}}, false).R.uses {
+		for _, m := range tokenRe.FindAllStringSubmatch(f.Text, -1) {
+			if !contains(u[m[1]], f.Text) {
+				u[m[1]] = append(u[m[1]], f.Text)
 			}
 		}
-	}
-	for _, r := range c.allBullets() {
-		add(r.B.Text)
-	}
-	for _, l := range c.leads() {
-		add(l.Text)
 	}
 	return u
 }

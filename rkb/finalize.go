@@ -55,7 +55,7 @@ func outputsFor(c *Composed, cf *ClaimsFile, sel, outDir, texDir string, final, 
 		fs, _ = strconv.ParseFloat(strings.TrimSuffix(v, "pt"), 64)
 	}
 	docx := filepath.Join(outDir, base+".docx")
-	dfs, dpages := exportDocx(c, cf, docx, pages, fs)
+	dfs, dpages := exportDocx(c, cf, docx, pages, fs, final)
 	tex := filepath.Join(texDir, base+".tex")
 	writeFile(tex, buildLatex(c, sel))
 
@@ -155,6 +155,9 @@ func cmdFinalize(a *args) {
 	}
 	stageTex := filepath.Join(stage, "tex")
 	r, rep, sdocx, dfs, dp, stex := outputsFor(c, cf, sel, stage, stageTex, true, true, pages)
+	if probs := r.R.coverage(cf); len(probs) > 0 || len(r.R.unverified) > 0 {
+		stop("figure coverage", append(probs, fmt.Sprintf("%d rendered figure(s) are not double-verified", len(r.R.unverified))))
+	}
 	if rep.Status != 0 {
 		printFit(rep)
 		stop("fit --strict", []string{rep.Advice})

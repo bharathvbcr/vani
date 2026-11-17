@@ -778,6 +778,7 @@ func finalPreconditions(c *Composed, cf *ClaimsFile, ecoPath string) []string {
 	if cf.ResumeHash != c.resumeHash() {
 		errs = append(errs, "claims.json was exported for different content; re-run `rkb claims export --used-in` on this resume")
 	}
+	errs = append(errs, renderResume(c, cf, true).R.coverage(cf)...)
 	if h := ageHours(cf.Generated); h > cfg.FreshHours {
 		errs = append(errs, fmt.Sprintf("claims.json is %.0f h old (max %.0f); re-export", h, cfg.FreshHours))
 	}
