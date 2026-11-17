@@ -36,7 +36,7 @@ type runOpts struct {
 // it. Expiry is an error naming the bound; a command that cannot be started or
 // exits non-zero returns exec's error with whatever it printed.
 func runCmd(timeout time.Duration, o runOpts, name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(rootContext(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir, cmd.Env = o.Dir, o.Env
@@ -47,7 +47,12 @@ func runCmd(timeout time.Duration, o runOpts, name string, args ...string) ([]by
 	}
 	ownGroup(cmd)
 	cmd.WaitDelay = killGrace
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return out.Bytes(), err
+	}
+	trackGroup(cmd)
+	defer untrackGroup(cmd)
+	err := cmd.Wait()
 	// Whatever the outcome, nothing the command started may outlive it:
 	// Chrome and soffice leave helpers in the group after the leader exits.
 	killGroup(cmd)

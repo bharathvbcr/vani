@@ -427,6 +427,7 @@ func exitNow(code int) {
 // on a normal return (defer cleanup()), a panic, a die and a stop alike. Use
 // it for any folder that holds copies of the person's documents.
 func scratchDir(prefix string) (string, func(), error) {
+	watchSignals() // a signal must remove the folder too
 	dir, err := os.MkdirTemp("", prefix)
 	if err != nil {
 		return "", func() {}, err
