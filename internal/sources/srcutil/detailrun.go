@@ -85,6 +85,10 @@ type DetailResult struct {
 	// BadRowSink as a shortfall, so the listing reads as short and their stored
 	// postings are kept, not aged.
 	Held int
+	// TooLarge rows answered a detail over the body cap (ErrBodyTooLarge). Each
+	// was skipped as a bad row (Rows.Bad), so the listing reads as short and a
+	// stored posting among them is kept, not aged.
+	TooLarge int
 }
 
 // Run does the step. ctx is checked before every request. The error is the
@@ -139,6 +143,17 @@ func (d DetailStep) Run(ctx context.Context) (DetailResult, error) {
 				reuse(i)
 			}
 			res.Unanswered++
+			continue
+		case err != nil && ctx.Err() == nil && errors.Is(err, ErrBodyTooLarge):
+			// One posting too large to read fails every run of its board if it
+			// fails the board. It is reported as a bad row instead: skipped,
+			// bounded with the other bad rows, and its stored posting, if any,
+			// held by the short listing. Without a sink Bad returns err and the
+			// board fails as it always did.
+			if berr := bad.Bad(fmt.Errorf("row %d: detail too large: %w", i, err)); berr != nil {
+				return res, d.fetchErr(i, berr)
+			}
+			res.TooLarge++
 			continue
 		case err != nil:
 			// A partial listing would age healthy postings as absent, so only a
