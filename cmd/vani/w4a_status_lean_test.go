@@ -81,6 +81,10 @@ func w4aFacetJSON(t *testing.T, dir string, full bool) string {
 func TestW4aStatusReadsNoBodies(t *testing.T) {
 	const n = 100
 	e, dir := w4aStatusState(t, n)
+	// A saved and an applied posting, so the unwatched-companies facet (which
+	// counts only marked postings, by company name) has something to report.
+	mustCode(t, 0, "jobs", "mark", "gh:co1:001", "saved")
+	mustCode(t, 0, "jobs", "mark", "gh:co2:002", "applied")
 
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -112,14 +116,15 @@ func TestW4aStatusReadsNoBodies(t *testing.T) {
 	cfg := config.Default()
 	lean, _ := json.Marshal(unwatchedCompaniesOf(f.recs, cfg, e.stateDir))
 	whole, _ := json.Marshal(unwatchedCompaniesOf(full.Records, cfg, e.stateDir))
-	if string(lean) != string(whole) {
-		t.Fatalf("unwatched companies\n lean %s\nwhole %s", lean, whole)
+	if string(lean) != string(whole) || !strings.Contains(string(lean), `"count":2`) {
+		t.Fatalf("unwatched companies (want the two marked ones)\n lean %s\nwhole %s", lean, whole)
 	}
 
 	// The command itself writes that facet.
 	out, _ := mustCode(t, 0, "status", "--json")
 	var got struct {
-		Ledger json.RawMessage `json:"ledger"`
+		Ledger    json.RawMessage `json:"ledger"`
+		Unwatched json.RawMessage `json:"unwatched_companies"`
 	}
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
@@ -129,6 +134,9 @@ func TestW4aStatusReadsNoBodies(t *testing.T) {
 	wb, _ := json.Marshal(want)
 	if string(got.Ledger) != string(wb) {
 		t.Fatalf("status --json ledger\n got %s\nwant %s", got.Ledger, wb)
+	}
+	if !strings.Contains(string(got.Unwatched), `"count":2`) {
+		t.Fatalf("status --json unwatched_companies: %s", got.Unwatched)
 	}
 }
 
