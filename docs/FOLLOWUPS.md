@@ -1085,6 +1085,18 @@ comment, so the next audit would report it as a bug. Line numbers are on main at
     not move (`internal/eval/names_test.go`). "Beats Jev" reads as local d1-3B against cloud
     d1-ultra. Lappi-decision's pre-registration amendment 2 records this rename (draft, for the
     owner's review).
+  - **Switched to `liquid/d1.2-ultra` (2026-11-17, the owner's call).** It answers as `d1-2-ultra`.
+    One probe call resolved it to `liquid/d1.2-ultra-20261116` (provider Liquid, four slots
+    answered, $0.00003). Legacy `jev` rows are now pinned to `d1-ultra`
+    (`eval.LegacyOpenRouterModel`), not to the configured model, so d1-ultra's readings are never
+    credited to d1.2-ultra (`TestLegacyRowsStayD1UltraAfterModelSwitch`). These start again for
+    the new name:
+    - Drops d1-ultra made are unjudged under the new triage model id. Retriage leaves them dropped
+      unless a refresh is asked for (`MaxRefreshUnjudged` 500).
+    - The rank-fit `Calibration` has no `d1-2-ultra` entry, so its readings score on raw p until
+      `vani rankfit` is re-run.
+    - Eval thresholds and Lappi promotion evidence for the primary start from n=0.
+    - `vani teacher --of` now defaults to `d1-2-ultra`; pass `--of d1-ultra` for the old set.
   - **The first live runs read nothing (2026-10-18, about 22:10).** `OPENROUTER_API_KEY` was unset,
     so d1-ultra was off. Anthropic refused every call with HTTP 400, "This API key is not scoped to
     a workspace", because `ANTHROPIC_WORKSPACE_ID` was unset; Vani sends `anthropic-workspace-id`

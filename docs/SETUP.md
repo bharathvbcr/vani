@@ -119,7 +119,7 @@ Everything else is an edit of the JSON file. Unknown fields are refused. `config
 
 | Key | Value |
 |---|---|
-| `decide.openrouter_model` | `liquid/d1-ultra` |
+| `decide.openrouter_model` | `liquid/d1.2-ultra` |
 | `decide.openrouter_key_env` | `OPENROUTER_API_KEY` |
 | `decide.daily_usd.openrouter` | `0.25` |
 | `decide.daily_usd.llm` | `1.0` |
@@ -136,8 +136,8 @@ While the model is set, `allowed_hosts` must include `openrouter.ai`. `vani init
 
 ### 4. OpenRouter
 
-`vani init` defaults `decide.openrouter_model` to `liquid/d1-ultra` (`allowed_hosts` already includes
-`openrouter.ai`), answered under the short name `d1-ultra`. Spend is logged to `<state dir>/budget/jev.json`
+`vani init` defaults `decide.openrouter_model` to `liquid/d1.2-ultra` (`allowed_hosts` already includes
+`openrouter.ai`), answered under the short name `d1-2-ultra`. Spend is logged to `<state dir>/budget/jev.json`
 against `decide.daily_usd.openrouter`, and notes spend to `budget/jev-notes.json` against
 `funnel.notes_daily_usd` (default `0.15`). Leave `decide.openrouter_model` empty only when turning off
 OpenRouter triage (`llm` or `--list-only` must carry the run). Full retry/timeout/key resolution rules live in [`RUNTIME.md`](RUNTIME.md).
@@ -450,7 +450,7 @@ prints the model line when it is disabled.
 | `semantic matching is not configured: set semantic.snapshot and kb.bank` | Warm was asked with one of the two unset. |
 | `this binary has the Tessl engine: no` | Rebuild with `-tags tessl` on darwin/arm64. |
 | `semantic matching not run:` | Profile, snapshot or model failed. The digest is still written. The reason is the rest of the line. |
-| `openrouter (liquid/d1-ultra) disabled:` and `no decision backend is available (configure decide.openrouter_model or llm)` | No key (environment and Keychain) and no `llm`, on a run that advances. `--list-only` prints the disabled warning and continues. |
+| `openrouter (liquid/d1.2-ultra) disabled:` and `no decision backend is available (configure decide.openrouter_model or llm)` | No key (environment and Keychain) and no `llm`, on a run that advances. `--list-only` prints the disabled warning and continues. |
 | `daemon: model disabled:` | Text status: the daemon has no key. stderr is `vani: daemon:` plus the same reason. The `fix:` line names the Keychain item. |
 | `decide.daily_usd.openrouter must be above 0 when decide.openrouter_model is set` | The model is on and the cap is 0. A zero cap would refuse every call. |
 | `allowed_hosts is missing: openrouter.ai` | The model is on and that host is not allowed. Other missing hosts are joined on the same line. |

@@ -156,6 +156,7 @@ func TestLegacyDecodersRejectUnknownFields(t *testing.T) {
 func TestBackendName(t *testing.T) {
 	for model, want := range map[string]string{
 		"liquid/d1-ultra":    "d1-ultra",
+		"liquid/d1.2-ultra":  "d1-2-ultra",
 		"typesafe/jev-1.13":  "jev-1-13",
 		"d1-ultra":           "d1-ultra",
 		" Vendor/Model_X:v2": "model_x-v2",
