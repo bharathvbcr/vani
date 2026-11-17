@@ -16,11 +16,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/decide"
 	"github.com/bharathvbcr/decide/internal/jsonwire"
@@ -116,6 +118,10 @@ type Config struct {
 	// Spend. A reported cost always wins. Zero charges nothing for such a call,
 	// as before; at most MaxInputUSDPerMTok.
 	InputUSDPerMTok float64
+	// Wire is the request dialect; default WireSystemOne. WireGemini sends
+	// State's value as the "input" string (a non-string value is sent as its
+	// JSON text); its default State is the question's Context as a string.
+	Wire Wire
 	// Name is the backend's name in routing, answers and ledgers; default
 	// "jev". A second instance speaking the same wire shape (a local
 	// llama.cpp /v1/systemone serving another decision model) needs its own
@@ -123,6 +129,36 @@ type Config struct {
 	// [a-z0-9_-].
 	Name string
 }
+
+// Wire names a Decisions request dialect. Every dialect asks the same typed
+// choice questions and reads the same answer (choice, probabilities,
+// confidence); they differ in the field that carries the shared context, the
+// auth header, the usage counter and how a refusal is reported.
+type Wire string
+
+const (
+	// WireSystemOne is OpenRouter's Decisions API and every /v1/systemone
+	// server (SubQ, llama.cpp): {"model","questions","state"} with
+	// Authorization: Bearer. The default.
+	WireSystemOne Wire = ""
+	// WireGemini is Google's /v1beta/decisions (gemini-decision-1):
+	// {"input","model","questions"} with the context as a string, the key in
+	// x-goog-api-key, usage.total_input_tokens, question keys of
+	// [A-Za-z0-9_-]{1,64}, and an input safety block as HTTP 400 with
+	// error.code, read here as Refused rather than an outage.
+	WireGemini Wire = "gemini"
+)
+
+// Gemini's documented key limits (aistudio.google.com/docs/decisions-api#limits).
+const (
+	geminiMaxQuestionKey = 64
+	geminiMaxOptionKey   = 128
+	geminiMaxOptionBytes = 512
+)
+
+// geminiRefusalCodes are the error.code values Google documents for a request
+// its input safety filters blocked.
+var geminiRefusalCodes = []string{"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}
 
 // MaxInputUSDPerMTok bounds Config.InputUSDPerMTok ($1,000 per million input
 // tokens): far above any decision model's price, low enough that a typo in a
@@ -152,6 +188,7 @@ type Backend struct {
 	spend         decide.Spend
 	spendKey      string
 	inputPerMTok  float64
+	wire          Wire
 	doer          Doer
 
 	disabled     atomic.Bool
@@ -225,8 +262,17 @@ func (cfg Config) resolve() (Config, error) {
 	if p := cfg.InputUSDPerMTok; math.IsNaN(p) || p < 0 || p > MaxInputUSDPerMTok {
 		return Config{}, fmt.Errorf("jev: input price %v USD per million tokens outside [0, %d]", p, MaxInputUSDPerMTok)
 	}
-	if cfg.State == nil {
-		cfg.State = textState
+	switch cfg.Wire {
+	case WireSystemOne:
+		if cfg.State == nil {
+			cfg.State = textState
+		}
+	case WireGemini:
+		if cfg.State == nil {
+			cfg.State = func(q decide.Question) any { return string(q.Context) }
+		}
+	default:
+		return Config{}, fmt.Errorf("jev: wire %q is not %q or %q", cfg.Wire, WireSystemOne, WireGemini)
 	}
 	if cfg.SpendKey == "" {
 		cfg.SpendKey = defaultSpendKey
@@ -316,7 +362,7 @@ func New(cfg Config, d Doer) (*Backend, error) {
 	return &Backend{
 		name: cfg.Name, endpoint: cfg.Endpoint, model: cfg.Model, key: cfg.Key, timeout: cfg.Timeout,
 		maxAttempts: cfg.MaxAttempts, maxRetryAfter: cfg.MaxRetryAfter, backoffBase: cfg.Backoff,
-		state: cfg.State, descs: cfg.Descriptions, instr: cfg.Instructions, spend: cfg.Spend, spendKey: cfg.SpendKey, inputPerMTok: cfg.InputUSDPerMTok, doer: d,
+		state: cfg.State, descs: cfg.Descriptions, instr: cfg.Instructions, spend: cfg.Spend, spendKey: cfg.SpendKey, inputPerMTok: cfg.InputUSDPerMTok, wire: cfg.Wire, doer: d,
 		sleep: sleepCtx,
 		jitter: func(n time.Duration) time.Duration {
 			if n <= 0 {
@@ -361,6 +407,40 @@ type requestBody struct {
 	State     any                         `json:"state"`
 }
 
+// geminiRequestBody is requestBody in Google's dialect, keys in order.
+type geminiRequestBody struct {
+	Input     string                      `json:"input"`
+	Model     string                      `json:"model"`
+	Questions map[string]criteriaQuestion `json:"questions"`
+}
+
+// errEmptyInput is a Gemini request whose input would be empty, which Google
+// refuses ("Input can't be empty"); it is never sent.
+var errEmptyInput = errors.New("jev: gemini input is empty")
+
+// checkGeminiKeys reports the first slot name or option Google's documented
+// key rules would refuse, so such a question fails here, named, rather than
+// as a bare HTTP 400 from the server.
+func checkGeminiKeys(q decide.Question) error {
+	for _, s := range q.Slots {
+		if len(s.Name) == 0 || len(s.Name) > geminiMaxQuestionKey || strings.IndexFunc(s.Name, func(r rune) bool {
+			return (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-'
+		}) >= 0 {
+			return fmt.Errorf("jev: gemini refuses question key %q (1..%d of [A-Za-z0-9_-])", s.Name, geminiMaxQuestionKey)
+		}
+		for _, o := range s.Options {
+			bad := o == "" || len(o) > geminiMaxOptionBytes || utf8.RuneCountInString(o) > geminiMaxOptionKey ||
+				o != strings.Trim(o, " ") || strings.IndexFunc(o, func(r rune) bool {
+				return unicode.IsControl(r) || (unicode.IsSpace(r) && r != ' ')
+			}) >= 0
+			if bad {
+				return fmt.Errorf("jev: gemini refuses option key %q of question %q", o, s.Name)
+			}
+		}
+	}
+	return nil
+}
+
 func (b *Backend) body(q decide.Question) ([]byte, error) {
 	rb := requestBody{
 		Model:     b.model,
@@ -382,7 +462,22 @@ func (b *Backend) body(q decide.Question) ([]byte, error) {
 		}
 		rb.Questions[s.Name] = criteriaQuestion{Type: "choice", Instructions: instructions, Criteria: crit}
 	}
-	return json.Marshal(rb, jsonwire.V1Bytes)
+	if b.wire != WireGemini {
+		return json.Marshal(rb, jsonwire.V1Bytes)
+	}
+	input, ok := rb.State.(string)
+	if !ok {
+		// Google: "Serialize JSON objects and arrays to a string and pass them as text".
+		raw, err := json.Marshal(rb.State, jsonwire.V1Bytes)
+		if err != nil {
+			return nil, err
+		}
+		input = string(raw)
+	}
+	if strings.TrimSpace(input) == "" {
+		return nil, errEmptyInput
+	}
+	return json.Marshal(geminiRequestBody{Input: input, Model: rb.Model, Questions: rb.Questions}, jsonwire.V1Bytes)
 }
 
 type slotAnswer struct {
@@ -395,7 +490,8 @@ type responseBody struct {
 	Answers map[string]slotAnswer `json:"answers"`
 	Usage   struct {
 		Cost        float64 `json:"cost"`
-		InputTokens int64   `json:"input_tokens"`
+		InputTokens int64   `json:"input_tokens"`       // SubQ
+		TotalInput  int64   `json:"total_input_tokens"` // Gemini
 	} `json:"usage"`
 }
 
@@ -407,8 +503,12 @@ func (b *Backend) cost(rb responseBody) float64 {
 	if math.IsNaN(c) || math.IsInf(c, 0) || c < 0 {
 		c = 0
 	}
-	if c == 0 && b.inputPerMTok > 0 && rb.Usage.InputTokens > 0 {
-		c = float64(min(rb.Usage.InputTokens, maxBilledInputTokens)) * b.inputPerMTok / 1e6
+	tokens := rb.Usage.InputTokens
+	if tokens <= 0 {
+		tokens = rb.Usage.TotalInput
+	}
+	if c == 0 && b.inputPerMTok > 0 && tokens > 0 {
+		c = float64(min(tokens, maxBilledInputTokens)) * b.inputPerMTok / 1e6
 	}
 	return c
 }
@@ -435,7 +535,17 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 			return b.all(q, decide.SlotReading{Reading: decide.NotAsked, Detail: "budget"}, 0), nil
 		}
 	}
+	if b.wire == WireGemini {
+		// Checked before the budget is asked: a question this provider cannot
+		// take is not a spend.
+		if err := checkGeminiKeys(q); err != nil {
+			return b.all(q, decide.SlotReading{Reading: decide.Refused, Detail: "unsupported_question"}, 0), err
+		}
+	}
 	reqBody, err := b.body(q)
+	if errors.Is(err, errEmptyInput) {
+		return b.all(q, decide.SlotReading{Reading: decide.Refused, Detail: "empty_input"}, 0), nil
+	}
 	if err != nil {
 		return decide.Answer{}, fmt.Errorf("jev: encode request: %w", err)
 	}
@@ -444,6 +554,12 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 	defer cancel()
 
 	raw, err := b.send(ctx, reqBody)
+	var refused refusalError
+	if errors.As(err, &refused) {
+		// The provider read the question and declined it: the router asks the
+		// next backend, and nothing marks this backend as down.
+		return b.all(q, decide.SlotReading{Reading: decide.Refused, Detail: "safety:" + refused.code}, 0), nil
+	}
 	if err != nil {
 		detail := "transport"
 		if errors.Is(err, ErrAuth) {
@@ -506,6 +622,11 @@ func (b *Backend) send(ctx context.Context, body []byte) ([]byte, error) {
 			return raw, nil
 		case err == nil && (status == 401 || status == 402 || status == 403):
 			return nil, fmt.Errorf("%w: HTTP %d", ErrAuth, status)
+		case err == nil && status == http.StatusBadRequest && b.wire == WireGemini:
+			if code, ok := geminiRefusal(raw); ok {
+				return nil, refusalError{code: code}
+			}
+			return nil, fmt.Errorf("jev: HTTP %d", status)
 		case err == nil && status != 429 && status < 500:
 			return nil, fmt.Errorf("jev: HTTP %d", status)
 		case err == nil:
@@ -526,6 +647,30 @@ func (b *Backend) send(ctx context.Context, body []byte) ([]byte, error) {
 	return nil, lastErr
 }
 
+// refusalError is a request the provider declined on its content (a Gemini
+// input safety block). code is one of geminiRefusalCodes, never message text.
+type refusalError struct{ code string }
+
+func (e refusalError) Error() string { return "jev: the provider refused the input (" + e.code + ")" }
+
+// geminiRefusal reads a Gemini 400 body and reports its error.code when it is
+// one of the documented safety codes.
+func geminiRefusal(raw []byte) (string, bool) {
+	var body struct {
+		Error struct {
+			Code any `json:"code"` // a string for a refusal; other errors may carry a number
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &body) != nil {
+		return "", false
+	}
+	code, ok := body.Error.Code.(string)
+	if !ok || !slices.Contains(geminiRefusalCodes, code) {
+		return "", false
+	}
+	return code, true
+}
+
 func (b *Backend) backoff(attempt int, retryAfter time.Duration) time.Duration {
 	if retryAfter > 0 {
 		return min(retryAfter, b.maxRetryAfter)
@@ -540,7 +685,11 @@ func (b *Backend) once(ctx context.Context, body []byte) (raw []byte, status int
 	if err != nil {
 		return nil, 0, 0, errors.New("jev: build request failed")
 	}
-	if b.key != "" {
+	switch {
+	case b.key == "":
+	case b.wire == WireGemini:
+		req.Header.Set("x-goog-api-key", b.key)
+	default:
 		req.Header.Set("Authorization", "Bearer "+b.key)
 	}
 	req.Header.Set("Content-Type", "application/json")

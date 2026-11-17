@@ -14,6 +14,11 @@ decision clients shared by Vani, DevCouncil and n8n-email-engine (Vani plan §4,
   `Config.Key` travels to another host. `Config.Name` (default `jev`) names the backend in every
   answer, so one process can run a second client for another systemone-shaped server (Vani's
   `local`: llama.cpp `/v1/systemone`); `Config.Instructions` overrides one slot's question text.
+  `Config.Wire` picks the dialect: the default speaks OpenRouter and every `/v1/systemone` server
+  (SubQ's `subq-snap-1.2`), `WireGemini` speaks Google's `/v1beta/decisions`
+  (`gemini-decision-1`: `input` string, `x-goog-api-key`, documented key limits checked before the
+  network, an input safety block read as `Refused`). `Config.InputUSDPerMTok` prices a reply that
+  reports input tokens but no cost (SubQ and Gemini), so the daily cap binds; a reported cost wins.
 - `decide/lappi`: the Lappi agent client (Unix socket, one JSON line each way under one deadline,
   strict reply parsing) and `Backend`, its `decide.Backend` adapter.
 
