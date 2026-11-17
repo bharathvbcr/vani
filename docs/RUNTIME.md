@@ -5,8 +5,9 @@ it before relying on it after the code changes.
 
 ## Models, one role each
 
-- **Decision model:** Liquid. The live config's `decide.openrouter_model` is `liquid/d1-ultra`
-  over OpenRouter (chosen 2026-10-19 after live readings; FOLLOWUPS). `vani init` writes the
+- **Decision model:** Liquid. The live config's `decide.openrouter_model` is `liquid/d1.2-ultra`
+  over OpenRouter, answering as `d1-2-ultra` (switched from `liquid/d1-ultra` on 2026-11-17; d1-ultra
+  was chosen 2026-10-19 after live readings; FOLLOWUPS). `vani init` writes the
   same model (`internal/config` `Default()`). The OpenRouter client is the shared decide
   module's `decide/jev` package, and the day's spend is kept under the budget key `jev`: those
   are library and file names kept from before the model was Liquid, not the model. The local
@@ -52,7 +53,7 @@ macOS) or `unreadable: …`; `vani status --json` carries the same as `paths`.
 
 ### The live pair today
 
-The live setup (19 boards, Liquid d1-ultra at $20/day, Claude Opus at $10/day, a target
+The live setup (19 boards, Liquid d1.2-ultra at $20/day, Claude Opus at $10/day, a target
 summary, DevPrism, `advance_per_run` 3000, a 3461-posting ledger) is the default pair,
 `~/Library/Application Support/Vani/config.json` and `.../Vani/state`, and the app's settings
 name no paths. The app, a bare `vani` in a terminal and an agent shell all use it; the verified
@@ -924,7 +925,10 @@ both old and new keys disagree; saving writes the new names while daily budget f
 Neither `liquid/d1-ultra` nor `typesafe/jev-1.13` appears in OpenRouter's public
 `GET /api/v1/models` on 2026-10-20 (468 models; the only `typesafe/` entry is
 `typesafe/jev-router`); both are presumably visible to the account's key only. d1-ultra has
-answered live calls (FOLLOWUPS, 2026-10-19). `typesafe/jev-1.13` remains the shared decide
+answered live calls (FOLLOWUPS, 2026-10-19). `liquid/d1.2-ultra` returned HTTP 400 "does not exist"
+on 2026-11-16 and answered on 2026-11-17 (one `tmp/jevprobe` call, resolved as
+`liquid/d1.2-ultra-20261116`, provider Liquid, all four slots answered); it was not checked against
+the public list. `typesafe/jev-1.13` remains the shared decide
 module's `jev.DefaultModel`, used only when a caller passes no model; Vani always passes one.
 
 ## Open

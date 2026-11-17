@@ -303,7 +303,7 @@ type Schedule struct {
 // Decide configures the decision engines and their daily spend caps.
 type Decide struct {
 	// OpenRouterModel is the decision model asked through the OpenRouter
-	// Decisions API (e.g. "liquid/d1-ultra"); empty turns it off. It answers
+	// Decisions API (e.g. "liquid/d1.2-ultra"); empty turns it off. It answers
 	// under OpenRouterName.
 	OpenRouterModel  string   `json:"openrouter_model"`
 	OpenRouterKeyEnv string   `json:"openrouter_key_env"`
@@ -684,8 +684,9 @@ func Default() Config {
 		AllowedHosts: []string{hostOpenRouter},
 		Schedule:     Schedule{DailyAt: "08:30", Timezone: "America/Los_Angeles"},
 		Decide: Decide{
-			// Liquid D, the decision model Vani runs (FOLLOWUPS: d1-ultra).
-			OpenRouterModel:  "liquid/d1-ultra",
+			// Liquid D, the decision model Vani runs (FOLLOWUPS: d1-ultra,
+			// then d1.2-ultra from 2026-11-17).
+			OpenRouterModel:  "liquid/d1.2-ultra",
 			OpenRouterKeyEnv: "OPENROUTER_API_KEY",
 			DailyUSD:         DailyUSD{OpenRouter: 0.25, LLM: 1.0},
 		},

@@ -71,7 +71,7 @@ Findings N1 to N10 and D1 to D11 of the later audit, and the advance-caller diff
 ## Filter-funnel findings
 
 Free stages run first: the title `read` lists, then the `exclude` block (landed, `d2f1724`; not set
-live). Then the paid router: Liquid D (`liquid/d1-ultra` on OpenRouter), then the Claude fallback.
+live). Then the paid router: Liquid D (`liquid/d1.2-ultra` on OpenRouter since 2026-11-17, was `liquid/d1-ultra`), then the Claude fallback.
 That fallback was Opus until 2026-10-20 and is Haiku now. No shadow is configured live. Only Liquid D
 at p≥0.9 (or Lappi) can drop a posting.
 
@@ -134,7 +134,7 @@ signal missing.
 | 0 | Rules (title read/exclude, location exclude) | Free pre-filter | Yes, as an engine rule |
 | 1 | DevPrism | Coverage for every kept posting | No |
 | 2 | EmbeddingGemma (Tessl) | Semantic score, near-dup, kb_match focus lines | No |
-| 3 | Liquid D `d1-ultra` (OpenRouter) | Triage slots | Yes, p≥0.9 |
+| 3 | Liquid D `d1-2-ultra` (OpenRouter `liquid/d1.2-ultra`) | Triage slots | Yes, p≥0.9 |
 | 3b | Liquid D local (`decide.local`) | Optional shadow only. **Not planned**: the owner chose cloud-only for now | No |
 | 4 | Claude Haiku (`triage_model`) | Fallback and escalation when Liquid D p is low; shadow on drop candidates | No (confidence only) |
 | 5 | Claude Sonnet | kb_match for top-K, notes above a relevance gate | No |
@@ -147,11 +147,11 @@ purpose: the daily cap files `budget/jev.json` and `budget/jev-notes.json`, and 
 `jev`. The cap takes no lock across processes, so renaming the file would let a daemon still on the
 old path start the day at zero (pinned by `cmd/vani/openrouter_budget_test.go`). Config keys and
 `kbmatch.backend` moved to `openrouter` names with the old ones still loading (`ca41802`,
-`internal/config/legacy.go`). `config.Default()` seeds `liquid/d1-ultra` and no paid language model.
+`internal/config/legacy.go`). `config.Default()` seeds `liquid/d1.2-ultra` and no paid language model.
 
 | Model | Path into Vani | Live? |
 |---|---|---|
-| Liquid D `d1-ultra` | OpenRouter, through `decide/jev` (`decide.openrouter_model`) | yes, the primary |
+| Liquid D `d1-2-ultra` (`liquid/d1.2-ultra`; `d1-ultra` until 2026-11-17) | OpenRouter, through `decide/jev` (`decide.openrouter_model`) | yes, the primary |
 | Liquid D local (`d1-3B` / `d3-mini`) | llama.cpp `/v1/systemone` (`decide.local`), shadow only | no, and not planned |
 | Lappi | local socket (`decide.lappi`) | no, not served |
 | EmbeddingGemma 2 | Tessl in-process (`-tags tessl`) | yes |

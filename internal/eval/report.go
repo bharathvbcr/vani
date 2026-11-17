@@ -192,8 +192,8 @@ type Report struct {
 	MalformedLines int    `json:"malformed_lines"` // label-file lines skipped as unreadable
 	LoadError      string `json:"load_error"`
 	// LegacyPrimary counts scored slot readings whose primary backend was
-	// recorded as LegacyOpenRouterName and is reported under the configured
-	// OpenRouter name.
+	// recorded as LegacyOpenRouterName and is reported under
+	// LegacyOpenRouterModel (an OpenRouter model being configured).
 	LegacyPrimary int `json:"legacy_primary"`
 	// ProbabilityBackend is the backend the threshold tables are built from.
 	ProbabilityBackend string `json:"probability_backend"`
@@ -233,7 +233,7 @@ func ratio(num, den int) (float64, bool) {
 // label is excluded from every denominator.
 //
 // names maps primary readings filed under the OpenRouter model's old name to
-// its current one (see Names); rep.LegacyPrimary counts how many were.
+// the model that wrote them (see Names); rep.LegacyPrimary counts how many were.
 func BuildReport(recs []ledger.Record, s *Store, names Names) Report {
 	labels, bad, err := s.Labels()
 	return buildReport(recs, labels, bad, err, names)
@@ -483,7 +483,7 @@ func (r Report) Markdown() string {
 	}
 	if r.LegacyPrimary > 0 {
 		fmt.Fprintf(&b, "- primary readings recorded under the old name %q and counted as %q: %d\n",
-			LegacyOpenRouterName, r.ProbabilityBackend, r.LegacyPrimary)
+			LegacyOpenRouterName, LegacyOpenRouterModel, r.LegacyPrimary)
 	}
 	b.WriteString("- \"skip\" labels are excluded from every denominator; the labeled set is a sample, not the whole ledger\n\n")
 

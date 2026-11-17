@@ -155,6 +155,52 @@ func TestNoConfiguredNameKeepsLegacyRows(t *testing.T) {
 	}
 }
 
+// The legacy rows were d1-ultra's, whatever model is configured now: after the
+// switch to d1.2-ultra (backend "d1-2-ultra") they stay d1-ultra's, out of the
+// new model's cells and threshold tables, and the teacher still finds them
+// under d1-ultra.
+func TestLegacyRowsStayD1UltraAfterModelSwitch(t *testing.T) {
+	names := Names{OpenRouter: "d1-2-ultra"}
+	recs, s := renameFixture(t, LegacyOpenRouterName)
+	rep := BuildReport(recs, s, names)
+
+	byBackend := map[string]int{}
+	for _, c := range rep.Cells {
+		if c.Slot == "work_mode" {
+			byBackend[c.Backend] = c.Labeled
+		}
+	}
+	want := map[string]int{"d1-ultra": 35, "llm": 3, UnknownBackend: 2}
+	if !reflect.DeepEqual(byBackend, want) {
+		t.Fatalf("work_mode cells by backend %v, want %v (jev rows filed under d1-ultra, none under d1-2-ultra)", byBackend, want)
+	}
+	if rep.LegacyPrimary != 40 {
+		t.Fatalf("legacy primary %d, want 40", rep.LegacyPrimary)
+	}
+	if rep.ProbabilityBackend != "d1-2-ultra" {
+		t.Fatalf("threshold tables built from %q, want the configured d1-2-ultra", rep.ProbabilityBackend)
+	}
+	for _, th := range rep.Thresholds {
+		for _, row := range th.Rows {
+			if row.Labeled != 0 {
+				t.Fatalf("d1-2-ultra threshold table counts a d1-ultra reading: %+v", th)
+			}
+		}
+	}
+	md := rep.Markdown()
+	if line := fmt.Sprintf("- primary readings recorded under the old name %q and counted as %q: 40\n", "jev", "d1-ultra"); !strings.Contains(md, line) {
+		t.Fatalf("report does not name the model the legacy rows came from:\n%s", md)
+	}
+
+	tk := TeacherCandidates([]ledger.Record{tkRec("gh:synth:old", "jev", "text", nil)}, names, "d1-ultra", nil)
+	if len(tk.Candidates) != 1 {
+		t.Fatalf("teacher --of d1-ultra lost a legacy jev row after the switch: %+v", tk)
+	}
+	if line := triageLine(recs[0], "work_mode", names); !strings.Contains(line, "d1-ultra") || strings.Contains(line, "d1-2-ultra") {
+		t.Fatalf("labelling line %q: want the legacy reading shown as d1-ultra's", line)
+	}
+}
+
 // The labelling screen shows the mapped name, never the legacy one, for the
 // primary, and leaves the shadow's own name alone.
 func TestLabelShowsMappedPrimaryName(t *testing.T) {
