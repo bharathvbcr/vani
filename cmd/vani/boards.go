@@ -401,6 +401,15 @@ func launchBoardFetches(ctx context.Context, watchlist []sources.Board, srcs map
 			b := watchlist[i]
 			give, ok := gate.tryAcquire(b)
 			if !ok {
+				if gate.parallel == 1 {
+					// One at a time: the caller returns the slot, in watchlist
+					// order, after it has read that board's result. A later
+					// board started past this one would hold the only slot
+					// while the caller waits for this one, which cannot start
+					// until that slot is returned.
+					parked = append(parked, pending[n:]...)
+					break
+				}
 				parked = append(parked, i)
 				continue
 			}
