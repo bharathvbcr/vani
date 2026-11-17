@@ -28,8 +28,10 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/himalayas"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
+	"github.com/bharathvbcr/Vani/internal/sources/remoteok"
 )
 
 const (
@@ -868,6 +870,10 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return b.Token + sources.TenantHostSuffix[b.ATS], true
 	case posting.TikTok:
 		return "api.lifeattiktok.com", true
+	case posting.Himalayas:
+		return "himalayas.app", true
+	case posting.RemoteOK:
+		return "remoteok.com", true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
@@ -956,7 +962,7 @@ var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 // unsearched listing is the whole company and cannot be paged to the end).
 func searchATS(a posting.ATS) bool {
 	switch a {
-	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.TikTok:
+	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.TikTok, posting.Himalayas:
 		return true
 	}
 	return false
@@ -1012,7 +1018,8 @@ var talentBrewToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 // SingleBoardATS are systems with one tenant: two boards of one would key the
 // same posting twice, so a watchlist holds at most one of each.
 func SingleBoardATS(a posting.ATS) bool {
-	return a == posting.Amazon || a == posting.Google || a == posting.Apple || a == posting.DEShaw || a == posting.Atlassian || a == posting.Meta
+	return a == posting.Amazon || a == posting.Google || a == posting.Apple || a == posting.DEShaw || a == posting.Atlassian || a == posting.Meta ||
+		a == posting.Himalayas || a == posting.RemoteOK
 }
 
 func cleanText(s string) bool {
@@ -1028,7 +1035,7 @@ func cleanText(s string) bool {
 func validSearches(b sources.Board) error {
 	if !searchATS(b.ATS) {
 		if b.Search != "" || len(b.Searches) > 0 {
-			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef, jb, ib and tt only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef, jb, hm, ib and tt only", b.ATS, b.Token)
 		}
 	}
 	if len(b.Searches) > sources.MaxSearches {
@@ -1087,9 +1094,10 @@ func ValidBoard(b sources.Board) error {
 		posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe,
 		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.Meta, posting.Jobvite, posting.OracleHCM,
 		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
-		posting.TikTok, posting.TalentBrew, posting.Feed, posting.Page, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob, posting.Manatal:
+		posting.TikTok, posting.TalentBrew, posting.Feed, posting.Page, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob, posting.Manatal,
+		posting.Himalayas, posting.RemoteOK:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb, mt, jv, mn", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb, mt, jv, mn, hm, ro", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1208,6 +1216,22 @@ func ValidBoard(b sources.Board) error {
 	if b.ATS == posting.TikTok && !strings.EqualFold(b.Token, "tiktok") {
 		// The one site the adapter reads (tiktok.sites); its API host is fixed.
 		return fmt.Errorf("board (%s) token %q must be tiktok", b.ATS, b.Token)
+	}
+	if b.ATS == posting.Himalayas && b.Token != himalayas.Token {
+		// One public API on a fixed host; the token only names the board.
+		return fmt.Errorf("board (%s) token %q must be %s", b.ATS, b.Token, himalayas.Token)
+	}
+	if b.ATS == posting.RemoteOK && b.Token != remoteok.Token {
+		return fmt.Errorf("board (%s) token %q must be %s", b.ATS, b.Token, remoteok.Token)
+	}
+	if b.ATS == posting.Himalayas {
+		// The API reads one value of each filter: a second would be dropped
+		// silently, not added to the search.
+		for k, vs := range b.Filters {
+			if len(vs) > 1 {
+				return fmt.Errorf("himalayas board: filter %q takes one value, got %d; the API does not combine values", k, len(vs))
+			}
+		}
 	}
 	if err := validSearches(b); err != nil {
 		return err

@@ -59,10 +59,10 @@ commands:
                              what they no longer match; vani prefilter shows it first
   watchlist list [--json]    list boards
   watchlist add [--json] --ats CODE --token T --company C [--allow-host]
-                   CODE: gh|lv|ab|wd|az|gg|ap|ef|jb|gm|sr|ib|av|ds|at|mt|jv|oc|rp|wk|rc|pp|bh|ps|bz|tm|hv|hb|mn|tt|tb|fd|pg
+                   CODE: gh|lv|ab|wd|az|gg|ap|ef|jb|gm|sr|ib|av|ds|at|mt|jv|oc|rp|wk|rc|pp|bh|ps|bz|tm|hv|hb|mn|tt|tb|hm|ro|fd|pg
                    [--region eu] (lv) [--board-name N] (ab) [--host H] (wd, oc, ef, jb, av, tb)
-                   [--search S]... (wd, oc, az, gg, ap, ef, jb, ib, tt)
-                   [--filter name=value]... (az, gg, ap, ef, jb, sr, tt)
+                   [--search S]... (wd, oc, az, gg, ap, ef, jb, ib, tt, hm)
+                   [--filter name=value]... (az, gg, ap, ef, jb, sr, tt, hm)
                    [--url U] (av, fd, pg) [--link-pattern RE] (pg) [--domain HOST [--icon URL]]
                    watchlist add -h says what each flag and token is per CODE
   watchlist remove [--json] --ats A --token T [--keep-postings | --close-postings]

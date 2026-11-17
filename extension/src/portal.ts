@@ -4,6 +4,7 @@
 // step detection, and form interaction tips.
 
 import { isWorkdaySharedHost, workdaySharedPath } from "./applied";
+import { jobSiteOf } from "./jobsites";
 
 export type PortalId =
   | "greenhouse"
@@ -17,6 +18,8 @@ export type PortalId =
   | "rippling"
   | "linkedin"
   | "indeed"
+  | "glassdoor"
+  | "naukri"
   | "generic_ats"
   | "job_board"
   | "general";
@@ -70,6 +73,25 @@ export function detectPortal(
 
   const q = (sel: string): unknown => (currentDoc?.querySelector ? currentDoc.querySelector(sel) : null);
   const qa = (sel: string): unknown[] => (currentDoc?.querySelectorAll ? Array.from(currentDoc.querySelectorAll(sel)) : []);
+
+  // 0. Job sites Vani never reads (jobsites.ts), told by host alone: nothing on the page is read to
+  // decide it, and no form or listing check below can claim the page and offer Scrape.
+  const site = jobSiteOf(host);
+  if (site && !site.readsPages) {
+    return {
+      id: site.id === "glassdoor" ? "glassdoor" : "naukri",
+      name: `${site.name} Jobs`,
+      badge: site.name,
+      icon: "🔎",
+      isATS: false,
+      isJobBoard: true,
+      isMultiStep: false,
+      tips: [
+        `${site.name}'s terms forbid automated reading, so Vani does not scrape or crawl its pages.`,
+        `Search ${site.name} from the Vani popup's job-site search, then open a job's own apply page to fill it with Vani.`,
+      ],
+    };
+  }
 
   // 1. Workday
   if (host.includes("myworkdayjobs.com") || host.includes("workday.com") || isWorkdaySharedHost(host)) {

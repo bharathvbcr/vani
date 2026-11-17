@@ -190,6 +190,30 @@ The score pill on a job page is one of two different numbers, and its label says
   it. A row Vani has but cannot be read says why next to the estimate instead of passing the estimate
   off as Vani's.
 
+### Searching LinkedIn, Glassdoor and Naukri
+
+The Job Scraper tab has a job-site search with a job title, a location and one button per site
+(`src/jobsites.ts`). It starts from the first target title you saved and your preferred location.
+A click opens that site's own search in a new tab. Vani reads nothing from it; you search there
+yourself. Each site's terms forbid automated reading:
+
+- LinkedIn's User Agreement §8.2 names browser plugins and add-ons that scrape.
+- Naukri's terms forbid "automated means to crawl and/or scrape".
+- Glassdoor's terms forbid robots, spiders and data-mining tools.
+
+On Glassdoor and Naukri pages the extension shows the site's badge, and Scrape and Crawl refuse
+with that reason. The content script does not read the posting's text there, so nothing is rated
+or sent to Vani. Filling a form still works. LinkedIn's existing Scrape reader is kept by the
+owner's choice (2026-11-17), so on LinkedIn the user carries the §8.2 risk.
+
+The search URLs follow how each site writes its own address bar, as third parties describe it. The
+sites publish no documentation for them:
+
+- LinkedIn: `keywords`, `location`.
+- Glassdoor: `sc.keyword`. No location is sent, because its text location is reported to be
+  ignored. Set the location on the site.
+- Naukri: the keyword and city in the path, with `k`.
+
 ### Crawling a whole listing into Vani
 
 In the scrape drawer, **Crawl all pages → Vani** reads every page of the listing you are on, not

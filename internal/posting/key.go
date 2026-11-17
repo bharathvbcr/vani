@@ -161,6 +161,16 @@ func JobviteKey(board, jobID string) (Key, error) {
 	return build(Jobvite, board, b.String())
 }
 
+// HimalayasKey is hm:himalayas:{company_slug}:{job_slug}, the two slugs of the
+// job's page (himalayas.app/companies/{company_slug}/jobs/{job_slug}). A job
+// slug is unique only within its company, so both are kept.
+func HimalayasKey(board, companySlug, jobSlug string) (Key, error) {
+	return build(Himalayas, board, companySlug, jobSlug)
+}
+
+// RemoteOKKey is ro:remoteok:{id}, the API's numeric job id.
+func RemoteOKKey(board, id string) (Key, error) { return build(RemoteOK, board, id) }
+
 // FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
 // cosmetic change to the apply URL does not split one role into two.
 func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
@@ -223,7 +233,7 @@ func (k Key) ATS() ATS {
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
 		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, Meta, Jobvite, OracleHCM, Rippling, Workable,
-		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, Manatal, TikTok, TalentBrew, Feed, Page, Other:
+		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, Manatal, TikTok, TalentBrew, Himalayas, RemoteOK, Feed, Page, Other:
 		return a
 	}
 	return ""

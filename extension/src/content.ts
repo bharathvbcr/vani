@@ -31,6 +31,7 @@ import {
 } from "./suggestjob";
 import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
 import { FILL_BUSY, contentListener, fillClaimHeld, fillInvokedByHolder, releaseFillClaim, tryClaimFill } from "./frames";
+import { unreadSite } from "./jobsites";
 import { detectPortal, type PortalInfo } from "./portal";
 import { evaluateRelevance, targetProfileFromBank, type RelevanceResult } from "./relevance";
 import { type FindRow, applyVaniRow, withRowError } from "./jobrow";
@@ -662,6 +663,10 @@ function renderScrapedDrawer(res: ScrapeResult): void {
   header.append(titleSpan, closeBtn);
   drawer.append(header);
 
+  if (res.refused) {
+    titleSpan.textContent = res.refused;
+    return;
+  }
   if (ranked.length === 0) {
     toast("No jobs found on this page.");
     return;
@@ -847,6 +852,9 @@ function loadedHref(): string {
 /** Rescans happen on every DOM change; the posting is re-read only when something it is read from changed (postingKey). */
 let jobCache: { key: string; job: JobInfo } | null = null;
 function jobInfo(): JobInfo {
+  // A job site whose terms forbid automated reading (jobsites.ts): its posting text is not read,
+  // so it is neither rated nor sent to Vani. Filling a form there still works.
+  if (unreadSite(location.hostname)) return { company: "", title: "", description: "" };
   const key = postingKey(document, location.href);
   if (jobCache?.key !== key) {
     const ctx = { href: location.href, loadedHref: loadedHref(), portal: detectPortal(document, location.href).id };
@@ -1534,7 +1542,7 @@ async function scheduleScan(): Promise<void> {
     const isBoard = s.portal?.isJobBoard || document.querySelectorAll(
       "a[href*='/jobs/'], a[href*='/job/'], a[href*='/careers/'], a[href*='/positions/'], .ashby-job-posting-brief, [class*='job-card'], [class*='job-post'], tr.job-post, .opening, .posting"
     ).length >= 2;
-    scrapeBtn.style.display = isBoard ? "inline-block" : "none";
+    scrapeBtn.style.display = isBoard && !unreadSite(location.hostname) ? "inline-block" : "none";
   }
 
   if (statusEl && Date.now() >= heldUntil && !statusEl.textContent?.startsWith("Filled") && !statusEl.textContent?.startsWith("Saved")) {

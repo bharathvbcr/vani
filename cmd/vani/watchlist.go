@@ -67,8 +67,8 @@ func (e *env) watchlistList(args []string) error {
 
 func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem), sr (SmartRecruiters), ib (IBM; tokens ibm and confluent), av (Avature), ds (D. E. Shaw), at (Atlassian), mt (Meta), jv (Jobvite), oc (Oracle HCM), rp (Rippling), wk (Workable), rc (Recruitee), pp (Pinpoint), bh (BambooHR), ps (Personio), tt (TikTok), tb (Radancy TalentBrew), fd (XML feed), bz (Breezy HR), tm (Teamtailor), hv (HireHive), hb (HiBob), mn (Manatal) or pg (careers page)")
-	token := fs.String("token", "", "board token (workday and oc: tenant/site, e.g. jpmc/CX_1001; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; av: a lower-case slug, e.g. twosigma; rp: the board slug; wk: the account slug; rc, pp, bh, ps, bz, tm, hv and hb: the board's subdomain, e.g. acme for acme.recruitee.com; tb: a lower-case slug, e.g. intuit; gm: the Gem vanity path; mn: the Manatal career-page slug; tt: tiktok; pg and fd: a short slug)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem), sr (SmartRecruiters), ib (IBM; tokens ibm and confluent), av (Avature), ds (D. E. Shaw), at (Atlassian), mt (Meta), jv (Jobvite), oc (Oracle HCM), rp (Rippling), wk (Workable), rc (Recruitee), pp (Pinpoint), bh (BambooHR), ps (Personio), tt (TikTok), tb (Radancy TalentBrew), hm (Himalayas job board), ro (Remote OK job board), fd (XML feed), bz (Breezy HR), tm (Teamtailor), hv (HireHive), hb (HiBob), mn (Manatal) or pg (careers page)")
+	token := fs.String("token", "", "board token (workday and oc: tenant/site, e.g. jpmc/CX_1001; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; av: a lower-case slug, e.g. twosigma; rp: the board slug; wk: the account slug; rc, pp, bh, ps, bz, tm, hv and hb: the board's subdomain, e.g. acme for acme.recruitee.com; tb: a lower-case slug, e.g. intuit; gm: the Gem vanity path; mn: the Manatal career-page slug; tt: tiktok; hm: himalayas; ro: remoteok; pg and fd: a short slug)")
 	company := fs.String("company", "", "company display name")
 	boardName := fs.String("board-name", "", "the board's literal name on the ATS when it is not --token (ab only): --token hippocratic-ai --board-name \"Hippocratic AI\"")
 	region := fs.String("region", "", "regional host (eu, lever only)")
@@ -211,7 +211,7 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 
 func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, bz, tm, hv, hb or pg")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, hm, ro, fd, bz, tm, hv, hb or pg")
 	token := fs.String("token", "", "board token")
 	keep := fs.Bool("keep-postings", false, "leave the board's open postings open (by default the next run closes them, and adding the board back reopens them)")
 	closeAbsent := fs.Bool("close-postings", false, "close the board's open postings at the next run even when it is no longer on the watchlist (a board removed before removal closed them)")

@@ -320,6 +320,12 @@ var FilterKeys = map[posting.ATS][]string{
 	// list, "location" a city code from it; both become location_code_list
 	// (US: 4,318 -> 1,847 rows, 2026-10-28).
 	posting.TikTok: {"country", "location"},
+	// Himalayas "machine learning" (2026-11-17): 4,451 -> 2,328 with
+	// country=US; -> 1,453 adding seniority=Senior; -> 2,072 adding
+	// employment_type=Full Time. An unknown value is HTTP 400. A repeated
+	// parameter is not a union (country=US&country=CA answered CA's 237, and a
+	// comma list is a 400), so config allows one value per filter.
+	posting.Himalayas: {"country", "seniority", "employment_type"},
 }
 
 // SearchTerms is the board's distinct search terms in order: Search, then

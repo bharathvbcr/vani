@@ -27,7 +27,7 @@ func TestSearchTerms(t *testing.T) {
 func TestFilterKeysOnlyForSearchSites(t *testing.T) {
 	for ats := range FilterKeys {
 		switch ats {
-		case posting.Google, posting.Amazon, posting.Apple, posting.Eightfold, posting.Jibe, posting.SmartRecruiters, posting.TikTok:
+		case posting.Google, posting.Amazon, posting.Apple, posting.Eightfold, posting.Jibe, posting.SmartRecruiters, posting.TikTok, posting.Himalayas:
 		default:
 			t.Errorf("filters listed for %q, which has no verified filters", ats)
 		}

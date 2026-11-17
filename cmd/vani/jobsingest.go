@@ -338,8 +338,10 @@ func pageRefusal(b sources.Board) string {
 	return ""
 }
 
-// aggregators are job sites that need a signed-in browser. Their subdomains too.
-var aggregators = []string{"linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com", "wellfound.com", "dice.com", "monster.com", "simplyhired.com"}
+// aggregators are job sites that need a signed-in browser, or whose terms forbid automated reading
+// (Naukri, and Glassdoor's country sites; extension/src/jobsites.ts). Their subdomains too.
+var aggregators = []string{"linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com", "wellfound.com", "dice.com", "monster.com", "simplyhired.com",
+	"naukri.com", "glassdoor.co.in", "glassdoor.co.uk", "glassdoor.ca", "glassdoor.com.au", "glassdoor.sg", "glassdoor.de", "glassdoor.fr", "glassdoor.ie"}
 
 func isAggregator(host string) bool {
 	for _, a := range aggregators {

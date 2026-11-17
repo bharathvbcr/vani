@@ -89,6 +89,13 @@ const (
 	// jobs.citi.com). The token is the owner's slug for the company, the board
 	// names the site's host, and the posting id is the number in the job URL.
 	TalentBrew ATS = "tb"
+	// Himalayas is the himalayas.app remote-jobs search API, a job board that
+	// lists many employers. The token is "himalayas"; the key id is the
+	// company slug and job slug of the job's himalayas.app page.
+	Himalayas ATS = "hm"
+	// RemoteOK is the remoteok.com remote-jobs API, a job board that lists
+	// many employers. The token is "remoteok"; the key id is its job id.
+	RemoteOK ATS = "ro"
 	// Feed is one https XML job feed the owner names. The token is a short
 	// slug; the posting id is the feed's partner job id.
 	Feed ATS = "fd"

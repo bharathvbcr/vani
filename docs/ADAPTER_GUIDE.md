@@ -8,7 +8,7 @@ How to add a new job-board adapter to Vani without duplicating shared rate limit
 
 First verify that an existing generic mechanism does not already cover the board:
 
-1. **Does an existing adapter cover it?** Check all 30 built-in ATS codes in [`internal/posting/posting.go`](../internal/posting/posting.go) (including multi-tenant `wd`, `oc`, `ef`, `jb`, `av`, `tb` and the 8 subdomain adapters `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb`).
+1. **Does an existing adapter cover it?** Check all 35 built-in ATS codes in [`internal/posting/posting.go`](../internal/posting/posting.go) (including multi-tenant `wd`, `oc`, `ef`, `jb`, `av`, `tb` and the 8 subdomain adapters `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb`, and the job boards `hm` and `ro`, whose rows each name their own employer).
 2. **XML job feed (`fd`)?** If the site serves `<source><job>...</job></source>`, [`internal/sources/feed`](../internal/sources/feed/feed.go) already parses it with zero new code.
 3. **Static or Lightpanda page with JSON-LD `JobPosting` (`pg`)?** If the company has ≤50 roles and embeds `JobPosting` JSON-LD on each role page, use `watchlist add --ats pg --url ... --link-pattern ...` ([`internal/sources/page`](../internal/sources/page/page.go)).
 4. **One-off / heavily authenticated JS board?** Use the browser extension's **Crawl all pages → Vani** (`extension/src/crawler.ts` -> `vani jobs ingest`).
