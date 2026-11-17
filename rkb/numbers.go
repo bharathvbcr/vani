@@ -186,6 +186,25 @@ func tailAfter(s string, i int) string {
 	return s[i:end]
 }
 
+// mayCarryUnit is false when what follows a number cannot start a multiplier
+// or unit (after its spaces comes a digit, punctuation or the end), so the
+// common bare number skips both regexps. A letter, "%" or any non-ASCII byte
+// (×, µ) may still start one.
+func mayCarryUnit(tail string) bool {
+	for i := 0; i < len(tail); i++ {
+		c := tail[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v':
+			continue
+		case c == '%' || c >= 0x80 || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
 // figuresIn is numbersIn with the unit each number is written with.
 func figuresIn(s string) []figure {
 	s = normalizeNumsKeep(s, true)
@@ -200,7 +219,12 @@ func figuresIn(s string) []figure {
 		if i > 0 && s[i-1] == '$' || i > 1 && s[i-1] == '-' && s[i-2] == '$' {
 			f.Class = "usd"
 		}
-		tail := unitTail.Replace(tailAfter(s, loc[1]))
+		tail := tailAfter(s, loc[1])
+		if !mayCarryUnit(tail) {
+			out = append(out, f)
+			continue
+		}
+		tail = unitTail.Replace(tail)
 		if m := reMultSfx.FindString(tail); m != "" {
 			f.Mult = multiplierOf(m)
 			tail = tail[len(m):]
