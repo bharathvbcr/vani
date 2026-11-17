@@ -298,7 +298,7 @@ export function isFillReply(r: unknown): r is FillReply {
 }
 
 export function isCaptureReply(r: unknown): r is CaptureReply {
-  return isRecord(r) && COUNTS.every(k => isCount(r[k])) && (r.unchanged === undefined || isCount(r.unchanged));
+  return isRecord(r) && COUNTS.every(k => isCount(r[k])) && (r.unchanged === undefined || isCount(r.unchanged)) && (r.skippedFull === undefined || isCount(r.skippedFull));
 }
 
 export function isScanReply(r: unknown): r is ScanReply {

@@ -1,6 +1,6 @@
 // Popup: act on the current page and manage saved answers.
 import type { Answer, Bank, FieldInfo } from "./types";
-import { MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
+import { BANK_FULL, MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
 import { ANSWER_KEY_BY_JARVIS, CONTACT_BY_ID, NOT_RUN_NOTE, contactEdits, contactItems, omitContactAnswers, readImport } from "./contacts";
 import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
 import { type FanOut, sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
@@ -1692,7 +1692,7 @@ $("#save").onclick = async () => {
   try {
     const r = await toFrames<CaptureReply>({ type: "capture" }, { registered });
     const c = sumCaptures(r);
-    status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + notAnswered(r), "ok");
+    status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + (c.skippedFull ? ` ${c.skippedFull} not saved: ${BANK_FULL}` : "") + notAnswered(r), "ok");
     toast(`Saved ${c.added + c.updated} answers!`);
     await refresh();
   } catch (e) {

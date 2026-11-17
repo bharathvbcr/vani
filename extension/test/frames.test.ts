@@ -185,7 +185,7 @@ describe("fill and save across frames", () => {
       { id: 5, script: true, scriptable: false, reply: () => later(10, c(4, 3)) },
     ]);
     const r = await toFrames<CaptureReply>({ type: "capture" }, reg([5]));
-    expect(sumCaptures(r)).toEqual({ added: 4, updated: 2, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 4, unchanged: 3 });
+    expect(sumCaptures(r)).toEqual({ added: 4, updated: 2, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 4, skippedFull: 0, unchanged: 3 });
   });
 
   test("no active tab is an error, not an empty result", async () => {

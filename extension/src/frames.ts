@@ -372,10 +372,10 @@ export function mergeFill(r: FanOut<FillReply>): FillOutcome[] {
 }
 
 export function sumCaptures(r: FanOut<CaptureReply>): Required<CaptureReply> {
-  const s = { added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0, unchanged: 0 };
+  const s = { added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0, skippedFull: 0, unchanged: 0 };
   for (const { reply: c } of r.answered) {
     s.added += c.added; s.updated += c.updated; s.skippedSecret += c.skippedSecret;
-    s.skippedSelfId += c.skippedSelfId; s.skippedEmpty += c.skippedEmpty; s.unchanged += c.unchanged ?? 0;
+    s.skippedSelfId += c.skippedSelfId; s.skippedEmpty += c.skippedEmpty; s.skippedFull += c.skippedFull ?? 0; s.unchanged += c.unchanged ?? 0;
   }
   return s;
 }

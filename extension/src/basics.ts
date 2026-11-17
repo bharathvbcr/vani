@@ -6,7 +6,7 @@
 // field resolves to (its autocomplete meaning, else its question), so Fill
 // needs nothing new to use them, and the answers table edits and deletes them.
 import type { Bank, FieldInfo, FieldKind } from "./types";
-import { BASICS_HOST, MAX_VALUE_CHARS, answerKey } from "./bank";
+import { BANK_FULL, BASICS_HOST, MAX_VALUE_CHARS, answerKey } from "./bank";
 import { INTENTS, intentOf } from "./intents";
 import { isCaptureReply } from "./messages";
 
@@ -116,7 +116,8 @@ export function basicsSaveOutcome(reply: unknown): BasicsSaveOutcome {
     const left: string[] = [];
     if (reply.skippedSecret) left.push(`${reply.skippedSecret} refused as sensitive`);
     if (reply.skippedSelfId) left.push(`${reply.skippedSelfId} kept out while self-ID is off`);
-    if (reply.skippedEmpty) left.push(`${reply.skippedEmpty} not saved (too short, or the bank is full)`);
+    if (reply.skippedEmpty) left.push(`${reply.skippedEmpty} not saved (too short)`);
+    if (reply.skippedFull) left.push(`${reply.skippedFull} not saved: ${BANK_FULL}`);
     const tail = left.length ? `; ${left.join("; ")}` : "";
     if (n === 0 && left.length > 0) return { saved: true, status: `Nothing saved${tail}.`, toast: "No basics were saved." };
     return { saved: true, status: `Saved ${n}${tail}.`, toast: `Saved ${n} ${n === 1 ? "basic" : "basics"}.` };

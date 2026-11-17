@@ -23,6 +23,8 @@ export const BASICS_HOST = "vani-basics";
 // Bounds: the bank lives in chrome.storage.local (10 MB quota) or the Mac app,
 // and is exported as JSON, so every list and string is capped.
 export const MAX_ANSWERS = 2000;
+/** Why a new answer was not saved at MAX_ANSWERS, worded for the owner (the toast and the popup status carry it). */
+export const BANK_FULL = `the answer bank is full (${MAX_ANSWERS} answers). Delete some in the popup to make room.`;
 export const MAX_VALUE_CHARS = 10_000;
 export const MAX_LABELS = 20;
 export const MAX_SIGNATURES = 50;
@@ -87,6 +89,8 @@ export interface CaptureResult {
   skippedSecret: number;
   skippedSelfId: number;
   skippedEmpty: number;
+  /** Rows refused because the bank already holds MAX_ANSWERS answers (see mergeCapture). Absent from a host that predates it. */
+  skippedFull?: number;
 }
 
 /** The key an answer is stored under: the autocomplete meaning if any, else the label. */
@@ -278,7 +282,9 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
       continue;
     }
     if (prev && keepsSaved(prev.value, value)) continue;
-    if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedEmpty++; continue; }
+    // The bank-full rule: at MAX_ANSWERS a new question is refused and counted in skippedFull, never evicting an
+    // older answer to make room (which answer is "least wanted" is the owner's call: they delete rows in the popup).
+    if (!prev && Object.keys(out.answers).length >= MAX_ANSWERS) { res.skippedFull = (res.skippedFull ?? 0) + 1; continue; }
     const label = normalizeLabel(f.label);
     const sig = signature(host, f);
     // Long free text is job-specific, and a model draft is never a confident
@@ -358,6 +364,8 @@ const KINDS: ReadonlySet<string> = new Set<FieldKind>([
   "text", "email", "tel", "url", "number", "date", "textarea", "select", "radio", "checkbox", "file", "password", "hidden", "other",
 ]);
 
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
+
 function isStrArray(x: unknown, cap: number): x is string[] {
   return Array.isArray(x) && x.length <= cap && x.every(s => typeof s === "string" && s.length <= MAX_VALUE_CHARS);
 }
@@ -389,6 +397,9 @@ export function parseBank(json: string): { bank: Bank; droppedSecret: number } {
     if (!a || typeof a !== "object" || a.key !== key || typeof key !== "string" || key.length < 2 || key.length > 200) {
       throw new Error(`answer ${JSON.stringify(key).slice(0, 60)} is malformed`);
     }
+    // Answers live in a plain object that every reader indexes by key. "__proto__" would swap its prototype on
+    // assignment, and the other two would read as inherited members of any bank that lacks them.
+    if (UNSAFE_KEYS.has(key)) throw new Error(`answer key ${JSON.stringify(key)} is not allowed`);
     if (typeof a.kind !== "string" || !KINDS.has(a.kind)) throw new Error(`answer ${key}: unknown kind`);
     if (!isStrArray(a.value, MAX_OPTIONS) || !isStrArray(a.labels, MAX_LABELS) || !isStrArray(a.signatures, MAX_SIGNATURES)) {
       throw new Error(`answer ${key}: value, labels or signatures malformed`);

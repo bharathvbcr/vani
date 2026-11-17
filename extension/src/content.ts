@@ -23,7 +23,7 @@ import {
 import { isReadableJob, navigationHref, postingKey, readJobInfo } from "./jobinfo";
 import { DRAFT_FIELD_ABSENT, DRAFT_FIELD_AMBIGUOUS, DRAFT_FIELD_BUSY, MAX_ATTEMPT, type DraftReply, type JobInfo, buildDraftRequest, draftHelp, maxWordsFor, parseDraftReply } from "./draft";
 import { classify } from "./classify";
-import { hostDisabled } from "./bank";
+import { BANK_FULL, hostDisabled } from "./bank";
 import { type AppliedFlow, type AppliedUi, createAppliedFlow, isFinalSubmit as appliedFinal, offerSubject, postingKey as applicationKey } from "./applied";
 import {
   DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, OLDER_VANI, SUGGEST_TIMEOUT_MS, type SuggestField, type SuggestRequest,
@@ -112,7 +112,8 @@ let tracker: Tracker;
 function announce(r: FlushResult): void {
   const saved = r.added + r.updated;
   if (r.failed) toast("Could not save answers: the extension's storage did not accept them");
-  else if (saved > 0) toast(`Saved ${saved} answers (${r.reason})` + (r.skippedSecret ? `; ${r.skippedSecret} sensitive fields not saved` : "") + (r.notSent ? `; ${r.notSent} more waiting for the next save` : ""));
+  else if (saved > 0) toast(`Saved ${saved} answers (${r.reason})` + (r.skippedSecret ? `; ${r.skippedSecret} sensitive fields not saved` : "") + (r.skippedFull ? `; ${r.skippedFull} not saved: ${BANK_FULL}` : "") + (r.notSent ? `; ${r.notSent} more waiting for the next save` : ""));
+  else if (r.skippedFull) toast(`Not saved: ${BANK_FULL}`);
   else if (r.reason === "saved") toast(`Nothing new to save (${r.unchanged} answers already saved)`);
 }
 
@@ -1183,9 +1184,13 @@ async function saveOne(ref: FieldRef): Promise<void> {
   }
   // The background accepted this value. Remember it so a later page-wide Save does not count it again.
   const stored = reply.added + reply.updated > 0;
-  const alreadyHeld = reply.added + reply.updated + reply.skippedSecret + reply.skippedSelfId + reply.skippedEmpty === 0;
+  const alreadyHeld = reply.added + reply.updated + reply.skippedSecret + reply.skippedSelfId + reply.skippedEmpty + (reply.skippedFull ?? 0) === 0;
   if (stored || alreadyHeld) tracker.noteSent(field, lastBank?.settings.captureSelfId === true);
   void scheduleScan();
+  if ((reply.skippedFull ?? 0) > 0) {
+    toast(`Not saved: ${BANK_FULL}`);
+    return;
+  }
   if (reply.skippedSecret > 0) {
     toast("Vani does not save this.");
     return;
