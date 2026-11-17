@@ -255,6 +255,26 @@ type listFetch struct {
 	release  func() // returns the host and pool slots; nil when none were taken
 }
 
+// maxPanicRunes bounds the panic value in a board's error: at most 4 bytes a
+// rune, so 512 bytes.
+const maxPanicRunes = 128
+
+// listOneBoard is one board's List, and the point where an adapter's panic
+// stops: it becomes that board's error, so the other boards finish and the
+// caller still sends its one listFetch and releases the board's slots. The
+// error carries the board and the panic value, bounded and on one line. The
+// value is the adapter's own panic text, which may echo a row; it is bounded
+// and never stored beyond the run report.
+func listOneBoard(ctx context.Context, src sources.Source, b sources.Board) (listed []posting.Posting, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			listed = nil
+			err = fmt.Errorf("adapter %s/%s panicked: %s", b.ATS, oneLine(b.Token, maxBoardNameRunes), oneLine(panicText(r), maxPanicRunes))
+		}
+	}()
+	return src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
+}
+
 // launchBoardFetches starts each board's List as slots allow and sends one
 // listFetch per board, so the caller can reconcile in watchlist order.
 // A busy host parks that board and the scan continues, so a later board on a
@@ -348,7 +368,7 @@ func launchBoardFetches(ctx context.Context, watchlist []sources.Board, srcs map
 			progressed = true
 			go func(i int, b sources.Board, src sources.Source, release func()) {
 				defer fetchWG.Done()
-				listed, err := src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
+				listed, err := listOneBoard(ctx, src, b)
 				canceled := ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 				if gate.parallel > 1 && !canceled {
 					release()
