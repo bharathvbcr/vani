@@ -274,11 +274,11 @@ func fit(htmlPath, pdfOut string, pages int, strict, final bool) FitReport {
 	if err := os.MkdirAll(filepath.Dir(pdfOut), 0o755); err != nil {
 		die("%v", err)
 	}
-	work, err := os.MkdirTemp("", "rkb-fit-")
+	work, cleanupWork, err := scratchDir("rkb-fit-")
 	if err != nil {
 		die("fit work dir: %v", err)
 	}
-	defer func() { _ = os.RemoveAll(work) }() // best-effort temp cleanup
+	defer cleanupWork()
 	minLast, minInner := cfg.Layout.MinLastFill, cfg.Layout.MinInnerFill
 
 	type res struct {

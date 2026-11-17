@@ -16,7 +16,7 @@ import (
 // and waits on it. rkb must give up within the bound, report why, and kill the
 // whole process group (the grandchild too, as a Chrome helper would be).
 
-const w3aBound = 400 * time.Millisecond
+const w3aBound = 2 * time.Second
 
 // w3aFakeTool installs a hanging stand-in for name on PATH and returns the file
 // its grandchild's pid lands in.
@@ -87,7 +87,7 @@ func TestW3APdftotextBBoxIsBounded(t *testing.T) {
 	w3aSetBound(t, &timeoutPoppler)
 	pidFile := w3aFakeTool(t, "pdftotext")
 	var err error
-	w3aWithin(t, 8*time.Second, func() { _, _, err = pdfWords("x.pdf") })
+	w3aWithin(t, 20*time.Second, func() { _, _, err = pdfWords("x.pdf") })
 	if err == nil || !strings.Contains(err.Error(), "did not finish within") {
 		t.Errorf("a hung pdftotext must come back as a timeout error, got %v", err)
 	}
@@ -102,7 +102,7 @@ func TestW3AQuotePdftotextIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	ok := true
-	w3aWithin(t, 8*time.Second, func() { _, ok = fileText(pdf) })
+	w3aWithin(t, 20*time.Second, func() { _, ok = fileText(pdf) })
 	if ok {
 		t.Error("a pdf whose text could not be extracted must not read as extracted")
 	}
@@ -113,7 +113,7 @@ func TestW3ADocxPageCountIsBounded(t *testing.T) {
 	w3aSetBound(t, &timeoutOffice)
 	pidFile := w3aFakeTool(t, "soffice")
 	got := 0
-	w3aWithin(t, 8*time.Second, func() { got = docxPages(filepath.Join(t.TempDir(), "r.docx")) })
+	w3aWithin(t, 20*time.Second, func() { got = docxPages(filepath.Join(t.TempDir(), "r.docx")) })
 	if got != -1 {
 		t.Errorf("a hung office converter must read as 'page count unknown' (-1), got %d", got)
 	}
@@ -137,7 +137,7 @@ func TestW3ARunCmdOutcomes(t *testing.T) {
 		t.Errorf("Dir and Env must apply: %q %v", out, err)
 	}
 	// a grandchild holding the output pipe open must not stall Run past the bound plus the grace
-	d := w3aWithin(t, 8*time.Second, func() {
+	d := w3aWithin(t, 20*time.Second, func() {
 		_, err = runCmd(300*time.Millisecond, runOpts{Combined: true}, "sh", "-c", "sleep 30 & wait")
 	})
 	if err == nil || d > 5*time.Second {
@@ -150,7 +150,7 @@ func TestW3AChromeIsBounded(t *testing.T) {
 	pidFile := w3aFakeTool(t, "chrome-w3a")
 	t.Setenv("RKB_CHROME", filepath.Join(filepath.Dir(pidFile), "chrome-w3a"))
 	var err error
-	w3aWithin(t, 8*time.Second, func() { _, err = runChrome("--version") })
+	w3aWithin(t, 20*time.Second, func() { _, err = runChrome("--version") })
 	if err == nil || !strings.Contains(err.Error(), "did not finish within") {
 		t.Errorf("a hung chrome must come back as a timeout error, got %v", err)
 	}

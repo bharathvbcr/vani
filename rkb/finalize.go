@@ -64,9 +64,9 @@ func outputsFor(c *Composed, cf *ClaimsFile, sel, outDir, texDir string, final, 
 		if pdflatex, err := exec.LookPath("pdflatex"); err == nil && pdflatex != "" {
 			cv := inRoot(cfg.CVDir)
 			absTex, _ := filepath.Abs(tex)
-			outGen, err := os.MkdirTemp("", "rkb-pdflatex-")
+			outGen, cleanupGen, err := scratchDir("rkb-pdflatex-")
 			if err == nil {
-				defer func() { _ = os.RemoveAll(outGen) }() // best-effort temp cleanup
+				defer cleanupGen()
 				for i := 0; i < 2; i++ {
 					// cv is the working directory: the generated LaTeX \inputs the CV sources relative to it.
 					// A failed or timed-out pass leaves no PDF, which the read below turns into "no PDF".
@@ -146,18 +146,19 @@ func cmdFinalize(a *args) {
 	// Only when every gate has passed are the files copied (each atomically)
 	// to the output folder, so a stopped finalize never leaves a half-updated
 	// set of "final" files behind, and the previous good release stays intact.
-	stage, err := os.MkdirTemp("", "rkb-finalize-")
+	// The stage holds the resume text and contact lines: scratchDir removes it
+	// on return, panic, stop and die (a failed fit dies inside outputsFor).
+	stage, cleanupStage, err := scratchDir("rkb-finalize-")
 	if err != nil {
 		die("staging folder: %v", err)
 	}
-	defer func() { _ = os.RemoveAll(stage) }() // best-effort: the stage holds only copies
+	defer cleanupStage()
 	stop = func(step string, problems []string) {
 		fmt.Printf("FINALIZE STOPPED at %s (nothing in %s was changed):\n", step, out)
 		for _, p := range problems {
 			fmt.Println("  - " + p)
 		}
-		_ = os.RemoveAll(stage) // best-effort: the stage holds only copies
-		os.Exit(1)
+		exitNow(1)
 	}
 	stageTex := filepath.Join(stage, "tex")
 	r, rep, sdocx, dfs, dp, stex := outputsFor(c, cf, sel, stage, stageTex, true, true, pages)

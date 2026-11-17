@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -399,7 +400,43 @@ func ageHours(iso string) float64 {
 
 func die(f string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, "rkb: "+f+"\n", a...)
-	os.Exit(2)
+	exitNow(2)
+}
+
+var (
+	exitMu       sync.Mutex
+	exitCleanups []func()
+)
+
+// exitNow ends the process after running the cleanups scratchDir registered:
+// os.Exit skips deferred calls, so a folder made with scratchDir would
+// otherwise survive every die() and stop.
+func exitNow(code int) {
+	exitMu.Lock()
+	fns := exitCleanups
+	exitCleanups = nil
+	exitMu.Unlock()
+	for i := len(fns) - 1; i >= 0; i-- {
+		fns[i]()
+	}
+	os.Exit(code)
+}
+
+// scratchDir makes a private temp folder and returns it with its cleanup. The
+// cleanup is idempotent and also runs from exitNow, so the folder is removed
+// on a normal return (defer cleanup()), a panic, a die and a stop alike. Use
+// it for any folder that holds copies of the person's documents.
+func scratchDir(prefix string) (string, func(), error) {
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return "", func() {}, err
+	}
+	var once sync.Once
+	cleanup := func() { once.Do(func() { _ = os.RemoveAll(dir) }) } // best-effort: the folder holds only copies
+	exitMu.Lock()
+	exitCleanups = append(exitCleanups, cleanup)
+	exitMu.Unlock()
+	return dir, cleanup, nil
 }
 
 func sortedKeys[V any](m map[string]V) []string {
