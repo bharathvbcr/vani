@@ -1,7 +1,7 @@
 // Capture that does not depend on catching the final click. The tracker keeps a
 // per-page set of the answers the user has given (a field is read when a trusted
-// event lands on it, again once the page's handlers have run, and for a short
-// window after it; a value a page script set on its own is never read) and flushes it when the page is about
+// event lands on it, and again once the page's handlers have run; a combobox the user operated is also re-read at
+// their own flush; a value a page script set on its own is never read) and flushes it when the page is about
 // to go away: submit, an advance click, Enter, a route change, pagehide or the
 // tab being hidden. A flush sends only what the bank does not already hold, so
 // flushing the same page twice saves nothing twice. Only a page that has shown
@@ -12,7 +12,7 @@ import type { Bank, FieldInfo } from "./types";
 import { emptyBank } from "./types";
 import { answerKey, hostDisabled, mergeCapture } from "./bank";
 import { classify } from "./classify";
-import { type FieldRef, type FormScan, readRefValue, scanForm } from "./extract";
+import { type FieldRef, type FormScan, filledBy, readRefValue, scanForm } from "./extract";
 import { fieldDigest, pendingDiff } from "./capture";
 import type { CaptureReply } from "./messages";
 import { isFinalSubmit } from "./applied";
@@ -30,9 +30,8 @@ const MAX_OBSERVED_ROOTS = 64;
 /** How far up from a touched element the search for its field climbs. */
 const TOUCH_DEPTH = 64;
 /**
- * How long after its last trusted event a field's DOM value is still read as the user's. Long enough for a widget
- * or an input mask to finish setting the value after a real click or keystroke, short enough that a page's later
- * rewrite is not.
+ * How long after a trusted event the post-handler re-read still takes a field's DOM value as the user's (an input
+ * mask finishing its rewrite). A late-setting combobox is covered separately by `operated`.
  */
 export const TRUST_WINDOW_MS = 1000;
 /** A target that can be a form control: only these cause a rescan when the last scan did not hold the target. */
@@ -149,8 +148,8 @@ export function createTracker(d: TrackerDeps): Tracker {
   /**
    * When a trusted event last landed on each control of a field (keyed by the control, so a rescan finds it).
    * A page script can set a value and dispatch events, but cannot make them trusted, so a field it only set
-   * has no mark and is never read. A mark also expires: the DOM is read for a field only within
-   * TRUST_WINDOW_MS of its last trusted event, so a later script rewrite is not taken for the user's answer.
+   * has no mark and is never read. A mark also expires: the post-handler re-read (`settle`) runs only within
+   * TRUST_WINDOW_MS of the event, and a flush never re-reads a plain field (see `operated`).
    */
   const marks = new WeakMap<object, number>();
   /** The last strict scan, by control: how an event's target is resolved to the field that contains it. */
@@ -228,6 +227,19 @@ export function createTracker(d: TrackerDeps): Tracker {
   }
   const live = (r: FieldRef): boolean => { const at = markedAt(r); return at !== undefined && clock.now() - at <= TRUST_WINDOW_MS; };
 
+  /**
+   * Controls of a combobox/ARIA-listbox widget that a trusted event landed on (or whose popup it landed on), with no
+   * expiry. A custom widget can finish setting its value long after the click (an async lookup), so at the user's own
+   * flush these are read from the DOM even outside TRUST_WINDOW_MS. Accepted residual: a hostile page can at most
+   * set a late value on a widget the user actually operated. Plain fields are never in this set: their value is the
+   * one absorbed at the user's own input/change/focusout (and the post-handler re-read for input masks), because a
+   * page's focusout/input handler can rewrite them later and the user's Next click would otherwise read the rewrite.
+   */
+  const operated = new WeakSet<object>();
+  const WIDGET = "[role=combobox], [aria-haspopup=listbox]";
+  const isWidget = (r: FieldRef): boolean => r.widget === "combobox" || r.els.some(e => e.matches?.(WIDGET) === true);
+  const operatedWidget = (r: FieldRef): boolean => isWidget(r) && r.els.some(e => operated.has(e));
+
   /** Fold one field into the pending set: a sensitive one is counted but never held, an emptied one is dropped. */
   function fold(f: FieldInfo): void {
     if (f.kind === "file" || f.kind === "hidden" || f.kind === "other") return;
@@ -247,8 +259,31 @@ export function createTracker(d: TrackerDeps): Tracker {
 
   /** The field's value now, as the user's answer. */
   function absorb(r: FieldRef): void {
-    try { fold({ ...r.info, value: readRefValue(r) }); } catch { /* a control mid-render: the next event reads it again */ }
+    try {
+      const value = readRefValue(r);
+      // r.info is as of the last scan: whether the value is still Vani's own fill is decided on the value read now,
+      // or an edit over a filled field would be dropped as the fill coming back (a flush no longer rescans a plain field).
+      const f: FieldInfo = { ...r.info, value };
+      const by = filledBy(r.els[0], value);
+      if (by) f.filledBy = by; else delete f.filledBy;
+      fold(f);
+    } catch { return; /* a control mid-render: the next event reads it again */ }
+    for (const e of r.els) held.add(e);
   }
+  /** Controls whose value a trusted event has already absorbed. */
+  const held = new WeakSet<object>();
+  /**
+   * A focusout does not re-read a plain field the user's own input/change/pointer/key event already absorbed: the
+   * blur can come well after a page's own timer rewrote the value, and that rewrite is not the user's answer.
+   * (A combobox is still read at focusout: its widget may set the value as focus leaves.)
+   */
+  const textLike = (e: HTMLElement): boolean => e.localName === "textarea" || e.localName === "input" && !["radio", "checkbox"].includes((e as HTMLInputElement).type) || e.isContentEditable === true;
+  /**
+   * A text control's `change` is the blur-time echo of the `input` events that already carried its value, so it is
+   * skipped the same way; a select, radio or checkbox takes its value from `change`/`click`, which is not skipped.
+   */
+  const skipFocusout = (ev: Event, r: FieldRef): boolean =>
+    (ev.type === "focusout" || (ev.type === "change" && r.els.every(textLike))) && !isWidget(r) && r.els.some(e => held.has(e));
 
   /**
    * A trusted event, seen before the page's own handlers: the fields it stands for are marked and read at once,
@@ -260,23 +295,23 @@ export function createTracker(d: TrackerDeps): Tracker {
     for (const o of originsOf(ev)) {
       const r = fieldOf(o);
       if (!r) continue;
-      for (const e of r.els) marks.set(e, now);
-      absorb(r);
+      for (const e of r.els) { marks.set(e, now); operated.add(e); }
+      if (!skipFocusout(ev, r)) absorb(r);
     }
   }
 
   /** The same event after the page's own handlers ran: an input mask has finished rewriting the value by now. */
   function settle(ev: Event): void {
     if (!isTrusted(ev)) return;
-    for (const o of originsOf(ev)) { const r = fieldOf(o); if (r && live(r)) absorb(r); }
+    for (const o of originsOf(ev)) { const r = fieldOf(o); if (r && live(r) && !skipFocusout(ev, r)) absorb(r); }
   }
 
   /**
    * Scan the page (wiring every root it finds) and fold in what may be read: a sensitive field always (so its
-   * count is honest), a field the user touched within TRUST_WINDOW_MS (`window`), or every field (`all`). With
+   * count is honest), a combobox/ARIA widget the user operated (`operated`), or every field (`all`). With
    * `none` the scan only counts questions: a flush the page can trigger itself reads no DOM.
    */
-  function fromDom(read: "none" | "window" | "all"): void {
+  function fromDom(read: "none" | "operated" | "all"): void {
     try {
       const scan = rescan();
       // Whether this is a form must not depend on which questions are visible enough to capture.
@@ -285,14 +320,14 @@ export function createTracker(d: TrackerDeps): Tracker {
       for (const r of scan.refs) {
         const f = r.info;
         if (f.kind === "password" || classify(f) === "secret") fold(f);
-        else if (read === "all" || (read === "window" && live(r))) fold(f);
+        else if (read === "all" || (read === "operated" && operatedWidget(r))) fold(f);
       }
     } catch {
       // A page mid-render must not break capture; the next trigger scans again.
     }
   }
 
-  function snapshot(all = false): void { fromDom(all ? "all" : "window"); }
+  function snapshot(all = false): void { fromDom(all ? "all" : "operated"); }
 
   const keyOf = (f: FieldInfo): string => `${answerKey(f)}|${f.kind}`;
 
@@ -376,17 +411,18 @@ export function createTracker(d: TrackerDeps): Tracker {
 
   /**
    * `read` is what the flush may read from the page first. A flush the user caused (their click on Next, Enter, a
-   * submit) reads the fields they touched in the last TRUST_WINDOW_MS; one a page can cause (a route change, a
-   * script's pagehide) reads nothing and sends what was held when the user acted; Save reads everything.
+   * submit) re-reads only the combobox/ARIA widgets they operated (a late-setting custom widget); plain fields are
+   * not re-read, so a page's rewrite after the user's last event is never taken for their answer. One a page can
+   * cause (a route change, a script's pagehide) reads nothing; Save reads everything.
    */
-  function flushWith(reason: string, explicit: boolean, read: "none" | "window" | "all"): Promise<FlushResult | null> {
+  function flushWith(reason: string, explicit: boolean, read: "none" | "operated" | "all"): Promise<FlushResult | null> {
     fromDom(read);
     const p = chain.then(() => run(reason, explicit));
     chain = p.catch(() => undefined); // flushes run one at a time, or two would both see an empty bank
     return p;
   }
   const flush = (reason: string, explicit = false): Promise<FlushResult | null> => flushWith(reason, explicit, explicit ? "all" : "none");
-  const flushByUser = (reason: string): Promise<FlushResult | null> => flushWith(reason, false, "window");
+  const flushByUser = (reason: string): Promise<FlushResult | null> => flushWith(reason, false, "operated");
 
   function commitSoon(ms = commitMs): void {
     clearTimeout(commitTimer);

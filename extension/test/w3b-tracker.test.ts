@@ -47,13 +47,24 @@ describe("w3b: provenance of captured fields", () => {
     expect(s.nestedOnlyInner).toBe(1);
   }, 20_000);
 
-  test("a field's DOM value is read only within the trust window of the user's last event on it", async () => {
+  test("a plain field keeps what the user's own event absorbed: Next, a blur and a flush never re-read a page's rewrite", async () => {
     const s = await scenarios();
-    expect(s.windowUserInside, "the user's Next inside the window reads the field").toBe(1);
-    expect(s.windowUserOutside, "outside the window the value held at the keystroke is kept").toBe(1);
-    expect(s.windowPageInside, "a flush the page can trigger reads nothing, even inside the window").toBe(1);
-    expect(s.windowEdge, "1000 ms is inside").toBe(1);
-    expect(s.windowEdgeOver, "1001 ms is outside").toBe(1);
+    expect(s.plainInside, "the user's Next does not re-read a plain field").toBe(1);
+    expect(s.plainOutside, "nor long after the keystroke").toBe(1);
+    expect(s.plainBlur, "the blur's focusout and change do not re-read it").toBe(1);
+    expect(s.plainPage, "a flush the page can trigger reads nothing").toBe(1);
+  }, 20_000);
+
+  test("a combobox the user operated is read again at their flush, however late its widget sets the value", async () => {
+    const s = await scenarios();
+    expect(s.comboLate, "set 600 ms after the click, Next at 2.6 s").toBe(1);
+    expect(s.comboPage, "a flush the page can trigger still reads nothing").toBe(1);
+    expect(s.sharedLate, "two comboboxes share a listbox: the one the user left (focusout) is read, the other is not").toBe(1);
+  }, 20_000);
+
+  test("a user's edit over a field Vani filled is saved as an answer, not dropped as the fill coming back", async () => {
+    const s = await scenarios();
+    expect(s.editOverFill).toBe(1);
   }, 20_000);
 
   test("a real click on a label marks the control it names", async () => {

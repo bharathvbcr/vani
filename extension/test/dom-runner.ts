@@ -275,18 +275,18 @@ async function tracking(): Promise<void> {
   await sleep(120);
   check("pagehide flushes a value that never fired change", mem.answers["expected salary"]?.value.join() === "120000", JSON.stringify(mem.answers["expected salary"]));
 
-  sp4.value = "130000";
+  sp4.value = "130000"; typed(sp4); // the user typed it: a script-only rewrite before Next is not read (w3b)
   q<HTMLElement>(document, "#wd-next").click(); // "Save and Continue", a button outside any form
   await sleep(120);
   check("advance button outside a form flushes", mem.answers["expected salary"]?.value.join() === "130000");
 
-  sp4.value = "140000";
+  sp4.value = "140000"; typed(sp4);
   sp4.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, composed: true }));
   await sleep(300);
   check("Enter flushes", mem.answers["expected salary"]?.value.join() === "140000");
 
   const pron = q(document, "#sh-dst").shadowRoot!.getElementById("sf") as HTMLInputElement;
-  pron.value = "ZED";
+  pron.value = "ZED"; typed(pron);
   pron.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
   await sleep(120);
   await t.flush("check");

@@ -28,18 +28,18 @@ const el = (name: string): Fake => ({ nodeType: 1, name, parentElement: null, ge
 const NAMES = ["Favourite colour", "Favourite editor", "Favourite shell"];
 const page = () => { const els = NAMES.map(n => el(n)); fields = NAMES.map((n, i) => ({ info: info(n), els: [els[i]!], widget: "native", manual: "" })); return els; };
 
-interface Run { sends: number; sent: string[]; values: string[]; submits: number; doc: ReturnType<typeof target>; win: ReturnType<typeof target>; t: ReturnType<typeof createTracker> }
+interface Run { sends: number; sent: string[]; filled: boolean[]; values: string[]; submits: number; doc: ReturnType<typeof target>; win: ReturnType<typeof target>; t: ReturnType<typeof createTracker> }
 let vt = 0;
 function make(opts: { trusted?: boolean; bank?: Bank } = {}): Run {
   const win = Object.assign(target(), { location: { href: "https://jobs.example/apply" } });
   const doc = Object.assign(target(), { nodeType: 9, defaultView: win, visibilityState: "visible" });
-  const run = { sends: 0, sent: [] as string[], values: [] as string[], submits: 0 } as Run;
+  const run = { sends: 0, sent: [] as string[], filled: [] as boolean[], values: [] as string[], submits: 0 } as Run;
   run.doc = doc; run.win = win;
   run.t = createTracker({
     doc: doc as unknown as Document, host: "jobs.example", getBank: async () => opts.bank ?? emptyBank(), commitMs: 10,
     ...(opts.trusted ? { isTrusted: () => true } : {}),
     clock: { now: () => vt, setTimer: (fn, ms) => setTimeout(fn, ms), clearTimer: h => clearTimeout(h as ReturnType<typeof setTimeout>) },
-    send: async f => { run.sends++; run.sent.push(...f.map(x => x.label)); run.values.push(...f.map(x => x.value.join(","))); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; },
+    send: async f => { run.sends++; run.sent.push(...f.map(x => x.label)); run.values.push(...f.map(x => x.value.join(","))); run.filled.push(...f.map(x => x.filledBy !== undefined)); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; },
     onSubmit: () => { run.submits++; },
   });
   return run;
@@ -163,22 +163,59 @@ out.ownerWrongPopup = (await claimed([{ haspopup: "menu" }])).length;           
   r.t.dispose();
 }
 
-// H9: the trust window. The tracker's clock is `vt`; the field's DOM value is fields[0].info.value (readRefValue is faked to read it).
-// The user types "typed" at t=0; with no event, a script (or a slow widget) sets "rewritten" at t=rewriteAt; something flushes at t=at.
-async function windowRun(rewriteAt: number, at: number, how: "user" | "page"): Promise<string> {
+// H9: what a user's flush may read. The tracker's clock is `vt`; the field's DOM value is fields[0].info.value
+// (readRefValue is faked to read it). The user types "typed" at t=0; with no event, a script (or a slow widget) sets
+// "rewritten" at t=rewriteAt; something flushes at t=at. A plain field keeps what the user's own event absorbed
+// whatever the clock says; a combobox the user operated is read again at the user's flush, however late.
+type Kind = "plain" | "combo";
+async function windowRun(rewriteAt: number, at: number, how: "user" | "page" | "blur-then-user", kind: Kind = "plain"): Promise<string> {
   const els = page(); const r = make({ trusted: true });
+  if (kind === "combo") { els[0]!.matches = (s: string) => s.includes("role=combobox"); fields[0]!.widget = "combobox"; }
+  else { els[0]!.localName = "input"; els[0]!.type = "text"; }
   vt = 0; fields[0]!.info.value = ["typed"];
   r.doc.fire("input", [els[0]!]);
   vt = rewriteAt; fields[0]!.info.value = ["rewritten"];
   vt = at;
-  if (how === "user") r.doc.fire("click", [clickable("Next")]); else await r.t.flush("route change");
+  if (how === "blur-then-user") { r.doc.fire("focusout", [els[0]!]); r.doc.fire("change", [els[0]!]); }
+  if (how === "page") await r.t.flush("route change"); else r.doc.fire("click", [clickable("Next")]);
   await sleep(40);
   r.t.dispose(); vt = 0;
   return r.values.filter((_, i) => r.sent[i] === "Favourite colour").join("|");
 }
-out.windowUserInside = (await windowRun(300, 600, "user")) === "rewritten" ? 1 : 0;   // the user's own Next, inside the window: the field is read
-out.windowUserOutside = (await windowRun(1500, 2500, "user")) === "typed" ? 1 : 0;    // outside it: the value held at the keystroke
-out.windowPageInside = (await windowRun(300, 600, "page")) === "typed" ? 1 : 0;       // a flush the page can cause never reads the DOM
-out.windowEdge = (await windowRun(0, 1000, "user")) === "rewritten" ? 1 : 0;          // the window is inclusive of 1000 ms
-out.windowEdgeOver = (await windowRun(0, 1001, "user")) === "typed" ? 1 : 0;          // and ends right after
+out.plainInside = (await windowRun(300, 600, "user")) === "typed" ? 1 : 0;                 // a plain field is not re-read at Next, even inside the old window
+out.plainOutside = (await windowRun(1500, 2500, "user")) === "typed" ? 1 : 0;
+out.plainBlur = (await windowRun(300, 600, "blur-then-user")) === "typed" ? 1 : 0;         // the blur's focusout and change do not re-read it
+out.plainPage = (await windowRun(300, 600, "page")) === "typed" ? 1 : 0;
+out.comboLate = (await windowRun(600, 2600, "user", "combo")) === "rewritten" ? 1 : 0;      // a late-setting combobox the user operated is read at Next
+out.comboPage = (await windowRun(600, 2600, "page", "combo")) === "typed" ? 1 : 0;          // a flush the page can cause still reads nothing
+// The shared-listbox case: two comboboxes name one listbox, so a click on its option marks neither, but the focusout on
+// the combobox the user left does. The widget then sets that combobox's value late.
+{
+  const lb: Fake = { nodeType: 1, name: "listbox", id: "lb", parentElement: null, getRootNode: () => ({}) };
+  const mk = (name: string): Fake => ({ nodeType: 1, name, parentElement: null, getRootNode: () => ({}), matches: () => true, getAttribute: (a: string) => (a === "aria-controls" ? "lb" : a === "role" ? "combobox" : null) });
+  const c1 = mk("c1"), c2 = mk("c2");
+  lb.getRootNode = () => ({ querySelectorAll: () => [c1, c2] });
+  const option: Fake = { nodeType: 1, name: "option", parentElement: lb, closest: (s: string) => (s === "[role=listbox]" ? lb : null), getRootNode: () => ({}) };
+  fields = [{ info: info("City", [""]), els: [c1], widget: "combobox", manual: "" }, { info: info("Region", [""]), els: [c2], widget: "combobox", manual: "" },
+    ...["Favourite editor", "Favourite shell"].map(n => ({ info: info(n), els: [el(n)], widget: "native", manual: "" }))];
+  const r = make({ trusted: true });
+  vt = 0;
+  r.doc.fire("pointerdown", [c1]); r.doc.fire("focusout", [c1]);          // the user picks the city, leaving the combobox for the option
+  r.doc.fire("pointerdown", [option]); r.doc.fire("click", [option]);     // two claimants: nothing marked by the option itself
+  vt = 600; fields[0]!.info.value = ["London"];                            // the widget sets it late
+  vt = 2600; r.doc.fire("click", [clickable("Next")]);
+  await sleep(40); r.t.dispose(); vt = 0;
+  out.sharedLate = r.values.join("|") === "London" ? 1 : 0;                // only the combobox the user operated, not the Region one
+}
+// A user's edit over a field Vani filled: the scan that built the index saw the fill (filledBy), the value read at the
+// user's event is no longer it, so it is saved as the user's answer and not dropped as the fill coming back.
+{
+  const els = page(); const r = make({ trusted: true });
+  fields[0]!.info.filledBy = { key: "favourite colour", review: false };
+  r.doc.fire("input", [els[0]!]);
+  r.doc.fire("click", [clickable("Next")]);
+  await sleep(40); r.t.dispose();
+  const i = r.sent.indexOf("Favourite colour");
+  out.editOverFill = i >= 0 && r.filled[i] === false ? 1 : 0;
+}
 console.log(JSON.stringify(out));
