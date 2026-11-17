@@ -11,7 +11,7 @@ import type { Bank, FieldInfo } from "./types";
 import { emptyBank } from "./types";
 import { answerKey, hostDisabled, mergeCapture } from "./bank";
 import { classify } from "./classify";
-import { scanForm } from "./extract";
+import { type FieldRef, scanForm } from "./extract";
 import { fieldDigest, pendingDiff } from "./capture";
 import type { CaptureReply } from "./messages";
 import { isFinalSubmit } from "./applied";
@@ -40,6 +40,12 @@ export interface TrackerDeps {
   onResult?: (r: FlushResult) => void;
   /** A button that sends the application was clicked (applied.isFinalSubmit); not Next, Continue, Save or Review. */
   onSubmit?: () => void;
+  /**
+   * Whether an event came from the user. Defaults to `ev.isTrusted === true`; only the DOM test page, which
+   * can dispatch nothing but script events, replaces it. The content script never passes it, and a page script
+   * cannot reach a content script's arguments, so a page cannot turn it on.
+   */
+  isTrusted?: (ev: Event) => boolean;
   commitMs?: number;
   domMs?: number;
   domMaxWaitMs?: number;
@@ -63,8 +69,11 @@ const REAL_CLOCK: Clock = {
 export type FlushResult = CaptureReply & { unchanged: number; reason: string; failed: boolean; notSent: number };
 
 export interface Tracker {
-  /** Fold the page's current fields into the pending set (synchronous). */
-  snapshot(): void;
+  /**
+   * Fold the fields the user has touched (a trusted event on the field) into the pending set (synchronous).
+   * `all` reads every visible field: only an explicit Save from the owner passes it.
+   */
+  snapshot(all?: boolean): void;
   flush(reason: string, explicit?: boolean): Promise<FlushResult | null>;
   /**
    * This page already saved `field` itself. A later flush must not send the same
@@ -120,7 +129,22 @@ export function createTracker(d: TrackerDeps): Tracker {
   // What each pending field last carried to the background on this page (see capture.fieldDigest).
   const sent = new Map<string, string>();
 
-  function snapshot(): void {
+  const isTrusted = d.isTrusted ?? ((ev: Event) => ev.isTrusted === true);
+  /**
+   * Elements that received a trusted user event, or that contain one (a combobox wrapper around the input
+   * the user typed in). A page script can set a value and dispatch events, but cannot make them trusted, so
+   * a field it only set never enters this set and is never read by `snapshot`.
+   */
+  const touched = new WeakSet<object>();
+
+  function touch(ev: Event): void {
+    if (!isTrusted(ev)) return;
+    for (const n of ev.composedPath()) if ((n as Node).nodeType === 1) touched.add(n);
+  }
+
+  const isTouched = (r: FieldRef): boolean => r.els.some(e => touched.has(e));
+
+  function snapshot(all = false): void {
     try {
       const scan = scanForm(d.doc);
       wireRoots(scan.roots);
@@ -134,6 +158,8 @@ export function createTracker(d: TrackerDeps): Tracker {
           // Kept so the count of skipped sensitive fields is honest; the value is never held.
           pending.delete(k);
           pending.set(k, { ...kept, value: [] });
+        } else if (!all && !isTouched(r)) {
+          continue; // set by the page, not typed or chosen by the user
         } else if (f.value.every(v => v.trim() === "")) {
           pending.delete(k); // the user cleared it
         } else {
@@ -228,7 +254,7 @@ export function createTracker(d: TrackerDeps): Tracker {
   }
 
   function flush(reason: string, explicit = false): Promise<FlushResult | null> {
-    snapshot(); // before the page moves on: this is the DOM the user filled in
+    snapshot(explicit); // before the page moves on: this is the DOM the user filled in
     const p = chain.then(() => run(reason, explicit));
     chain = p.catch(() => undefined); // flushes run one at a time, or two would both see an empty bank
     return p;
@@ -270,7 +296,7 @@ export function createTracker(d: TrackerDeps): Tracker {
   const once = (ev: Event): boolean => { if (seen.has(ev)) return false; seen.add(ev); return true; };
 
   function onClick(ev: Event): void {
-    if (!once(ev)) return;
+    if (!isTrusted(ev) || !once(ev)) return; // a page script's click is neither a commit nor an Applied prompt
     const t = ev.composedPath()[0] as Element | undefined;
     if (!t?.closest) return;
     const adv = t.closest("button, input[type=submit], [role=button], a[role=button]");
@@ -284,7 +310,7 @@ export function createTracker(d: TrackerDeps): Tracker {
 
   function onKey(ev: Event): void {
     const k = ev as KeyboardEvent;
-    if (!once(ev) || k.key !== "Enter" || k.isComposing) return;
+    if (!isTrusted(ev) || !once(ev) || k.key !== "Enter" || k.isComposing) return;
     const t = ev.composedPath()[0] as Element | undefined;
     if (t?.localName === "input") setTimeout(() => { if (!disposed) void flush("enter"); }, 150);
   }
@@ -296,11 +322,13 @@ export function createTracker(d: TrackerDeps): Tracker {
       root.addEventListener(type, fn, true);
       cleanups.push(() => root.removeEventListener(type, fn, true));
     };
-    on("submit", ev => { if (once(ev)) void flush("submitted"); });
-    on("click", onClick);
-    on("keydown", onKey);
-    on("change", ev => { if (once(ev)) commitSoon(); });   // `change` and `focusout` are separate events, and
-    on("focusout", ev => { if (once(ev)) commitSoon(); }); // only focusout crosses a shadow boundary
+    // Provenance first: every user-originated event marks its target (and the ancestors it bubbled through).
+    for (const type of ["input", "pointerdown", "mousedown"]) on(type, touch);
+    on("submit", ev => { if (isTrusted(ev) && once(ev)) void flush("submitted"); });
+    on("click", ev => { touch(ev); onClick(ev); });
+    on("keydown", ev => { touch(ev); onKey(ev); });
+    on("change", ev => { touch(ev); if (isTrusted(ev) && once(ev)) commitSoon(); });   // `change` and `focusout` are separate events, and
+    on("focusout", ev => { touch(ev); if (isTrusted(ev) && once(ev)) commitSoon(); }); // only focusout crosses a shadow boundary
     on("load", () => commitSoon(50));                      // an iframe finished loading: scan it, wire it
     if (observers.length < MAX_OBSERVED_ROOTS) {
       const mo = new MutationObserver(markDom);

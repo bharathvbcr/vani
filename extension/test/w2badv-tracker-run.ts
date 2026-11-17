@@ -6,8 +6,10 @@ import type { Bank, FieldInfo } from "../src/types";
 import { emptyBank } from "../src/types";
 
 const info = (label: string): FieldInfo => ({ kind: "text", label, name: "", autocomplete: "", automationId: "", options: [], required: false, value: ["blue"] });
+// The user typed in every field these scenarios touch: the events are script-made, so the tracker is told to trust them (createTracker isTrusted).
+const FIELD_EL = { nodeType: 1 };
 const real = await import("../src/extract");
-mock.module("../src/extract", () => ({ ...real, scanForm: () => ({ roots: [], refs: ["Favourite colour", "Favourite editor", "Favourite shell"].map(l => ({ info: info(l), els: [], widget: "native", manual: "" })) }) }));
+mock.module("../src/extract", () => ({ ...real, scanForm: () => ({ roots: [], refs: ["Favourite colour", "Favourite editor", "Favourite shell"].map(l => ({ info: info(l), els: [FIELD_EL], widget: "native", manual: "" })) }) }));
 (globalThis as Record<string, unknown>).MutationObserver = class { observe() {} disconnect() {} };
 const { createTracker } = await import("../src/tracker");
 
@@ -16,7 +18,7 @@ function target() {
   return {
     addEventListener(t: string, f: (e: Event) => void) { l.set(t, [...(l.get(t) ?? []), f]); },
     removeEventListener() {},
-    fire(t: string) { const e = new Event(t); for (const f of l.get(t) ?? []) f(e); },
+    fire(t: string) { const e = Object.assign(new Event(t), { composedPath: () => [FIELD_EL] }); for (const f of l.get(t) ?? []) f(e); },
   };
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -26,7 +28,7 @@ async function scenario(getBank: () => Promise<Bank | null>, steps: (doc: Return
   const win = Object.assign(target(), { location: { href: "https://jobs.example/apply" } });
   const doc = Object.assign(target(), { nodeType: 9, defaultView: win, visibilityState: "visible" });
   let sends = 0;
-  const t = createTracker({ doc: doc as unknown as Document, host: "jobs.example", getBank, send: async f => { sends++; return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; }, commitMs: 10 });
+  const t = createTracker({ doc: doc as unknown as Document, host: "jobs.example", getBank, isTrusted: () => true, send: async f => { sends++; return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; }, commitMs: 10 });
   await steps(doc, win, t);
   t.dispose();
   return sends;
@@ -56,7 +58,7 @@ out.retryAfterThrow = await scenario(async () => { if (++m === 1) throw new Erro
 {
   const win = Object.assign(target(), { location: { href: "https://jobs.example/apply" } });
   const doc = Object.assign(target(), { nodeType: 9, defaultView: win, visibilityState: "visible" });
-  const t = createTracker({ doc: doc as unknown as Document, host: "jobs.example", getBank: async () => null, send: async () => ({ error: "the answer bank could not be read" }), commitMs: 10 });
+  const t = createTracker({ doc: doc as unknown as Document, host: "jobs.example", getBank: async () => null, isTrusted: () => true, send: async () => ({ error: "the answer bank could not be read" }), commitMs: 10 });
   doc.fire("change");
   const r = await t.flush("saved", true);
   t.dispose();

@@ -8,7 +8,7 @@ import { readJobInfo } from "../src/jobinfo";
 import { scrapePageJobs } from "../src/scraper";
 import { mergeCapture } from "../src/bank";
 import { coverageLine, coverageOf } from "../src/coverage";
-import { createTracker } from "../src/tracker";
+import { type TrackerDeps, createTracker as createRealTracker } from "../src/tracker";
 import { type Bank, type FieldInfo, emptyBank } from "../src/types";
 import { intentOf, motivationEssay } from "../src/intents";
 import { BASICS_HOST, basicsFields } from "../src/basics";
@@ -23,6 +23,15 @@ function check(name: string, ok: boolean, detail = ""): void {
   lines.push(`${ok ? "PASS" : "FAIL"} ${name}${ok || !detail ? "" : ` :: ${detail}`}`);
 }
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/**
+ * This page can dispatch only script events, which are never trusted. Every tracker here is told to trust them,
+ * as if each were the user typing (TrackerDeps.isTrusted); the one test that checks a hostile page uses
+ * createRealTracker, whose default is the browser's own isTrusted.
+ */
+const createTracker = (d: TrackerDeps) => createRealTracker({ isTrusted: () => true, ...d });
+/** The user typing in `el`: a script-made input event stands in, which the trusting tracker above accepts. */
+const typed = (el: HTMLElement): void => { el.dispatchEvent(new Event("input", { bubbles: true, composed: true })); };
 
 /** Listen before the frame is inserted. A srcdoc load can finish inside append, and a listener added afterwards never runs. */
 function frameLoaded(frame: HTMLIFrameElement): Promise<void> {
@@ -257,7 +266,7 @@ async function tracking(): Promise<void> {
   check("flushing the same page again saves nothing twice", mem.answers["current company"]!.uses === 1 && r2 !== null && r2.added === 0 && r2.updated === 0 && r2.unchanged >= 1, JSON.stringify(r2));
 
   const sp4 = q<HTMLInputElement>(document, "#sp4");
-  sp4.value = "120000"; // typed, never blurred, no change event
+  sp4.value = "120000"; typed(sp4); // typed, never blurred, no change event
   const sendsBeforeHide = sends;
   window.dispatchEvent(new Event("pagehide"));
   check("pagehide sends within the event, without awaiting a bank read", sends === sendsBeforeHide + 1, `sends ${sends - sendsBeforeHide}`);
@@ -558,6 +567,7 @@ async function oncePerPage(): Promise<void> {
       return counts;
     },
   });
+  typed(q<HTMLInputElement>(box, "#op1")); typed(q<HTMLInputElement>(box, "#op2"));
   await t.flush("first");
   const after1 = sends;
   const r2 = await t.flush("second");
@@ -568,7 +578,7 @@ async function oncePerPage(): Promise<void> {
   check("pagehide after a flush does not send it again", sends === 1 && mem.answers["favourite editor"]?.uses === 1, `sends ${sends} uses ${mem.answers["favourite editor"]?.uses}`);
 
   refuse = true;
-  q<HTMLInputElement>(box, "#op1").value = "emacs";
+  q<HTMLInputElement>(box, "#op1").value = "emacs"; typed(q<HTMLInputElement>(box, "#op1"));
   const refused = await t.flush("refused");
   check("a save the background refused is reported failed", refused?.failed === true, JSON.stringify(refused));
   refuse = false;
@@ -578,6 +588,49 @@ async function oncePerPage(): Promise<void> {
   check("and then not again", mem.answers["favourite editor"]?.uses === 2, String(mem.answers["favourite editor"]?.uses));
   t.dispose();
   box.remove();
+}
+
+/**
+ * w3b (ft-bf5e): a hostile page script sets values and dispatches input, change, focusout and click events. This is
+ * the real tracker with the browser's own isTrusted, so none of it is the user. It sends nothing and prompts nothing;
+ * a user's own typing (here, the trusting tracker) is still captured, and so is an explicit Save.
+ */
+async function hostilePage(): Promise<void> {
+  const box = document.createElement("div");
+  box.innerHTML = '<label for="hp1">Favourite editor</label><input id="hp1" value="vim"><label for="hp2">Favourite shell</label><input id="hp2" value="fish">' +
+    '<label for="hp3">Favourite font</label><input id="hp3" value="mono"><button id="hp-go" type="button">Submit application</button>';
+  document.body.append(box);
+  const open = (make: typeof createRealTracker) => {
+    const sent: FieldInfo[] = [];
+    let prompts = 0;
+    const t = make({ doc: document, host: "x.example", getBank: async () => emptyBank(), commitMs: 5, onSubmit: () => { prompts++; }, send: async f => { sent.push(...f); return { added: f.length, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 }; } });
+    return { sent, t, prompts: () => prompts };
+  };
+  try {
+    const hostile = open(createRealTracker);
+    for (const id of ["hp1", "hp2", "hp3"]) {
+      const el = q<HTMLInputElement>(box, `#${id}`);
+      el.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      el.dispatchEvent(new FocusEvent("focusout", { bubbles: true, composed: true }));
+    }
+    q<HTMLElement>(box, "#hp-go").click();
+    window.dispatchEvent(new Event("pagehide"));
+    await sleep(60);
+    await hostile.t.flush("hostile");
+    check("hostile page: synthetic events capture nothing and raise no Applied prompt", hostile.sent.length === 0 && hostile.t.pendingCount() === 0 && hostile.prompts() === 0, `sent ${hostile.sent.length} pending ${hostile.t.pendingCount()} prompts ${hostile.prompts()}`);
+    await hostile.t.flush("saved", true);
+    check("hostile page: an explicit Save still captures the untouched values", hostile.sent.length === 3, `sent ${hostile.sent.length}`);
+    hostile.t.dispose();
+
+    const user = open(createTracker);
+    typed(q<HTMLInputElement>(box, "#hp1"));
+    await user.t.flush("typed");
+    check("hostile page: the same page, typed in by the user, captures only the typed field", user.sent.length === 1 && user.sent[0]!.label === "Favourite editor", JSON.stringify(user.sent.map(f => f.label)));
+    user.t.dispose();
+  } finally {
+    box.remove();
+  }
 }
 
 /** w2b (232): a bank that cannot be read, or one that disables this host (in any case, with a trailing dot), sends nothing. */
@@ -1337,6 +1390,7 @@ async function main(): Promise<void> {
     ["typeahead", typeahead],
     ["once per page", oncePerPage],
     ["fail-closed capture", failClosedCapture],
+    ["hostile page", hostilePage],
     ["submit signal", submitSignal],
     ["not questions", notQuestions],
     ["dial picker", dialPicker],
