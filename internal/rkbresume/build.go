@@ -424,12 +424,33 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, keepBu
 		}
 		return nil, why, nil
 	}
+	// A reply that validated is kept (choicekeep.go) for as long as the build is
+	// failing after it: a build that ends any other way (built, or the choice was
+	// rejected) forgets what it kept, so only a failure that is not the model's
+	// buys a retry the same reply.
+	kept := choiceKeep{dir: b.cfg.ChoiceDir}
+	var keys []string
+	retain := false
+	defer func() {
+		if !retain {
+			for _, k := range keys {
+				kept.remove(k)
+			}
+		}
+	}()
 	for round := 0; round < 2; round++ {
 		if round > 0 && b.remaining(ctx) < minForModel {
 			return keepSoft("the tailored build was rejected and no time was left to retry")
 		}
-		tr := b.turn(ctx, msgs)
+		key := b.keptChoiceKey(msgs)
+		tr, reused := turnResult{}, false
+		if text, ok := kept.load(key, time.Now()); ok {
+			tr, reused = turnResult{text: text}, true
+		} else {
+			tr = b.turn(ctx, msgs)
+		}
 		if ctx.Err() != nil {
+			retain = true
 			return keepSoftOnTimeout(soft, ctx, ctxError(ctx))
 		}
 		if tr.text == "" {
@@ -437,6 +458,14 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, keepBu
 		}
 		b.answered++
 		ch, err := b.parseTailored(tr.text, p, kw)
+		if err == nil {
+			keys = append(keys, key)
+			if !reused {
+				kept.save(key, tr.text, time.Now())
+			}
+		} else if reused {
+			kept.remove(key) // a replay that no longer validates is not replayed again
+		}
 		if err != nil {
 			if b.rd != nil {
 				b.rd.refusal = refusalCode(err)
@@ -450,6 +479,7 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, keepBu
 		}
 		out, ferr := b.attempt(ctx, fmt.Sprintf("tailored%d", round), ch, false, true)
 		if ferr != nil {
+			retain = true
 			if ferr.Code == CodeTimeout {
 				return keepSoftOnTimeout(soft, ctx, ferr)
 			}
@@ -458,6 +488,9 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, keepBu
 		why := ""
 		if round == 1 {
 			why = "after one retry"
+		}
+		if len(out.problems) > 0 {
+			kept.remove(key) // the model's fault: this reply buys nothing on a retry
 		}
 		if len(out.problems) == 0 {
 			res, rerr := b.finish(SourceTailored, why, out)

@@ -374,7 +374,9 @@ dispatch:
 			sum.NotAskedKeys = append(sum.NotAskedKeys, string(r.Key))
 		}
 	}
-	if sum.NotAsked > 0 {
+	// A cancel that landed after every posting was asked (a paid item counts as
+	// asked) is still a stop: the owner stopped it, and the summary says so.
+	if sum.NotAsked > 0 || ctx.Err() != nil {
 		sum.Stopped, sum.Message = b.stop, b.stopMsg
 	}
 	out.event(retriageBatchEvent{Event: "done", Summary: &sum})
@@ -447,7 +449,9 @@ func (b *retriageBatch) one(ctx context.Context, r ledger.Record, pr retriagePro
 	defer cancel()
 	rd, cost, re := b.ask.read(actx, b.p, b.dir, r, pr)
 	if re != nil {
-		if re.code == rtCancelled {
+		// Stopped before anything was paid: not asked, so not an item. A call that was
+		// paid for before the stop is an item that carries its cost.
+		if re.code == rtCancelled && re.cost == nil {
 			return ev, false
 		}
 		ev.Error, ev.Code, ev.Cost = re.msg, re.code, re.cost

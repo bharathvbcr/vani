@@ -251,10 +251,11 @@ type wired struct {
 func (w *wired) runReport() runDetail {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	stats := w.backendErrs.stats()
 	return runDetail{
-		Boards: w.boards, Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: w.backendErrs.stats(), SemanticPre: w.semPre,
+		Boards: w.boards, Advance: w.advance, BackendErrors: w.backendErrs.report(), BackendStats: stats, SemanticPre: w.semPre,
 		NearDup: w.nearDup, Exclusions: w.exclusions, Logos: w.logos, Shadow: w.shadow, Explain: w.explain,
-		EscalateBackfill: w.backfill,
+		EscalateBackfill: w.backfill, ChargeErrors: totalChargeErrors(stats),
 	}
 }
 

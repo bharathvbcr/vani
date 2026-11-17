@@ -212,9 +212,9 @@ func (e *env) resumeConfig(ctx context.Context, withModel bool) (resumeWiring, e
 		Runner:   resumeRunner,
 		MaxPDF:   maxResumePDF,
 	}
-	if filepath.IsAbs(e.stateDir) { // builds are exclusive per state dir, and their temp folders swept
-		rc.WorkDir, rc.LockDir = filepath.Join(e.stateDir, "resumes", ".tmp"), e.stateDir
-	}
+	// Builds are exclusive per state dir, and their temp folders swept.
+	rc.WorkDir, rc.LockDir = filepath.Join(e.stateDir, "resumes", ".tmp"), e.stateDir
+	rc.ChoiceDir = filepath.Join(e.stateDir, "resumes", ".choices")
 	if withModel {
 		rc.Model = rkbresume.Model
 		rc.Provider, rc.NoModel = e.resumeModel(ctx, cfg)

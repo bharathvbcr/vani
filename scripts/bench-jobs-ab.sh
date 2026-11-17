@@ -4,6 +4,9 @@
 #
 #   scripts/bench-jobs-ab.sh <base-rev> <state-dir> <config.json> [rounds=5]
 #
+# <state-dir> and <config.json> may be relative to the directory you run from;
+# the script makes them absolute before exporting them to vani.
+#
 # Run from the repository root. The old binary is built with `go build -overlay`
 # over this tree: each non-test .go file changed since <base-rev> is replaced by
 # its copy at <base-rev>, and each added one (committed or not) is hidden. A file deleted since then
@@ -47,7 +50,9 @@ print -r -- "{\"Replace\": {${(j:, :)entries}}}" > $work/overlay.json
 go build -overlay $work/overlay.json -o $work/vani-old ./cmd/vani
 go build -o $work/vani-new ./cmd/vani
 
-export VANI_NO_KEYCHAIN=1 VANI_STATE_DIR=$state VANI_CONFIG=$config
+# vani refuses a relative state dir or config path, so absolutise both against
+# the directory the script was run from (zsh :a, no symlink resolution).
+export VANI_NO_KEYCHAIN=1 VANI_STATE_DIR=${state:a} VANI_CONFIG=${config:a}
 cases=("new|--view new" "allco|--view all --sort company" "salary|--view new --sort salary" "saved|--view saved")
 for (( i = 1; i <= n; i++ )); do
   if (( i % 2 )); then arms=(old new); else arms=(new old); fi

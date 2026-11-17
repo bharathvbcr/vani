@@ -266,12 +266,10 @@ func (e *env) resumeJobFor(rawKey string, needText bool) (resumeJob, *resumeErro
 	return resumeJob{key: k, rec: r, req: rkbresume.Request{Company: r.Posting.Company, Title: r.Posting.Title, Description: r.Posting.Description}}, nil
 }
 
-// resumeStore opens the store under the state dir, which must be absolute: the
-// PDF paths a reply names and the folders builds work in are absolute.
+// resumeStore opens the store under the state dir. resumestore.Open owns the
+// guard: it refuses a relative dir, because the PDF paths a reply names and the
+// folders builds work in are absolute. The refusal comes back as a store error.
 func (e *env) resumeStore() (*resumestore.Store, *resumeError) {
-	if !filepath.IsAbs(e.stateDir) {
-		return nil, jrErr(codeConfig, "jobs resume: the state directory must be an absolute path")
-	}
 	st, err := resumestore.Open(e.stateDir)
 	if err != nil {
 		return nil, storeError(err)

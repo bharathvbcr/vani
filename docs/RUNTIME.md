@@ -25,7 +25,9 @@ it before relying on it after the code changes.
 `vani` resolves one config file and one state directory per process
 (`internal/config/appsettings.go`, `Resolve`):
 
-1. `VANI_CONFIG` and `VANI_STATE_DIR` win, each on its own.
+1. `VANI_CONFIG` and `VANI_STATE_DIR` win, each on its own. Each must be an absolute path (cleaned
+   of `.` and `..`); a relative one, `~/x` included, is refused with `ErrRelativePath` naming the
+   variable, since launchd and the app have no working directory worth resolving against.
 2. Otherwise the platform default: on macOS `~/Library/Application Support/Vani/config.json`
    and `~/Library/Application Support/Vani/state`.
 3. On macOS, when either path came from the default, `vani` reads the Mac app's settings,

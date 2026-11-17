@@ -283,8 +283,12 @@ type PairResult struct {
 	Unusable            int // stored: the reply was not one of the options
 	// Stopped is why the run ended early; empty when every pair was handled.
 	Stopped string
-	// SpentNano is what the metered total grew by, when it could be read.
-	SpentNano int64
+	// SpentNano is what the metered total grew by. It is a measurement only when
+	// SpentUnknown is false: when the meter could not be read after the run, Run
+	// returns an error and SpentUnknown is true, and SpentNano must not be shown
+	// or used as "nothing spent".
+	SpentNano    int64
+	SpentUnknown bool
 }
 
 // Run asks every pair not already stored, keeping each answer as it arrives. It
@@ -438,7 +442,13 @@ feed:
 	close(jobs)
 	wg.Wait()
 
-	if spent, serr := r.Spent(context.WithoutCancel(ctx)); serr == nil {
+	if spent, serr := r.Spent(context.WithoutCancel(ctx)); serr != nil {
+		// A meter that could not be read is not "nothing was spent": SpentNano stays
+		// 0 only as the zero value, SpentUnknown says it is not a measurement, and
+		// the error reaches the caller.
+		res.SpentUnknown = true
+		fatal = errors.Join(fatal, fmt.Errorf("eval: the spend could not be read after the run, so what it cost is unknown: %w", serr))
+	} else {
 		res.SpentNano = spent - base
 	}
 	if fatal != nil {

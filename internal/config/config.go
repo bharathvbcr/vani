@@ -564,8 +564,8 @@ func (l LLM) EffectiveTriageModel() string {
 const (
 	GeminiInputNanoUSD  = 1500
 	GeminiOutputNanoUSD = 7500
-	// maxNanoUSDPerToken bounds a configured price ($1,000 per million tokens).
-	maxNanoUSDPerToken = 1_000_000
+	// MaxNanoUSDPerToken bounds a configured price ($1,000 per million tokens).
+	MaxNanoUSDPerToken = 1_000_000
 )
 
 // Prices returns the per-token prices to meter the configured provider with.
@@ -582,8 +582,8 @@ func (l LLM) Prices() (input, output int64, err error) {
 	if in <= 0 || out <= 0 {
 		return 0, 0, fmt.Errorf("llm: %s needs input_nano_usd_per_token and output_nano_usd_per_token", l.Provider)
 	}
-	if in > maxNanoUSDPerToken || out > maxNanoUSDPerToken {
-		return 0, 0, fmt.Errorf("llm: per-token price above %d nano-USD", maxNanoUSDPerToken)
+	if in > MaxNanoUSDPerToken || out > MaxNanoUSDPerToken {
+		return 0, 0, fmt.Errorf("llm: per-token price above %d nano-USD", MaxNanoUSDPerToken)
 	}
 	return in, out, nil
 }

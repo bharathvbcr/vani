@@ -40,7 +40,7 @@ func Write(path string, data []byte) (err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("atomic write %s: create directory: %w", name, err)
 	}
-	tmp, err := os.CreateTemp(dir, "."+name+".tmp-*")
+	tmp, err := createTemp(dir, name)
 	if err != nil {
 		return fmt.Errorf("atomic write %s: create temp file: %w", name, err)
 	}
@@ -68,6 +68,31 @@ func Write(path string, data []byte) (err error) {
 	}
 	if serr := SyncDir(dir); serr != nil {
 		return fmt.Errorf("atomic write %s: replaced, but syncing the directory failed: %w", name, serr)
+	}
+	return nil
+}
+
+// createTemp makes the temp file Write fills: hidden, named after the target,
+// in the target's directory so the rename stays on one filesystem.
+func createTemp(dir, name string) (*os.File, error) {
+	return os.CreateTemp(dir, "."+name+".tmp-*")
+}
+
+// CheckWritable reports whether Write could create its temp file in dir. It
+// creates that temp file the way Write does and removes it, so a read-only
+// directory is found without replacing anything.
+func CheckWritable(dir string) error {
+	tmp, err := createTemp(dir, "writable")
+	if err != nil {
+		return fmt.Errorf("directory is not writable: %w", err)
+	}
+	name := tmp.Name()
+	cerr := tmp.Close()
+	if rerr := os.Remove(name); rerr != nil {
+		return fmt.Errorf("directory is not writable: %w", rerr)
+	}
+	if cerr != nil {
+		return fmt.Errorf("directory is not writable: %w", cerr)
 	}
 	return nil
 }

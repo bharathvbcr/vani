@@ -39,8 +39,11 @@ func positive(t *testing.T, label string, r budget.Rates) {
 func TestConfiguredModelKeepsConfiguredRatesAndTableCacheRead(t *testing.T) {
 	got, ok := opusPriced(t).PriceOf("claude-opus-5-5")
 	table, _ := anthropic.PriceOf("claude-opus-5-5")
-	if !ok || got.Input != opusIn || got.Output != opusOut || got.CacheWrite != opusIn {
+	if !ok || got.Input != opusIn || got.Output != opusOut {
 		t.Fatalf("configured rates changed: %+v ok=%v", got, ok)
+	}
+	if got.CacheWrite != table.CacheWrite || got.CacheWrite <= opusIn {
+		t.Fatalf("cache write %d, want Manvi's rate %d (input is %d)", got.CacheWrite, table.CacheWrite, opusIn)
 	}
 	if got.CacheRead != table.CacheRead || got.CacheRead >= opusIn {
 		t.Fatalf("cache read %d, want Manvi's rate %d (input is %d)", got.CacheRead, table.CacheRead, opusIn)

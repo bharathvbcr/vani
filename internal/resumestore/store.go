@@ -92,10 +92,15 @@ type Store struct {
 // Dir is where the store lives for a state directory.
 func Dir(stateDir string) string { return filepath.Join(stateDir, dirName) }
 
-// Open returns the store for stateDir. It creates nothing: the first Save does.
+// Open returns the store for stateDir, which must be absolute: the PDF paths a
+// reply names and the folders builds work in are absolute. It creates nothing:
+// the first Save does.
 func Open(stateDir string) (*Store, error) {
 	if stateDir == "" {
 		return nil, fmt.Errorf("%w: no state directory", ErrInvalid)
+	}
+	if !filepath.IsAbs(stateDir) {
+		return nil, fmt.Errorf("%w: the state directory must be an absolute path", ErrInvalid)
 	}
 	return &Store{root: Dir(stateDir)}, nil
 }

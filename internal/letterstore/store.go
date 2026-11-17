@@ -10,10 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -31,9 +33,12 @@ const (
 	// MaxVersions is how many versions one posting keeps.
 	MaxVersions = 20
 	// MaxJobs is how many postings the store holds.
-	MaxJobs  = 200
-	maxKey   = 2048
-	lockWait = 5 * time.Second
+	MaxJobs = 200
+	maxKey  = 2048
+	// maxPointer and maxMeta bound the small files Save and Room read back.
+	maxPointer = 32
+	maxMeta    = 64 << 10
+	lockWait   = 5 * time.Second
 )
 
 // Codes for a store failure.
@@ -166,11 +171,12 @@ func (s *Store) Save(ctx context.Context, key, body, companyCheck string, pdf []
 	if err := ctx.Err(); err != nil {
 		return Meta{}, fail(CodeTimeout, fmt.Errorf("letterstore: %w", err))
 	}
-	dir, release, err := s.lock(ctx, key, true)
+	adm, err := s.admit(ctx, key, opSave)
 	if err != nil {
 		return Meta{}, err
 	}
-	defer release()
+	defer adm.release()
+	dir := adm.dir
 	textSum := sha256.Sum256([]byte(body))
 	textHex := hex.EncodeToString(textSum[:])
 	var pdfHex string
@@ -183,13 +189,10 @@ func (s *Store) Save(ctx context.Context, key, body, companyCheck string, pdf []
 			return meta, nil
 		}
 	}
-	next, err := nextVersion(dir)
-	if err != nil {
-		return Meta{}, err
+	if adm.full != nil {
+		return Meta{}, adm.full
 	}
-	if next > MaxVersions {
-		return Meta{}, fail(CodeFull, fmt.Errorf("letterstore: %d versions already saved", MaxVersions))
-	}
+	next := adm.next
 	meta := Meta{
 		Version:      next,
 		Created:      s.now().Format(time.RFC3339),
@@ -223,6 +226,27 @@ func (s *Store) Save(ctx context.Context, key, body, companyCheck string, pdf []
 	return meta, nil
 }
 
+// Room reports whether Save could write one more version for key right now,
+// without writing anything: the CodeFull error Save would return when key is at
+// MaxVersions, or when key is new and the store already holds MaxJobs postings.
+// A caller that pays for a letter asks first, so a full store refuses before the
+// money is spent. It is a probe, not a reservation: a writer that fills the
+// store between Room and Save still makes Save report full.
+func (s *Store) Room(ctx context.Context, key string) error {
+	if err := checkKey(key); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(CodeTimeout, fmt.Errorf("letterstore: %w", err))
+	}
+	adm, err := s.admit(ctx, key, opRoom)
+	if err != nil {
+		return err
+	}
+	defer adm.release()
+	return adm.full
+}
+
 // Use points the used letter at version n. It does not copy the text into the reply.
 func (s *Store) Use(ctx context.Context, key string, n int) (Meta, error) {
 	if err := checkKey(key); err != nil {
@@ -231,11 +255,12 @@ func (s *Store) Use(ctx context.Context, key string, n int) (Meta, error) {
 	if n < 1 || n > MaxVersions {
 		return Meta{}, fail(CodeBadRequest, fmt.Errorf("letterstore: version %d is not in 1..%d", n, MaxVersions))
 	}
-	dir, release, err := s.lock(ctx, key, false)
+	adm, err := s.admit(ctx, key, opUse)
 	if err != nil {
 		return Meta{}, err
 	}
-	defer release()
+	defer adm.release()
+	dir := adm.dir
 	if err := verifyKey(dir, key); err != nil {
 		return Meta{}, err
 	}
@@ -316,50 +341,142 @@ func (s *Store) meta(key string, n int) (Meta, error) {
 	return readMeta(s.dir(key), n)
 }
 
-func (s *Store) lock(ctx context.Context, key string, create bool) (string, func(), error) {
+// admitOp is what the caller of admit is about to do with the posting.
+type admitOp int
+
+const (
+	opUse  admitOp = iota // read an existing posting; never create
+	opSave                // write the next version; create the posting if new
+	opRoom                // ask whether opSave would succeed; write nothing durable
+)
+
+// admission is what admit decided. release drops the locks it took. full is the
+// CodeFull error opSave and opRoom owe when the posting is at MaxVersions; Save
+// reads it after its identical-letter check, which still returns a full
+// posting's current version.
+type admission struct {
+	dir     string
+	next    int
+	full    error
+	release func()
+}
+
+// admit is the one step Save and Room both run: take the store lock, resolve the
+// posting folder, take its own lock, decide capacity (MaxJobs for a new posting,
+// MaxVersions for an existing one) and prove the folder can take a write. Room
+// stops there, so what it says cannot drift from what Save then does.
+//
+// Not bounded: the fsync and rename inside atomicfile.Write on a hung
+// filesystem. They are not abandoned on a timeout either, because a write that
+// landed after the caller was told "not saved" would make that reply dishonest.
+func (s *Store) admit(ctx context.Context, key string, op admitOp) (admission, error) {
+	none := admission{release: func() {}}
 	ctx, cancel := context.WithTimeout(ctx, lockWait)
 	defer cancel()
-	if err := os.MkdirAll(s.root, 0o700); err != nil {
-		return "", nil, fail(CodeIO, fmt.Errorf("letterstore: %w", err))
+	if op == opSave {
+		if err := os.MkdirAll(s.root, 0o700); err != nil {
+			return none, fail(CodeIO, fmt.Errorf("letterstore: %w", err))
+		}
+	} else if _, err := os.Lstat(s.root); err != nil {
+		if op == opRoom && errors.Is(err, os.ErrNotExist) {
+			return none, nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return none, fail(CodeNotFound, errors.New("letterstore: no letter for this posting"))
+		}
+		return none, fail(CodeIO, err)
 	}
 	lk, err := filelock.Acquire(ctx, filepath.Join(s.root, ".lock"))
 	if err != nil {
-		if ctx.Err() != nil {
-			return "", nil, fail(CodeTimeout, fmt.Errorf("letterstore: lock: %w", ctx.Err()))
-		}
-		return "", nil, fail(CodeIO, fmt.Errorf("letterstore: lock: %w", err))
+		return none, lockFailure(ctx, err)
 	}
 	defer lk.Release()
 	dir := s.dir(key)
 	st, serr := os.Lstat(dir)
 	switch {
 	case errors.Is(serr, os.ErrNotExist):
-		if !create {
-			return "", nil, fail(CodeNotFound, errors.New("letterstore: no letter for this posting"))
+		if op == opUse {
+			return none, fail(CodeNotFound, errors.New("letterstore: no letter for this posting"))
 		}
 		n, err := jobCount(s.root)
 		if err != nil {
-			return "", nil, err
+			return none, err
 		}
 		if n >= MaxJobs {
-			return "", nil, fail(CodeFull, fmt.Errorf("letterstore: %d postings already have a letter", MaxJobs))
+			return none, fail(CodeFull, fmt.Errorf("letterstore: %d postings already have a letter", MaxJobs))
+		}
+		if op == opRoom {
+			return none, checkWritable(s.root)
 		}
 		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return "", nil, fail(CodeIO, fmt.Errorf("letterstore: %w", err))
+			return none, fail(CodeIO, fmt.Errorf("letterstore: %w", err))
 		}
 	case serr != nil:
-		return "", nil, fail(CodeIO, serr)
+		return none, fail(CodeIO, serr)
 	case !st.IsDir():
-		return "", nil, fail(CodeDamaged, errors.New("letterstore: the posting folder is not a directory"))
+		return none, fail(CodeDamaged, errors.New("letterstore: the posting folder is not a directory"))
 	}
 	jl, err := filelock.Acquire(ctx, filepath.Join(dir, ".lock"))
 	if err != nil {
-		if ctx.Err() != nil {
-			return "", nil, fail(CodeTimeout, fmt.Errorf("letterstore: lock: %w", ctx.Err()))
-		}
-		return "", nil, fail(CodeIO, fmt.Errorf("letterstore: lock: %w", err))
+		return none, lockFailure(ctx, err)
 	}
-	return dir, func() { _ = jl.Release() }, nil
+	adm := admission{dir: dir, next: 1, release: func() { _ = jl.Release() }}
+	if op == opUse {
+		return adm, nil
+	}
+	next, err := nextVersion(dir)
+	if err != nil {
+		adm.release()
+		return none, err
+	}
+	adm.next = next
+	if next > MaxVersions {
+		adm.full = fail(CodeFull, fmt.Errorf("letterstore: %d versions already saved", MaxVersions))
+	}
+	if err := checkSaveTargets(dir); err != nil {
+		adm.release()
+		return none, err
+	}
+	if err := checkWritable(dir); err != nil {
+		adm.release()
+		return none, err
+	}
+	return adm, nil
+}
+
+// checkSaveTargets refuses a posting folder where a file Save rewrites is a
+// link, directory or FIFO. Save would find that only at its last writes, after
+// the model was paid and with the new version half in place.
+func checkSaveTargets(dir string) error {
+	for _, name := range []string{"current", "key"} {
+		fi, err := os.Lstat(filepath.Join(dir, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fail(CodeIO, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return fail(CodeDamaged, fmt.Errorf("letterstore: %s is not a regular file", name))
+		}
+	}
+	return nil
+}
+
+func lockFailure(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return fail(CodeTimeout, fmt.Errorf("letterstore: lock: %w", ctx.Err()))
+	}
+	return fail(CodeIO, fmt.Errorf("letterstore: lock: %w", err))
+}
+
+// checkWritable proves dir takes a new file the way every Save write does, then
+// removes it.
+func checkWritable(dir string) error {
+	if err := atomicfile.CheckWritable(dir); err != nil {
+		return fail(CodeIO, fmt.Errorf("letterstore: %w", err))
+	}
+	return nil
 }
 
 func jobCount(root string) (int, error) {
@@ -402,7 +519,7 @@ func nextVersion(dir string) (int, error) {
 }
 
 func verifyKey(dir, key string) error {
-	b, err := os.ReadFile(filepath.Join(dir, "key"))
+	b, err := readBounded(filepath.Join(dir, "key"), maxKey)
 	if errors.Is(err, os.ErrNotExist) {
 		if _, serr := os.Lstat(dir); errors.Is(serr, os.ErrNotExist) {
 			return fail(CodeNotFound, errors.New("letterstore: no letter for this posting"))
@@ -410,7 +527,7 @@ func verifyKey(dir, key string) error {
 		return fail(CodeDamaged, errors.New("letterstore: the stored posting key does not match"))
 	}
 	if err != nil {
-		return fail(CodeIO, err)
+		return ioOr(err)
 	}
 	if string(b) != key {
 		return fail(CodeDamaged, errors.New("letterstore: the stored posting key does not match"))
@@ -419,12 +536,12 @@ func verifyKey(dir, key string) error {
 }
 
 func readPointer(path string) (int, error) {
-	b, err := os.ReadFile(path)
+	b, err := readBounded(path, maxPointer)
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, fail(CodeNotFound, errors.New("letterstore: no letter is selected"))
 	}
 	if err != nil {
-		return 0, fail(CodeIO, err)
+		return 0, ioOr(err)
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	if err != nil || n < 1 {
@@ -434,12 +551,12 @@ func readPointer(path string) (int, error) {
 }
 
 func readMeta(dir string, n int) (Meta, error) {
-	b, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("v%d.json", n)))
+	b, err := readBounded(filepath.Join(dir, fmt.Sprintf("v%d.json", n)), maxMeta)
 	if errors.Is(err, os.ErrNotExist) {
 		return Meta{}, fail(CodeNotFound, fmt.Errorf("letterstore: no v%d", n))
 	}
 	if err != nil {
-		return Meta{}, fail(CodeIO, err)
+		return Meta{}, ioOr(err)
 	}
 	var meta Meta
 	if json.Unmarshal(b, &meta) != nil || meta.Version != n || meta.TextSHA256 == "" {
@@ -449,25 +566,62 @@ func readMeta(dir string, n int) (Meta, error) {
 }
 
 func readChecked(path, want string, max int) ([]byte, error) {
-	fi, err := os.Lstat(path)
+	b, err := readBounded(path, max)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fail(CodeNotFound, errors.New("letterstore: the file is missing"))
 	}
 	if err != nil {
-		return nil, fail(CodeIO, err)
-	}
-	if !fi.Mode().IsRegular() || fi.Size() > int64(max) {
-		return nil, fail(CodeDamaged, errors.New("letterstore: the file is not a regular file of the stored size"))
-	}
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fail(CodeIO, err)
+		return nil, ioOr(err)
 	}
 	sum := sha256.Sum256(b)
 	if hex.EncodeToString(sum[:]) != want {
 		return nil, fail(CodeDamaged, errors.New("letterstore: the file does not match the stored hash"))
 	}
 	return b, nil
+}
+
+// readBounded reads a regular file of at most max bytes. A symbolic link, FIFO,
+// device or directory in its place is CodeDamaged, never followed or waited on:
+// the file is opened non-blocking and re-checked after the open, so a swap
+// between the Lstat and the open cannot park the reader on a FIFO. A missing
+// file comes back as an error satisfying os.ErrNotExist.
+func readBounded(path string, max int) ([]byte, error) {
+	notRegular := fail(CodeDamaged, errors.New("letterstore: the file is not a regular file of the stored size"))
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() || fi.Size() > int64(max) {
+		return nil, notRegular
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() || !os.SameFile(fi, st) {
+		return nil, notRegular
+	}
+	b, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > max {
+		return nil, notRegular
+	}
+	return b, nil
+}
+
+// ioOr keeps a store error as it is and codes any other failure CodeIO.
+func ioOr(err error) error {
+	if CodeOf(err) != "" {
+		return err
+	}
+	return fail(CodeIO, err)
 }
 
 func bytesHasPDF(b []byte) bool {
