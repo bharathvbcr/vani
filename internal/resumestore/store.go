@@ -177,6 +177,10 @@ type folder struct {
 	// vN.json time then (zero when it held none). They order the candidates, and
 	// newest is what makeRoom re-reads under the folder's lock.
 	saved, newest time.Time
+	// names is the sorted vN.json names then. A save that lands within the
+	// filesystem's time granularity (1 s on HFS+, 2 s on FAT) of the newest
+	// version leaves newest equal, but it adds a name.
+	names string
 }
 
 // jobFolders lists the job folders: real directories named by a 64-hex hash.
@@ -215,19 +219,29 @@ func lastSaved(dir string) time.Time {
 // newestVersion is the newest vN.json modification time in dir, zero when it
 // holds none.
 func newestVersion(dir string) time.Time {
-	var newest time.Time
+	newest, _ := versionState(dir)
+	return newest
+}
+
+// versionState is newestVersion plus the sorted vN.json names in dir joined by
+// newlines: the pair makeRoom compares under a folder's lock, since the newest
+// time alone cannot tell a new version that carries an equal time.
+func versionState(dir string) (newest time.Time, names string) {
+	var all []string
 	if ents, err := os.ReadDir(dir); err == nil {
 		for _, e := range ents {
 			m := fileRe.FindStringSubmatch(e.Name())
 			if m == nil || m[2] != "json" {
 				continue
 			}
+			all = append(all, e.Name())
 			if info, err := e.Info(); err == nil && info.ModTime().After(newest) {
 				newest = info.ModTime()
 			}
 		}
 	}
-	return newest
+	sort.Strings(all)
+	return newest, strings.Join(all, "\n")
 }
 
 // beforePruneLock is called by makeRoom just before it tries a candidate's job
@@ -252,7 +266,7 @@ func (s *Store) makeRoom() error {
 	}
 	for i := range cands {
 		dir := filepath.Join(s.root, cands[i].name)
-		cands[i].newest = newestVersion(dir)
+		cands[i].newest, cands[i].names = versionState(dir)
 		cands[i].saved = lastSaved(dir)
 	}
 	sort.Slice(cands, func(i, j int) bool {
@@ -274,9 +288,11 @@ func (s *Store) makeRoom() error {
 		if err != nil {
 			continue
 		}
-		if _, err := os.Lstat(filepath.Join(dir, usedFile)); err == nil || !newestVersion(dir).Equal(c.newest) {
+		newest, names := versionState(dir)
+		if _, err := os.Lstat(filepath.Join(dir, usedFile)); err == nil || !newest.Equal(c.newest) || names != c.names {
 			// A used version is what the owner applied with: never deleted. A
-			// changed newest version is a save that landed after the listing.
+			// changed newest time or set of versions is a save that landed after
+			// the listing, even one whose time equals the old newest.
 			_ = l.Release()
 			continue
 		}

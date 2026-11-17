@@ -172,22 +172,52 @@ func TestW1cPruneChild(t *testing.T) {
 	ctx := context.Background()
 	switch role {
 	case "prune":
+		// Widen the window between makeRoom's listing and its job lock until the
+		// acquirer has applied every real job, so every real job is a candidate
+		// whose used pointer appears only after the listing. Only the under-lock
+		// re-check keeps them. (The acquirer cannot go through Use here: Use
+		// needs the store lock the pruner holds across the window.)
+		beforePruneLock = func(string) {
+			_ = os.WriteFile(filepath.Join(state, "window"), nil, 0o600)
+			for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+				if _, err := os.Stat(filepath.Join(state, "acquired")); err == nil {
+					return
+				}
+			}
+			t.Error("the acquirer never finished applying")
+		}
 		for i := range w1cPrunes {
 			if _, _, err := s.Save(ctx, fmt.Sprintf("new-%d", i), goodMeta(), pdfBytes("n")); err != nil {
 				t.Fatalf("prune Save %d: %v", i, err)
 			}
 		}
 	case "acquire":
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(state, "window")); err == nil {
+				break
+			} else if time.Now().After(deadline) {
+				t.Fatal("the pruner never reached the window")
+			}
+		}
+		// Inside the window: take each real job's lock as Use does and bind its
+		// version for applying, which is a used pointer the pruner's listing has
+		// not seen.
 		var got []string
 		for i := range w1cReals {
-			switch _, err := s.Use(ctx, w1cRealKey(i), 1); {
-			case err == nil:
-				got = append(got, w1cRealKey(i))
-			case errors.Is(err, ErrNotFound):
-				// pruned before it could be applied: allowed
-			default:
-				t.Fatalf("Use %d: %v", i, err)
+			dir := s.dir(w1cRealKey(i))
+			var l *filelock.Lock
+			for deadline := time.Now().Add(10 * time.Second); l == nil; time.Sleep(time.Millisecond) {
+				var err error
+				if l, err = filelock.TryAcquire(filepath.Join(dir, lockFile)); err != nil && time.Now().After(deadline) {
+					t.Fatalf("job %d lock: %v", i, err)
+				}
 			}
+			err := os.WriteFile(filepath.Join(dir, usedFile), []byte("1\n"), 0o600)
+			_ = l.Release()
+			if err != nil {
+				t.Fatalf("used %d: %v", i, err)
+			}
+			got = append(got, w1cRealKey(i))
 		}
 		if err := os.WriteFile(filepath.Join(state, "acquired"), []byte(strings.Join(got, "\n")), 0o600); err != nil {
 			t.Fatal(err)
