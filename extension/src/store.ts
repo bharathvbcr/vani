@@ -14,6 +14,8 @@ const MERGED_KEY = "vaniBankMerged";
 const CALL_TIMEOUT_MS = 5_000;
 const MODE_TTL_MS = 30_000;
 const MAX_ATTEMPTS = 3;
+/** Whole-bank reads one getSnapshot makes before it gives up on a host whose revision keeps moving mid-transfer. */
+const MAX_SNAPSHOT_READS = 5;
 
 export type StorageMode = "mac-app" | "browser";
 
@@ -212,7 +214,21 @@ export function createStore(opts: StoreOptions = {}) {
     return reply;
   }
 
+  /**
+   * One consistent read of the bank. A chunked transfer restarts when the host's revision moves mid-transfer
+   * (a conflict reply), at most MAX_SNAPSHOT_READS reads in all; a host that never settles is an error the
+   * caller reports, not a loop.
+   */
   async function getSnapshot(): Promise<Snapshot> {
+    for (let read = 0; read < MAX_SNAPSHOT_READS; read++) {
+      const snap = await readSnapshot();
+      if (snap !== "moved") return snap;
+    }
+    throw new NativeError(`the answer bank kept changing while it was being read (${MAX_SNAPSHOT_READS} tries); try again`);
+  }
+
+  /** One read of the bank, or "moved" when the host's revision changed under a chunked transfer. */
+  async function readSnapshot(): Promise<Snapshot | "moved"> {
     const r = await call({ op: "get" });
     if (r.chunked === true) {
       const rev = r.rev;
@@ -221,9 +237,7 @@ export function createStore(opts: StoreOptions = {}) {
       const chunks: string[] = [typeof r.chunk === "string" ? r.chunk : ""];
       for (let i = 1; i < chunkCount; i++) {
         const next = await call({ op: "getChunk", rev, chunkIndex: i });
-        if (next.conflict === true) {
-          return getSnapshot();
-        }
+        if (next.conflict === true) return "moved";
         if (next.rev !== rev || typeof next.chunk !== "string") {
           throw new NativeError("chunked transfer rev mismatch or missing chunk");
         }
