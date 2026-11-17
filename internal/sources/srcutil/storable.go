@@ -18,28 +18,56 @@ import (
 // the whole batch of its board (and, in the run, ends the run). Storable is the
 // one check every listed row passes before it can reach the ledger.
 //
-// The byte caps below are declared by the seam, not copied from any adapter.
+// The byte caps below are declared by the seam, derived from what the adapters
+// can emit and not copied from any one of them. A cap under an adapter's own
+// bound refuses rows that adapter lists, and a board whose adapter is in
+// failsBoardOnBadRow then fails whole on one such row. So each cap is the
+// largest legitimate adapter output, with headroom:
+//   - MaxLocation: the largest place count any adapter allows is 50 (ibm
+//     maxCities, talentbrew maxPlaces; workday and oraclehcm allow 20), each
+//     place up to RealisticPlaceBytes, joined by "; ", rounded up to 32 KiB.
+//     Adapters whose join has no count bound (apple, google, amazon, deshaw,
+//     eightfold, jibe, rippling, atlassian, smartrecruiters, workable) are
+//     limited only by the response body cap (srcutil.MaxBody); no realistic
+//     listing reaches 32 KiB of places, and one that does is refused rather
+//     than stored cut.
+//   - MaxDepartment: up to six RealisticPlaceBytes elements (jibe and tiktok
+//     join several categories), 4 KiB.
+//   - MaxCompany: a tenant or hiring name, a few elements, 1 KiB.
+//   - MaxKeyPart, MaxKey: an id is a short token; page and other keys hash
+//     their URL to 24 hex bytes, so a URL's length never reaches the key. A
+//     key has at most three parts after its prefix (workday, oraclehcm): three
+//     parts at MaxKeyPart is 3 KiB, so MaxKey is 4 KiB.
+//
 // Worst case, one JSON-escaped byte costs six (a control character), so the
-// text caps plus MaxDescription stay under the ledger's line limit with room
-// for the event envelope, annotations and the form summary:
-// 6 * (MaxCompany + MaxLocation + MaxDepartment + MaxURL + MaxApplyURL +
-// MaxTitle + MaxKey + MaxDescription) is about 0.44 MiB against the
-// ledger's 1 MiB line. MaxRecordBytes then checks the real encoded size, which
-// also covers fields that have no cap of their own (the form summary).
+// caps stay under the ledger's line limit with room for the event envelope,
+// annotations and the form summary: 6 * (MaxCompany + MaxLocation +
+// MaxDepartment + MaxURL + MaxApplyURL + MaxTitle + 2*MaxKey (the event's key
+// and the posting's) + MaxDescription) is about 0.66 MiB against the ledger's
+// 1 MiB line. MaxRecordBytes then checks the real encoded size, which also
+// covers fields that have no cap of their own (the form summary), and refuses a
+// row of all-control-character fields before it nears the line limit.
 const (
+	// RealisticPlaceBytes is the longest single place (or other list element)
+	// a listing realistically carries: 200 runes of a three-byte script. The
+	// field caps below are derived from it and from the largest element count
+	// any adapter allows; each adapter's package tests assert its own maximum
+	// output at this element size passes Storable.
+	RealisticPlaceBytes = 600
+
 	// MaxCompany is the byte cap on Posting.Company.
-	MaxCompany = 256
+	MaxCompany = 1 << 10
 	// MaxLocation is the byte cap on Posting.Location.
-	MaxLocation = 512
+	MaxLocation = 32 << 10
 	// MaxDepartment is the byte cap on Posting.Department.
-	MaxDepartment = 256
+	MaxDepartment = 4 << 10
 	// MaxURL is the byte cap on Posting.URL and on Posting.ApplyURL.
 	MaxURL = 2048
 	// MaxKeyPart is the byte cap on each ":"-separated part of a posting key
 	// after the ATS prefix.
-	MaxKeyPart = 512
+	MaxKeyPart = 1 << 10
 	// MaxKey is the byte cap on a whole posting key.
-	MaxKey = 1536
+	MaxKey = 4 << 10
 	// MaxRecordBytes is the cap on the JSON encoding of one posting. The ledger
 	// refuses a line past its own limit (1 MiB, event envelope included); this
 	// leaves half of that for the envelope, annotations and reason.

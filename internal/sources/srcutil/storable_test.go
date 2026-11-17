@@ -63,7 +63,8 @@ func TestStorableByteBounds(t *testing.T) {
 // A whole key past MaxKey is refused even when every part is within its bound.
 func TestStorableKeyBounds(t *testing.T) {
 	p := storableRow()
-	p.Key = posting.Key("wd:" + strings.Repeat("a", MaxKeyPart) + ":" + strings.Repeat("b", MaxKeyPart) + ":" + strings.Repeat("c", MaxKeyPart))
+	part := strings.Repeat("a", MaxKeyPart)
+	p.Key = posting.Key("wd:" + part + ":" + part + ":" + part + ":" + part + ":" + part)
 	if len(p.Key) <= MaxKey {
 		t.Fatalf("test key is %d bytes, want over %d", len(p.Key), MaxKey)
 	}
@@ -177,7 +178,7 @@ func TestStorableURLs(t *testing.T) {
 func TestStorableCapsKeepAWorstCaseEventUnderTheLedgerLimit(t *testing.T) {
 	ctl := func(n int) string { return strings.Repeat("\x01", n) }
 	p := posting.Posting{
-		Key:         posting.Key("wd:" + strings.Repeat("a", MaxKeyPart) + ":" + strings.Repeat("b", MaxKeyPart)),
+		Key:         posting.Key("wd:" + strings.Repeat("a", MaxKeyPart) + ":" + strings.Repeat("b", MaxKeyPart) + ":" + strings.Repeat("c", MaxKeyPart)),
 		ATS:         posting.Workday,
 		Company:     ctl(MaxCompany),
 		Title:       strings.Repeat("<", MaxTitle),
