@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"io"
 	"net/http"
@@ -30,14 +31,20 @@ const providerKeySentinel = "PROVIDER-KEY-SENTINEL-never-in-a-message"
 // recordingDoer answers every request with one decision reply and keeps the
 // requests it saw.
 type recordingDoer struct {
-	mu   sync.Mutex
-	reqs []*http.Request
-	body string
+	mu     sync.Mutex
+	reqs   []*http.Request
+	bodies [][]byte
+	body   string
 }
 
 func (d *recordingDoer) Do(_ context.Context, req *http.Request) (*http.Response, error) {
+	raw, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
 	d.mu.Lock()
 	d.reqs = append(d.reqs, req)
+	d.bodies = append(d.bodies, raw)
 	d.mu.Unlock()
 	return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(d.body))}, nil
 }
@@ -177,7 +184,9 @@ func TestOneConstructorForTheDecisionModel(t *testing.T) {
 	}
 }
 
-// Every question vani asks a decision model fits both new providers'
+// Every question a decision-model client sends (decisionJev's callers: the
+// run, suggest, contacts, notes and kbmatch; wouldapply, silver and the auditor
+// ask the llm) fits both new providers'
 // documented limits: SubQ takes 1..128 questions named in up to 100
 // characters; Gemini takes question keys of [A-Za-z0-9_-]{1,64} and option
 // keys of 1..128 characters with no leading or trailing space.
@@ -234,5 +243,66 @@ func TestSwiftKeyRoutesMatchTheProviderTable(t *testing.T) {
 				t.Errorf("%s: Drafting.swift does not name %s", p.ID, want)
 			}
 		}
+	}
+}
+
+// The run asks SubQ and Gemini each slot's own question; OpenRouter keeps the
+// one combined prompt. Each slot of the unified question has a distinct,
+// non-empty question.
+func TestTriageInstructionsPerProvider(t *testing.T) {
+	if got := triageInstructions(config.Decide{OpenRouterModel: "liquid/d1.2-ultra"}); got != nil {
+		t.Errorf("openrouter got per-slot questions: %v", got)
+	}
+	q := jobcategory.UnifiedQuestion(posting.Posting{Title: "Engineer", Description: "Build things."}, "")
+	for _, provider := range []string{config.DecisionSubQ, config.DecisionGemini} {
+		instr := triageInstructions(config.Decide{Provider: provider})
+		seen := map[string]string{}
+		for _, s := range q.Slots {
+			text := instr[s.Name]
+			if strings.TrimSpace(text) == "" || text == q.Prompt {
+				t.Errorf("%s: slot %s asks %q", provider, s.Name, text)
+			}
+			if other, dup := seen[text]; dup {
+				t.Errorf("%s: slots %s and %s ask the same question", provider, s.Name, other)
+			}
+			seen[text] = s.Name
+		}
+		if len(instr) != len(q.Slots) {
+			t.Errorf("%s: %d questions for %d slots", provider, len(instr), len(q.Slots))
+		}
+	}
+	// End to end through the Gemini wire: each slot carries its own instructions.
+	w := providerWired(t, config.DecisionGemini)
+	t.Setenv("GEMINI_API_KEY", providerKeySentinel)
+	jc, err := w.decisionJev(jev.Config{Descriptions: jobcategory.UnifiedDescriptions(), Instructions: triageInstructions(w.cfg.Decide)}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"answers":{},"usage":{"total_input_tokens":1}}`
+	d := &recordingDoer{body: body}
+	jb, err := jev.New(jc, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jb.Decide(context.Background(), q); err != nil {
+		t.Fatal(err)
+	}
+	var sent struct {
+		Questions map[string]struct {
+			Instructions string `json:"instructions"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(d.bodies[0], &sent); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Questions) != len(q.Slots) {
+		t.Fatalf("%d questions sent for %d slots", len(sent.Questions), len(q.Slots))
+	}
+	asked := map[string]bool{}
+	for name, qq := range sent.Questions {
+		if qq.Instructions == q.Prompt || asked[qq.Instructions] {
+			t.Errorf("slot %s sent %q", name, qq.Instructions)
+		}
+		asked[qq.Instructions] = true
 	}
 }

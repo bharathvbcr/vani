@@ -9,6 +9,20 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **Model switch: SubQ Snap and Gemini Decision beside Liquid, Claude or Google AI Studio for
+  drafts and triage** (2026-11-17, the owner's request). `decide.provider` picks the decision
+  model: `openrouter` (Liquid, the default), `subq` (`subq-snap-1.2` on SubQ's `/v1/systemone`)
+  or `gemini` (`gemini-decision-1` on Google's Decisions API, the AI Studio key). One provider
+  table and one client constructor replace the five hand-built OpenRouter clients; `decide/jev`
+  gains Google's wire dialect (`input`, `x-goog-api-key`, documented key limits, a safety block
+  read as Refused) and input-token pricing for replies that report no cost. SubQ and Gemini are
+  asked each slot's own question. `vani config models [--set]` switches the decision provider and
+  the llm (`anthropic` with Claude Opus/Sonnet/Haiku 5.5, or `gemini` with Gemini 4 Hydrogen,
+  which needs Manvi's `gemini-4-hydrogen` entry) with models and prices in one validated write.
+  Vani Apply's Settings → Models drives it and saves pasted keys to the login Keychain
+  (`openrouter-api-key`, `subq-api-key`, `gemini-api-key`); every launch carries the configured
+  provider's key, and the schedule agent restarts the daemon when a switch changes the key it
+  needs. docs/RUNTIME.md has the table and the security impact.
 - **Fresh install from a clone** (2026-11-15, issue #1). `scripts/bootstrap.sh` clones the public
   siblings (Manvi, DevCouncil, gusset, tessl) at the commits in `scripts/deps.lock`, writes
   `go.work`, builds `build/vani` and `build/rkb`, runs `vani init` and `config check`, and reports

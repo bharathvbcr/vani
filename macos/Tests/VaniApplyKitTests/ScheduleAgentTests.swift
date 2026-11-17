@@ -127,6 +127,24 @@ final class ScheduleAgentTests: XCTestCase {
         XCTAssertNotNil(log, "the refusal is written to the daemon log")
     }
 
+    /// Switching the decision or llm provider in Settings rewrites the config, not the settings;
+    /// the daemon must still restart, because it holds the old provider's key.
+    func testTheFingerprintTracksTheProvidersKeys() throws {
+        let cfgDir = try tempDir(self)
+        let cfg = cfgDir.appendingPathComponent("config.json")
+        let dir = try settingsDir(config: cfg.path, state: cfgDir.appendingPathComponent("state").path)
+        func fp(_ json: String) throws -> String {
+            try Data(json.utf8).write(to: cfg)
+            return try XCTUnwrap(ScheduleAgent.currentFingerprint(settingsDir: dir))
+        }
+        let liquid = try fp(#"{"decide":{"openrouter_model":"liquid/d1.2-ultra"},"llm":{"provider":"anthropic"}}"#)
+        let subq = try fp(#"{"decide":{"provider":"subq"},"llm":{"provider":"anthropic"}}"#)
+        let gemini = try fp(#"{"decide":{"provider":"subq"},"llm":{"provider":"gemini"}}"#)
+        XCTAssertEqual(Set([liquid, subq, gemini]).count, 3, "each switch restarts the daemon")
+        XCTAssertEqual(liquid, try fp(#"{"decide":{"openrouter_model":"other"},"llm":{"provider":"anthropic"},"watchlist":[]}"#),
+                       "an edit that changes no key does not restart it")
+    }
+
     func testTheFingerprintTracksThePairAndTheAccount() throws {
         let a = try settingsDir(config: "/a/config.json", state: "/a/state")
         let b = try settingsDir(config: "/b/config.json", state: "/a/state")

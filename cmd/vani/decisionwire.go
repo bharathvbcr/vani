@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/jobcategory"
 	"github.com/bharathvbcr/decide/jev"
 )
 
@@ -58,6 +59,18 @@ func (w *wired) decisionJev(c jev.Config, endpoint string) (jev.Config, error) {
 	}
 	c.Key = key
 	return c, nil
+}
+
+// triageInstructions is the per-slot question map for the run's unified
+// triage question: nil for OpenRouter, whose Liquid model was validated on the
+// combined prompt (its requests stay byte-identical), and every slot's own
+// question for SubQ and Gemini, which answer each named question on its own and
+// never show the model the key (Google's docs say so; SubQ's do not say).
+func triageInstructions(d config.Decide) map[string]string {
+	if d.ProviderID() == config.DecisionOpenRouter {
+		return nil
+	}
+	return jobcategory.UnifiedInstructions()
 }
 
 // decisionWhere names where the decision model is asked, for a dry run's

@@ -176,8 +176,14 @@ public enum ScheduleAgent {
         log.write(ScheduleAgentConstants.storeFailureLine, to: url)
     }
 
+    /// Also the keys the config's providers need (the decision key's item and variable, and
+    /// whether the llm is gemini): a daemon holds the keys it was started with, with
+    /// VANI_NO_KEYCHAIN set, so switching a provider in Settings must restart it, or it would
+    /// keep the old provider's key and the new model would be off until a manual restart.
     static func fingerprint(_ settings: DraftSettings, _ paths: Paths) -> String {
-        "\(paths.configPath)\n\(paths.stateDir)\n\(settings.anthropicAccount)"
+        let route = VaniConfig.decisionKeyRoute(configPath: paths.configPath)
+        let llm = VaniConfig.llmProvider(configPath: paths.configPath) ?? ""
+        return "\(paths.configPath)\n\(paths.stateDir)\n\(settings.anthropicAccount)\n\(route.service) \(route.envVar)\n\(llm)"
     }
 
     /// The fingerprint of the settings saved now; nil when they cannot be read, so an edit in

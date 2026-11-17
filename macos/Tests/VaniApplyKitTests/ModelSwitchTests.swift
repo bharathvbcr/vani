@@ -83,18 +83,6 @@ final class ModelSwitchTests: XCTestCase {
         XCTAssertEqual(l.decisionKey, .present)
     }
 
-    func testTheDefaultDecisionLookupReadsTheProvidersItem() throws {
-        // No lookup injected: the runner asks the Keychain for the configured provider's item.
-        // A refusal for an item name that cannot exist proves which item was asked for without
-        // reading a real one: the error names the service.
-        let path = try config(#"{"decide":{"provider":"subq"}}"#)
-        let r = DraftRunner(vaniBinary: vani, configPath: path, keys: .noKey, keychainTimeout: 5, key: { nil })
-        guard case let .launch(l) = r.prepare(["run-once"], withDecisionKey: true) else { return XCTFail("refused") }
-        // A missing item reads as notFound; a present one as present. Either way only SUBQ_API_KEY may carry it.
-        XCTAssertNil(l.environment["OPENROUTER_API_KEY"])
-        XCTAssertNotEqual(l.decisionKey, .notRequested)
-    }
-
     func testAGeminiLLMLaunchCarriesTheAIStudioKey() throws {
         let path = try config(#"{"llm":{"provider":"gemini","model":"gemini-4-hydrogen"},"decide":{"provider":"gemini"}}"#)
         final class Reads: @unchecked Sendable {

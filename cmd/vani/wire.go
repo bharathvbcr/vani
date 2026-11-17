@@ -372,6 +372,7 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 		}
 		jc, err := w.decisionJev(jev.Config{
 			Descriptions: jobcategory.UnifiedDescriptions(),
+			Instructions: triageInstructions(w.cfg.Decide),
 			Spend:        spend,
 			SpendKey:     openRouterSpendKey,
 		}, "")

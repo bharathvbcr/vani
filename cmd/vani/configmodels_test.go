@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bharathvbcr/Manvi/manvi/llm/anthropic"
+	"github.com/bharathvbcr/Manvi/manvi/llm/gemini"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/vault"
 )
@@ -98,5 +100,28 @@ func TestGeminiProviderReadsTheAIStudioKeychainItem(t *testing.T) {
 	w = &wired{cfg: cfg, stateDir: t.TempDir(), warn: &bytes.Buffer{}}
 	if _, err := w.provider(context.Background()); err == nil || len(asked) != 0 {
 		t.Errorf("anthropic: %v asked=%v", err, asked)
+	}
+}
+
+// Every model the switch offers is one the linked Manvi adapter serves: a model
+// it does not know is refused when the provider is built, which fails a run
+// that advances. gemini-4-hydrogen needs Manvi with feat/gemini-4-hydrogen
+// (e599aaa); against an older Manvi this test is the alarm.
+func TestEveryOfferedModelIsServedByTheLinkedManvi(t *testing.T) {
+	for _, p := range config.LLMProviders() {
+		for _, m := range p.Models {
+			var ok bool
+			switch p.ID {
+			case "anthropic":
+				_, ok = anthropic.Capability(m.ID)
+			case "gemini":
+				_, ok = gemini.Capability(m.ID)
+			default:
+				t.Fatalf("no adapter check for provider %q", p.ID)
+			}
+			if !ok {
+				t.Errorf("%s/%s is offered but the linked Manvi adapter does not serve it", p.ID, m.ID)
+			}
+		}
 	}
 }

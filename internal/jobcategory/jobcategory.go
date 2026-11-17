@@ -183,3 +183,17 @@ func UnifiedDescriptions() map[string]map[string]string {
 	out[Slot] = Descriptions()
 	return out
 }
+
+// UnifiedInstructions is slot -> its own question for every slot of
+// UnifiedQuestion: each triage family's fixture question and the category's
+// Prompt. A decision API that answers named questions independently and never
+// shows the model the key (Gemini's Decisions API, SubQ's) needs the full
+// question per slot, or every slot would carry the same combined prompt.
+func UnifiedInstructions() map[string]string {
+	out := make(map[string]string, len(jdtriage.Families)+1)
+	for _, f := range jdtriage.Families {
+		out[f.Slot.Name] = f.Question
+	}
+	out[Slot] = Prompt
+	return out
+}
