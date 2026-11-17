@@ -94,43 +94,62 @@ type File struct {
 	// fit; it only loosens.
 	SpareSeniorityMismatch []string `json:"spare_seniority_mismatch,omitempty"`
 	Report                 *Report  `json:"report,omitempty"`
+	// ReportIgnored is what Load ignored of the report: the unknown field a
+	// newer vani wrote there, which an older one reads past (the report is
+	// provenance, and no part of ranking reads it). It is "" for a clean report
+	// and never written.
+	ReportIgnored string `json:"-"`
 }
+
+// PartError is a refusal that names the part of the file at fault: "shares",
+// "calibration", "spare_seniority_mismatch", "report", or "file" (the envelope:
+// an unknown top-level field, a bad version, a missing fitted_at, data after
+// the file).
+type PartError struct {
+	Part string
+	Err  error
+}
+
+func (e *PartError) Error() string { return e.Err.Error() }
+func (e *PartError) Unwrap() error { return e.Err }
+
+func partErr(part string, err error) error { return &PartError{Part: part, Err: err} }
 
 // Validate refuses a file Apply could not use whole.
 func (f File) Validate() error {
 	if f.V != FileVersion {
-		return fmt.Errorf("rankfit: file version %d, want %d", f.V, FileVersion)
+		return partErr("file", fmt.Errorf("rankfit: file version %d, want %d", f.V, FileVersion))
 	}
 	if f.FittedAt.IsZero() {
-		return errors.New("rankfit: file has no fitted_at")
+		return partErr("file", errors.New("rankfit: file has no fitted_at"))
 	}
 	if f.Shares == nil && len(f.Calibration) == 0 && len(f.SpareSeniorityMismatch) == 0 {
-		return errors.New("rankfit: file has no shares, calibration or spared seniority")
+		return partErr("file", errors.New("rankfit: file has no shares, calibration or spared seniority"))
 	}
 	if err := checkSpareSeniority(f.SpareSeniorityMismatch); err != nil {
-		return err
+		return partErr("spare_seniority_mismatch", err)
 	}
 	if f.Shares != nil {
 		sum := 0.0
 		for i, v := range f.Shares.Array() {
 			if math.IsNaN(v) || v < 0 || v > maxShare {
-				return fmt.Errorf("rankfit: share %s is %v, want 0..%g", PartNames[i], v, float64(maxShare))
+				return partErr("shares", fmt.Errorf("rankfit: share %s is %v, want 0..%g", PartNames[i], v, float64(maxShare)))
 			}
 			sum += v
 		}
 		if !(sum > 0) {
-			return errors.New("rankfit: every share is 0")
+			return partErr("shares", errors.New("rankfit: every share is 0"))
 		}
 	}
 	if len(f.Calibration) > MaxCalibrations {
-		return fmt.Errorf("rankfit: %d calibrations, max %d", len(f.Calibration), MaxCalibrations)
+		return partErr("calibration", fmt.Errorf("rankfit: %d calibrations, max %d", len(f.Calibration), MaxCalibrations))
 	}
 	for name, c := range f.Calibration {
 		if strings.TrimSpace(name) == "" || len(name) > MaxBackendNameBytes || strings.ContainsFunc(name, unicode.IsControl) {
-			return fmt.Errorf("rankfit: calibration backend name %q is empty, too long or has a control character", name)
+			return partErr("calibration", fmt.Errorf("rankfit: calibration backend name %q is empty, too long or has a control character", name))
 		}
 		if !c.Valid() {
-			return fmt.Errorf("rankfit: calibration for %q is not finite or exceeds |%g|", name, jobinsight.MaxCalibrationCoef)
+			return partErr("calibration", fmt.Errorf("rankfit: calibration for %q is not finite or exceeds |%g|", name, jobinsight.MaxCalibrationCoef))
 		}
 	}
 	return nil
@@ -151,19 +170,78 @@ func Load(path string) (File, error) {
 	if len(b) > MaxFileBytes {
 		return File{}, fmt.Errorf("rankfit: %s is over %d bytes", path, MaxFileBytes)
 	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	var f File
-	if err := dec.Decode(&f); err != nil {
-		return File{}, fmt.Errorf("rankfit: decode %s: %w", path, err)
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return File{}, fmt.Errorf("rankfit: %s has data after the file", path)
+	f, err := decodeFile(path, b)
+	if err != nil {
+		return File{}, err
 	}
 	if err := f.Validate(); err != nil {
 		return File{}, err
 	}
 	return f, nil
+}
+
+// fileWire is a file with each part held raw, so each is decoded under its own
+// rule and a refusal names the part.
+type fileWire struct {
+	V                      int             `json:"v"`
+	FittedAt               time.Time       `json:"fitted_at"`
+	Shares                 json.RawMessage `json:"shares"`
+	Calibration            json.RawMessage `json:"calibration"`
+	SpareSeniorityMismatch []string        `json:"spare_seniority_mismatch"`
+	Report                 json.RawMessage `json:"report"`
+}
+
+// decodeFile decodes b under two rules. The envelope and the parts that rank
+// (shares, calibration, spared seniority) are strict: an unknown field in any of
+// them refuses the file, since an older reader ranking by half-understood
+// weights is wrong. The report is provenance that nothing ranks by, so an
+// unknown field there (a newer vani's addition) is read past and recorded in
+// File.ReportIgnored; a report that is not decodable at all is still refused.
+func decodeFile(path string, b []byte) (File, error) {
+	var w fileWire
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&w); err != nil {
+		return File{}, partErr("file", fmt.Errorf("rankfit: decode %s: %w", path, err))
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return File{}, partErr("file", fmt.Errorf("rankfit: %s has data after the file", path))
+	}
+	f := File{V: w.V, FittedAt: w.FittedAt, SpareSeniorityMismatch: w.SpareSeniorityMismatch}
+	if err := decodePart(path, "shares", w.Shares, &f.Shares, true); err != nil {
+		return File{}, err
+	}
+	if err := decodePart(path, "calibration", w.Calibration, &f.Calibration, true); err != nil {
+		return File{}, err
+	}
+	if err := decodePart(path, "report", w.Report, &f.Report, false); err != nil {
+		return File{}, err
+	}
+	if f.Report != nil {
+		strict := json.NewDecoder(bytes.NewReader(w.Report))
+		strict.DisallowUnknownFields()
+		var probe *Report
+		if err := strict.Decode(&probe); err != nil {
+			f.ReportIgnored = err.Error()
+		}
+	}
+	return f, nil
+}
+
+// decodePart decodes one raw part into v, strictly (unknown fields refused) or
+// tolerantly (they are ignored). An absent part leaves v as it is.
+func decodePart(path, part string, raw json.RawMessage, v any, strict bool) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if strict {
+		dec.DisallowUnknownFields()
+	}
+	if err := dec.Decode(v); err != nil {
+		return partErr(part, fmt.Errorf("rankfit: decode %s: %s: %w", path, part, err))
+	}
+	return nil
 }
 
 // Apply overlays f on base: the shares when f has them, and the calibration
