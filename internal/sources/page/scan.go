@@ -56,12 +56,12 @@ func scanHTML(doc string) scanned {
 		}
 		i += j
 		if strings.HasPrefix(doc[i:], "<!--") {
-			end := strings.Index(doc[i+4:], "-->")
-			if end < 0 {
+			next, ok := commentEnd(doc, i+4)
+			if !ok {
 				out.truncated = fmt.Sprintf("unterminated comment at byte %d", i)
 				break
 			}
-			i += 4 + end + 3
+			i = next
 			continue
 		}
 		if i+1 >= len(doc) || !isLetter(doc[i+1]) {
@@ -101,6 +101,10 @@ func scanHTML(doc string) scanned {
 				out.links = append(out.links, link{href: html.UnescapeString(href), text: htmltext.Text(text, 200)})
 			}
 		case "script", "style", "textarea", "title":
+			if selfClosed(doc, k, end) {
+				// <title/> or <script/> in SVG or XHTML has no body and no closing tag.
+				break
+			}
 			closeAt := htmltext.IndexFold(doc[end:], "</"+name)
 			if closeAt < 0 {
 				out.truncated = fmt.Sprintf("<%s> at byte %d has no closing tag", name, i)
@@ -120,6 +124,39 @@ func scanHTML(doc string) scanned {
 		i = end
 	}
 	return out
+}
+
+// commentEnd is the offset just past the comment whose text starts at pos (past
+// "<!--"). HTML5 closes a comment at "-->" or "--!>", and the abrupt forms
+// "<!-->" and "<!--->" are empty comments that close at once. ok is false when
+// the comment never closes.
+func commentEnd(doc string, pos int) (next int, ok bool) {
+	if strings.HasPrefix(doc[pos:], ">") {
+		return pos + 1, true
+	}
+	if strings.HasPrefix(doc[pos:], "->") {
+		return pos + 2, true
+	}
+	rest := doc[pos:]
+	a, b := strings.Index(rest, "-->"), strings.Index(rest, "--!>")
+	switch {
+	case a < 0 && b < 0:
+		return 0, false
+	case b < 0 || (a >= 0 && a < b):
+		return pos + a + 3, true
+	default:
+		return pos + b + 4, true
+	}
+}
+
+// selfClosed is whether the tag whose name ends at k and whose ">" ends just
+// before end was written with a "/>" of its own: the "/" follows the name, a
+// space or a closing quote, not the tail of an unquoted value ("src=/a/>").
+func selfClosed(doc string, k, end int) bool {
+	if end-2 < k || doc[end-2] != '/' {
+		return false
+	}
+	return end-2 == k || isSpace(doc[end-3]) || doc[end-3] == '"' || doc[end-3] == '\''
 }
 
 // parseAttrs reads attributes from pos up to the tag's ">", returning them by
