@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -43,18 +44,43 @@ func w4aStatusLedger(t *testing.T, state string, n int) {
 	}
 }
 
-// `vani status --json` reads what it reports (the heads), not every body: the
-// snapshot its ledger facet keeps carries no description, and reading it
-// allocates a small fraction of the bodies' size. What it reports is what the
-// full read reports.
-func TestW4aStatusReadsNoBodies(t *testing.T) {
+func w4aStatusState(t *testing.T, n int) (e *env, dir string) {
+	t.Helper()
 	cfgPath, state := setup(t)
+	fixedNow(t)
 	if err := config.Save(cfgPath, config.Default()); err != nil {
 		t.Fatal(err)
 	}
-	const n = 100
 	t.Run("seed", func(t *testing.T) { w4aStatusLedger(t, state, n) })
-	e := &env{stateDir: state, configPath: cfgPath, stdout: &strings.Builder{}, stderr: &strings.Builder{}}
+	return &env{stateDir: state, configPath: cfgPath, stdout: &strings.Builder{}, stderr: &strings.Builder{}}, filepath.Join(state, "ledger")
+}
+
+// w4aFacetJSON is the ledger facet as `status --json` writes it, from the full
+// read that status used before: the bytes the scoped read must reproduce.
+func w4aFacetJSON(t *testing.T, dir string, full bool) string {
+	t.Helper()
+	var snap ledger.Snapshot
+	var err error
+	if full {
+		snap, err = ledger.ReadSnapshot(dir)
+	} else {
+		snap, err = ledger.ReadSnapshotScoped(dir, nil)
+	}
+	b, merr := json.Marshal(ledgerFacetOf(dir, snap, err))
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	return string(b)
+}
+
+// `vani status --json` reads what it reports (the heads), not every body: the
+// snapshot its ledger facet keeps carries no description, and reading it
+// allocates a small fraction of the bodies' size. The ledger facet, and what
+// the other facets derive from the same records, are byte for byte what the
+// full read gave.
+func TestW4aStatusReadsNoBodies(t *testing.T) {
+	const n = 100
+	e, dir := w4aStatusState(t, n)
 
 	var before, after runtime.MemStats
 	runtime.GC()
@@ -73,43 +99,90 @@ func TestW4aStatusReadsNoBodies(t *testing.T) {
 		t.Errorf("reading the status ledger allocated %d bytes for %d bytes of bodies", got, bodies)
 	}
 
-	// Same answer as the full read.
-	full, err := ledger.ReadSnapshot(filepath.Join(state, "ledger"))
+	if lean, full := w4aFacetJSON(t, dir, false), w4aFacetJSON(t, dir, true); lean != full {
+		t.Fatalf("ledger facet\nscoped %s\n  full %s", lean, full)
+	}
+	full, err := ledger.ReadSnapshot(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, _ := json.Marshal(struct {
-		Total    int
-		ByStatus map[string]int
-		Torn     bool
-		LiveUS   int
-	}{len(full.Records), statusCounts(full.Records), full.Torn, liveInUS(full.Records)})
-	got, _ := json.Marshal(struct {
-		Total    int
-		ByStatus map[string]int
-		Torn     bool
-		LiveUS   int
-	}{f.Total, f.ByStatus, f.Torn, *f.liveUS})
-	if string(got) != string(want) {
-		t.Fatalf("status ledger facet\n got %s\nwant %s", got, want)
+	if got, want := *f.liveUS, liveInUS(full.Records); got != want {
+		t.Fatalf("live in US %d, full read %d", got, want)
 	}
 	cfg := config.Default()
-	lean, _ := json.Marshal(unwatchedCompaniesOf(f.recs, cfg, state))
-	whole, _ := json.Marshal(unwatchedCompaniesOf(full.Records, cfg, state))
+	lean, _ := json.Marshal(unwatchedCompaniesOf(f.recs, cfg, e.stateDir))
+	whole, _ := json.Marshal(unwatchedCompaniesOf(full.Records, cfg, e.stateDir))
 	if string(lean) != string(whole) {
 		t.Fatalf("unwatched companies\n lean %s\nwhole %s", lean, whole)
 	}
-}
 
-// No ledger yet is still "no ledger yet", and a ledger that is not a ledger is
-// still unknown, never zero.
-func TestW4aStatusLedgerFacetFailsAsBefore(t *testing.T) {
-	cfgPath, state := setup(t)
-	if err := config.Save(cfgPath, config.Default()); err != nil {
+	// The command itself writes that facet.
+	out, _ := mustCode(t, 0, "status", "--json")
+	var got struct {
+		Ledger json.RawMessage `json:"ledger"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatal(err)
 	}
-	e := &env{stateDir: state, configPath: cfgPath, stdout: &strings.Builder{}, stderr: &strings.Builder{}}
-	if f := e.ledgerFacet(); !f.OK || f.Exists || !strings.Contains(f.Reason, "no ledger yet") {
-		t.Fatalf("no ledger: %+v", f.facet)
+	want := ledgerFacetOf(dir, full, nil)
+	want.PendingReopens, want.PendingReopensError = e.pendingReopens()
+	wb, _ := json.Marshal(want)
+	if string(got.Ledger) != string(wb) {
+		t.Fatalf("status --json ledger\n got %s\nwant %s", got.Ledger, wb)
 	}
+}
+
+// A torn tail (a writer mid-append) is counted the same way and flagged torn; a
+// ledger corrupt mid-file, or one that is not a ledger, is unknown, never zero.
+func TestW4aStatusLedgerFacetTornAndCorrupt(t *testing.T) {
+	t.Run("torn tail", func(t *testing.T) {
+		_, dir := w4aStatusState(t, 12)
+		f, err := os.OpenFile(filepath.Join(dir, "events.jsonl"), os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.WriteString(`{"v":1,"key":"gh:co0:999","status":"li`); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+		lean, full := w4aFacetJSON(t, dir, false), w4aFacetJSON(t, dir, true)
+		if lean != full || !strings.Contains(lean, `"torn":true`) || !strings.Contains(lean, `"total":12`) {
+			t.Fatalf("torn tail\nscoped %s\n  full %s", lean, full)
+		}
+	})
+	t.Run("corrupt mid-file", func(t *testing.T) {
+		e, dir := w4aStatusState(t, 12)
+		path := filepath.Join(dir, "events.jsonl")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.SplitAfter(string(raw), "\n")
+		lines[3] = "this is not an event\n"
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, full := range []bool{false, true} {
+			var f ledgerFacet
+			if full {
+				snap, err := ledger.ReadSnapshot(dir)
+				f = ledgerFacetOf(dir, snap, err)
+			} else {
+				f = e.ledgerFacet()
+			}
+			if f.OK || f.Exists || f.Total != 0 || f.Reason == "" {
+				t.Fatalf("full=%v: a corrupt ledger reads as %+v, want unknown with a reason", full, f)
+			}
+		}
+	})
+	t.Run("no ledger yet", func(t *testing.T) {
+		cfgPath, state := setup(t)
+		if err := config.Save(cfgPath, config.Default()); err != nil {
+			t.Fatal(err)
+		}
+		e := &env{stateDir: state, configPath: cfgPath, stdout: &strings.Builder{}, stderr: &strings.Builder{}}
+		if f := e.ledgerFacet(); !f.OK || f.Exists || !strings.Contains(f.Reason, "no ledger yet") {
+			t.Fatalf("no ledger: %+v", f.facet)
+		}
+	})
 }
