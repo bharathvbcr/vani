@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -15,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // fit: fill the target number of pages to the bottom, then export the PDF.
@@ -97,22 +95,12 @@ func chromeArgs(extra ...string) []string {
 }
 
 func runChrome(args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
 	prof, err := os.MkdirTemp("", "rkb-chrome-")
 	if err != nil {
 		return nil, fmt.Errorf("chrome profile dir: %v", err)
 	}
 	defer func() { _ = os.RemoveAll(prof) }() // best-effort temp cleanup
-	cmd := exec.CommandContext(ctx, findChrome(), chromeArgs(append([]string{"--user-data-dir=" + prof}, args...)...)...)
-	var out strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = nil
-	err = cmd.Run()
-	if ctx.Err() == context.DeadlineExceeded {
-		err = fmt.Errorf("chrome did not finish within 90 s")
-	}
-	return []byte(out.String()), err
+	return runCmd(timeoutChrome, runOpts{}, findChrome(), chromeArgs(append([]string{"--user-data-dir=" + prof}, args...)...)...)
 }
 
 func printPDF(htmlPath, pdfPath string) error {
@@ -140,7 +128,7 @@ type pdfWord struct {
 
 // pdfWords runs pdftotext -bbox and returns every word with its box.
 func pdfWords(pdf string) ([]pdfWord, [][2]float64, error) {
-	out, err := exec.Command("pdftotext", "-bbox", pdf, "-").Output()
+	out, err := runCmd(timeoutPoppler, runOpts{}, "pdftotext", "-bbox", pdf, "-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("pdftotext (poppler) is needed: %v", err)
 	}

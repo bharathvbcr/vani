@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -484,7 +483,7 @@ func relPath(fromDir, to string) string {
 }
 
 func pdfPagesOr(pdf string, def int) int {
-	out, err := exec.Command("pdfinfo", pdf).Output()
+	out, err := runCmd(timeoutPoppler, runOpts{}, "pdfinfo", pdf)
 	if err != nil {
 		return def
 	}

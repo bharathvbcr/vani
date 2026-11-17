@@ -4,7 +4,6 @@ import (
 	"html"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -178,7 +177,7 @@ func fileText(path string) (string, bool) {
 		return "", false
 	}
 	if strings.EqualFold(filepath.Ext(path), ".pdf") {
-		out, err := exec.Command("pdftotext", "-layout", path, "-").Output()
+		out, err := runCmd(timeoutPoppler, runOpts{}, "pdftotext", "-layout", path, "-")
 		if err != nil {
 			return "", false
 		}

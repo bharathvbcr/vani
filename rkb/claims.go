@@ -997,15 +997,13 @@ func claimsAdd(a *args) {
 func claimsVM(a *args) {
 	v := inRoot(cfg.Validator)
 	cv := inRoot(cfg.CVDir)
-	var cmd *exec.Cmd
+	var name string
+	var argv []string
 	switch {
 	case dirExists(v):
 		cache, _ := os.UserCacheDir()
 		bin := filepath.Join(cache, "rkb", "validate_metrics")
-		b := exec.Command(goBinary(), "build", "-o", bin, ".")
-		b.Dir = v
-		b.Env = append(os.Environ(), goEnv()...)
-		if o, err := b.CombinedOutput(); err != nil {
+		if o, err := runCmd(timeoutValidator, runOpts{Dir: v, Env: append(os.Environ(), goEnv()...), Combined: true}, goBinary(), "build", "-o", bin, "."); err != nil {
 			die("building the validator failed (run `rkb setup`?): %v\n%s", err, o)
 		}
 		var flags []string
@@ -1014,15 +1012,13 @@ func claimsVM(a *args) {
 				flags = append(flags, "-"+f+"="+x)
 			}
 		}
-		cmd = exec.Command(bin, flags...)
+		name, argv = bin, flags
 	case strings.HasSuffix(v, ".py"):
-		cmd = exec.Command(a.get("python", "python3"), v)
+		name, argv = a.get("python", "python3"), []string{v}
 	default:
-		cmd = exec.Command(v)
+		name = v
 	}
-	cmd.Dir = cv
-	cmd.Env = append(append(os.Environ(), goEnv()...), "CV_DIR="+cv)
-	out, runErr := cmd.CombinedOutput()
+	out, runErr := runCmd(timeoutValidator, runOpts{Dir: cv, Env: append(append(os.Environ(), goEnv()...), "CV_DIR="+cv), Combined: true}, name, argv...)
 	p := a.get("out", "vm_report.txt")
 	report := string(out)
 	if why := vmAbnormal(report, runErr); why != "" {

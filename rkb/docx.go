@@ -343,13 +343,11 @@ func docxPages(docx string) int {
 		return -1
 	}
 	defer func() { _ = os.RemoveAll(tmp) }() // best-effort temp cleanup
-	cmd := exec.Command(so, "--headless", "--convert-to", "pdf", "--outdir", tmp, docx)
-	cmd.Env = append(os.Environ(), "HOME="+tmp)
-	if err := cmd.Run(); err != nil {
+	if _, err := runCmd(timeoutOffice, runOpts{Env: append(os.Environ(), "HOME="+tmp)}, so, "--headless", "--convert-to", "pdf", "--outdir", tmp, docx); err != nil {
 		return -1
 	}
 	pdf := filepath.Join(tmp, strings.TrimSuffix(filepath.Base(docx), ".docx")+".pdf")
-	out, err := exec.Command("pdfinfo", pdf).Output()
+	out, err := runCmd(timeoutPoppler, runOpts{}, "pdfinfo", pdf)
 	if err != nil {
 		return -1
 	}

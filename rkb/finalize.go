@@ -68,9 +68,9 @@ func outputsFor(c *Composed, cf *ClaimsFile, sel, outDir, texDir string, final, 
 			if err == nil {
 				defer func() { _ = os.RemoveAll(outGen) }() // best-effort temp cleanup
 				for i := 0; i < 2; i++ {
-					cmd := exec.Command("pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-output-directory="+outGen, absTex)
-					cmd.Dir = cv // the generated LaTeX \inputs the CV sources relative to it
-					_ = cmd.Run()
+					// cv is the working directory: the generated LaTeX \inputs the CV sources relative to it.
+					// A failed or timed-out pass leaves no PDF, which the read below turns into "no PDF".
+					_, _ = runCmd(timeoutLatex, runOpts{Dir: cv}, "pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-output-directory="+outGen, absTex)
 				}
 				if b, err := os.ReadFile(filepath.Join(outGen, base+".pdf")); err == nil {
 					writeFile(pdfPath, string(b))
