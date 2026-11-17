@@ -24,10 +24,16 @@ func TestW4aDeriveStaffLevel(t *testing.T) {
 	}
 }
 
-// A store from before StaffLevel existed is not read: it would answer "" for
-// every posting whose text states years.
-func TestW4aStoreFormatMovedWithStaffLevel(t *testing.T) {
-	if format < 2 {
-		t.Fatalf("format %d predates the StaffLevel fact", format)
+// The store's Version exercises StaffLevel (a probe posting derives one), so a
+// store written before the fact existed carries another Version and is not read:
+// it would answer "" for every posting whose text states years.
+func TestW4aVersionProbesStaffLevel(t *testing.T) {
+	v := vocab(t)
+	found := false
+	for _, p := range probe {
+		found = found || Derive(v, p).StaffLevel != ""
+	}
+	if !found {
+		t.Fatal("no probe posting derives a StaffLevel, so Version does not depend on it")
 	}
 }
