@@ -110,6 +110,15 @@ func (e *env) coverBuild(ctx context.Context, rawKey string) (jobsCoverSaved, er
 	if strings.TrimSpace(job.Description) == "" {
 		return jobsCoverSaved{Code: "no_text"}, fmt.Errorf("cover: the posting has no text")
 	}
+	st, serr := e.letterStore()
+	if serr != nil {
+		return jobsCoverSaved{Code: codeOfCover(serr)}, serr
+	}
+	// A full store refuses here, before the model is asked: a letter that
+	// cannot be kept must not be paid for.
+	if rerr := st.Room(ctx, string(job.Key)); rerr != nil {
+		return jobsCoverSaved{Code: codeOfCover(rerr)}, rerr
+	}
 	w, code, err := e.coverConfig(ctx)
 	if err != nil {
 		if code == "" {
@@ -122,13 +131,14 @@ func (e *env) coverBuild(ctx context.Context, rawKey string) (jobsCoverSaved, er
 	if err != nil && !cover.Kept(letter, err) {
 		return jobsCoverSaved{}, err
 	}
-	st, serr := e.letterStore()
+	// The model has been paid for. Keeping its letter must not depend on the
+	// command's Stop, Ctrl-C or deadline, which may fire any time after it
+	// returned, so the save runs detached and bounded.
+	sctx, scancel := detached(ctx)
+	defer scancel()
+	meta, serr := st.Save(sctx, string(job.Key), letter.Body, letter.CompanyCheck, letter.PDF)
 	if serr != nil {
-		return jobsCoverSaved{}, serr
-	}
-	meta, serr := st.Save(ctx, string(job.Key), letter.Body, letter.CompanyCheck, letter.PDF)
-	if serr != nil {
-		return jobsCoverSaved{}, serr
+		return jobsCoverSaved{Code: codeOfCover(serr)}, fmt.Errorf("cover: the model was already paid for and the letter could not be saved: %w", serr)
 	}
 	out := jobsCoverSaved{
 		Key:          string(job.Key),

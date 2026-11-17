@@ -223,6 +223,59 @@ func (s *Store) Save(ctx context.Context, key, body, companyCheck string, pdf []
 	return meta, nil
 }
 
+// Room reports whether Save could write one more version for key right now,
+// without writing anything: the CodeFull error Save would return when key is at
+// MaxVersions, or when key is new and the store already holds MaxJobs postings.
+// A caller that pays for a letter asks first, so a full store refuses before the
+// money is spent. It is a probe, not a reservation: a writer that fills the
+// store between Room and Save still makes Save report full.
+func (s *Store) Room(ctx context.Context, key string) error {
+	if err := checkKey(key); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(CodeTimeout, fmt.Errorf("letterstore: %w", err))
+	}
+	if _, err := os.Lstat(s.root); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, lockWait)
+	defer cancel()
+	lk, err := filelock.Acquire(ctx, filepath.Join(s.root, ".lock"))
+	if err != nil {
+		if ctx.Err() != nil {
+			return fail(CodeTimeout, fmt.Errorf("letterstore: lock: %w", ctx.Err()))
+		}
+		return fail(CodeIO, fmt.Errorf("letterstore: lock: %w", err))
+	}
+	defer lk.Release()
+	dir := s.dir(key)
+	st, serr := os.Lstat(dir)
+	switch {
+	case errors.Is(serr, os.ErrNotExist):
+		n, err := jobCount(s.root)
+		if err != nil {
+			return err
+		}
+		if n >= MaxJobs {
+			return fail(CodeFull, fmt.Errorf("letterstore: %d postings already have a letter", MaxJobs))
+		}
+	case serr != nil:
+		return fail(CodeIO, serr)
+	case !st.IsDir():
+		return fail(CodeDamaged, errors.New("letterstore: the posting folder is not a directory"))
+	default:
+		next, err := nextVersion(dir)
+		if err != nil {
+			return err
+		}
+		if next > MaxVersions {
+			return fail(CodeFull, fmt.Errorf("letterstore: %d versions already saved", MaxVersions))
+		}
+	}
+	return nil
+}
+
 // Use points the used letter at version n. It does not copy the text into the reply.
 func (s *Store) Use(ctx context.Context, key string, n int) (Meta, error) {
 	if err := checkKey(key); err != nil {
