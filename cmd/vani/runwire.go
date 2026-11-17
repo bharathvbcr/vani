@@ -242,16 +242,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		if dirty {
 			return w.storedFor(b)
 		}
-		start := sort.Search(len(initialRecs), func(i int) bool {
-			return string(initialRecs[i].Key) >= prefix
-		})
-		var out []posting.Posting
-		for i := start; i < len(initialRecs) && strings.HasPrefix(string(initialRecs[i].Key), prefix); i++ {
-			if p, ok := storedPosting(w.led, initialRecs[i]); ok {
-				out = append(out, p)
-			}
-		}
-		return out
+		return storedByPrefix(w.led, initialRecs, b)
 	}
 
 	srcs := apiSources(d)
@@ -270,6 +261,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// spends at most workday.MaxDetails requests a run.
 	wd, err := workday.NewWith(d, workday.Options{
 		Stored:     storedFor,
+		Unusable:   workdayUnusable,
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -687,23 +679,37 @@ func (w *wired) markProtector() func(posting.Key) bool { return protectMarked(w.
 // storedFor is every posting the ledger holds under b, whatever its status:
 // what an adapter may reuse instead of fetching again.
 func (w *wired) storedFor(b sources.Board) []posting.Posting {
+	return storedByPrefix(w.led, w.led.All(), b)
+}
+
+// storedByPrefix is the postings of recs (the ledger's records in key order)
+// that b's key prefix covers, each with its text. A closed record's text is not
+// resident, and an adapter that reuses a stored posting hands it back as the
+// listed row, so the text is read back here (storedPosting). Workday's adapter
+// guards its listing by the stored postings, so for it a posting whose text
+// cannot be read back stays in the result with an empty description, which its
+// Options.Unusable (workdayUnusable) reads as "fetch this row again"; for every
+// other adapter such a posting is left out, so it fetches the posting again
+// rather than storing "" over its text.
+func storedByPrefix(l ledger.Ledger, recs []ledger.Record, b sources.Board) []posting.Posting {
 	prefix := b.KeyPrefix()
+	start := sort.Search(len(recs), func(i int) bool { return string(recs[i].Key) >= prefix })
 	var out []posting.Posting
-	for _, r := range w.led.All() {
-		if strings.HasPrefix(string(r.Key), prefix) {
-			if p, ok := storedPosting(w.led, r); ok {
-				out = append(out, p)
-			}
+	for i := start; i < len(recs) && strings.HasPrefix(string(recs[i].Key), prefix); i++ {
+		p, ok := storedPosting(l, recs[i])
+		if ok || b.ATS == posting.Workday {
+			out = append(out, p)
 		}
 	}
 	return out
 }
 
-// storedPosting is r's posting with its text. A closed record's text is not
-// resident, and an adapter that reuses a stored posting hands it back as the
-// listed row, so the text is read back here. A body that cannot be read back
-// is not returned at all (not with an empty description): the adapter fetches
-// that posting again instead of storing "" over its text.
+// workdayUnusable is workday.Options.Unusable: a stored posting with no text is
+// one the ledger could not read back (storedByPrefix).
+func workdayUnusable(p posting.Posting) bool { return strings.TrimSpace(p.Description) == "" }
+
+// storedPosting is r's posting with its text, and whether the text could be
+// read back. An unreadable body leaves the description empty.
 func storedPosting(l ledger.Ledger, r ledger.Record) (posting.Posting, bool) {
 	full := ledger.Full(l, r)
 	return full.Posting, !full.BodyEvicted
