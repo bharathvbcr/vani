@@ -247,7 +247,9 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		})
 		var out []posting.Posting
 		for i := start; i < len(initialRecs) && strings.HasPrefix(string(initialRecs[i].Key), prefix); i++ {
-			out = append(out, ledger.Full(w.led, initialRecs[i]).Posting)
+			if p, ok := storedPosting(w.led, initialRecs[i]); ok {
+				out = append(out, p)
+			}
 		}
 		return out
 	}
@@ -689,11 +691,22 @@ func (w *wired) storedFor(b sources.Board) []posting.Posting {
 	var out []posting.Posting
 	for _, r := range w.led.All() {
 		if strings.HasPrefix(string(r.Key), prefix) {
-			// A closed record's text is not resident; the adapter reuses it, so read it back.
-			out = append(out, ledger.Full(w.led, r).Posting)
+			if p, ok := storedPosting(w.led, r); ok {
+				out = append(out, p)
+			}
 		}
 	}
 	return out
+}
+
+// storedPosting is r's posting with its text. A closed record's text is not
+// resident, and an adapter that reuses a stored posting hands it back as the
+// listed row, so the text is read back here. A body that cannot be read back
+// is not returned at all (not with an empty description): the adapter fetches
+// that posting again instead of storing "" over its text.
+func storedPosting(l ledger.Ledger, r ledger.Record) (posting.Posting, bool) {
+	full := ledger.Full(l, r)
+	return full.Posting, !full.BodyEvicted
 }
 
 // ashbySource is the Ashby adapter with the application-form read. The posting

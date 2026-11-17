@@ -119,7 +119,12 @@ func (c *ReadCache) seed(l ledger.Ledger, modelID string) {
 			continue
 		}
 		// readKey hashes the description, which a Dropped record keeps out of memory.
+		// A body that cannot be read back would key the reading under the hash
+		// of empty text, so a posting with no text would inherit it: skip it.
 		rec = ledger.Full(l, rec)
+		if rec.BodyEvicted {
+			continue
+		}
 		k := readKey(rec.Posting, modelID)
 		if _, dup := c.entries[k]; dup {
 			continue
