@@ -261,6 +261,15 @@ func ImportWithLimits(r io.Reader, source string, lim Limits) (Partial, error) {
 		byFY[fy] = c
 		p.Source.RowsCounted++
 	}
+	// A header with no rows, or rows none of which counted, means the wrong
+	// file or a layout this build does not read: an empty import would look
+	// like "this year had no certified cases", so refuse.
+	if p.Source.RowsRead == 0 {
+		return Partial{}, errors.New("lca: no data rows after the header; nothing to import")
+	}
+	if p.Source.RowsCounted == 0 {
+		return Partial{}, fmt.Errorf("lca: %d rows read and none counted (skipped: %v); the file's layout or codes are not the documented ones", p.Source.RowsRead, p.Source.Skipped)
+	}
 	p.Source.SHA256 = hex.EncodeToString(h.Sum(nil))
 	if len(p.Source.Skipped) == 0 {
 		p.Source.Skipped = nil
