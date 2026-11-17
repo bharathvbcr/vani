@@ -225,7 +225,10 @@ extension FailureReport: VersionedReply {}
 private struct VersionProbe: Decodable { var version: Int? }
 
 extension VaniProcess {
-    private struct Failure: Decodable { var error: String }
+    private struct Failure: Decodable {
+        var error: String
+        var code: String?
+    }
 
     /// Runs a `vani` command that writes one JSON reply on stdout: the value on
     /// exit 0, or `{"error": ...}` on failure, which is thrown as is. stderr is
@@ -270,7 +273,7 @@ extension VaniProcess {
         do {
             return try decoder.decode(T.self, from: reply)
         } catch let error as DecodingError {
-            if let reported = try? decoder.decode(Failure.self, from: reply) { throw BankError(reported.error) }
+            if let reported = try? decoder.decode(Failure.self, from: reply) { throw BankError(reported.error, code: reported.code) }
             if let place = describe(error) { throw BankError("\(name) sent a reply this app cannot read: \(place)") }
             throw unreadable()
         } catch {
@@ -337,7 +340,7 @@ extension VaniProcess {
     /// vani's `{"error": ...}` as it wrote it, or an account of the missing reply.
     private static func failure(_ out: Outcome, name: String, decoder: JSONDecoder, tooOld: String) -> BankError {
         if let failure = try? decoder.decode(Failure.self, from: out.stdout) {
-            return BankError(failure.error)
+            return BankError(failure.error, code: failure.code)
         }
         return BankError("\(name) exited \(out.status ?? -1) without a reply" + (out.status == 2 ? " (\(tooOld))" : ""))
     }

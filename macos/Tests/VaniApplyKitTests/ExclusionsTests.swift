@@ -273,9 +273,27 @@ final class ExclusionsTests: XCTestCase {
         XCTAssertThrowsError(try ExclusionsClient(vaniBinary: vani).save(ExclusionLists(), revision: "old")) {
             XCTAssertEqual($0 as? ExclusionsStale, ExclusionsStale(), "\($0)")
         }
-        let other = try fakeExcludeVani(self, reply: revisionReply("", error: "config invalid: exclude.titles[1]: duplicate"), status: 1)
+        let other = try fakeExcludeVani(self, reply: revisionReply("", error: "config invalid: exclude.titles[1]: duplicate", code: "runtime"), status: 1)
         XCTAssertThrowsError(try ExclusionsClient(vaniBinary: other).save(ExclusionLists(), revision: "old")) {
             XCTAssertFalse($0 is ExclusionsStale, "only a stale refusal is stale: \($0)")
+        }
+    }
+
+    /// Staleness is the reply's code, not its text: a duplicate-entry refusal echoes the owner's
+    /// entry, which can spell the stale phrase, and must stay an ordinary refusal.
+    func testOnlyTheStaleCodeIsStaleWhateverTheTextSays() throws {
+        let echoed = try fakeExcludeVani(self, reply: revisionReply("", error: "config invalid: exclude.titles[1]: duplicate entry \(staleText)", code: "runtime"), status: 1)
+        XCTAssertThrowsError(try ExclusionsClient(vaniBinary: echoed).save(ExclusionLists(), revision: "old")) {
+            XCTAssertFalse($0 is ExclusionsStale, "the stale phrase in the text of a runtime refusal: \($0)")
+            XCTAssertEqual(($0 as? BankError)?.code, "runtime")
+        }
+        let noCode = try fakeExcludeVani(self, reply: revisionReply("", error: staleText, code: "runtime"), status: 1)
+        XCTAssertThrowsError(try ExclusionsClient(vaniBinary: noCode).save(ExclusionLists(), revision: "old")) {
+            XCTAssertFalse($0 is ExclusionsStale, "stale text under another code: \($0)")
+        }
+        let coded = try fakeExcludeVani(self, reply: revisionReply("", error: "any words at all", code: "stale"), status: 1)
+        XCTAssertThrowsError(try ExclusionsClient(vaniBinary: coded).save(ExclusionLists(), revision: "old")) {
+            XCTAssertEqual($0 as? ExclusionsStale, ExclusionsStale(), "code stale with other text: \($0)")
         }
     }
 
@@ -384,9 +402,9 @@ final class ExclusionsTests: XCTestCase {
 
 private let staleText = "config: the exclusions changed since they were read; read them again"
 
-private func revisionReply(_ saved: String, revision: String = "", error: String? = nil) -> String {
+private func revisionReply(_ saved: String, revision: String = "", error: String? = nil, code: String = "stale") -> String {
     let lists = saved.isEmpty ? #"{"titles":[],"title_unless":[],"companies":[],"locations":[],"only_locations":[],"descriptions":[]}"# : saved
-    let tail = error.map { #","error":"\#($0)","code":"stale""# } ?? ""
+    let tail = error.map { #","error":"\#($0)","code":"\#(code)""# } ?? ""
     return #"{"exclude":\#(lists),"revision":"\#(revision)","max_entries":128,"max_descriptions":32,"max_entry_bytes":100\#(tail)}"#
 }
 

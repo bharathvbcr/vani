@@ -3,7 +3,14 @@ import Foundation
 /// A bank refused as a whole: nothing is half-written.
 public struct BankError: Error, Equatable, CustomStringConvertible {
     public let description: String
-    public init(_ description: String) { self.description = description }
+    /// The `code` of vani's `{"error", "code"}` reply when the failure came from one (`stale`,
+    /// `busy`, ...); nil for every other failure. Callers that must tell a refusal apart match
+    /// this, never `description`, which can echo the owner's own text.
+    public let code: String?
+    public init(_ description: String, code: String? = nil) {
+        self.description = description
+        self.code = code
+    }
 }
 
 // A port of parseBank (extension/src/bank.ts), applied to every bank that

@@ -143,15 +143,16 @@ public struct ExclusionsClient: Sendable {
                         input: try encoder.encode(lists))
     }
 
-    /// Vani's words for a stale save (config.ErrStale), which reach the app as the error text.
-    static let staleMarker = "the exclusions changed since they were read"
+    /// The code of vani's reply to a stale save (config.ErrStale). Matched on the code, never the
+    /// error text: a refusal echoes the owner's entry, which can spell any phrase.
+    static let staleCode = "stale"
 
     private func call(_ args: [String], input: Data?) throws -> Exclusions {
         do {
             return try VaniProcess.call(vaniBinary, args, configPath: configPath, stateDir: stateDir, input: input,
                                         timeout: timeout, maxOutputBytes: Self.maxOutputBytes,
                                         tooOld: "this vani is too old for exclusions; rebuild the app")
-        } catch let error as BankError where error.description.contains(Self.staleMarker) {
+        } catch let error as BankError where error.code == Self.staleCode {
             throw ExclusionsStale()
         }
     }
