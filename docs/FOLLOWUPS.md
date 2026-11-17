@@ -2131,9 +2131,14 @@ Left open:
   JPMorgan Chase), IBM careers (`ib`: IBM, Confluent), D. E. Shaw (`ds`), Atlassian (`at`),
   Rippling (`rp`), and XML job feeds (`fd`: Shopify) are now implemented as dedicated adapters
   and merged to `main`. Remaining unsupported, each checked 2026-11-17:
-  - **Meta.** `www.metacareers.com/robots.txt` opens with a notice that automated collection is
-    prohibited without Meta's written permission (it does list `/jobsearch/sitemap.xml`). Not
-    built: an owner decision.
+  - **Meta** is built: `mt` (`internal/sources/meta`), at the owner's decision, although
+    `www.metacareers.com/robots.txt` opens with a notice that automated collection needs Meta's
+    written permission (both paths it reads are allowed). Sitemap of ~1,360 jobs with no titles,
+    so 150 job pages (~560 KB each) a run; about ten runs fill it.
+  - **iCIMS** classic hosts (`careers-{x}.icims.com`, `us-careers-rivian.icims.com`,
+    `experienced-arm.icims.com`, `careers-amd.icims.com`, `careers-ulta…`) all answer
+    `Disallow: /`, so no `{tenant}.icims.com` adapter. iCIMS customers with an iCIMS Career Sites
+    (Jibe) front end are read by `jb`: Rivian (`jb rivian`, host `careers.rivian.com`, 974 jobs).
   - **Uber.** Careers moved to `jobs.uber.com`; robots allows `/`, and `/en/jobs/sitemap.xml` lists
     806 `/en/jobs/{id}/` pages, but every job page answers a Cloudflare challenge (403,
     `cf-mitigated: challenge`) to a plain client. The old `www.uber.com/api/` search is disallowed.
@@ -2141,11 +2146,15 @@ Left open:
     challenge for its career sitemap and `/careers/details/{slug}/` pages; `citadelsecurities.com`
     challenges even robots.txt. Lightpanda loaded `/careers/open-opportunities/` (200, 10 roles).
   - **Aurora** is not custom: it is Ashby `aurora-operations-inc` (`ab`), live since 2026-11-17.
-  - Not yet located: Applied Materials, Lam Research and NetApp (Eightfold), Rivian (iCIMS),
-    Dell, Cadence, KLA, Western Digital, Seagate, HP, Akamai, Nutanix (careers pages named no ATS).
+  - Not yet located: Applied Materials, Lam Research and NetApp (Eightfold), Dell, Cadence, KLA,
+    Western Digital, Seagate, HP, Akamai, Nutanix (careers pages named no ATS).
   - Added 2026-11-17 after a scratch dry run (1,542 postings, all with description and location):
     Riot Games, Pure Storage (board name "Everpure"), PagerDuty, New Relic, Fastly, YugabyteDB,
     Zscaler, SoFi, Samsung Semiconductor, PlayStation, Netlify (gh) and Fly.io (lv `fly`).
+  - Open-source companies added 2026-11-17 (695 postings, all complete): Zed, Redis, Prefect, n8n,
+    Tiger Data, InfluxData, Coder, Percona (ab); Canonical, Mozilla, Wikimedia, Mattermost,
+    Upbound, Neo4j, Cline, MariaDB (gh). opencode's maker (Anomaly, anoma.ly) has no public board
+    found on gh, ab, lv or wk.
   Arm (`careers.arm.com`) and Synopsys (`careers.synopsys.com`) are TalentBrew (`tb`) sites, and
   GitLab is Greenhouse (`gh gitlab`); a scratch `run-once --list-only` on 2026-11-17 read GitLab
   253, Arm 150 (the detail cap; 452 listed) and Synopsys 149 (713 listed), all with title,
