@@ -155,6 +155,10 @@ type Options struct {
 	// 2026-11-11, each run asking for all of its ~137 details again: reuse
 	// cuts a run to its search pages and the new positions' details.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// DropListed reports whether the engine drops a posting from what a
 	// search row says of it: its title and the board's company. A new position
 	// it drops is neither fetched nor returned. Nil drops nothing.
@@ -403,7 +407,7 @@ func (s *source) planDetails(b sources.Board, domain string, ids []listing, seen
 		}
 		keys[i] = key
 		_, ok := stored[key]
-		rows[i] = srcutil.DetailRow{ID: l.id, Stored: ok}
+		rows[i] = srcutil.DetailRow{ID: l.id, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, key)}
 		if !ok && drop != nil {
 			rows[i].Drop = drop(posting.Posting{ATS: posting.Eightfold, Company: company, Title: srcutil.Title(l.name)})
 		}

@@ -83,11 +83,10 @@ type Options struct {
 	// posting has the row's path (read from its URL) is returned as stored,
 	// with no detail request. Required.
 	Stored func(b sources.Board) []posting.Posting
-	// Unusable reports a stored posting whose text must not be reused (the
-	// ledger could not read it back, so Description is empty). Its row is read
-	// again, never reused or dropped unread, and a miss that would leave it out
-	// fails the board. Nil treats every stored posting as usable.
-	Unusable func(p posting.Posting) bool
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 	// DropListed reports whether the engine drops a posting before triage
 	// from what a listed row says: its title, the board's company and the
 	// row's location text (no description, no remote flag). A listed row with
@@ -288,8 +287,6 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	seen := s.now()
 	stored := map[string]posting.Posting{}
 	storedKeys := map[posting.Key]bool{}
-	unusable := map[string]posting.Key{} // stored with no text, by listed path
-	unusableKeys := map[posting.Key]bool{}
 	unmatched := 0 // stored postings whose URL names no path on this site
 	if s.opt != nil {
 		prefix := b.KeyPrefix()
@@ -297,29 +294,19 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 			if !strings.HasPrefix(string(p.Key), prefix) {
 				continue // another board's posting is never this board's row
 			}
-			path, ok := storedPath(p.URL, host, pagePrefix(host, tenant, site))
-			switch {
-			case ok && s.opt.Unusable != nil && s.opt.Unusable(p):
-				// A stored posting whose text is unusable (the ledger could not
-				// read its body back) is never reused: its row is read again like
-				// a new one, but still guarded as stored, so a miss or a deferral
-				// that would leave it out fails the board instead of aging it as
-				// absent.
-				unusable[path], unusableKeys[p.Key] = p.Key, true
-			case ok:
-				storedKeys[p.Key] = true
+			storedKeys[p.Key] = true
+			if path, ok := storedPath(p.URL, host, pagePrefix(host, tenant, site)); ok {
 				stored[path] = p
-			default:
-				storedKeys[p.Key] = true
+			} else {
 				unmatched++
 			}
 		}
 	}
 	plan := make([]srcutil.DetailRow, len(rows))
 	for i, row := range rows {
-		_, ok := stored[row.ExternalPath]
-		plan[i] = srcutil.DetailRow{ID: row.ExternalPath, Stored: ok}
-		if _, held := unusable[row.ExternalPath]; !ok && !held && s.opt != nil && s.opt.DropListed != nil {
+		sp, ok := stored[row.ExternalPath]
+		plan[i] = srcutil.DetailRow{ID: row.ExternalPath, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, sp.Key)}
+		if !ok && s.opt != nil && s.opt.DropListed != nil {
 			plan[i].Drop = s.opt.DropListed(listedPosting(b, tenant, row))
 		}
 	}
@@ -344,11 +331,8 @@ func (s *source) details(ctx context.Context, b sources.Board, base, host, tenan
 	// detail missed) whose path id names a stored posting would age that
 	// posting as absent, so it is refused.
 	repostOf := func(i int) (posting.Key, bool) {
-		if key, held := unusable[rows[i].ExternalPath]; held {
-			return key, true // a stored posting whose text is unusable is still stored
-		}
 		key, ok := pathKey(tenant, site, rows[i].ExternalPath)
-		return key, ok && (storedKeys[key] || unusableKeys[key])
+		return key, ok && storedKeys[key]
 	}
 	if pl.Deferred > 0 {
 		inPlan := make([]bool, len(rows))

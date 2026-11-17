@@ -234,15 +234,19 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	defer w.savePrefilterSample()
 	var prefixMu sync.Mutex
 	dirtyPrefix := map[string]bool{}
+	var unusable unusableKeys
 	storedFor := func(b sources.Board) []posting.Posting {
 		prefix := b.KeyPrefix()
 		prefixMu.Lock()
 		dirty := dirtyPrefix[prefix]
 		prefixMu.Unlock()
+		recs := initialRecs
 		if dirty {
-			return w.storedFor(b)
+			recs = w.led.All()
 		}
-		return storedByPrefix(w.led, initialRecs, b)
+		out, unreadable := storedByPrefix(w.led, recs, b)
+		unusable.add(unreadable)
+		return out
 	}
 
 	srcs := apiSources(d)
@@ -261,7 +265,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// spends at most workday.MaxDetails requests a run.
 	wd, err := workday.NewWith(d, workday.Options{
 		Stored:     storedFor,
-		Unusable:   workdayUnusable,
+		Unusable:   unusable.has,
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st workday.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -277,6 +281,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// smartrecruiters.MaxDetails requests a board a run).
 	sr, err := smartrecruiters.NewWith(d, smartrecruiters.Options{
 		Stored:     storedFor,
+		Unusable:   unusable.has,
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st smartrecruiters.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -289,7 +294,8 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	srcs[posting.SmartRecruiters] = sr
 	// Oracle HCM costs a detail request per posting too, bounded the same way.
 	oc, err := oraclehcm.NewWith(d, oraclehcm.Options{
-		Stored: storedFor,
+		Stored:   storedFor,
+		Unusable: unusable.has,
 		Report: func(b sources.Board, st oraclehcm.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, oracleFetch(st))
@@ -309,6 +315,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// rippling.MaxDetails requests a board a run).
 	rp, err := rippling.NewWith(d, rippling.Options{
 		Stored:     storedFor,
+		Unusable:   unusable.has,
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st rippling.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -324,6 +331,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// talentbrew.MaxDetails pages a board a run.
 	tb, err := talentbrew.NewWith(d, talentbrew.Options{
 		Stored:     storedFor,
+		Unusable:   unusable.has,
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st talentbrew.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -339,6 +347,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// never fetched, so a run asks for its search pages and the new details.
 	srcs[posting.Eightfold] = eightfold.NewWith(d, eightfold.Options{
 		Stored:     storedFor,
+		Unusable:   unusable.has,
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st eightfold.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -350,6 +359,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// requests a board a run).
 	srcs[posting.Avature] = avature.NewWith(d, avature.Options{
 		Stored:     storedFor,
+		Unusable:   unusable.has,
 		DropListed: w.listedDrops(policy),
 		Report: func(b sources.Board, st avature.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
@@ -364,7 +374,8 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, fmt.Errorf("egress for apple: %w", err)
 	}
 	srcs[posting.Apple] = apple.NewWith(ad, apple.Options{
-		Stored: storedFor,
+		Stored:   storedFor,
+		Unusable: unusable.has,
 		Report: func(b sources.Board, st apple.Stats) {
 			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
 			w.noteBoardFetch(b, appleFetch(st))
@@ -679,40 +690,86 @@ func (w *wired) markProtector() func(posting.Key) bool { return protectMarked(w.
 // storedFor is every posting the ledger holds under b, whatever its status:
 // what an adapter may reuse instead of fetching again.
 func (w *wired) storedFor(b sources.Board) []posting.Posting {
-	return storedByPrefix(w.led, w.led.All(), b)
-}
-
-// storedByPrefix is the postings of recs (the ledger's records in key order)
-// that b's key prefix covers, each with its text. A closed record's text is not
-// resident, and an adapter that reuses a stored posting hands it back as the
-// listed row, so the text is read back here (storedPosting). Workday's adapter
-// guards its listing by the stored postings, so for it a posting whose text
-// cannot be read back stays in the result with an empty description, which its
-// Options.Unusable (workdayUnusable) reads as "fetch this row again"; for every
-// other adapter such a posting is left out, so it fetches the posting again
-// rather than storing "" over its text.
-func storedByPrefix(l ledger.Ledger, recs []ledger.Record, b sources.Board) []posting.Posting {
-	prefix := b.KeyPrefix()
-	start := sort.Search(len(recs), func(i int) bool { return string(recs[i].Key) >= prefix })
-	var out []posting.Posting
-	for i := start; i < len(recs) && strings.HasPrefix(string(recs[i].Key), prefix); i++ {
-		p, ok := storedPosting(l, recs[i])
-		if ok || b.ATS == posting.Workday {
-			out = append(out, p)
-		}
-	}
+	out, _ := storedByPrefix(w.led, w.led.All(), b)
 	return out
 }
 
-// workdayUnusable is workday.Options.Unusable: a stored posting with no text is
-// one the ledger could not read back (storedByPrefix).
-func workdayUnusable(p posting.Posting) bool { return strings.TrimSpace(p.Description) == "" }
+// storedByPrefix is the postings of recs (the ledger's records in key order)
+// that b's key prefix covers, each with its text, and the keys of those whose
+// text could not be read back. A closed record's text is not resident, and an
+// adapter that reuses a stored posting hands it back as the listed row, so the
+// text is read back here. A posting whose text cannot be read back stays in the
+// result with an empty description: an adapter's guards ask whether a posting is
+// stored, so leaving it out would let a missed detail age it as absent. Its key
+// is returned beside it, the adapter's Options.Unusable mark, so the detail
+// planner reads it again and never reuses it. A posting that is stored with a
+// genuinely empty description is not marked.
+func storedByPrefix(l ledger.Ledger, recs []ledger.Record, b sources.Board) ([]posting.Posting, []posting.Key) {
+	prefix := b.KeyPrefix()
+	start := sort.Search(len(recs), func(i int) bool { return string(recs[i].Key) >= prefix })
+	var out []posting.Posting
+	var unusable []posting.Key
+	for i := start; i < len(recs) && strings.HasPrefix(string(recs[i].Key), prefix); i++ {
+		p, ok := storedPosting(l, recs[i])
+		out = append(out, p)
+		if !ok {
+			unusable = append(unusable, p.Key)
+		}
+	}
+	return out, unusable
+}
 
-// storedPosting is r's posting with its text, and whether the text could be
-// read back. An unreadable body leaves the description empty.
+// bodyReader is a ledger that reads an evicted body back and says when it
+// cannot (ledger.File).
+type bodyReader interface {
+	Hydrate(k posting.Key) (ledger.Record, error)
+}
+
+// storedPosting is r's posting with its text, and whether the text could be read
+// back. A record whose body is not resident is read with the ledger's
+// error-returning read, so a failure is told from a body that is really empty;
+// a ledger without one is asked as ledger.Full does.
 func storedPosting(l ledger.Ledger, r ledger.Record) (posting.Posting, bool) {
+	if !r.BodyEvicted {
+		return r.Posting, true
+	}
+	if h, ok := l.(bodyReader); ok {
+		full, err := h.Hydrate(r.Key)
+		if err != nil {
+			return r.Posting, false
+		}
+		return full.Posting, true
+	}
 	full := ledger.Full(l, r)
 	return full.Posting, !full.BodyEvicted
+}
+
+// unusableKeys is the set of stored keys whose text could not be read back,
+// filled as boards ask for their stored postings and read by adapters' Options.Unusable
+// while they list. It is safe for the concurrent boards of one read.
+type unusableKeys struct {
+	mu   sync.Mutex
+	keys map[posting.Key]bool
+}
+
+func (u *unusableKeys) add(keys []posting.Key) {
+	if len(keys) == 0 {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.keys == nil {
+		u.keys = map[posting.Key]bool{}
+	}
+	for _, k := range keys {
+		u.keys[k] = true
+	}
+}
+
+func (u *unusableKeys) has(k posting.Key) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.keys[k]
 }
 
 // ashbySource is the Ashby adapter with the application-form read. The posting

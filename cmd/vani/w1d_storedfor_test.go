@@ -13,9 +13,9 @@ import (
 )
 
 // An adapter that reuses a stored posting hands it back as the listed row, so
-// storedFor never returns a closed posting with an empty description in place
-// of its text: one that reads back is returned whole, one that does not is left
-// out and the adapter fetches it again.
+// storedFor never returns a closed posting with another text in place of its
+// own: one that reads back is returned whole, one that does not keeps its place
+// in the result with an empty description (storedByPrefix marks it unusable).
 func TestW1dStoredForNeverReturnsEmptyText(t *testing.T) {
 	dir := t.TempDir()
 	l, err := ledger.Open(dir)
@@ -50,7 +50,12 @@ func TestW1dStoredForNeverReturnsEmptyText(t *testing.T) {
 
 	w := &wired{led: l}
 	got := w.storedFor(sources.Board{ATS: posting.Greenhouse, Token: "acme", Company: "Acme"})
-	if len(got) != 1 || got[0].Description != readable {
-		t.Fatalf("storedFor = %+v, want only the posting whose text reads back", got)
+	if len(got) != 2 {
+		t.Fatalf("storedFor = %+v, want both postings: the board's guards must see the unreadable one as stored", got)
+	}
+	for _, p := range got {
+		if (p.Description == readable) == (p.Description == "") || (p.Description != readable && p.Description != "") {
+			t.Fatalf("storedFor returned %q for %s: want the text, or nothing where it cannot be read", p.Description, p.Key)
+		}
 	}
 }

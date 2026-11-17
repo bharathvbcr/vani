@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"time"
+
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // The bounded detail step. A source whose listing carries no description
@@ -76,6 +78,7 @@ func MaxMissed(fetch, reused int) int {
 // Anything not Transient, and anything past MaxMissed, still fails the board.
 type DetailMisses struct {
 	newRows  int
+	unusable int
 	reused   int
 	canDefer bool
 	allowed  int
@@ -87,7 +90,7 @@ type DetailMisses struct {
 // NewDetailMisses returns the tolerance for the detail requests of pl.
 // canDefer is whether a new row of pl may be left out (see DetailMisses).
 func NewDetailMisses(pl DetailPlan, canDefer bool) *DetailMisses {
-	return &DetailMisses{newRows: pl.New, reused: len(pl.Reuse), canDefer: canDefer, allowed: MaxMissed(len(pl.Fetch), len(pl.Reuse))}
+	return &DetailMisses{newRows: pl.New, unusable: pl.Unusable, reused: len(pl.Reuse), canDefer: canDefer, allowed: MaxMissed(len(pl.Fetch), len(pl.Reuse))}
 }
 
 // ErrNothingAnswered is a detail step that missed requests and had no other
@@ -109,7 +112,7 @@ func (m *DetailMisses) Done(answered int) error {
 // Take reports whether the failed detail request for pl.Fetch[n] is left for a
 // later run, and counts it when it is. False means the board fails with err.
 func (m *DetailMisses) Take(ctx context.Context, n int, err error) bool {
-	if ctx.Err() != nil || !Transient(err) || m.Total() >= m.allowed {
+	if ctx.Err() != nil || !Transient(err) || m.Total() >= m.allowed || m.isUnusable(n) {
 		return false
 	}
 	if n < m.newRows {
@@ -122,6 +125,12 @@ func (m *DetailMisses) Take(ctx context.Context, n int, err error) bool {
 	m.Stored++
 	return true
 }
+
+// isUnusable is whether pl.Fetch[n] is a stored row whose text cannot be reused
+// (DetailRow.Unusable). Its miss can be neither left out (it is stored, so that
+// would age it as absent) nor returned as stored (its text is empty), so it
+// fails the board.
+func (m *DetailMisses) isUnusable(n int) bool { return n >= m.newRows && n < m.newRows+m.unusable }
 
 // Total is how many detail requests were missed and left for a later run.
 func (m *DetailMisses) Total() int { return m.New + m.Stored }
@@ -137,7 +146,7 @@ var ErrTooManyMisses = errors.New("too many detail requests missed")
 // so and how many misses were already absorbed, and still wraps err, so a
 // timeout stays a timeout to errors.Is. In every other case it is err itself.
 func (m *DetailMisses) Refusal(ctx context.Context, n int, err error) error {
-	if ctx.Err() != nil || !Transient(err) || m.Total() < m.allowed || (n < m.newRows && !m.canDefer) {
+	if ctx.Err() != nil || !Transient(err) || m.Total() < m.allowed || (n < m.newRows && !m.canDefer) || m.isUnusable(n) {
 		return err
 	}
 	return fmt.Errorf("%w: %d already left for a later run, the most this board may leave is %d: %w", ErrTooManyMisses, m.Total(), m.allowed, err)
@@ -156,6 +165,22 @@ type DetailRow struct {
 	// Drop is whether a new row is dropped before any request (a source's
 	// DropListed). It is ignored on a stored row.
 	Drop bool
+	// Unusable is whether the stored row's text must not be reused: the ledger
+	// could not read it back, so the stored posting has no description
+	// (Marked: an explicit mark beside the stored postings, never inferred from
+	// an empty description, which a posting may genuinely have). Such a row is
+	// always read again, ahead of the other stored rows, and never reused. It stays a stored row for the guards that ask
+	// whether a posting is stored: a miss on it fails the board, and it is never
+	// dropped or deferred. It is ignored on a row that is not Stored.
+	Unusable bool
+}
+
+// Marked is whether the adapter's Options.Unusable (nil marks none) marks the
+// stored posting k as one whose text cannot be reused: the ledger could not read
+// its body back, and handing it back as the listed row would store an empty
+// description over the text. It is DetailRow.Unusable for a stored row.
+func Marked(unusable func(posting.Key) bool, k posting.Key) bool {
+	return unusable != nil && unusable(k)
 }
 
 // DetailPlan is which listed rows get a detail request. Each slice holds row
@@ -166,6 +191,11 @@ type DetailPlan struct {
 	Fetch []int
 	// New is how many of Fetch, from its start, are new rows.
 	New int
+	// Unusable is how many of Fetch, right after the New rows, are stored rows
+	// whose text is unusable (DetailRow.Unusable). The limit does not cap them:
+	// listing one unread would list it with no text. They are bounded by the
+	// stored rows the listing names, and take their room from the new rows.
+	Unusable int
 	// Reuse is the stored rows returned as stored, with no request: those not
 	// due a re-read, and those whose re-read did not fit.
 	Reuse []int
@@ -176,8 +206,9 @@ type DetailPlan struct {
 }
 
 // PlanDetails plans the detail requests for rows on day, at most limit of
-// them. New rows come first and those past limit are deferred; changed stored
-// rows, then stored rows whose RefreshTurn it is, fill what room is left, and a
+// them. New rows come first and those past limit are deferred; stored rows with
+// unusable text follow, always read (they take their room from the new rows);
+// changed stored rows, then stored rows whose RefreshTurn it is, fill what room is left, and a
 // stored row whose re-read does not fit is reused. Every row lands in exactly
 // one of Fetch, Reuse, Deferred or Prefiltered.
 //
@@ -186,9 +217,11 @@ type DetailPlan struct {
 // would age it as absent.
 func PlanDetails(rows []DetailRow, day, limit int) DetailPlan {
 	var p DetailPlan
-	var fresh, changed, scheduled []int
+	var fresh, unusable, changed, scheduled []int
 	for i, r := range rows {
 		switch {
+		case r.Stored && r.Unusable:
+			unusable = append(unusable, i)
 		case r.Stored && r.Changed:
 			changed = append(changed, i)
 		case r.Stored && RefreshTurn(r.ID, day):
@@ -202,14 +235,14 @@ func PlanDetails(rows []DetailRow, day, limit int) DetailPlan {
 		}
 	}
 	limit = max(limit, 0)
-	if len(fresh) > limit {
-		p.Deferred = len(fresh) - limit
-		fresh = fresh[:limit]
+	if room := max(limit-len(unusable), 0); len(fresh) > room {
+		p.Deferred = len(fresh) - room
+		fresh = fresh[:room]
 	}
-	p.Fetch = fresh
-	p.New = len(fresh)
+	p.New, p.Unusable = len(fresh), len(unusable)
+	p.Fetch = append(fresh, unusable...)
 	for _, group := range [][]int{changed, scheduled} {
-		room := limit - len(p.Fetch)
+		room := max(limit-len(p.Fetch), 0)
 		if len(group) > room {
 			p.Reuse = append(p.Reuse, group[room:]...)
 			group = group[:room]

@@ -9,9 +9,6 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
-// w1dadvNoText is cmd/vani's Options.Unusable: a stored posting with no text.
-func w1dadvNoText(p posting.Posting) bool { return strings.TrimSpace(p.Description) == "" }
-
 // w1dadvUnreadableStored is every job of fb stored, the unreadable one with the
 // empty Description cmd/vani's workdayStored gives a posting whose text did not
 // read back.
@@ -27,6 +24,13 @@ func w1dadvUnreadableStored(fb *fakeBoard, unreadable int) []posting.Posting {
 	return stored
 }
 
+// w1dadvMarked is cmd/vani's Options.Unusable for the one unreadable job: the
+// mark names the stored posting whose body could not be read back.
+func w1dadvMarked(fb *fakeBoard, unreadable int) func(posting.Key) bool {
+	k := storedJobs(fb, unreadable)[0].Key
+	return func(x posting.Key) bool { return x == k }
+}
+
 // The adapter's own guards (CanDefer, repostOf, LeftOut) assume every stored
 // posting is in Stored: "a row with no stored path holds no stored posting". A
 // posting whose text cannot be read back is therefore kept in Stored with an
@@ -39,7 +43,7 @@ func TestW1dadvAStoredPostingLeftOutOfStoredIsNotSilentlyOmittedOnAMiss(t *testi
 	const unreadable = 5
 	stored := w1dadvUnreadableStored(fb, unreadable)
 	s := missSource(failDetails(fb, missTimeout, unreadable), &Options{
-		Stored: func(sources.Board) []posting.Posting { return stored }, Unusable: w1dadvNoText,
+		Stored: func(sources.Board) []posting.Posting { return stored }, Unusable: w1dadvMarked(fb, unreadable),
 	})
 	got, err := s.List(missNoRetry(), board)
 	if err != nil {
@@ -58,7 +62,8 @@ func TestW1dadvUnusableStoredPostingIsReadAgainAndNeverDropped(t *testing.T) {
 	const unreadable = 5
 	var st Stats
 	s := missSource(fb.handle, &Options{
-		Stored: func(sources.Board) []posting.Posting { return w1dadvUnreadableStored(fb, unreadable) }, Unusable: w1dadvNoText,
+		Stored:     func(sources.Board) []posting.Posting { return w1dadvUnreadableStored(fb, unreadable) },
+		Unusable:   w1dadvMarked(fb, unreadable),
 		DropListed: func(posting.Posting) bool { return true },
 		Report:     func(_ sources.Board, x Stats) { st = x },
 	})
@@ -75,8 +80,9 @@ func TestW1dadvUnusableStoredPostingIsReadAgainAndNeverDropped(t *testing.T) {
 			}
 		}
 	}
-	if !found || st.Fetched != 1 || st.Prefiltered != 0 {
-		t.Fatalf("found=%v stats %+v: want the unusable posting fetched once and not prefiltered", found, st)
+	if !found || st.Refreshed < 1 || st.Fetched != 0 || st.Prefiltered != 0 {
+		// Refreshed also counts the stored rows whose turn it is, so at least one.
+		t.Fatalf("found=%v stats %+v: want the unusable posting re-read (a stored row, not a new one) and not prefiltered", found, st)
 	}
 }
 
@@ -86,7 +92,7 @@ func TestW1dadvUnusableStoredPostingMissFailsTheBoard(t *testing.T) {
 	fb := missBoard(30)
 	const unreadable = 7
 	s := missSource(failDetails(fb, missTimeout, unreadable), &Options{
-		Stored: func(sources.Board) []posting.Posting { return w1dadvUnreadableStored(fb, unreadable) }, Unusable: w1dadvNoText,
+		Stored: func(sources.Board) []posting.Posting { return w1dadvUnreadableStored(fb, unreadable) }, Unusable: w1dadvMarked(fb, unreadable),
 	})
 	if got, err := s.List(missNoRetry(), board); err == nil {
 		t.Fatalf("a missed unusable stored posting was left out silently: %d postings, no error", len(got))

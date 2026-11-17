@@ -109,6 +109,10 @@ type Options struct {
 	// its search row (the details page must name the same position). Nil asks
 	// for every details page, within MaxPostings.
 	Stored func(b sources.Board) []posting.Posting
+	// Unusable reports a stored posting whose text must not be reused (see
+	// srcutil.DetailRow.Unusable). It is an explicit mark, never read from the
+	// text. Nil marks none.
+	Unusable func(k posting.Key) bool
 }
 
 // limit is the most positions a board's searches may list: MaxListed when the
@@ -231,7 +235,7 @@ func (s *source) planDetails(b sources.Board, rows []row, seen time.Time) (srcut
 		}
 		keys[i] = key
 		_, ok := stored[key]
-		dr[i] = srcutil.DetailRow{ID: r.position, Stored: ok}
+		dr[i] = srcutil.DetailRow{ID: r.position, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, key)}
 	}
 	limit := MaxPostings
 	if s.opt != nil && s.opt.Stored != nil {
