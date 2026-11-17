@@ -81,7 +81,10 @@ func SharesOf(w jobinsight.Weights) Shares {
 // file may carry only the part that could be fitted), but not both absent.
 // Report is provenance for the reader; Apply does not read it.
 type File struct {
-	V           int                               `json:"v"`
+	V int `json:"v"`
+	// FittedAt is when the file was last fitted, of any part: a platt-only or a
+	// weights-only fit refreshes it over the part it kept, and --spare-seniority
+	// leaves it alone. It is not the age of the shares or of the calibration.
 	FittedAt    time.Time                         `json:"fitted_at"`
 	Shares      *Shares                           `json:"shares,omitempty"`
 	Calibration map[string]jobinsight.Calibration `json:"calibration,omitempty"`

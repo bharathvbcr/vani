@@ -106,10 +106,10 @@ func TestW1cRankfitRefusesAMalformedExistingFile(t *testing.T) {
 func TestW1cMergeRankfitPartRefusesAnEmptyPlattOverAFile(t *testing.T) {
 	cur := rankfit.File{V: rankfit.FileVersion, FittedAt: jobsT0, Calibration: map[string]jobinsight.Calibration{"a": {B: 1}}}
 	fitted := rankfit.File{V: rankfit.FileVersion, FittedAt: jobsT0.Add(1), Report: &rankfit.Report{}}
-	if _, err := mergeRankfitPart(cur, true, fitted, true, false); err == nil {
+	if _, err := mergeRankfitPart(cur, true, fitted, true, false, nil); err == nil {
 		t.Error("an empty platt fit was merged")
 	}
-	if got, err := mergeRankfitPart(rankfit.File{}, false, fitted, true, false); err != nil || got.FittedAt != fitted.FittedAt {
+	if got, err := mergeRankfitPart(rankfit.File{}, false, fitted, true, false, nil); err != nil || got.FittedAt != fitted.FittedAt {
 		t.Errorf("no prior file: %+v, %v; want the fit alone", got, err)
 	}
 }

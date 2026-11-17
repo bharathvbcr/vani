@@ -63,6 +63,8 @@ func rankWeightsChecked(cfg config.Config) (w *jobinsight.Weights, used, warn st
 	if err != nil {
 		return nil, rankWeightsHand, "rank_weights_file could not be used, so the hand weights rank: " + oneLine(err.Error(), 300), false
 	}
+	// The date is the file's last fit of any part (a platt-only or weights-only
+	// fit refreshes it; --spare-seniority does not), not the age of the shares.
 	used = "fitted " + f.FittedAt.UTC().Format("2006-01-02")
 	if f.Shares != nil {
 		switch refusal, unchecked := sharesVerdict(f); {
@@ -135,7 +137,7 @@ func rankWeightsLines(f *rankWeightsFacet) []string {
 // for shares at least as good as the hand weights on their own held-out pairs.
 func sharesVerdict(f rankfit.File) (refusal, unchecked string) {
 	if f.Report == nil || f.Report.Weights == nil {
-		return "", "rank_weights_file's shares record no held-out result (a file `vani rankfit` writes does), so they are used unchecked against the hand weights"
+		return "", "rank_weights_file's shares record no held-out result (a weight fit records one; a calibration-only fit drops it, since the calibration it was measured under changed), so they are used unchecked against the hand weights"
 	}
 	r := f.Report.Weights
 	unit := func(v float64) bool { return v >= 0 && v <= 1 } // false for NaN
