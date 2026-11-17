@@ -65,10 +65,10 @@ func TestW1dHealedOldDropIsNotDroppedToday(t *testing.T) {
 	if r, _ := l.Get(key); r.Status != posting.Dropped || r.BodyEvicted {
 		t.Fatalf("after the heal: status %s evicted %v", r.Status, r.BodyEvicted)
 	}
-	if c := countsFor(l.All(), healDay, loc); c.Dropped != 0 {
+	if c := countsFor(l.All(), nil, healDay, loc); c.Dropped != 0 {
 		t.Fatalf("the heal day's footer counts %d dropped, want 0 (counts %+v)", c.Dropped, c)
 	}
-	if c := countsFor(l.All(), dropDay, loc); c.Dropped != 1 {
+	if c := countsFor(l.All(), nil, dropDay, loc); c.Dropped != 1 {
 		t.Fatalf("the drop day's footer counts %d dropped, want 1 (counts %+v)", c.Dropped, c)
 	}
 }

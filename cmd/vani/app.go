@@ -689,7 +689,7 @@ func (e *env) publishDigest(ctx context.Context, app *App, date time.Time, loc *
 		rd := app.RunReport()
 		adv, stats, boards = rd.Advance, rd.BackendStats, rd.Boards
 	}
-	counts := countsFor(recs, date, loc)
+	counts := countsFor(recs, m, date, loc)
 	if adv != nil {
 		counts.CouldNotCheck = uncheckedCauses(adv.FailOpen)
 	}
@@ -750,8 +750,9 @@ type published struct {
 
 // countsFor derives the footer counts for the calendar day of date in loc from
 // ledger state: postings first seen that day, and postings dropped or dead
-// whose last event was that day.
-func countsFor(recs []ledger.Record, date time.Time, loc *time.Location) digest.Counts {
+// whose last event was that day. A deferred note is counted only for a role the
+// digest could list (digest.Listable under the Jobs marks mk).
+func countsFor(recs []ledger.Record, mk map[posting.Key]marks.Mark, date time.Time, loc *time.Location) digest.Counts {
 	y, m, d := date.In(loc).Date()
 	same := func(t time.Time) bool {
 		ty, tm, td := t.In(loc).Date()
@@ -762,7 +763,7 @@ func countsFor(recs []ledger.Record, date time.Time, loc *time.Location) digest.
 		if same(r.FirstSeen) {
 			c.New++
 		}
-		if pipeline.NotesDeferred(r) {
+		if pipeline.NotesDeferred(r) && digest.Listable(mk[r.Key]) {
 			c.NotesDeferred++
 		}
 		switch r.Status {

@@ -238,10 +238,15 @@ func selectAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time,
 	return selectWith(recs, m, newScorer(recs, m, now, o))
 }
 
+// Listable reports whether a role carrying mark can be listed in the digest:
+// only a role the owner hid in Jobs never is. The listing (selectWith) and the
+// footer's held-back count both ask this one question.
+func Listable(mark marks.Mark) bool { return mark != marks.Hidden }
+
 func selectWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {
-		if (r.Status == posting.Explained || r.Status == posting.Unsure) && m[r.Key] != marks.Hidden {
+		if (r.Status == posting.Explained || r.Status == posting.Unsure) && Listable(m[r.Key]) {
 			out = append(out, r)
 		}
 	}
