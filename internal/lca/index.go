@@ -2,10 +2,12 @@ package lca
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sort"
 	"sync"
@@ -205,6 +207,35 @@ func (x *Index) Save(path string) error {
 		return fmt.Errorf("lca: encode index: %w", err)
 	}
 	return atomicfile.Write(path, data)
+}
+
+// ErrBusy means another import held the index for longer than the wait bound.
+var ErrBusy = indexutil.ErrBusy
+
+// Update is the import path: under the index's lock it merges p into the index
+// at path (an absent file is an empty index) and saves it, so two imports never
+// overwrite each other's rows. A corrupt index or a refused partial leaves the
+// file as it was; a lock held past indexutil.LockWait is ErrBusy.
+func Update(path string, p Partial) (*Index, error) {
+	path, release, err := indexutil.Lock(context.Background(), path)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	x, err := Load(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		x, err = NewIndex(), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := x.Merge(p); err != nil {
+		return nil, err
+	}
+	if err := x.Save(path); err != nil {
+		return nil, err
+	}
+	return x, nil
 }
 
 // Load reads an index written by Save. A corrupted, truncated, unknown-version

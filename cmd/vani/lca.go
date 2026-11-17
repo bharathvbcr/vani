@@ -85,18 +85,9 @@ func (e *env) lcaImport(args []string) error {
 	if err != nil {
 		return fmt.Errorf("lca import %s: %w", path, err)
 	}
-	x, err := loadLCAIndex(e.stateDir)
+	x, err := lca.Update(lcaIndexPath(e.stateDir), part)
 	if err != nil {
-		return err
-	}
-	if x == nil {
-		x = lca.NewIndex()
-	}
-	if err := x.Merge(part); err != nil {
-		return err
-	}
-	if err := x.Save(lcaIndexPath(e.stateDir)); err != nil {
-		return err
+		return fmt.Errorf("lca index: %w", err)
 	}
 	return e.reply(*asJSON, struct {
 		File        string `json:"file"`
