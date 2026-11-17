@@ -110,6 +110,12 @@ type Config struct {
 	Instructions map[string]string
 	Spend        decide.Spend // optional daily cap / meter
 	SpendKey     string       // default "jev"
+	// InputUSDPerMTok prices a call from its usage.input_tokens when the
+	// response reports no usage.cost. SubQ's /v1/systemone bills input tokens
+	// only and reports no cost, so without a price its calls would never reach
+	// Spend. A reported cost always wins. Zero charges nothing for such a call,
+	// as before; at most MaxInputUSDPerMTok.
+	InputUSDPerMTok float64
 	// Name is the backend's name in routing, answers and ledgers; default
 	// "jev". A second instance speaking the same wire shape (a local
 	// llama.cpp /v1/systemone serving another decision model) needs its own
@@ -117,6 +123,15 @@ type Config struct {
 	// [a-z0-9_-].
 	Name string
 }
+
+// MaxInputUSDPerMTok bounds Config.InputUSDPerMTok ($1,000 per million input
+// tokens): far above any decision model's price, low enough that a typo in a
+// config cannot meter one call as a day's budget.
+const MaxInputUSDPerMTok = 1000
+
+// maxBilledInputTokens bounds the token count a response may claim before it
+// is priced, so a corrupt reply cannot overflow the cost into Inf.
+const maxBilledInputTokens = 1 << 40
 
 // MaxNameBytes bounds Config.Name.
 const MaxNameBytes = 32
@@ -136,6 +151,7 @@ type Backend struct {
 	instr         map[string]string
 	spend         decide.Spend
 	spendKey      string
+	inputPerMTok  float64
 	doer          Doer
 
 	disabled     atomic.Bool
@@ -205,6 +221,9 @@ func (cfg Config) resolve() (Config, error) {
 		cfg.Backoff = DefaultBackoff
 	case cfg.Backoff < MinBackoff || cfg.Backoff > MaxBackoff:
 		return Config{}, fmt.Errorf("jev: backoff %s outside [%s, %s]", cfg.Backoff, MinBackoff, MaxBackoff)
+	}
+	if p := cfg.InputUSDPerMTok; math.IsNaN(p) || p < 0 || p > MaxInputUSDPerMTok {
+		return Config{}, fmt.Errorf("jev: input price %v USD per million tokens outside [0, %d]", p, MaxInputUSDPerMTok)
 	}
 	if cfg.State == nil {
 		cfg.State = textState
@@ -297,7 +316,7 @@ func New(cfg Config, d Doer) (*Backend, error) {
 	return &Backend{
 		name: cfg.Name, endpoint: cfg.Endpoint, model: cfg.Model, key: cfg.Key, timeout: cfg.Timeout,
 		maxAttempts: cfg.MaxAttempts, maxRetryAfter: cfg.MaxRetryAfter, backoffBase: cfg.Backoff,
-		state: cfg.State, descs: cfg.Descriptions, instr: cfg.Instructions, spend: cfg.Spend, spendKey: cfg.SpendKey, doer: d,
+		state: cfg.State, descs: cfg.Descriptions, instr: cfg.Instructions, spend: cfg.Spend, spendKey: cfg.SpendKey, inputPerMTok: cfg.InputUSDPerMTok, doer: d,
 		sleep: sleepCtx,
 		jitter: func(n time.Duration) time.Duration {
 			if n <= 0 {
@@ -375,8 +394,23 @@ type slotAnswer struct {
 type responseBody struct {
 	Answers map[string]slotAnswer `json:"answers"`
 	Usage   struct {
-		Cost float64 `json:"cost"`
+		Cost        float64 `json:"cost"`
+		InputTokens int64   `json:"input_tokens"`
 	} `json:"usage"`
+}
+
+// cost is what the call cost: the reported usage.cost when positive, else
+// usage.input_tokens at the configured input price, else 0. A value that is
+// not a finite non-negative amount reads as 0.
+func (b *Backend) cost(rb responseBody) float64 {
+	c := rb.Usage.Cost
+	if math.IsNaN(c) || math.IsInf(c, 0) || c < 0 {
+		c = 0
+	}
+	if c == 0 && b.inputPerMTok > 0 && rb.Usage.InputTokens > 0 {
+		c = float64(min(rb.Usage.InputTokens, maxBilledInputTokens)) * b.inputPerMTok / 1e6
+	}
+	return c
 }
 
 // all returns an Answer holding one reading for every slot.
@@ -428,10 +462,7 @@ func (b *Backend) parse(ctx context.Context, q decide.Question, raw []byte) deci
 	if err := json.Unmarshal(raw, &rb); err != nil {
 		return b.all(q, decide.SlotReading{Reading: decide.Failed, Detail: "bad_response"}, 0)
 	}
-	cost := rb.Usage.Cost
-	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 {
-		cost = 0
-	}
+	cost := b.cost(rb)
 	if cost > 0 && b.spend != nil {
 		// The call is already paid for; record it even if ctx has ended.
 		if err := b.spend.Charge(context.WithoutCancel(ctx), b.spendKey, cost); err != nil {
