@@ -377,6 +377,35 @@ final class RetriageBatchPresentationTests: XCTestCase {
         XCTAssertEqual(b.blockedReason?.contains("daily cap is spent"), true)
     }
 
+    /// The fixture asks gh:a:1 (no reading), gh:a:2 (current) and gh:a:3 (stale): only gh:a:1 needs a
+    /// place in the store.
+    func testAStoreWithTooLittleRoomWarnsAndAFullOneBlocks() throws {
+        let p = try plan()
+        XCTAssertNil(p.storeRoom, "a plan from a vani that does not say is not a full store")
+        XCTAssertEqual(p.newToAsk(skipRead: false), 1)
+        XCTAssertTrue(RetriageBatchPresentation.confirmation(for: p, skipRead: false, locale: en).canConfirm)
+
+        let room0 = planJSON.replacingOccurrences(of: #""max_keys":500,"#, with: #""max_keys":500,"new":1,"store_room":0,"#)
+        let w = RetriageBatchPresentation.confirmation(for: try plan(room0), skipRead: false, locale: en)
+        XCTAssertTrue(w.canConfirm, "the roles that already have a reading can still be read")
+        XCTAssertEqual(w.capWarning?.contains("room for only 0 of the 1 role with no reading yet"), true, w.capWarning ?? "")
+
+        let only = #"{"batch":true,"items":[{"key":"a"},{"key":"b"}],"estimate":{"max_usd":0.01,"typical_usd":0.004},"new":2,"store_room":0}"#
+        let b = RetriageBatchPresentation.confirmation(for: try plan(only), skipRead: false, locale: en)
+        XCTAssertFalse(b.canConfirm)
+        XCTAssertEqual(b.blockedReason, RetriageWords.storeFullReason)
+
+        let roomy = #"{"batch":true,"items":[{"key":"a"},{"key":"b"}],"estimate":{"max_usd":0.01,"typical_usd":0.004},"new":2,"store_room":2}"#
+        let ok = RetriageBatchPresentation.confirmation(for: try plan(roomy), skipRead: false, locale: en)
+        XCTAssertTrue(ok.canConfirm)
+        XCTAssertNil(ok.capWarning)
+    }
+
+    func testAStopForAFullStoreIsSaidInWords() {
+        let s = RetriageBatchSummary(kept: 1, notAsked: 2, stopped: "store_full", message: "raw")
+        XCTAssertTrue(RetriageBatchPresentation.summaryDetails(s).contains { $0.contains("store of Sonnet readings is full") })
+    }
+
     func testNothingLeftToAskIsBlockedAndSaysHow() throws {
         let raw = #"{"batch":true,"items":[{"key":"a","read":"current"},{"key":"b","skip":"untriaged"}],"estimate":{"max_usd":0.01,"typical_usd":0.004},"estimate_unread":{}}"#
         let c = RetriageBatchPresentation.confirmation(for: try plan(raw), skipRead: true, locale: en)

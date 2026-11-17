@@ -24,6 +24,8 @@ public enum RetriageWords {
     public static let droppedNote = "This posting is dropped, and this reading does not bring it back."
     /// Why the action is not offered on a posting no run has triaged.
     public static let untriagedReason = "Not triaged yet: no run has read this posting, so there is no reading to compare."
+    /// Why a posting with no reading cannot be asked about (`store_full`). Nothing is asked or paid.
+    public static let storeFullReason = "Vani's store of Sonnet readings is full, so this role cannot be read; nothing was asked or paid. Clear readings you no longer need to make room."
     /// What Sonnet is given. Never the owner's personal details.
     public static func sentLine(model: String?) -> String {
         "Sent to \(model.flatMap { $0.isEmpty ? nil : $0 } ?? "Sonnet"): the posting's text and your target summary, both marked as untrusted. Never your name, contact details or work authorization."
@@ -255,17 +257,22 @@ public struct RetriageDryRun: Decodable, Equatable, Sendable, RetriageKeyed {
     public var estimate: RetriageEstimate
     /// The reading already stored for this posting, when there is one.
     public var manualTriage: ManualTriage?
+    /// Vani's store of Sonnet readings has no room for this posting (`store_full`), so asking would be
+    /// refused before anything is paid. False when vani did not say.
+    public var storeFull: Bool
 
     private enum CodingKeys: String, CodingKey {
         case key, model, estimate
-        case manualTriage = "manual_triage"
+        case manualTriage = "manual_triage", storeFull = "store_full"
     }
 
-    public init(key: String? = nil, model: String? = nil, estimate: RetriageEstimate, manualTriage: ManualTriage? = nil) {
+    public init(key: String? = nil, model: String? = nil, estimate: RetriageEstimate, manualTriage: ManualTriage? = nil,
+                storeFull: Bool = false) {
         self.key = key
         self.model = model
         self.estimate = estimate
         self.manualTriage = manualTriage
+        self.storeFull = storeFull
     }
 
     /// An estimate is required: without one there is no cost to confirm.
@@ -275,6 +282,7 @@ public struct RetriageDryRun: Decodable, Equatable, Sendable, RetriageKeyed {
         model = try? c.decode(String.self, forKey: .model)
         estimate = try c.decode(RetriageEstimate.self, forKey: .estimate)
         manualTriage = (try? c.decode(Lenient<ManualTriage>.self, forKey: .manualTriage))?.value
+        storeFull = (try? c.decode(Bool.self, forKey: .storeFull)) ?? false
     }
 }
 
@@ -584,7 +592,9 @@ public enum RetriagePresentation {
         parts.append(capText(e))
 
         var blocked: String?
-        if e.capReached {
+        if dry.storeFull {
+            blocked = RetriageWords.storeFullReason
+        } else if e.capReached {
             blocked = "Today's daily cap is already spent (decide.daily_usd.llm in Vani's config), so Sonnet cannot be asked until it resets."
         } else if e.typicalUSD == nil && e.maxUSD == nil {
             blocked = "Vani did not say what this would cost, so it cannot be confirmed."
@@ -720,8 +730,10 @@ public enum RetriagePresentation {
             message = "Another re-triage is already running. Wait for it to finish, then try again."
             retry = true
         case "store":
-            message = "Sonnet answered, but the reading could not be saved."
-            retry = true
+            message = "Vani could not read or write its store of Sonnet readings: \(detail)"
+            // Asking again pays again when this attempt was paid for.
+            retry = failure.cost == nil
+        case "store_full": message = RetriageWords.storeFullReason
         case "config": message = "Vani's configuration cannot be used for this: \(detail)"
         case "account": message = "anthropic-account could not start Vani with an Anthropic key: \(detail). Check the Anthropic account in Settings, or run `anthropic-account doctor`."
         case "keychain":

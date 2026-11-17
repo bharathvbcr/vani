@@ -412,6 +412,24 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Fixed
 
+- **Re-triage with Sonnet no longer pays for readings it cannot keep** (2026-11-17). The owner's
+  store of manual readings reached its 5,000-reading bound that morning. From then on, every new
+  posting's re-triage asked Sonnet, was charged, and then failed to save with `store`. The app
+  offered a retry that paid again. Now:
+  - **Room is checked first.** Under the ask lock, before any model is asked, `vani jobs retriage`
+    (single and `--batch`) checks that the store has a place for each posting it holds no reading
+    of. No paid reading is removed to make room.
+  - **A full store is refused unpaid.** A posting that finds no place is refused with the new code
+    `store_full`, and nothing is asked or paid. A `--dry-run` on a store that does not read now
+    fails with `store`, as the run would, instead of giving an estimate.
+  - **Dry runs warn ahead.** `--dry-run` reports it in advance (`store_full`, or the batch plan's
+    `new` and `store_room`), and the app's confirm sheets block or warn.
+  - **Batches stop unpaid.** A batch takes one place per new posting and stops, unasked, at the
+    first that finds none.
+  - **The limit is higher.** It is now 20,000 readings in 16 MiB. A binary from before this change
+    reads a larger store as corrupt, so install the app, its helper and the daemon together.
+  - **Truthful app wording.** The app's `store` message no longer says Sonnet answered when the
+    store failed before anything was asked, and it offers a retry only when nothing was paid.
 - **Help and hints name real commands** (2026-11-16, found by running the README's coding-agent
   setup on a fresh clone). `vani status`, the semantic warning and the identifying-words refusal
   told the owner to run `vani track apply`, which does not exist; they now say `vani track use`.

@@ -293,7 +293,7 @@ final class RetriageClientTests: XCTestCase {
 
     func testEveryCodeVaniDefinesComesBackWithItsCode() throws {
         let codes = ["bad_request", "unknown_key", "text_gone", "untriaged", "no_llm", "no_key", "cap_reached", "provider", "refused",
-                     "unsure", "unreadable", "busy", "store", "config"]
+                     "unsure", "unreadable", "busy", "store", "store_full", "config"]
         for code in codes {
             let fake = try retriageFake(self, reply: #"{"error":"plain words","code":"\#(code)"}"#, status: 1)
             for out in [RetriageClient(runner: runner(fake)).estimate("k").fail, RetriageClient(runner: runner(fake)).run("k").fail] {
@@ -595,13 +595,15 @@ final class RetriagePresentationTests: XCTestCase {
             "untriaged": "No run has triaged this posting yet. Let a run read it first, then re-triage it.",
             "unknown_key": "Vani no longer has this posting in its ledger. Refresh the list.",
             "no_llm": "No language-model provider is configured. Set llm.provider in Vani's config, then try again.",
-            "store": "Sonnet answered, but the reading could not be saved.",
+            // Was "Sonnet answered, but the reading could not be saved.", which was wrong for a store
+            // found unreadable before any model was asked; vani's own words now say which it was.
+            "store_full": RetriageWords.storeFullReason,
             "timeout": "Sonnet did not answer within 90 s. Nothing was saved.",
         ]
         for (code, words) in expected {
             XCTAssertEqual(RetriagePresentation.errorText(for: RetriageFailure(code: code, message: "raw vani text"))?.message, words, code)
         }
-        for code in ["bad_request", "config", "account", "keychain", "settings", "too_large", "no_reply", "unreadable_reply"] {
+        for code in ["bad_request", "config", "account", "keychain", "settings", "too_large", "no_reply", "unreadable_reply", "store"] {
             let text = try XCTUnwrap(RetriagePresentation.errorText(for: RetriageFailure(code: code, message: "raw vani text")), code)
             XCTAssertTrue(text.message.contains("raw vani text"), "\(code): \(text.message)")
         }
@@ -611,9 +613,24 @@ final class RetriagePresentationTests: XCTestCase {
     func testRetryOnlyWhereItMakesSense() {
         func retry(_ code: String) -> Bool { RetriagePresentation.errorText(for: RetriageFailure(code: code, message: "m"))?.canRetry ?? false }
         for code in ["provider", "timeout", "unreadable", "busy", "store", "no_reply", "too_large", "unreadable_reply", "keychain"] { XCTAssertTrue(retry(code), code) }
-        for code in ["no_key", "no_llm", "cap_reached", "text_gone", "untriaged", "unknown_key", "refused", "unsure", "bad_request", "config", "cancelled", "mystery"] {
+        for code in ["no_key", "no_llm", "cap_reached", "text_gone", "untriaged", "unknown_key", "refused", "unsure", "bad_request", "config", "cancelled", "mystery", "store_full"] {
             XCTAssertFalse(retry(code), code)
         }
+        // A store failure after a paid call would be paid for again by a retry.
+        let paid = RetriageFailure(code: "store", message: "m", cost: RetriageCost(inputTokens: 2840, outputTokens: 48, usd: 0.006))
+        XCTAssertEqual(RetriagePresentation.errorText(for: paid)?.canRetry, false)
+    }
+
+    func testAFullStoreBlocksConfirmBeforeAnythingIsPaid() throws {
+        let raw = dryJSON.replacingOccurrences(of: #""dry_run":true,"#, with: #""dry_run":true,"store_full":true,"#)
+        let full = try JobsClient.decoder.decode(RetriageDryRun.self, from: Data(raw.utf8))
+        XCTAssertTrue(full.storeFull)
+        let c = RetriagePresentation.confirmation(for: full, locale: en)
+        XCTAssertFalse(c.canConfirm)
+        XCTAssertEqual(c.blockedReason, RetriageWords.storeFullReason)
+        let older = try JobsClient.decoder.decode(RetriageDryRun.self, from: Data(dryJSON.utf8))
+        XCTAssertFalse(older.storeFull, "a reply without the field is not a full store")
+        XCTAssertTrue(RetriagePresentation.confirmation(for: older, locale: en).canConfirm)
     }
 
     func testAnUnknownCodeShowsItsTextClipped() throws {

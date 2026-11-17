@@ -160,6 +160,9 @@ and calls no decision backend.
   caps the run within the scope. The record's `options` keep the scope, and a name with nothing
   waiting is a warning in the run's output. To have Sonnet read again roles already triaged there, take the keys
   from `jobs list --json` with the same flags and pass them to `jobs retriage --batch`.
+  The manual readings store holds 20,000 readings. A posting with no reading that finds no place is
+  refused with code `store_full` before anything is paid; the `--dry-run` says so first
+  (`store_full`, or a batch plan's `new` and `store_room`).
 - `vani digest` writes the digest. `vani daemon` and `vani launchd plist` run and install the
   scheduler.
 - Maintenance commands: `vani retriage`, `vani rescore`, `vani migrate`.

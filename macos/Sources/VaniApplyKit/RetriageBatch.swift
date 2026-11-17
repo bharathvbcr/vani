@@ -52,20 +52,24 @@ public struct RetriageBatchPlan: Decodable, Equatable, Sendable {
     public var estimate: RetriageEstimate
     /// Asking only those Sonnet has no current reading of; nil when vani did not say.
     public var estimateUnread: RetriageEstimate?
+    /// How many roles with no reading at all Vani's store of Sonnet readings can still take; nil when
+    /// vani did not say. A run stops, unasked and unpaid, at the first role past it.
+    public var storeRoom: Int?
 
     public init(model: String? = nil, items: [RetriageBatchItem], eligible: Int, alreadyRead: Int,
-                estimate: RetriageEstimate, estimateUnread: RetriageEstimate? = nil) {
+                estimate: RetriageEstimate, estimateUnread: RetriageEstimate? = nil, storeRoom: Int? = nil) {
         self.model = model
         self.items = items
         self.eligible = eligible
         self.alreadyRead = alreadyRead
         self.estimate = estimate
         self.estimateUnread = estimateUnread
+        self.storeRoom = storeRoom
     }
 
     private enum CodingKeys: String, CodingKey {
         case batch, model, items, eligible, estimate
-        case alreadyRead = "already_read", estimateUnread = "estimate_unread"
+        case alreadyRead = "already_read", estimateUnread = "estimate_unread", storeRoom = "store_room"
     }
 
     /// `batch` must be true and the estimate present: a single posting's reply, or one with no cost,
@@ -79,6 +83,7 @@ public struct RetriageBatchPlan: Decodable, Equatable, Sendable {
         items = try c.decode([RetriageBatchItem].self, forKey: .items)
         estimate = try c.decode(RetriageEstimate.self, forKey: .estimate)
         estimateUnread = try? c.decode(RetriageEstimate.self, forKey: .estimateUnread)
+        storeRoom = (try? c.decode(Int.self, forKey: .storeRoom)).flatMap { $0 >= 0 ? $0 : nil }
         eligible = items.filter(\.isEligible).count
         alreadyRead = items.filter { $0.isEligible && $0.alreadyRead }.count
     }
@@ -86,6 +91,12 @@ public struct RetriageBatchPlan: Decodable, Equatable, Sendable {
     /// The keys that would be asked, in order.
     public func keysToAsk(skipRead: Bool) -> [String] {
         items.filter { $0.isEligible && !(skipRead && $0.alreadyRead) }.map(\.key)
+    }
+
+    /// How many of the keys that would be asked Sonnet has no reading of at all, current or stale: each
+    /// needs a place in the store.
+    public func newToAsk(skipRead: Bool) -> Int {
+        items.filter { $0.isEligible && !(skipRead && $0.alreadyRead) && $0.read == nil }.count
     }
 
     /// The estimate for the choice; with `skipRead` and no separate estimate, nil (unknown).
@@ -548,6 +559,15 @@ public enum RetriageBatchPresentation {
             }
         } else {
             blocked = "Vani did not say what this would cost, so it cannot be confirmed."
+        }
+        let fresh = plan.newToAsk(skipRead: skipRead)
+        if blocked == nil, let room = plan.storeRoom, room < fresh {
+            if room == 0 && fresh == n {
+                blocked = RetriageWords.storeFullReason
+            } else {
+                let full = "Vani's store of Sonnet readings has room for only \(room) of the \(roles(fresh, locale: locale)) with no reading yet. The batch stops at the first that finds none, without asking or paying for it."
+                warning = warning.map { $0 + " " + full } ?? full
+            }
         }
 
         var skipped: [String] = []

@@ -139,6 +139,9 @@ type retriageReply struct {
 	Cost         *retriageCost         `json:"cost,omitempty"`
 	Estimate     *retriageEstimate     `json:"estimate,omitempty"`
 	ManualTriage *jobview.ManualTriage `json:"manual_triage,omitempty"`
+	// StoreFull is, on a dry run, that asking would be refused (rtStoreFull):
+	// the manual readings store has no room for this posting.
+	StoreFull bool `json:"store_full,omitempty"`
 }
 
 type retriageClearReply struct {
@@ -420,7 +423,11 @@ func (e *env) manualRetriage(ctx context.Context, rawKey string, dry, clr bool) 
 
 	if dry {
 		est := ask.estimate(ctx, []retriagePrompt{a})
-		return retriageReply{Key: string(k), DryRun: true, Model: ask.model, Status: r.Status, Estimate: est, ManualTriage: in.manual.view(r)}, nil
+		full, re := retriageWouldBeFull(dir, k)
+		if re != nil {
+			return nil, re
+		}
+		return retriageReply{Key: string(k), DryRun: true, Model: ask.model, Status: r.Status, Estimate: est, ManualTriage: in.manual.view(r), StoreFull: full}, nil
 	}
 
 	// One paid reading at a time: a second click while a model is being asked
@@ -434,9 +441,16 @@ func (e *env) manualRetriage(ctx context.Context, rawKey string, dry, clr bool) 
 	}
 	defer unlock()
 	// A store that cannot take the reading is found out before the model is paid,
-	// not after.
-	if _, err := manualtriage.Read(dir); err != nil {
+	// not after: one that does not read, and one with no room for a posting it
+	// holds no reading of. The ask lock is held from here to the write, and only
+	// a paid reading adds one, so the room found here is still there when the
+	// reading is kept.
+	stored, err := manualtriage.Read(dir)
+	if err != nil {
 		return nil, storeErr(err, nil)
+	}
+	if manualNew(stored, []posting.Key{k}) > retriageRoom(stored) {
+		return nil, storeFullErr()
 	}
 
 	pctx, cancel := context.WithTimeout(ctx, retriageAskTimeout)
@@ -669,6 +683,8 @@ func withPaidCost(re *retriageError, cost *retriageCost) *retriageError {
 
 func storeErr(err error, cost *retriageCost) *retriageError {
 	code := rtStore
+	// A store found full only at the write (changed by hand after the room check)
+	// stays rtStore: rtStoreFull says nothing was paid, and this reading was.
 	if errors.Is(err, manualtriage.ErrBusy) {
 		code = rtBusy
 	}

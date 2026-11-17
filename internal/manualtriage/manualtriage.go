@@ -57,10 +57,16 @@ const (
 	Version = 1
 	// MaxFileBytes bounds the store. A write that would pass it compacts the
 	// file to its live readings first; if they alone do not fit, the write is
-	// refused (ErrFull), never trimmed.
-	MaxFileBytes = 4 << 20
-	// MaxEntries bounds the live readings (one per posting).
-	MaxEntries = 5000
+	// refused (ErrFull), never trimmed. MaxEntries readings at their widest
+	// (TestFullStoreWithProvenanceFitsTheFileBound) fit inside it.
+	MaxFileBytes = 16 << 20
+	// MaxEntries bounds the live readings (one per posting). It was 5000 until
+	// 2026-11-17, when the owner's store reached it and every new posting's
+	// reading was refused; a reader built before then takes a store past 5000
+	// readings or 4 MiB for corrupt, so the app, its helper and the daemon are
+	// installed and restarted together. A caller checks for room before it pays
+	// for a reading (cmd/vani retriageRoom); nothing is ever removed to make it.
+	MaxEntries = 20000
 	// maxLineBytes bounds one stored line: four short slot values, two hashes, a
 	// model id and a key, with JSON escaping, fit well inside it (a test pins the
 	// worst case).

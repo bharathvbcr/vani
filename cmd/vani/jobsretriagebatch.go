@@ -78,6 +78,12 @@ type retriageBatchPlan struct {
 	Estimate       *retriageEstimate `json:"estimate"`
 	EstimateUnread *retriageEstimate `json:"estimate_unread"`
 	MaxKeys        int               `json:"max_keys"`
+	// New is how many eligible postings the manual readings store holds no
+	// reading of (each needs a place in it); StoreRoom how many such postings
+	// it can still take. When New is more, a run stops unasked at the first
+	// that finds none.
+	New       int `json:"new"`
+	StoreRoom int `json:"store_room"`
 }
 
 // retriageBatchSummary is a batch's totals. Kept + Failed + NotAsked is the
@@ -118,7 +124,7 @@ type retriageBatchEvent struct {
 
 // retriageBatchFatal are the codes that would fail every later posting the
 // same way.
-var retriageBatchFatal = map[string]bool{rtNoKey: true, rtCapReached: true, rtConfig: true, rtStore: true, rtLedger: true, rtBusy: true}
+var retriageBatchFatal = map[string]bool{rtNoKey: true, rtCapReached: true, rtConfig: true, rtStore: true, rtStoreFull: true, rtLedger: true, rtBusy: true}
 
 func (e *env) jobsRetriageBatch(ctx context.Context, raw []string, dry, skipRead bool, parallel int, asJSON bool) error {
 	out := &batchOut{w: e.stdout, json: asJSON}
@@ -257,10 +263,12 @@ func (e *env) retriageBatchPlan(ctx context.Context, keys []posting.Key) (retria
 	}
 	plan := retriageBatchPlan{Batch: true, DryRun: true, Model: ask.model, Items: st.items, MaxKeys: maxRetriageBatch}
 	var all, unread []retriagePrompt
+	var eligible []posting.Key
 	for _, it := range st.items {
 		if it.Skip != "" {
 			continue
 		}
+		eligible = append(eligible, posting.Key(it.Key))
 		p, err := ask.question(ctx, st.recs[posting.Key(it.Key)])
 		if err != nil {
 			return retriageBatchPlan{}, rtErr(rtConfig, "%v", err)
@@ -274,6 +282,7 @@ func (e *env) retriageBatchPlan(ctx context.Context, keys []posting.Key) (retria
 		}
 	}
 	plan.Estimate, plan.EstimateUnread = ask.estimate(ctx, all), ask.estimate(ctx, unread)
+	plan.New, plan.StoreRoom = manualNew(st.manual.m, eligible), retriageRoom(st.manual.m)
 	return plan, nil
 }
 
@@ -321,6 +330,13 @@ func (e *env) retriageBatchRun(ctx context.Context, keys []posting.Key, skipRead
 		return retriageBatchSummary{}, storeErr(err, nil)
 	}
 	defer unlock()
+	// The room is found under the ask lock, before anything is paid, as for one
+	// reading: each posting the store holds no reading of takes one place
+	// (retriageBatch.reserve), and one that finds none stops the batch unasked.
+	stored, err := manualtriage.Read(dir)
+	if err != nil {
+		return retriageBatchSummary{}, storeErr(err, nil)
+	}
 	pctx, cancel := context.WithTimeout(ctx, retriageAskTimeout)
 	p, err := retriageProvider(pctx, ask.w)
 	cancel()
@@ -328,7 +344,8 @@ func (e *env) retriageBatchRun(ctx context.Context, keys []posting.Key, skipRead
 		return retriageBatchSummary{}, mapProviderErr(pctx, err, "building the provider")
 	}
 
-	b := &retriageBatch{e: e, ask: ask, st: st, dir: dir, p: p, insights: map[string]*insight{}}
+	b := &retriageBatch{e: e, ask: ask, st: st, dir: dir, p: p, insights: map[string]*insight{},
+		stored: stored, room: retriageRoom(stored), reserved: map[posting.Key]bool{}}
 	out.event(retriageBatchEvent{Event: "start", Model: ask.model, Total: len(todo), Parallel: parallel, Skipped: skipped})
 
 	jobs := make(chan int)
@@ -395,6 +412,39 @@ type retriageBatch struct {
 	insights         map[string]*insight
 	stop, stopMsg    string
 	providerFailures int
+	// stored is the store as read under the ask lock; room how many postings it
+	// holds no reading of can still be kept, less those reserved for a posting
+	// being asked about. Guarded by mu.
+	stored   map[posting.Key]manualtriage.Reading
+	room     int
+	reserved map[posting.Key]bool
+}
+
+// reserve takes a place in the store for k before it is asked about: none is
+// needed when the store already holds a reading of k. false means there is no
+// place, and k must not be asked.
+func (b *retriageBatch) reserve(k posting.Key) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.stored[k]; ok || b.reserved[k] {
+		return true
+	}
+	if b.room <= 0 {
+		return false
+	}
+	b.room--
+	b.reserved[k] = true
+	return true
+}
+
+// unreserve gives k's place back when its reading was not kept.
+func (b *retriageBatch) unreserve(k posting.Key) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.reserved[k] {
+		delete(b.reserved, k)
+		b.room++
+	}
 }
 
 func (b *retriageBatch) stopped() string {
@@ -439,6 +489,13 @@ func (b *retriageBatch) one(ctx context.Context, r ledger.Record, pr retriagePro
 	if b.stopped() != "" || ctx.Err() != nil {
 		return ev, false
 	}
+	// No place in the store: not asked, not paid for, and every later posting
+	// the store holds no reading of would find none either.
+	if !b.reserve(r.Key) {
+		re := storeFullErr()
+		b.setStop(re.code, re.msg)
+		return ev, false
+	}
 	before, err := b.side(r)
 	if err != nil {
 		ev.Error, ev.Code = err.Error(), rtLedger
@@ -449,6 +506,7 @@ func (b *retriageBatch) one(ctx context.Context, r ledger.Record, pr retriagePro
 	defer cancel()
 	rd, cost, re := b.ask.read(actx, b.p, b.dir, r, pr)
 	if re != nil {
+		b.unreserve(r.Key)
 		// Stopped before anything was paid: not asked, so not an item. A call that was
 		// paid for before the stop is an item that carries its cost.
 		if re.code == rtCancelled && re.cost == nil {
@@ -575,6 +633,9 @@ func (o *batchOut) plan(p retriageBatchPlan) {
 			fmt.Fprintf(o.w, "; %d of them fit in it at their most", *est.FitAtMax)
 		}
 		fmt.Fprintln(o.w)
+	}
+	if p.New > p.StoreRoom {
+		fmt.Fprintf(o.w, "the manual readings store has room for %d of the %d postings it holds no reading of; a run stops, unasked and unpaid, at the first that finds none\n", p.StoreRoom, p.New)
 	}
 	for _, it := range p.Items {
 		if it.Skip != "" {
