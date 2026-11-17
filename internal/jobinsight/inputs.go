@@ -82,6 +82,27 @@ type RankContext struct {
 	// manual reading outranks the primary's and the escalation's (SlotFor). nil
 	// means there are none.
 	Manual func(r ledger.Record, slot string) (value string, ok bool)
+
+	// BelowStaff returns the seniority level r's own stated years imply when a
+	// staff reading is contradicted by them (expyears.BelowStaff), or false.
+	// A surface that holds a posting without its text (the Jobs list, read from
+	// stored facts) answers from what it stored, so every surface ranks a row
+	// alike. nil reads r's description when it is resident, and says false for a
+	// record whose body is not loaded (ledger.Record.BodyEvicted): an empty
+	// string is not text that states no years.
+	BelowStaff func(r ledger.Record) (level string, ok bool)
+}
+
+// belowStaff is c.BelowStaff, or the posting's own description when there is
+// none and it is loaded.
+func (c RankContext) belowStaff(r ledger.Record) (string, bool) {
+	if c.BelowStaff != nil {
+		return c.BelowStaff(r)
+	}
+	if r.BodyEvicted {
+		return "", false
+	}
+	return expyears.BelowStaff(r.Posting.Description)
 }
 
 // ScoreOf scores r under c: InputsFor, then c.Weights or DefaultWeights.
@@ -349,7 +370,7 @@ func blendInputsFor(r ledger.Record, c RankContext) Inputs {
 		// penalised at the level those years imply (expyears.BelowStaff).
 		// Only the ranking reads it so; the stored reading is untouched.
 		if rule.Slot == seniorityName && s.Value == expyears.ValueStaff {
-			if level, ok := expyears.BelowStaff(r.Posting.Description); ok {
+			if level, ok := c.belowStaff(r); ok {
 				s.Value = level
 			}
 		}

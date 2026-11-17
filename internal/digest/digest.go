@@ -55,6 +55,11 @@ type Counts struct {
 	// so the footer says they exist: otherwise "No new roles today" above
 	// "New today: 3027" reads as nothing to look at.
 	AwaitingTriage int
+	// NotesDeferred is the scored postings whose note is waiting (the notes
+	// budget is spent, or their relevance is unknown). The digest lists explained
+	// roles, so these join it once a run writes the note; until then the footer
+	// says how many are held back.
+	NotesDeferred int
 	// CouldNotCheck is what the run kept without checking, by cause (a check
 	// that could not run is not a check that passed). Causes with no postings
 	// are not printed; none at all prints nothing.
@@ -157,6 +162,12 @@ type Options struct {
 	// postings the ranking and the drop rules would never show. Zero lists
 	// none. Each at most MaxExplore.
 	ExploreBelowFold, ExploreDropped int
+	// Hydrate reads back the text of an Explore pick whose body is evicted from
+	// memory (ledger.Record.BodyEvicted; All() leaves it empty for a closed or
+	// dropped posting). It returns the record with its text, or false when the
+	// text cannot be read. nil reads nothing back. At most 2*MaxExplore records
+	// are asked for.
+	Hydrate func(ledger.Record) (ledger.Record, bool)
 }
 
 // Bounds on Options' extra sections.
@@ -180,6 +191,11 @@ type Shown struct {
 	// would_apply label records.
 	Source  string
 	PSelect float64
+	// NotScored is a row whose text could not be read back (an Explore pick, or a
+	// saved closed role), so it was listed without a score (Result is zero and
+	// means nothing). Impressions
+	// leave it out: a zero would read as a measured priority of 0.
+	NotScored bool
 }
 
 // Section names Shown carries; they match the feedback package's.
@@ -222,10 +238,15 @@ func selectAt(recs []ledger.Record, m map[posting.Key]marks.Mark, now time.Time,
 	return selectWith(recs, m, newScorer(recs, m, now, o))
 }
 
+// Listable reports whether a role carrying mark can be listed in the digest:
+// only a role the owner hid in Jobs never is. The listing (selectWith) and the
+// footer's held-back count both ask this one question.
+func Listable(mark marks.Mark) bool { return mark != marks.Hidden }
+
 func selectWith(recs []ledger.Record, m map[posting.Key]marks.Mark, sc *scorer) []ledger.Record {
 	var out []ledger.Record
 	for _, r := range recs {
-		if (r.Status == posting.Explained || r.Status == posting.Unsure) && m[r.Key] != marks.Hidden {
+		if (r.Status == posting.Explained || r.Status == posting.Unsure) && Listable(m[r.Key]) {
 			out = append(out, r)
 		}
 	}
@@ -457,8 +478,15 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	sel := selectWith(recs, m, sc)
 	var shown []Shown
 	show := func(r ledger.Record, section string) {
-		shown = append(shown, Shown{Key: r.Key, Section: section, Position: len(shown) + 1, Status: r.Status,
-			DropClass: DropClass(r, o.Rules), Result: sc.score(r)})
+		// A record still without its text (a saved closed role whose body could
+		// not be read back) is listed, but its score would be one computed on an
+		// empty description, so none is recorded.
+		s := Shown{Key: r.Key, Section: section, Position: len(shown) + 1, Status: r.Status,
+			DropClass: DropClass(r, o.Rules), NotScored: r.BodyEvicted}
+		if !r.BodyEvicted {
+			s.Result = sc.score(r)
+		}
+		shown = append(shown, s)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Vani digest %s\n\n", date.Format("2006-01-02"))
@@ -552,6 +580,17 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 		b.WriteString("Picked at random from roles ranked lower and roles that were dropped, so Vani can learn what it misses. Judge one with `vani audit answer --key KEY --verdict yes|maybe|no --source STRATUM --p-select P`, using the stratum and p_select on its row.\n\n")
 		for _, x := range ex {
 			r := x.rec
+			if r.BodyEvicted {
+				full, ok := o.hydrate(r)
+				if !ok {
+					writeUnscored(&b, r, DropClass(r, o.Rules))
+					fmt.Fprintf(&b, "  - Drawn: stratum `%s` · p_select %s\n", x.source, strconv.FormatFloat(x.p, 'g', 6, 64))
+					shown = append(shown, Shown{Key: r.Key, Section: SectionExplore, Position: len(shown) + 1, Status: r.Status,
+						DropClass: DropClass(r, o.Rules), Source: x.source, PSelect: x.p, NotScored: true})
+					continue
+				}
+				r = full
+			}
 			writeBrief(&b, r, sc.score(r), DropClass(r, o.Rules))
 			fmt.Fprintf(&b, "  - Drawn: stratum `%s` · p_select %s\n", x.source, strconv.FormatFloat(x.p, 'g', 6, 64))
 			shown = append(shown, Shown{Key: r.Key, Section: SectionExplore, Position: len(shown) + 1, Status: r.Status,
@@ -589,6 +628,9 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	}
 	if c.AwaitingTriage > 0 {
 		fmt.Fprintf(&b, "\nAwaiting triage: %d (not in this digest; later runs triage them, up to advance_per_run each)\n", c.AwaitingTriage)
+	}
+	if c.NotesDeferred > 0 {
+		fmt.Fprintf(&b, "\nNotes deferred: %d scored posting(s) (held back, not in this digest until a later run explains them: each waits on the notes budget or on a known relevance)\n", c.NotesDeferred)
 	}
 	if c.ClockBehind > 0 {
 		fmt.Fprintf(&b, "\nNot aged: the ledger holds events stamped ahead of this run's clock, so %d board(s) left the postings they no longer list as they were (none was missed or marked dead) until the clock passes them; the clock is behind, or those events came from a clock that ran ahead\n", c.ClockBehind)
@@ -633,6 +675,31 @@ func writeBrief(b *strings.Builder, r ledger.Record, res jobinsight.Result, drop
 	fmt.Fprintf(b, "- **%s** at %s (%s): %s\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes), Where(p), linkLine(p.URL))
 	fmt.Fprintf(b, "  - Relevance %s · priority %s · key `%s`\n", strconv.FormatFloat(res.Relevance, 'f', 0, 64),
 		strconv.FormatFloat(res.Score, 'f', 1, 64), codeSpan(string(r.Key)))
+	if dropClass != "" {
+		fmt.Fprintf(b, "  - Dropped: %s\n", Escape(dropClass, 80))
+	}
+}
+
+// hydrate is Options.Hydrate for a record whose text must be read back: the
+// record with its text, or false when it cannot be.
+func (o Options) hydrate(r ledger.Record) (ledger.Record, bool) {
+	if o.Hydrate == nil {
+		return r, false
+	}
+	full, ok := o.Hydrate(r)
+	if !ok || full.BodyEvicted {
+		return r, false
+	}
+	return full, true
+}
+
+// writeUnscored is writeBrief for a role whose text was not loaded: it names
+// the role and says it was not scored, rather than showing a score computed on
+// an empty description.
+func writeUnscored(b *strings.Builder, r ledger.Record, dropClass string) {
+	p := r.Posting
+	fmt.Fprintf(b, "- **%s** at %s (%s): %s\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes), Where(p), linkLine(p.URL))
+	fmt.Fprintf(b, "  - not scored: text not loaded · key `%s`\n", codeSpan(string(r.Key)))
 	if dropClass != "" {
 		fmt.Fprintf(b, "  - Dropped: %s\n", Escape(dropClass, 80))
 	}

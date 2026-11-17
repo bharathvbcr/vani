@@ -691,7 +691,7 @@ func TestCountsForUsesScheduleZone(t *testing.T) {
 		{Status: posting.Dead, FirstSeen: other, LastEvent: seen},
 		{Status: posting.Dropped, FirstSeen: other, LastEvent: other},
 	}
-	c := countsFor(recs, time.Date(2026, 10, 18, 9, 0, 0, 0, loc), loc)
+	c := countsFor(recs, nil, time.Date(2026, 10, 18, 9, 0, 0, 0, loc), loc)
 	if c.New != 1 || c.Dead != 1 || c.Dropped != 0 {
 		t.Errorf("counts %+v", c)
 	}

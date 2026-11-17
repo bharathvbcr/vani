@@ -29,8 +29,8 @@ import (
 //
 // Every section is a facet with its own ok/reason, and a facet that could not
 // be read says so; it is never reported as zero, empty or "fine". One facet
-// failing never fails the command. The ledger is read with ledger.ReadSnapshot
-// (no lock), so the answer comes while a run or the daemon holds the ledger,
+// failing never fails the command. The ledger is read with
+// ledger.ReadSnapshotScoped and no scope (no lock, no description loaded), so the answer comes while a run or the daemon holds the ledger,
 // which the text `status` (it opens the ledger) cannot do.
 
 // statusTimeout bounds the whole read, the budget ledger's lock wait included.
@@ -407,8 +407,19 @@ func (e *env) runRequestFacet(at time.Time) runRequestFacet {
 
 func (e *env) ledgerFacet() ledgerFacet {
 	dir := filepath.Join(e.stateDir, "ledger")
+	// Status reports counts, never text: the scoped read folds the heads and
+	// loads no description (a nil scope hydrates nothing), where ReadSnapshot
+	// would materialise every body of a ledger the daemon holds lean.
+	snap, err := ledger.ReadSnapshotScoped(dir, nil)
+	f := ledgerFacetOf(dir, snap, err)
+	f.PendingReopens, f.PendingReopensError = e.pendingReopens()
+	return f
+}
+
+// ledgerFacetOf is the ledger facet of a read of dir (without the pending
+// reopens): what the snapshot or its failure says.
+func ledgerFacetOf(dir string, snap ledger.Snapshot, err error) ledgerFacet {
 	f := ledgerFacet{Path: dir, ByStatus: map[string]int{}}
-	snap, err := ledger.ReadSnapshot(dir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		f.facet = facet{OK: true, Reason: "no ledger yet: no run has created it"}
@@ -420,7 +431,6 @@ func (e *env) ledgerFacet() ledgerFacet {
 		f.liveUS = new(liveInUS(snap.Records))
 		f.recs = snap.Records
 	}
-	f.PendingReopens, f.PendingReopensError = e.pendingReopens()
 	return f
 }
 
