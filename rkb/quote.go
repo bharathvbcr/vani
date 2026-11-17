@@ -61,6 +61,32 @@ func quoteInNorm(t, quote string) bool {
 	return longest >= minQuoteFrag
 }
 
+// quoteHasFigure reports whether the quote contains every figure of found with
+// the unit found gives it: the figure the validator accepted must be the one
+// the quote shows, not some other number in the same sentence. A found figure
+// with no unit is matched on value alone; one with a unit needs that unit in
+// the quote ("94" in a table next to a "ms" header does not carry it). A
+// found value with no number at all has nothing to tie, so it passes.
+func quoteHasFigure(quote, found string) bool {
+	q := figuresIn(quote)
+	for _, f := range figuresIn(found) {
+		ok := false
+		for _, g := range q {
+			if f.Class != "" && g.Class == "" {
+				continue
+			}
+			if sameQuantity(f, g, 1) || sameQuantity(g, f, 1) {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
 const maxQuoteFile = 64 << 20
 
 // quoteInFile checks a quote against a file's text (PDFs through pdftotext).

@@ -82,7 +82,11 @@ var (
 	reBrSp = regexp.MustCompile(`\^\{([^}]*)\}`)
 )
 
-func normalizeNums(s string) string {
+func normalizeNums(s string) string { return normalizeNumsKeep(s, false) }
+
+// normalizeNumsKeep is normalizeNums that can leave "$" in place, so a figure
+// can tell a currency amount from a bare number.
+func normalizeNumsKeep(s string, keepDollar bool) string {
 	var b strings.Builder
 	for _, r := range s {
 		if v, ok := unsupMap[r]; ok {
@@ -92,7 +96,9 @@ func normalizeNums(s string) string {
 		}
 	}
 	s = strings.ReplaceAll(b.String(), "−", "-")
-	s = strings.ReplaceAll(s, "$", "")
+	if !keepDollar {
+		s = strings.ReplaceAll(s, "$", "")
+	}
 	s = reBrSp.ReplaceAllString(s, "^$1")
 	return reSci.ReplaceAllStringFunc(s, func(m string) string {
 		g := reSci.FindStringSubmatch(m)
@@ -108,17 +114,110 @@ func normalizeNums(s string) string {
 // separators ("F(2,30)" is 2 and 30), 3.1×10⁻⁵ / 3.07e-5 as one number, and
 // a minus sign only when it is not a range dash ("2.5-12").
 func numbersIn(s string) []string {
-	s = normalizeNums(s)
 	var out []string
+	for _, f := range figuresIn(s) {
+		out = append(out, f.Tok)
+	}
+	return out
+}
+
+// A figure is a number with what it measures. Class is the unit family ("pct",
+// "pp", "mult", "time", "usd") or "" when the text names none we know (a word
+// such as "calls" or "loans" is not a unit, so it never separates two figures).
+// Mult is the k/M/B multiplier written on the number; TimeScale converts a
+// time unit to seconds. Two figures are the same quantity only when
+// Tok*Mult*TimeScale agree to the precision the claim wrote.
+type figure struct {
+	Tok       string
+	Class     string
+	Mult      float64
+	TimeScale float64
+}
+
+var (
+	reMultSfx = regexp.MustCompile(`^(?:[kK]|M|B|[bB]n|(?i:thousand|million|billion))\b`)
+	reUnitSfx = regexp.MustCompile(`^\s?(%|×|(?i:percentage points?|percent|pp\b|x\b|ns\b|us\b|ms\b|seconds?\b|secs?\b|s\b|minutes?\b|mins?\b|hours?\b|hrs?\b|h\b|days?\b|weeks?\b))`)
+	unitTail  = strings.NewReplacer("µ", "u", "μ", "u")
+)
+
+// timeUnits maps a time unit to seconds.
+var timeUnits = map[string]float64{
+	"ns": 1e-9, "us": 1e-6, "ms": 1e-3,
+	"s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1,
+	"min": 60, "mins": 60, "minute": 60, "minutes": 60,
+	"h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
+	"day": 86400, "days": 86400, "week": 604800, "weeks": 604800,
+}
+
+func multiplierOf(sfx string) float64 {
+	switch strings.ToLower(sfx) {
+	case "k", "thousand":
+		return 1e3
+	case "m", "million":
+		if sfx == "m" { // lower-case m is minutes or metres, not a million
+			return 1
+		}
+		return 1e6
+	case "b", "bn", "billion":
+		if sfx == "b" {
+			return 1
+		}
+		return 1e9
+	}
+	return 1
+}
+
+// figuresIn is numbersIn with the unit each number is written with.
+func figuresIn(s string) []figure {
+	s = normalizeNumsKeep(s, true)
+	var out []figure
 	for _, loc := range reNum.FindAllStringIndex(s, -1) {
 		tok := strings.ReplaceAll(s[loc[0]:loc[1]], ",", "")
 		i := loc[0]
 		if i > 0 && s[i-1] == '-' && (i == 1 || s[i-2] < '0' || s[i-2] > '9') {
 			tok = "-" + tok
 		}
-		out = append(out, tok)
+		f := figure{Tok: tok, Mult: 1, TimeScale: 1}
+		if i > 0 && s[i-1] == '$' || i > 1 && s[i-1] == '-' && s[i-2] == '$' {
+			f.Class = "usd"
+		}
+		tail := unitTail.Replace(s[loc[1]:])
+		if m := reMultSfx.FindString(tail); m != "" {
+			f.Mult = multiplierOf(m)
+			tail = tail[len(m):]
+		}
+		if m := reUnitSfx.FindStringSubmatch(tail); m != nil {
+			u := strings.ToLower(m[1])
+			switch {
+			case u == "%" || u == "percent":
+				f.Class = "pct"
+			case u == "pp" || strings.HasPrefix(u, "percentage point"):
+				f.Class = "pp"
+			case u == "×" || u == "x":
+				f.Class = "mult"
+			default:
+				f.Class, f.TimeScale = "time", timeUnits[u]
+			}
+		}
+		out = append(out, f)
 	}
 	return out
+}
+
+// sameQuantity: x and y name the same quantity when their unit families do not
+// contradict each other (an unstated unit never contradicts) and the values,
+// after the multiplier and the time scale, agree to x's written precision.
+// extra rescales y (a percentage the source states as a fraction).
+func sameQuantity(x, y figure, extra float64) bool {
+	if x.Class != "" && y.Class != "" && x.Class != y.Class {
+		return false
+	}
+	scale := extra
+	if x.Class == "time" && y.Class == "time" {
+		scale *= y.TimeScale / x.TimeScale
+	}
+	scale *= y.Mult / x.Mult
+	return numEq(x.Tok, y.Tok, scale)
 }
 
 func numVal(tok string) float64 {
@@ -178,8 +277,13 @@ func numEq(x, y string, scale float64) bool {
 // rounded to the claim's precision (a claim may round, never inflate). When
 // the source carries extra numbers, the claim's numbers must still appear in
 // order. A percentage may be stated as a fraction in the source.
+//
+// Each number is read with its unit (see figure): "40 ms" is not "40%", "3x" is
+// not "3 hours", "1.5 ms" is not "1.5 s", while "1,200", "1200" and "1.2k" are
+// one value. A number with no recognised unit on either side is compared as a
+// bare value.
 func sameNumbers(claim, source string) bool {
-	a, b := numbersIn(claim), numbersIn(source)
+	a, b := figuresIn(claim), figuresIn(source)
 	if len(a) == 0 || len(b) == 0 {
 		return len(a) == 0 && len(b) == 0
 	}
@@ -187,7 +291,7 @@ func sameNumbers(claim, source string) bool {
 		if len(a) == len(b) {
 			ok := true
 			for i := range a {
-				if !numEq(a[i], b[i], scale) {
+				if !sameQuantity(a[i], b[i], scale) {
 					ok = false
 					break
 				}
@@ -198,7 +302,7 @@ func sameNumbers(claim, source string) bool {
 		}
 		j := 0
 		for _, x := range a {
-			for j < len(b) && !numEq(x, b[j], scale) {
+			for j < len(b) && !sameQuantity(x, b[j], scale) {
 				j++
 			}
 			if j == len(b) {
@@ -213,7 +317,7 @@ func sameNumbers(claim, source string) bool {
 	}
 	if strings.Contains(claim, "%") {
 		for _, y := range b {
-			if math.Abs(numVal(y)) > 1 {
+			if math.Abs(numVal(y.Tok)) > 1 {
 				return false
 			}
 		}

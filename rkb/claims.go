@@ -863,6 +863,8 @@ func ingestWorksheet(ws *Worksheet, by string, claims map[string]*Claim, add Ver
 			e.Verdict, e.Evidence = "NO_QUOTE", "no quote given from "+sp
 		case !quoteInFile(inRoot(sp), qt):
 			e.Verdict, e.Evidence = "QUOTE_NOT_FOUND", fmt.Sprintf("the quote does not occur in %s: %q", sp, truncate(qt, 120))
+		case !quoteHasFigure(qt, found):
+			e.Verdict, e.Evidence = "QUOTE_MISMATCH", fmt.Sprintf("the quote does not contain the figure found (%q, with its unit): %q", found, truncate(qt, 120))
 		default:
 			e.Verdict, e.Evidence = "CONFIRMED", truncate(qt, 200)
 			e.SourceSHA = sha256File(inRoot(sp))
