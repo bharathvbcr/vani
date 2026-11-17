@@ -204,7 +204,7 @@ func TestRunnerTakesTheOpenRouterKeyFromTheKeychain(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			clearKeys(t)
 			cfg := config.Default()
-			if !cfg.OpenRouterConfigured() {
+			if !cfg.DecisionConfigured() {
 				t.Fatal("the default config has no OpenRouter model to test with")
 			}
 			w, warn := openWired(t, cfg)

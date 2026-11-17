@@ -56,7 +56,13 @@ func triageModelID(cfg config.Config) string {
 			lappi = "slots:" + strings.Join(ps, "+")
 		}
 	}
-	return fmt.Sprintf("or=%s;llm=%s/%s;lappi=%s;ctx=%s", cfg.Decide.OpenRouterModel, cfg.LLM.Provider, cfg.LLM.Model, lappi,
+	// OpenRouter keeps the bare model, byte-identical with every cached id;
+	// another provider's model is named with its provider.
+	dm := cfg.Decide.OpenRouterModel
+	if p := cfg.Decide.ProviderID(); p != config.DecisionOpenRouter {
+		dm = p + ":" + cfg.Decide.DecisionModel()
+	}
+	return fmt.Sprintf("or=%s;llm=%s/%s;lappi=%s;ctx=%s", dm, cfg.LLM.Provider, cfg.LLM.Model, lappi,
 		hex.EncodeToString(h.Sum(nil))[:12])
 }
 

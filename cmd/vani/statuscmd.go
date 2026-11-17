@@ -270,7 +270,7 @@ type backendsFacet struct {
 type backendJSON struct {
 	facet
 	Name string `json:"name"`
-	Kind string `json:"kind"` // llm, openrouter or openrouter_notes
+	Kind string `json:"kind"` // llm, or the decision provider (openrouter, subq, gemini) and its _notes
 	// CapUSD is the configured daily cap. SpentUSD and RemainingUSD are absent
 	// when the spend could not be read (ok false), never zero.
 	CapUSD       float64  `json:"cap_usd"`
@@ -599,12 +599,12 @@ func (e *env) backendsOf(ctx context.Context, cfg config.Config, cfgErr error, a
 		return backendsFacet{facet: facet{Reason: "the config could not be read, so the caps are not known"}, Day: day, Items: []backendJSON{}}
 	}
 	out := backendsFacet{facet: facet{OK: true}, Day: day, Items: []backendJSON{}}
-	if cfg.OpenRouterConfigured() {
-		b := backendJSON{Name: cfg.Decide.OpenRouterName(), Kind: "openrouter", CapUSD: cfg.Decide.DailyUSD.OpenRouter}
+	if cfg.DecisionConfigured() {
+		b := backendJSON{Name: cfg.Decide.DecisionName(), Kind: cfg.Decide.ProviderID(), CapUSD: cfg.Decide.DailyUSD.OpenRouter}
 		spent, err := readOpenRouterSpend(filepath.Join(e.stateDir, "budget", openRouterBudgetFile), day, openRouterSpendKey)
 		out.Items = append(out.Items, b.withSpend(spent, err))
 		// The notes' own cap, in its own file beside the triage one.
-		nb := backendJSON{Name: b.Name + " notes", Kind: "openrouter_notes", CapUSD: cfg.Funnel.NotesCapUSD()}
+		nb := backendJSON{Name: b.Name + " notes", Kind: cfg.Decide.ProviderID() + "_notes", CapUSD: cfg.Funnel.NotesCapUSD()}
 		spent, err = readOpenRouterSpend(filepath.Join(e.stateDir, "budget", notesBudgetFile), day, openRouterSpendKey)
 		out.Items = append(out.Items, nb.withSpend(spent, err))
 	}

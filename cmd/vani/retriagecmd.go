@@ -150,7 +150,7 @@ func (e *env) retriageDrops(ctx context.Context, l ledger.Ledger, cfg config.Con
 			classOf[r.Key] = eval.DropClass(r, rules)
 		}
 	}
-	got, err := pipeline.RetriagePolicyDrops(ctx, l, now(), dropPolicy(cfg, cfg.Decide.OpenRouterName()), sc, dry)
+	got, err := pipeline.RetriagePolicyDrops(ctx, l, now(), dropPolicy(cfg, cfg.Decide.DecisionName()), sc, dry)
 	if !dry && len(got.Deferred) > 0 {
 		if serr := pending.Save(path, now()); serr != nil {
 			err = errors.Join(err, fmt.Errorf("retriage: %d reopen(s) were not recorded as pending: %w", len(got.Deferred), serr))
@@ -189,7 +189,7 @@ func (e *env) retriageDrops(ctx context.Context, l ledger.Ledger, cfg config.Con
 			fmt.Fprintf(e.stdout, "  unjudged drops sent for a fresh read: %d\n", len(got.Refresh))
 		}
 		if got.Unjudged > 0 {
-			fmt.Fprintf(e.stdout, "  model drops not judged, left dropped: %d (read under another model or question, or no calibrated reading from %q or lappi)\n", got.Unjudged, cfg.Decide.OpenRouterName())
+			fmt.Fprintf(e.stdout, "  model drops not judged, left dropped: %d (read under another model or question, or no calibrated reading from %q or lappi)\n", got.Unjudged, cfg.Decide.DecisionName())
 		}
 	}
 	if got.AlreadyPending > 0 {

@@ -2,7 +2,7 @@ package eval
 
 // LegacyOpenRouterName is the name the OpenRouter decision model answered
 // under until 2026-10-19, when Vani began naming it after its model
-// (config.Decide.OpenRouterName, e.g. "d1-ultra"). It is decide/jev's
+// (config.Decide.DecisionName, e.g. "d1-ultra"). It is decide/jev's
 // default backend name, and ledger rows written before then carry it as a
 // slot's primary backend.
 const LegacyOpenRouterName = "jev"

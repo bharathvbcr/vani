@@ -40,7 +40,7 @@ func (w *wired) reopenOnSighting(rec *pipeline.Reconciler, at time.Time) (finish
 	// exclusion drop moved is judged by it too (SightingReopen.movedExclusion).
 	sc := reopenScope(w.cfg)
 	sc.Watched = pipeline.WatchedBy(whole)
-	so := &pipeline.SightingReopen{Policy: dropPolicy(w.cfg, w.cfg.Decide.OpenRouterName()), Scope: sc, Pending: pending}
+	so := &pipeline.SightingReopen{Policy: dropPolicy(w.cfg, w.cfg.Decide.DecisionName()), Scope: sc, Pending: pending}
 	rec.ReopenOnSighting(so)
 	return func() {
 		// A board's events become durable together at the end of the board

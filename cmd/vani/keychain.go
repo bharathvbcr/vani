@@ -30,7 +30,7 @@ var keychainRead = func(ctx context.Context, service string) (string, error) {
 	return vault.New().ModelKey(ctx, service, u.Username)
 }
 
-// keychainCache is the OpenRouter key read from the Keychain: a success is kept
+// keychainCache is one model key read from the Keychain: a success is kept
 // for the life of the process (a daemon reads it once), a failure only for the
 // run it happened in, so one run neither waits on nor warns about the Keychain
 // twice. mu serialises reads, so concurrent clients never prompt twice; it is
@@ -77,7 +77,7 @@ func (w *wired) openRouterGetenv(name string) string {
 // off says the truth about the Keychain too.
 func (w *wired) openRouterKey(name string) (key, from, why string) {
 	w.mu.Lock()
-	keyEnv, run := w.cfg.Decide.OpenRouterKeyEnv, w.keychainRun
+	keyEnv := w.cfg.Decide.OpenRouterKeyEnv
 	w.mu.Unlock()
 	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 		return v, keyFromEnvironment, ""
@@ -85,10 +85,34 @@ func (w *wired) openRouterKey(name string) (key, from, why string) {
 	if name != keyEnv {
 		return "", "", ""
 	}
+	return w.modelKey("openrouter", []string{name}, vault.OpenRouterService)
+}
+
+// modelKey is a model key: the first of envs that holds a value, else, unless
+// VANI_NO_KEYCHAIN is set, the login Keychain item service, cached as
+// keychainCache says. what names the key in a warning ("subq", "gemini").
+// It returns where the key came from, or why there is none; never a value in
+// a message. Only services vault.ModelKey's table holds can be read.
+func (w *wired) modelKey(what string, envs []string, service string) (key, from, why string) {
+	for _, name := range envs {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v, keyFromEnvironment, ""
+		}
+	}
 	if os.Getenv(noKeychainEnv) != "" {
 		return "", "", "the Keychain was not read because " + noKeychainEnv + " is set"
 	}
-	c := &w.keychain
+	w.mu.Lock()
+	run := w.keychainRun
+	if w.keychains == nil {
+		w.keychains = map[string]*keychainCache{}
+	}
+	c := w.keychains[service]
+	if c == nil {
+		c = &keychainCache{}
+		w.keychains[service] = c
+	}
+	w.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.key != "" {
@@ -97,14 +121,22 @@ func (w *wired) openRouterKey(name string) (key, from, why string) {
 	if c.failed && c.failRun == run {
 		return "", "", c.why
 	}
-	k, err := keychainRead(context.Background(), vault.OpenRouterService)
+	k, err := keychainRead(context.Background(), service)
 	if err != nil || k == "" {
 		c.failed, c.failRun = true, run
 		if errors.Is(err, vault.ErrNoKeychain) {
 			c.why = "there is no Keychain on this platform"
 		} else {
-			c.why = fmt.Sprintf("the login Keychain item %q could not be read: %s", vault.OpenRouterService, keychainFailure(err))
-			w.warnf("openrouter key: %s is unset and the Keychain item %q could not be read: %s", name, vault.OpenRouterService, keychainFailure(err))
+			c.why = fmt.Sprintf("the login Keychain item %q could not be read: %s", service, keychainFailure(err))
+			unset := "no key variable is set"
+			switch len(envs) {
+			case 0:
+			case 1:
+				unset = envs[0] + " is unset"
+			default:
+				unset = strings.Join(envs, " and ") + " are unset"
+			}
+			w.warnf("%s key: %s and the Keychain item %q could not be read: %s", what, unset, service, keychainFailure(err))
 		}
 		return "", "", c.why
 	}

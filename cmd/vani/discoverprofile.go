@@ -432,7 +432,7 @@ func watchedIn(watchlist []sources.Board, mb freehire.MergedBoard) (as string, w
 // from the title drops it. A result with no title passes only when include is
 // empty; one with no location is kept by the location rules, as in a run.
 func profileKeep(cfg config.Config) func(freehire.Job) bool {
-	drops := dropPolicy(cfg, cfg.Decide.OpenRouterName()).ListedDrops()
+	drops := dropPolicy(cfg, cfg.Decide.DecisionName()).ListedDrops()
 	sig := cfg.TitleSignals
 	return func(j freehire.Job) bool {
 		r := sig.Rank(j.Title)

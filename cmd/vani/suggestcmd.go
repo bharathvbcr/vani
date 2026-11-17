@@ -148,7 +148,7 @@ func (k kbFailedDrafter) Answer(context.Context, draft.AnswerRequest) (draft.Ans
 func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 	var backends []decide.Backend
 	backends = append(backends, logErrors(fmbackend.New(fmbackend.Config{Descriptions: fieldtriage.Descriptions()}), w.warnf, nil))
-	if w.cfg.OpenRouterConfigured() {
+	if w.cfg.DecisionConfigured() {
 		spend, err := decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
 		if err != nil {
 			return nil, fmt.Errorf("openrouter budget: %w", err)
@@ -157,17 +157,17 @@ func (w *wired) fieldRouter(p llm.Provider) (decide.Decider, error) {
 		if err != nil {
 			return nil, err
 		}
-		jb, err := jev.New(jev.Config{
-			Name:         w.cfg.Decide.OpenRouterName(),
-			Model:        w.cfg.Decide.OpenRouterModel,
-			KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
-			Getenv:       w.openRouterGetenv,
+		jc, err := w.decisionJev(jev.Config{
 			Descriptions: fieldtriage.Descriptions(),
 			Spend:        spend,
 			SpendKey:     openRouterSpendKey,
-		}, d)
+		}, "")
+		var jb *jev.Backend
+		if err == nil {
+			jb, err = jev.New(jc, d)
+		}
 		if err != nil {
-			w.warnf("openrouter (%s) disabled: %v", w.cfg.Decide.OpenRouterModel, err)
+			w.warnf("%s (%s) disabled: %v", w.cfg.Decide.ProviderID(), w.cfg.Decide.DecisionModel(), err)
 		} else {
 			backends = append(backends, logErrors(jb, w.warnf, nil))
 		}

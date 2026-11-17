@@ -322,8 +322,8 @@ func (e *env) namesAndDropRules() (eval.Names, []eval.DropRuleSpec, error) {
 		return eval.Names{}, nil, fmt.Errorf("relevance needs the config to name the OpenRouter backend and read the drop rules: %w", err)
 	}
 	var n eval.Names
-	if cfg.OpenRouterConfigured() {
-		n.OpenRouter = cfg.Decide.OpenRouterName()
+	if cfg.DecisionConfigured() {
+		n.OpenRouter = cfg.Decide.DecisionName()
 	}
 	if cfg.LLM.Provider != "" {
 		n.LLMModel = cfg.LLM.EffectiveTriageModel()

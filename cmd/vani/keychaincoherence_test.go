@@ -90,7 +90,7 @@ func TestStartRunAdvancesTheKeychainRun(t *testing.T) {
 func TestDaemonModelForKeychain(t *testing.T) {
 	cfg := configWithModel("OPENROUTER_API_KEY")
 	look := func(key, from, why string) keyLookup {
-		return func(string) (string, string, string) { return key, from, why }
+		return func() (string, string, string) { return key, from, why }
 	}
 
 	if m := daemonModelFor(config.Config{}, look("", "", "")); m != nil {
@@ -125,7 +125,7 @@ func TestDaemonModelForKeychain(t *testing.T) {
 // daemonLines names the Keychain only when the daemon looked there.
 func TestDaemonLinesNameTheKeychainWhenTheDaemonLooked(t *testing.T) {
 	cfg := configWithModel("OPENROUTER_API_KEY")
-	looked := daemonModelFor(cfg, func(string) (string, string, string) {
+	looked := daemonModelFor(cfg, func() (string, string, string) {
 		return "", "", "the Keychain was not read because VANI_NO_KEYCHAIN is set"
 	})
 	lines := daemonLines(daemonFacet{Running: true, Model: looked})
@@ -218,7 +218,7 @@ func runDaemonWithKeys(t *testing.T) (during statusJSON, textDuring, stderr stri
 		if err != nil {
 			return nil, err
 		}
-		app.ModelKey = (&wired{cfg: cfg, stateDir: dir, warn: io.Discard}).openRouterKey
+		app.ModelKey = (&wired{cfg: cfg, stateDir: dir, warn: io.Discard}).decisionKey
 		return app, nil
 	}
 	_, stderr = mustCode(t, exitRuntime, "daemon")

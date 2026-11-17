@@ -71,10 +71,27 @@ func TestModelKeyTimeout(t *testing.T) {
 	}
 }
 
+// The table holds exactly the three decision-provider keys; the Anthropic key
+// stays with anthropic-account.
+func TestModelKeyReadsEachProviderService(t *testing.T) {
+	if !reflect.DeepEqual(modelServices, []string{"openrouter-api-key", "subq-api-key", "gemini-api-key"}) {
+		t.Fatalf("modelServices = %v", modelServices)
+	}
+	for _, svc := range []string{SubQService, GeminiService} {
+		f := &keyRunner{out: "k\n"}
+		if got, err := NewWithRunner(f).ModelKey(context.Background(), svc, "owner"); err != nil || got != "k" {
+			t.Errorf("%s: %q %v", svc, got, err)
+		}
+		if len(f.calls) != 1 || f.calls[0].args[2] != svc {
+			t.Errorf("%s: calls = %+v", svc, f.calls)
+		}
+	}
+}
+
 func TestModelKeyRefusals(t *testing.T) {
 	f := &keyRunner{out: "x"}
 	v := NewWithRunner(f)
-	for _, svc := range []string{"anthropic-api-key", "vani", "", "openrouter-api-key-other"} {
+	for _, svc := range []string{"anthropic-api-key", "vani", "", "openrouter-api-key-other", "subq-api-key ", "Gemini-api-key"} {
 		if _, err := v.ModelKey(context.Background(), svc, "owner"); err == nil {
 			t.Errorf("service %q read", svc)
 		}

@@ -527,7 +527,7 @@ func newInsightWith(cfg config.Config, err error, stateDir string, halfLife floa
 			in.rc.TitleRank = in.memo.titleRank(cfg.TitleSignals)
 		}
 		in.rc.EscalateBelowP = rankEscalateBelowP(cfg)
-		if p := dropPolicy(cfg, cfg.Decide.OpenRouterName()); p.Prefilters() {
+		if p := dropPolicy(cfg, cfg.Decide.DecisionName()); p.Prefilters() {
 			in.drop, in.dropReadsText = &p, cfg.Exclude.ReadsDescriptions()
 		}
 		in.rc.AgeNeutral = jobinsight.AgeNeutralSet(cfg.AgeNeutralCompanies)

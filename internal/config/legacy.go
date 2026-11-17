@@ -43,10 +43,6 @@ const MaxBackendName = 32
 // "apple_fm" is the on-device Apple model (decide/fmbackend).
 var reservedBackendNames = []string{"llm", "lappi", "local", "unknown", "title", "apple_fm"}
 
-// OpenRouterName is the name the OpenRouter decision model answers under in
-// routing, ledger annotations, drop reasons and the eval: see BackendName.
-func (d Decide) OpenRouterName() string { return BackendName(d.OpenRouterModel) }
-
 // BackendName derives a backend name from a model id: its last path segment,
 // lower-cased, with every character outside [a-z0-9_-] turned into '-' and
 // leading or trailing '-' trimmed ("liquid/d1-ultra" -> "d1-ultra",

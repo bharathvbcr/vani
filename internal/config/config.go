@@ -307,9 +307,19 @@ type Decide struct {
 	// OpenRouterModel is the decision model asked through the OpenRouter
 	// Decisions API (e.g. "liquid/d1.2-ultra"); empty turns it off. It answers
 	// under OpenRouterName.
-	OpenRouterModel  string   `json:"openrouter_model"`
-	OpenRouterKeyEnv string   `json:"openrouter_key_env"`
-	DailyUSD         DailyUSD `json:"daily_usd"`
+	OpenRouterModel  string `json:"openrouter_model"`
+	OpenRouterKeyEnv string `json:"openrouter_key_env"`
+	// Provider picks which provider's decision model answers (decision.go):
+	// "" or DecisionOpenRouter (OpenRouterModel), DecisionSubQ (SubQModel)
+	// or DecisionGemini (GeminiModel). The others' settings are kept. Every
+	// provider answers under DecisionName and spends from DailyUSD.OpenRouter,
+	// the decision model's one daily cap.
+	Provider string `json:"provider,omitempty"`
+	// SubQModel and GeminiModel are those providers' models; empty means
+	// the provider's default (subq-snap-1.2, gemini-decision-1).
+	SubQModel   string   `json:"subq_model,omitempty"`
+	GeminiModel string   `json:"gemini_model,omitempty"`
+	DailyUSD    DailyUSD `json:"daily_usd"`
 	// Shadow names a backend asked alongside the primary chain whose answers
 	// are recorded but never used ("" off, "llm", "openrouter", "lappi",
 	// "local"). Disagreements feed the labelling queue. It costs a second
@@ -837,9 +847,6 @@ func (s Schedule) Parsed() (hour, minute int, loc *time.Location, err error) {
 	return hour, minute, loc, nil
 }
 
-// OpenRouterConfigured reports whether the OpenRouter decision model is set up.
-func (c Config) OpenRouterConfigured() bool { return c.Decide.OpenRouterModel != "" }
-
 // BoardHost returns the API host a board is fetched from. Workday hosts are
 // tenant-specific and not derivable from the token, so ok is false for them.
 func BoardHost(b sources.Board) (host string, ok bool) {
@@ -943,8 +950,10 @@ func (c Config) RequiredHosts() []string {
 			set[h] = true
 		}
 	}
-	if c.OpenRouterConfigured() {
-		set[hostOpenRouter] = true
+	if c.DecisionConfigured() {
+		if p, ok := c.Decide.DecisionProvider(); ok {
+			set[p.Host] = true
+		}
 	}
 	out := make([]string, 0, len(set))
 	for h := range set {
@@ -1382,12 +1391,13 @@ func (c Config) Validate() error {
 	if badUSD(c.Decide.DailyUSD.LLM) {
 		add("decide.daily_usd.llm %v must be within 0..%v", c.Decide.DailyUSD.LLM, MaxDailyUSD)
 	}
-	if c.OpenRouterConfigured() {
-		if c.Decide.OpenRouterKeyEnv == "" {
+	c.Decide.validateDecision(add)
+	if c.DecisionConfigured() {
+		if c.Decide.ProviderID() == DecisionOpenRouter && c.Decide.OpenRouterKeyEnv == "" {
 			add("decide.openrouter_key_env is required when decide.openrouter_model is set")
 		}
-		if err := checkBackendName(c.Decide.OpenRouterName()); err != nil {
-			add("decide.openrouter_model %q: %v", c.Decide.OpenRouterModel, err)
+		if err := checkBackendName(c.Decide.DecisionName()); err != nil {
+			add("decide model %q (decide.provider %s): %v", c.Decide.DecisionModel(), c.Decide.ProviderID(), err)
 		}
 	}
 	for name, p := range map[string]string{"kb.bank": c.KB.Bank, "kb.rkb": c.KB.RKB, "kb.code_root": c.KB.CodeRoot, "kb.vm_report": c.KB.VMReport,
@@ -1479,7 +1489,7 @@ func (c Config) Validate() error {
 			add("decide.shadow llm with shadow_mode %s needs llm.triage_model set to a model other than llm.model (%q): it would read every drop candidate on the expensive tier", ShadowModeDropCandidates, c.LLM.Model)
 		}
 	case ShadowOpenRouter:
-		if !c.OpenRouterConfigured() {
+		if !c.DecisionConfigured() {
 			add("decide.shadow openrouter needs decide.openrouter_model")
 		}
 	case "lappi":
@@ -1612,8 +1622,8 @@ func (c Config) Validate() error {
 	}
 	// A configured backend with a zero cap refuses every call, which would
 	// stall postings silently instead of failing where it can be seen.
-	if c.OpenRouterConfigured() && c.Decide.DailyUSD.OpenRouter == 0 {
-		add("decide.daily_usd.openrouter must be above 0 when decide.openrouter_model is set")
+	if c.DecisionConfigured() && c.Decide.DailyUSD.OpenRouter == 0 {
+		add("decide.daily_usd.openrouter must be above 0 when a decision model is set (it caps every decide.provider)")
 	}
 	if c.LLM.Provider != "" && c.Decide.DailyUSD.LLM == 0 {
 		add("decide.daily_usd.llm must be above 0 when llm.provider is set")
@@ -1651,7 +1661,7 @@ func (c Config) Validate() error {
 			}
 		}
 	case KBMatchOpenRouter:
-		if !c.OpenRouterConfigured() {
+		if !c.DecisionConfigured() {
 			add("kbmatch.backend %q needs decide.openrouter_model", KBMatchOpenRouter)
 		}
 		if c.KBMatch.Model != "" {

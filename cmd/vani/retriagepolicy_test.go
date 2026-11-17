@@ -54,7 +54,7 @@ func seedDrops(t *testing.T, cfgPath, stateDir string) (model, oldName, title, e
 		}
 		return p.Key
 	}
-	model = add("model", reading(cfg.Decide.OpenRouterName()))
+	model = add("model", reading(cfg.Decide.DecisionName()))
 	oldName = add("jev", reading("jev"))
 	title = add("title", map[string]string{"triage.backend": "title", "triage.seniority": "staff_plus", "triage.seniority.reading": "answered"})
 	excluded = add("exclude", map[string]string{"triage.backend": "exclude", "exclude.matched": "excluded: company is \"Acme\""})

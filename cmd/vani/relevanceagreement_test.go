@@ -76,8 +76,8 @@ func TestRelevanceLabelsTheCloudShadowByBackendAndModel(t *testing.T) {
 	if err := config.Save(cfgPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	seedDropCandidateBy(t, state, "gh:a:1", "mismatch_domain", cfg.Decide.OpenRouterName(), "llm")
-	seedDropCandidateBy(t, state, "gh:a:2", "strong_fit", cfg.Decide.OpenRouterName(), "llm")
+	seedDropCandidateBy(t, state, "gh:a:1", "mismatch_domain", cfg.Decide.DecisionName(), "llm")
+	seedDropCandidateBy(t, state, "gh:a:2", "strong_fit", cfg.Decide.DecisionName(), "llm")
 	o, _ := mustCode(t, 0, "relevance")
 	if !strings.Contains(o, "| role_fit | llm (claude-haiku-5-5) | 2 | 0 | 2 | 1/2 = 50%") {
 		t.Errorf("shadow not labelled by backend and model:\n%s", o)

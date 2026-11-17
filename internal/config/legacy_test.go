@@ -63,7 +63,7 @@ func TestLegacyKeysLoadAsTheirNewNames(t *testing.T) {
 	}
 	d := renamed.Decide
 	if d.OpenRouterModel != "liquid/d1-ultra" || d.OpenRouterKeyEnv != "OPENROUTER_API_KEY" || d.DailyUSD.OpenRouter != 0.5 ||
-		d.Shadow != ShadowOpenRouter || renamed.DropRules[1].MinOpenRouterProb != 0.9 || d.OpenRouterName() != "d1-ultra" {
+		d.Shadow != ShadowOpenRouter || renamed.DropRules[1].MinOpenRouterProb != 0.9 || d.DecisionName() != "d1-ultra" {
 		t.Fatalf("decoded %+v rules %+v", d, renamed.DropRules)
 	}
 }

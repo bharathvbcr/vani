@@ -240,7 +240,7 @@ func (e *env) contactModels(ctx context.Context) (contacts.Asker, contacts.Asker
 	desc := map[string]map[string]string{contacts.Slot: contacts.Descriptions}
 	var backends []decide.Backend
 	backends = append(backends, fmbackend.New(fmbackend.Config{Descriptions: desc}))
-	if w.cfg.OpenRouterConfigured() {
+	if w.cfg.DecisionConfigured() {
 		spend, err := decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
 		if err != nil {
 			// A spend file is not required for the on-device model. Liquid is
@@ -251,17 +251,17 @@ func (e *env) contactModels(ctx context.Context) (contacts.Asker, contacts.Asker
 			if err != nil {
 				return nil, nil, err
 			}
-			jb, err := jev.New(jev.Config{
-				Name:         w.cfg.Decide.OpenRouterName(),
-				Model:        w.cfg.Decide.OpenRouterModel,
-				KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
-				Getenv:       w.openRouterGetenv,
+			jc, err := w.decisionJev(jev.Config{
 				Descriptions: desc,
 				Spend:        spend,
 				SpendKey:     openRouterSpendKey,
-			}, d)
+			}, "")
+			var jb *jev.Backend
+			if err == nil {
+				jb, err = jev.New(jc, d)
+			}
 			if err != nil {
-				w.warnf("contacts: openrouter disabled: %v", err)
+				w.warnf("contacts: %s disabled: %v", w.cfg.Decide.ProviderID(), err)
 			} else {
 				backends = append(backends, jb)
 			}

@@ -204,7 +204,7 @@ func TestRunnerPicksNotesWithOpenRouter(t *testing.T) {
 		t.Fatalf("explainer %T skip %v\n%s", r.Explainer, r.SkipExplain, warn)
 	}
 	rt, ok := pk.D.(*decide.Router)
-	if !ok || strings.Join(rt.Backends(), ",") != cfg.Decide.OpenRouterName() || rt.Shadow != nil {
+	if !ok || strings.Join(rt.Backends(), ",") != cfg.Decide.DecisionName() || rt.Shadow != nil {
 		t.Fatalf("notes router %T %v", pk.D, rt)
 	}
 	if len(pk.Catalog.Fit) != 1 || pk.TargetSummary != reasonsTarget {

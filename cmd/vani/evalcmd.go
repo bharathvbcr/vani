@@ -295,8 +295,8 @@ func (e *env) evalNames() (eval.Names, error) {
 		return eval.Names{}, fmt.Errorf("eval needs the config to name the OpenRouter backend: %w", err)
 	}
 	var n eval.Names
-	if cfg.OpenRouterConfigured() {
-		n.OpenRouter = cfg.Decide.OpenRouterName()
+	if cfg.DecisionConfigured() {
+		n.OpenRouter = cfg.Decide.DecisionName()
 	}
 	return n, nil
 }

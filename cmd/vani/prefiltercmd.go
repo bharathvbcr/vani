@@ -182,7 +182,7 @@ func (e *env) cmdPrefilter(args []string) error {
 	if err != nil {
 		return err
 	}
-	p := dropPolicy(cfg, cfg.Decide.OpenRouterName())
+	p := dropPolicy(cfg, cfg.Decide.DecisionName())
 	if !p.Prefilters() {
 		return e.reply(*asJSON, prefilterReply{Off: true}, nil, func() {
 			fmt.Fprintln(e.stdout, "prefilter is off: the config has no exclude entries and no title_signals.read entries; nothing was evaluated")

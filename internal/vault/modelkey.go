@@ -14,6 +14,14 @@ import (
 // (Keychain.openRouterService in macos/Sources/VaniApplyKit/Drafting.swift).
 const OpenRouterService = "openrouter-api-key"
 
+// SubQService and GeminiService hold the other decision providers' keys
+// (config.KeychainSubQ, config.KeychainGemini). The Gemini item is the AI
+// Studio key, which the gemini llm provider uses too.
+const (
+	SubQService   = "subq-api-key"
+	GeminiService = "gemini-api-key"
+)
+
 // ModelKeyTimeout bounds one model-key read: long enough to answer the
 // Keychain's access prompt, short enough that an unanswered prompt cannot hold
 // a run.
@@ -22,7 +30,7 @@ const ModelKeyTimeout = 60 * time.Second
 // modelServices lists the only services ModelKey reads. Anthropic's key is not
 // here: the app reaches it through anthropic-account, which picks the Console
 // workspace a direct read would bypass.
-var modelServices = []string{OpenRouterService}
+var modelServices = []string{OpenRouterService, SubQService, GeminiService}
 
 var (
 	// ErrKeychainTimeout means security(1) did not answer in time, usually an

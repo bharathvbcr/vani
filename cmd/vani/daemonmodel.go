@@ -25,8 +25,13 @@ type daemonModel struct {
 	// Keychain item itself (Source). It never says the key is valid: only a
 	// call does.
 	Enabled bool `json:"enabled"`
-	// KeyEnv is the variable the config reads the key from (decide.openrouter_key_env).
+	// KeyEnv is the variable the config reads the key from
+	// (decide.openrouter_key_env, or the provider's: "SUBQ_API_KEY",
+	// "GEMINI_API_KEY or GOOGLE_API_KEY").
 	KeyEnv string `json:"key_env,omitempty"`
+	// Service is the login Keychain item that holds the provider's key;
+	// absent from a daemon that predates the field (openrouter-api-key).
+	Service string `json:"service,omitempty"`
 	// Source is "keychain" when the daemon read the key from the login
 	// Keychain itself; absent means the environment (every daemon before the
 	// field, and one the Mac app started).
@@ -41,15 +46,21 @@ type daemonModel struct {
 
 // keyLookup finds the decision model's key in a daemon's process: the key
 // (never put in a result), where it came from and, when there is none, why the
-// Keychain gave none. (*wired).openRouterKey is the real one.
-type keyLookup func(name string) (key, from, why string)
+// Keychain gave none, for the configured provider. (*wired).decisionKey is
+// the real one.
+type keyLookup func() (key, from, why string)
 
 // daemonModelOf reports the decision model's state for a daemon whose
 // environment is getenv and that reads nothing else, or nil when the config
-// names no OpenRouter model. The key's value is never read into the result.
+// names no decision model. The key's value is never read into the result.
 func daemonModelOf(cfg config.Config, getenv func(string) string) *daemonModel {
-	return daemonModelFor(cfg, func(name string) (string, string, string) {
-		return getenv(name), keyFromEnvironment, ""
+	return daemonModelFor(cfg, func() (string, string, string) {
+		for _, name := range cfg.Decide.DecisionKeyEnvs() {
+			if v := getenv(name); strings.TrimSpace(v) != "" {
+				return v, keyFromEnvironment, ""
+			}
+		}
+		return "", keyFromEnvironment, ""
 	})
 }
 
@@ -59,12 +70,16 @@ func daemonModelOf(cfg config.Config, getenv func(string) string) *daemonModel {
 // at the daemon's start, so a Keychain read happens there and not at the first
 // run (a success is kept for the process).
 func daemonModelFor(cfg config.Config, lookup keyLookup) *daemonModel {
-	if !cfg.OpenRouterConfigured() {
+	if !cfg.DecisionConfigured() {
 		return nil
 	}
-	env := cfg.Decide.OpenRouterKeyEnv
+	envs := cfg.Decide.DecisionKeyEnvs()
+	env := strings.Join(envs, " or ")
 	m := &daemonModel{KeyEnv: env}
-	key, from, why := lookup(env)
+	if p, ok := cfg.Decide.DecisionProvider(); ok {
+		m.Service = p.KeychainService
+	}
+	key, from, why := lookup()
 	if strings.TrimSpace(key) != "" {
 		m.Enabled = true
 		if from == keyFromKeychain {
@@ -77,7 +92,7 @@ func daemonModelFor(cfg config.Config, lookup keyLookup) *daemonModel {
 	if why != "" {
 		reason += " and " + why
 	}
-	m.Reason = fmt.Sprintf("%s, so the decision model (%s) is disabled and the daemon triages no posting", reason, cfg.Decide.OpenRouterModel)
+	m.Reason = fmt.Sprintf("%s, so the decision model (%s) is disabled and the daemon triages no posting", reason, cfg.Decide.DecisionModel())
 	return m
 }
 
@@ -91,7 +106,11 @@ func daemonLines(d daemonFacet) []string {
 	if !d.Running || d.Model == nil || d.Model.Enabled {
 		return lines
 	}
-	fix := "  fix: add the key to the login Keychain (service openrouter-api-key) and turn Run on schedule off and on in Vani Apply's Pipeline tab, or start the daemon with " + d.Model.KeyEnv + " set"
+	service := d.Model.Service
+	if service == "" {
+		service = config.KeychainOpenRouter
+	}
+	fix := "  fix: add the key to the login Keychain (service " + service + "; Vani Apply's Settings can paste it there) and turn Run on schedule off and on in Vani Apply's Pipeline tab, or start the daemon with " + d.Model.KeyEnv + " set"
 	if d.Model.Keychain != "" {
 		// This daemon looked in the Keychain itself (a daemon the app started is told not to).
 		fix += "; a daemon the app did not start reads the item itself when it starts, unless " + noKeychainEnv + " is set"

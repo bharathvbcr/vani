@@ -210,7 +210,7 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 		w.warnf("%s", msg)
 		w.noteExplain(explainOff, msg)
 		return nil, true
-	case !w.cfg.OpenRouterConfigured():
+	case !w.cfg.DecisionConfigured():
 		msg := "notes off: picking notes needs decide.openrouter_model"
 		w.warnf("%s", msg)
 		w.noteExplain(explainOff, msg)
@@ -220,17 +220,16 @@ func (w *wired) notes(d egress.Doer, capUSD *decide.DailyCap) (pipeline.Explaine
 	if capUSD != nil {
 		spend = capUSD
 	}
-	jb, err := jev.New(jev.Config{
-		Name:         w.cfg.Decide.OpenRouterName(),
-		Endpoint:     notesEndpoint,
-		Model:        w.cfg.Decide.OpenRouterModel,
-		KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
-		Getenv:       w.openRouterGetenv,
+	jc, err := w.decisionJev(jev.Config{
 		Descriptions: c.Descriptions(),
 		Instructions: jdreasons.Instructions(),
 		Spend:        spend,
 		SpendKey:     openRouterSpendKey,
-	}, d)
+	}, notesEndpoint)
+	var jb *jev.Backend
+	if err == nil {
+		jb, err = jev.New(jc, d)
+	}
 	if err != nil {
 		msg := fmt.Sprintf("notes paused: %v", err)
 		w.warnf("%s", msg)

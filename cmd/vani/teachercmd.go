@@ -397,10 +397,10 @@ func (e *env) teacherRun(o teacherOpts, jr *teacherReply) error {
 	}
 	first := o.of
 	if first == "" {
-		if !cfg.OpenRouterConfigured() {
+		if !cfg.DecisionConfigured() {
 			return errors.New("teacher: no OpenRouter decision model is configured; name the first teacher with --of")
 		}
-		first = cfg.Decide.OpenRouterName()
+		first = cfg.Decide.DecisionName()
 	}
 	summary, err := jdtriage.NormalizeSummary(cfg.TargetSummary)
 	if err != nil {

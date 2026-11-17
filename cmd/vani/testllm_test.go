@@ -37,8 +37,8 @@ func TestDefaultNamesNoLLM(t *testing.T) {
 	if c.LLM != (config.LLM{}) {
 		t.Errorf("Default llm %+v, want none", c.LLM)
 	}
-	if c.Decide.OpenRouterModel != "liquid/d1.2-ultra" || c.Decide.OpenRouterName() != "d1-2-ultra" {
-		t.Errorf("Default decision model %q (%q), want liquid/d1.2-ultra (d1-2-ultra)", c.Decide.OpenRouterModel, c.Decide.OpenRouterName())
+	if c.Decide.OpenRouterModel != "liquid/d1.2-ultra" || c.Decide.DecisionName() != "d1-2-ultra" {
+		t.Errorf("Default decision model %q (%q), want liquid/d1.2-ultra (d1-2-ultra)", c.Decide.OpenRouterModel, c.Decide.DecisionName())
 	}
 	if err := c.Validate(); err != nil {
 		t.Errorf("Default invalid: %v", err)

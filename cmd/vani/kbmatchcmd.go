@@ -93,17 +93,16 @@ var (
 			if err != nil {
 				return nil, err
 			}
-			jb, err := jev.New(jev.Config{
-				Name:         w.cfg.Decide.OpenRouterName(),
-				Endpoint:     kbmatchEndpoint,
-				Model:        w.cfg.Decide.OpenRouterModel,
-				KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
-				Getenv:       w.openRouterGetenv,
+			jc, err := w.decisionJev(jev.Config{
 				Descriptions: kbmatch.Descriptions(),
 				Instructions: kbmatch.Instructions(),
 				Spend:        spend,
 				SpendKey:     openRouterSpendKey,
-			}, d)
+			}, kbmatchEndpoint)
+			var jb *jev.Backend
+			if err == nil {
+				jb, err = jev.New(jc, d)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("decision model: %w", err)
 			}
@@ -422,7 +421,7 @@ func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag
 		}
 		model = cfg.KBMatchModel()
 	case config.KBMatchOpenRouter:
-		model = cfg.Decide.OpenRouterModel
+		model = cfg.Decide.DecisionModel()
 	}
 
 	snap, m, err := e.jobsState()
@@ -493,7 +492,7 @@ func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag
 	fmt.Fprintf(e.stdout, "kbmatch: %d postings to ask about (left out: %d mismatch readings, %d too thin, %d already answered)\n", len(cands), mismatch, thin, current)
 	where := cfg.LLM.Provider + " model " + model
 	if backend == config.KBMatchOpenRouter {
-		where = "openrouter.ai decision model " + model
+		where = decisionWhere(cfg.Decide) + " decision model " + model
 	}
 	view := fmt.Sprintf("a %d-byte digest of your knowledge base", len(digest.Text))
 	if retrieve {

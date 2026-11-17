@@ -39,10 +39,10 @@ const (
 // openRouterName is the configured OpenRouter model's backend name, or ""
 // when none is configured (then no backend drops on a probability).
 func (w *wired) openRouterName() string {
-	if !w.cfg.OpenRouterConfigured() {
+	if !w.cfg.DecisionConfigured() {
 		return ""
 	}
-	return w.cfg.Decide.OpenRouterName()
+	return w.cfg.Decide.DecisionName()
 }
 
 // shadowName maps decide.shadow to the backend name it selects: the role
@@ -118,7 +118,7 @@ func wireApp(cfg config.Config, stateDir string, warn io.Writer) (*App, error) {
 		// The coverage pass shares the ledger and scoring stage of the default one.
 		RescoreCoverage: w.rescoreCoverage,
 		Tune:            w.tune,
-		ModelKey:        w.openRouterKey,
+		ModelKey:        w.decisionKey,
 		// The Vani Apply app posts run notices itself while it runs. When it
 		// does not, the daemon launches it to announce the run, and posts
 		// through osascript only if the app cannot take over.
@@ -240,9 +240,11 @@ type wired struct {
 	// pass leaves shadow and notes gaps off the record.
 	recordGaps bool
 	// keychainRun counts runs (startRun), so a failed Keychain read is retried
-	// once per run; keychain caches the OpenRouter key (keychain.go).
+	// once per run (keychain.go).
 	keychainRun int
-	keychain    keychainCache
+	// keychains caches each model key read from the Keychain, by service;
+	// guarded by mu (each entry by its own mu).
+	keychains map[string]*keychainCache
 	// live is shared with App. Nil on a wired value a test built by hand.
 	live *liveNote
 }
@@ -362,23 +364,23 @@ func (w *wired) runnerFor(ctx context.Context, d egress.Doer, advance bool) (*pi
 	// pre-rename name "jev" (jev.Config's default
 	// SpendKey), so renaming the backend did not reset a day's spend.
 	var spend *decide.DailyCap
-	if w.cfg.OpenRouterConfigured() {
+	if w.cfg.DecisionConfigured() {
 		var err error
 		spend, err = decide.NewDailyCap(filepath.Join(w.stateDir, "budget", openRouterBudgetFile), w.cfg.Decide.DailyUSD.OpenRouter)
 		if err != nil {
 			return nil, fmt.Errorf("openrouter budget: %w", err)
 		}
-		jb, err := jev.New(jev.Config{
-			Name:         w.cfg.Decide.OpenRouterName(),
-			Model:        w.cfg.Decide.OpenRouterModel,
-			KeyEnv:       w.cfg.Decide.OpenRouterKeyEnv,
-			Getenv:       w.openRouterGetenv,
+		jc, err := w.decisionJev(jev.Config{
 			Descriptions: jobcategory.UnifiedDescriptions(),
 			Spend:        spend,
 			SpendKey:     openRouterSpendKey,
-		}, d)
+		}, "")
+		var jb *jev.Backend
+		if err == nil {
+			jb, err = jev.New(jc, d)
+		}
 		if err != nil {
-			w.warnf("openrouter (%s) disabled: %v", w.cfg.Decide.OpenRouterModel, err)
+			w.warnf("%s (%s) disabled: %v", w.cfg.Decide.ProviderID(), w.cfg.Decide.DecisionModel(), err)
 		} else {
 			backends = append(backends, logErrors(jb, w.warnf, w.backendErrs))
 		}

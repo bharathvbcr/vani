@@ -133,15 +133,19 @@ func keepHint(cfg config.Config) string {
 	// advice to write the key into its plist.
 	var b strings.Builder
 	b.WriteString("turn on Run on schedule in Vani Apply's Pipeline tab: it runs the daemon as a login item")
-	if cfg.OpenRouterConfigured() {
+	if cfg.DecisionConfigured() {
 		b.WriteString(", with the decision model's key read from the Keychain and never written to disk")
 	}
 	b.WriteString(". Until then, Run in the app with a higher advance cap, or `vani run-once --advance N`. " +
 		"Without the app, `vani launchd plist` prints an agent for the daemon (vani installs nothing)")
-	if cfg.OpenRouterConfigured() {
+	if cfg.DecisionConfigured() {
+		service := config.KeychainOpenRouter
+		if p, ok := cfg.Decide.DecisionProvider(); ok {
+			service = p.KeychainService
+		}
 		fmt.Fprintf(&b, "; that agent carries no model key (%s is not in its environment), so the daemon reads the login Keychain item "+
-			"openrouter-api-key itself when it starts (macOS may ask once to let vani read it; VANI_NO_KEYCHAIN=1 turns that off), "+
-			"and without a key it triages nothing (`vani status` says so)", cfg.Decide.OpenRouterKeyEnv)
+			"%s itself when it starts (macOS may ask once to let vani read it; VANI_NO_KEYCHAIN=1 turns that off), "+
+			"and without a key it triages nothing (`vani status` says so)", strings.Join(cfg.Decide.DecisionKeyEnvs(), " or "), service)
 	}
 	return b.String()
 }
