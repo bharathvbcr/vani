@@ -463,6 +463,8 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, keepBu
 			if !reused {
 				kept.save(key, tr.text, time.Now())
 			}
+		} else if reused {
+			kept.remove(key) // a replay that no longer validates is not replayed again
 		}
 		if err != nil {
 			if b.rd != nil {
@@ -486,6 +488,9 @@ func (b *builder) tailor(ctx context.Context, req Request, baseCh choice, keepBu
 		why := ""
 		if round == 1 {
 			why = "after one retry"
+		}
+		if len(out.problems) > 0 {
+			kept.remove(key) // the model's fault: this reply buys nothing on a retry
 		}
 		if len(out.problems) == 0 {
 			res, rerr := b.finish(SourceTailored, why, out)
