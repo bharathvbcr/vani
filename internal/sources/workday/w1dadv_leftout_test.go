@@ -7,6 +7,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
 )
 
 // w1dadvUnreadableStored is every job of fb stored, the unreadable one with the
@@ -80,14 +81,26 @@ func TestW1dadvUnusableStoredPostingIsReadAgainAndNeverDropped(t *testing.T) {
 			}
 		}
 	}
-	if !found || st.Refreshed < 1 || st.Fetched != 0 || st.Prefiltered != 0 {
-		// Refreshed also counts the stored rows whose turn it is, so at least one.
+	// Refreshed is the unusable row plus the other stored rows whose refresh turn
+	// it is on fixedNow: exactly 3 for this fixture.
+	const wantRefreshed = 3
+	turns := 1
+	for i := range fb.jobs {
+		if i != unreadable && srcutil.RefreshTurn(fb.jobs[i].path, srcutil.Day(fixedNow)) {
+			turns++
+		}
+	}
+	if turns != wantRefreshed {
+		t.Fatalf("setup: the refresh-turn rule gives %d refreshed rows, the fixture expects %d", turns, wantRefreshed)
+	}
+	if !found || st.Refreshed != wantRefreshed || st.Fetched != 0 || st.Prefiltered != 0 {
 		t.Fatalf("found=%v stats %+v: want the unusable posting re-read (a stored row, not a new one) and not prefiltered", found, st)
 	}
 }
 
 // The row of an unusable stored posting that misses is never left out: the
-// board fails rather than listing 29 of 30.
+// board fails rather than listing 29 of 30 (no sink is installed here, so the miss
+// cannot be held as a shortfall; with one it is, see w1dhold_test.go).
 func TestW1dadvUnusableStoredPostingMissFailsTheBoard(t *testing.T) {
 	fb := missBoard(30)
 	const unreadable = 7
