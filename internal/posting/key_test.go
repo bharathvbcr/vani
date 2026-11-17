@@ -80,6 +80,7 @@ func TestSearchSiteKeys(t *testing.T) {
 		{TikTokKey, "TikTok", "7680987768009754885", "tt:tiktok:7680987768009754885", TikTok},
 		{TalentBrewKey, "Intuit", "102521439872", "tb:intuit:102521439872", TalentBrew},
 		{FeedKey, "Shopify", "1AFFB074-F055-4F5A-A97E-80D97D77DA6E", "fd:shopify:1affb074-f055-4f5a-a97e-80d97d77da6e", Feed},
+		{RemoteOKKey, "remoteok", "1137796", "ro:remoteok:1137796", RemoteOK},
 	} {
 		k, err := tc.mk(tc.a, tc.b)
 		if err != nil || k != tc.want || k.ATS() != tc.ats {
@@ -89,6 +90,18 @@ func TestSearchSiteKeys(t *testing.T) {
 			if _, err := tc.mk(bad[0], bad[1]); !errors.Is(err, ErrKeyPart) {
 				t.Errorf("%s(%q,%q) err = %v, want ErrKeyPart", tc.ats, bad[0], bad[1], err)
 			}
+		}
+	}
+}
+
+func TestHimalayasKey(t *testing.T) {
+	k, err := HimalayasKey("himalayas", "Acme-Labs", "ML-Engineer-12345")
+	if err != nil || k != "hm:himalayas:acme-labs:ml-engineer-12345" || k.ATS() != Himalayas {
+		t.Fatalf("%q %v (ATS %q), want hm:himalayas:acme-labs:ml-engineer-12345", k, err, k.ATS())
+	}
+	for _, bad := range [][3]string{{"", "a", "b"}, {"himalayas", "", "b"}, {"himalayas", "a", ""}, {"himalayas", "a:b", "c"}, {"himalayas", "a", "b:c"}} {
+		if _, err := HimalayasKey(bad[0], bad[1], bad[2]); !errors.Is(err, ErrKeyPart) {
+			t.Errorf("HimalayasKey(%q,%q,%q) err = %v, want ErrKeyPart", bad[0], bad[1], bad[2], err)
 		}
 	}
 }

@@ -288,6 +288,7 @@ Add boards with `vani watchlist add --ats CODE --token T --company 'Name' --allo
 | `ef`, `jb`, `av`, `tb` | Eightfold, Jibe, Avature, TalentBrew | Require `--host`; `ef` token is company domain + optional `--search`/`--filter`; `jb` token is client code + optional `--search`/`--filter`; `av` also requires `--url` portal listing URL |
 | `sr`, `ds`, `at`, `rp`, `wk` | SmartRecruiters, D. E. Shaw, Atlassian, Rippling, Workable | Slug `--token`; `sr` accepts repeatable `--filter country=us` (2-letter ISO code) |
 | `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb` | Recruitee, Pinpoint, BambooHR, Personio, Breezy HR, Teamtailor, HireHive, HiBob | Lower-case subdomain `--token` (e.g. `acme` for `acme.recruitee.com`) |
+| `hm`, `ro` | Himalayas, Remote OK (job boards: one listing, many employers, remote roles) | `hm` requires `--token himalayas` and at least one `--search`, and takes `--filter country=US`, `seniority=Senior` and `employment_type=Full Time`, one value each. A board whose searches match over 1,000 jobs fails, so narrow it. `ro` requires `--token remoteok` and takes no search (one request lists about 100 recent jobs). Terms: docs/LEGAL.md |
 | `fd`, `pg` | XML feed, generic careers page | Short slug `--token` + `--url`; `pg` also requires `--link-pattern RE` |
 
 ```bash

@@ -31,6 +31,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/google"
 	"github.com/bharathvbcr/Vani/internal/sources/greenhouse"
 	"github.com/bharathvbcr/Vani/internal/sources/hibob"
+	"github.com/bharathvbcr/Vani/internal/sources/himalayas"
 	"github.com/bharathvbcr/Vani/internal/sources/hirehive"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/jibe"
@@ -39,6 +40,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/personio"
 	"github.com/bharathvbcr/Vani/internal/sources/pinpoint"
 	"github.com/bharathvbcr/Vani/internal/sources/recruitee"
+	"github.com/bharathvbcr/Vani/internal/sources/remoteok"
 	"github.com/bharathvbcr/Vani/internal/sources/rippling"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/srcutil"
@@ -884,6 +886,8 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.HiBob:           hibob.New(d),
 		posting.TikTok:          tiktok.New(d),
 		posting.TalentBrew:      talentbrew.New(d),
+		posting.Himalayas:       himalayas.New(d),
+		posting.RemoteOK:        remoteok.New(d),
 		posting.Feed:            feed.New(d),
 	}
 }

@@ -38,11 +38,18 @@ A notice about copied code is handled the same way. If a file here is a substant
 
 ## How a fetch behaves
 
-Vani reads career pages and listing APIs that employers publish for applicants. It does not log into LinkedIn, Indeed, Glassdoor, or other aggregator accounts, and it does not solve CAPTCHAs.
+Vani reads career pages and listing APIs that employers publish for applicants, and two job boards' public APIs that invite this use (below). It does not log into LinkedIn, Indeed, Glassdoor, or other aggregator accounts, and it does not solve CAPTCHAs.
 
 Requests identify themselves as `Vani/0.1 (+personal job-listing reader)` (`internal/egress/client.go`). Career-page fetches honor `robots.txt` for that agent, including `Crawl-delay`. A career page whose `robots.txt` cannot be read, or whose `Crawl-delay` is above 10 seconds, fails that board with a warning instead of being fetched anyway. A 4xx from `robots.txt` means the host published none. Listing APIs are paced per host.
 
 Each third-party site keeps its own terms. freehire.me, used only to suggest boards and never as a posting source, allows keyless personal noncommercial use of its documented API. The client stays inside that limit.
+
+Two job boards are read through the public APIs they document, as boards an owner adds (`hm`, `ro`), never by default. As read on 2026-11-17:
+
+- **Himalayas** (`himalayas.app/jobs/api/search`): free to use without a key. Show Himalayas as the source and link back, send apply actions to the row's `applicationLink`, and do not pass the jobs on to other job boards or aggregators. Its robots.txt does not disallow the API. Vani keeps each job's himalayas.app page as its link and `applicationLink` as its apply link.
+- **Remote OK** (`remoteok.com/api`): link back to the job's Remote OK page and name Remote OK as the source. Do not use its logo. Its robots.txt allows `/api` to every agent not named (`Allow: /`, `Crawl-delay: 1`), disallows named AI-training and SEO crawlers, and states `Content-Signal: search=yes, ai-train=no, use=reference` as a condition of access. Vani trains no model. It does send a job's description to the owner's decision model to rank it, which the signal neither grants nor forbids (no `ai-input` value). Vani keeps each job's remoteok.com page as its link and apply link.
+
+Vani shows these jobs only to the person running it and passes them on to no one.
 
 People who run Vani are responsible for the sources they choose and for the law that applies to them.
 
