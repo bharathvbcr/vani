@@ -54,9 +54,10 @@ func w1dEvicted(t *testing.T, st posting.Status, ann map[string]string) (*ledger
 	return l, p
 }
 
-// An unreadable stored body is never changed text. The listing carries the same
-// text the record was stored with, so a dropped or dead record keeps its triage;
-// a listing whose hash really differs from the stored one is still a change.
+// An unreadable stored body is not changed text when the stored hash equals the
+// listed one: the record keeps its triage. A listing whose hash differs, or a
+// record with no stored hash to compare (nothing is known of its text, so it is
+// judged on the empty text it reads as, as before), is a change.
 func TestW1dReconcileUnreadableBody(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -71,7 +72,8 @@ func TestW1dReconcileUnreadableBody(t *testing.T) {
 		{name: "dropped same text", st: posting.Dropped, storedHash: true, listed: w1dText, wantStatus: posting.Dropped, wantReading: true},
 		{name: "dropped same text, other spacing", st: posting.Dropped, storedHash: true, listed: "alpha  beta gamma\ndelta epsilon", wantStatus: posting.Dropped, wantReading: true},
 		{name: "dropped changed text", st: posting.Dropped, storedHash: true, listed: w1dText + " zeta", wantChanged: 1, wantStatus: posting.Live},
-		{name: "dropped no stored hash", st: posting.Dropped, storedHash: false, listed: w1dText + " zeta", wantStatus: posting.Dropped, wantReading: true},
+		{name: "dropped no stored hash", st: posting.Dropped, storedHash: false, listed: w1dText + " zeta", wantChanged: 1, wantStatus: posting.Live},
+		{name: "dropped no stored hash, same text", st: posting.Dropped, storedHash: false, listed: w1dText, wantChanged: 1, wantStatus: posting.Live},
 		{name: "dead same text", st: posting.Dead, ann: map[string]string{DiedFromKey: string(posting.Triaged)}, storedHash: true, listed: w1dText, wantStatus: posting.Triaged, wantReading: true},
 		{name: "dead changed text", st: posting.Dead, ann: map[string]string{DiedFromKey: string(posting.Triaged)}, storedHash: true, listed: w1dText + " zeta", wantChanged: 1, wantStatus: posting.Live},
 	} {

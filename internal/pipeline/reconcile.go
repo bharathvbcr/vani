@@ -244,8 +244,8 @@ func (rc *Reconciler) reconcileIn(ctx context.Context, g ledger.Ledger, b source
 			// nothing about it: the stored summary, if any, stands.
 			p.Form = rec.Posting.Form
 		}
-		rendered, changed := textChange(rec, hash, p)
-		rendered, changed = known && rendered, known && changed
+		rendered, changed, restore := textChange(rec, hash, p)
+		rendered, changed, restore = known && rendered, known && changed, known && restore
 		// relist is what a same-content listing stores over a known record.
 		relist := relisted(rec.Posting, p, full)
 
@@ -358,6 +358,18 @@ func (rc *Reconciler) reconcileIn(ctx context.Context, g ledger.Ledger, b source
 				return s, err
 			}
 			s.Reappeared++
+		case restore:
+			// The stored body cannot be read back, the listing is the text it
+			// held: the stored posting takes the listing, so the body is
+			// readable again, and keeps its status and annotations (no
+			// re-triage). Unlike a re-render this includes a dropped record;
+			// its event is the only way the body comes back.
+			e := ledger.Event{V: ledger.SchemaVersion, At: now, Key: p.Key, Status: rec.Status, Posting: &relist,
+				Reason: "refreshed"}
+			if err := l.Append(ctx, e); err != nil {
+				return s, err
+			}
+			s.Refreshed++
 		case rendered && rec.Status != posting.Dropped:
 			// Same board text in a new rendering: the stored posting takes it
 			// (so the digest shows it) and keeps its status and annotations.
@@ -536,24 +548,32 @@ func refreshFields(stored, relist posting.Posting) bool {
 
 // textChange compares the listed text (p, whose DescriptionHash is hash) with
 // the text rec was stored with. rendered means the full hash differs; changed
-// means the board's own text differs, which re-triages.
+// means the board's own text differs, which re-triages. restore means the
+// stored body cannot be read back and the listing is the text it was stored
+// with: the record keeps its status and triage and takes the listed posting, so
+// its body is readable again.
 //
 // A record whose body is evicted and cannot be read back (rec.BodyEvicted after
-// ledger.Get: its Description is empty, not its text) is never changed text on
-// that account. It is judged on the description hash its last write recorded
-// (DescHashKey); with no such hash the answer is unknown, and unknown is not
-// changed. That hash is of the full text, so a differing one cannot tell a
-// re-rendering from an edit and counts as an edit, as it always did.
-func textChange(rec ledger.Record, hash string, p posting.Posting) (rendered, changed bool) {
+// ledger.Get: its Description is empty, not its text) is judged on the
+// description hash its last write recorded (DescHashKey). An equal hash is
+// restore, not a change. A differing hash is a change: it is of the full text,
+// so it cannot tell a re-rendering from an edit, and counts as an edit, as it
+// always did. With no stored hash nothing is known of the text and the record
+// is judged on the empty text it reads as, as it was before unreadable bodies
+// were told apart (a scan of the owner's ledger found no key without a hash).
+func textChange(rec ledger.Record, hash string, p posting.Posting) (rendered, changed, restore bool) {
 	if rec.BodyEvicted {
-		stored := rec.Annotations[DescHashKey]
-		differs := stored != "" && stored != hash
-		return differs, differs
+		if stored := rec.Annotations[DescHashKey]; stored != "" {
+			if stored == hash {
+				return false, false, true
+			}
+			return true, true, false
+		}
 	}
 	if rec.Posting.DescriptionHash() == hash {
-		return false, false
+		return false, false, false
 	}
-	return true, sourceHash(rec.Posting.Description) != sourceHash(p.Description)
+	return true, sourceHash(rec.Posting.Description) != sourceHash(p.Description), false
 }
 
 // sourceHash identifies the board's own text in a stored or listed

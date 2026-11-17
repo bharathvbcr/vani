@@ -80,6 +80,33 @@ func TestW1dadvUnreadableBodyOtherDamage(t *testing.T) {
 	}
 }
 
+// The unchanged listing of an unreadable record whose hash matches restores the
+// body without a status change or a re-triage, for a dropped and a live record,
+// and a second identical listing writes nothing more.
+func TestW1dadvUnreadableSameHashRestoresBody(t *testing.T) {
+	l, p := w1dadvEvictedBy(t, func(t *testing.T, path string, raw []byte) {
+		if err := os.WriteFile(path, bytes.ReplaceAll(raw, []byte(w1dText), []byte(w1dGarbled)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+	s, err := Reconcile(ctx, l, board, []posting.Posting{p}, t0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rec(t, l, p.Key)
+	if got.BodyEvicted || got.Posting.Description != w1dText || got.Status != posting.Dropped ||
+		got.Annotations[ledger.AnnTriagePrefix+"reading"] == "" || s.Refreshed != 1 || s.Changed != 0 {
+		t.Fatalf("summary %+v, evicted %v, text %q, status %s, annotations %v: want body restored, status and triage kept", s, got.BodyEvicted, got.Posting.Description, got.Status, got.Annotations)
+	}
+	s, err = Reconcile(ctx, l, board, []posting.Posting{p}, t0.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Refreshed != 0 || s.Unchanged != 1 {
+		t.Fatalf("second listing %+v: a restored record is unchanged", s)
+	}
+}
+
 // A record that is not evicted and legitimately has no text, listed with text,
 // is changed text as it always was: the evicted branch of textChange must not
 // swallow it.
@@ -103,12 +130,9 @@ func TestW1dadvEmptyDescriptionNotEvictedIsStillChange(t *testing.T) {
 	}
 }
 
-// An unreadable dropped record whose listing text really changed while it has
-// no stored hash is judged "not changed". Characterization of what happens
-// next: does any later listing heal the record (adopt the listed text) or does
-// it stay unreadable and stale for ever? The assertion is the desired one: the
-// record takes the listed text on a later run, so the stale body does not
-// outlive the first sighting.
+// An unreadable dropped record with no stored hash is judged on the empty text
+// it reads as, so a listing with text is a change and the record takes the
+// listed text: the stale body does not outlive the first sighting.
 func TestW1dadvUnknownHashUnreadableRecordHeals(t *testing.T) {
 	l, p := w1dadvEvictedBy(t, func(t *testing.T, path string, raw []byte) {
 		if err := os.WriteFile(path, bytes.ReplaceAll(raw, []byte(w1dText), []byte(w1dGarbled)), 0o600); err != nil {
