@@ -257,9 +257,6 @@ func (e *env) coverPosting(rawKey string) (posting.Posting, error) {
 }
 
 func (e *env) letterStore() (*letterstore.Store, error) {
-	if !filepath.IsAbs(e.stateDir) {
-		return nil, fmt.Errorf("cover: the state directory must be an absolute path")
-	}
 	return letterstore.Open(e.stateDir)
 }
 

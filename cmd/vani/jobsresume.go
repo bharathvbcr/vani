@@ -269,9 +269,6 @@ func (e *env) resumeJobFor(rawKey string, needText bool) (resumeJob, *resumeErro
 // resumeStore opens the store under the state dir, which must be absolute: the
 // PDF paths a reply names and the folders builds work in are absolute.
 func (e *env) resumeStore() (*resumestore.Store, *resumeError) {
-	if !filepath.IsAbs(e.stateDir) {
-		return nil, jrErr(codeConfig, "jobs resume: the state directory must be an absolute path")
-	}
 	st, err := resumestore.Open(e.stateDir)
 	if err != nil {
 		return nil, storeError(err)

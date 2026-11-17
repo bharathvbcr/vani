@@ -30,6 +30,11 @@ const (
 // never shows.
 var ErrAppPairMismatch = errors.New("config: the Mac app uses another config or state dir")
 
+// ErrRelativePath is a resolution refused because VANI_CONFIG or VANI_STATE_DIR
+// is a relative path, which would depend on the starting process's working
+// directory.
+var ErrRelativePath = errors.New("config: relative path in environment")
+
 // AppSettingsPath is the Mac app's settings file under home. Its vaniConfig
 // and vaniStateDir (DraftSettings.swift) name the config and state dir the app
 // runs vani on; empty means the platform default.
@@ -59,7 +64,27 @@ type Resolved struct {
 // ErrAppPairMismatch; a component taken from the environment is never
 // compared. Unreadable settings skip the check with a Warning.
 func Resolve(getenv func(string) string, home, goos string) (Resolved, error) {
-	c, s := pathsFor(goos, getenv, home)
+	// Refuse rather than absolutise: launchd and the app have no meaningful
+	// working directory, so a made-absolute path would land under / or the
+	// app bundle. A literal ~/x is relative (no shell expanded it) and is
+	// refused too. An absolute value is cleaned of . and .. segments.
+	cleaned := map[string]string{}
+	for _, name := range []string{"VANI_CONFIG", "VANI_STATE_DIR"} {
+		v := getenv(name)
+		if v == "" {
+			continue
+		}
+		if !filepath.IsAbs(v) {
+			return Resolved{}, fmt.Errorf("%w: %s=%q is relative; set an absolute path", ErrRelativePath, name, v)
+		}
+		cleaned[name] = filepath.Clean(v)
+	}
+	c, s := pathsFor(goos, func(k string) string {
+		if v, ok := cleaned[k]; ok {
+			return v
+		}
+		return getenv(k)
+	}, home)
 	r := Resolved{ConfigPath: c, StateDir: s, ConfigFrom: FromDefault, StateFrom: FromDefault, AppSettings: "not checked"}
 	if getenv("VANI_CONFIG") != "" {
 		r.ConfigFrom = FromEnv
