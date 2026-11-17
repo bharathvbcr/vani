@@ -6,6 +6,7 @@ import (
 
 	"github.com/bharathvbcr/Manvi/manvi/llm"
 	"github.com/bharathvbcr/Manvi/manvi/llm/budget"
+	"github.com/bharathvbcr/Vani/internal/config"
 )
 
 // newPricedProvider meters inner at the operator's rates for model, the model
@@ -29,13 +30,15 @@ func newPricedProvider(inner llm.Provider, model string, in, out int64) pricedPr
 // configuredPrices is the operator's input and output rates with the cache
 // rates taken from table, the provider's published entry for the same model,
 // when ok. It is the one place the fallback's cache rates are decided, so the
-// metered path and the teacher/auditor planners cannot disagree.
+// metered path and the teacher/auditor planners cannot disagree. The cache-write
+// rate is clamped to config.MaxNanoUSDPerToken, the cap on any configured rate,
+// so an input rate near that cap still gives prices the budget package accepts.
 func configuredPrices(in, out int64, table budget.Prices, ok bool) budget.Prices {
 	p := budget.Prices{Rates: budget.Rates{Input: in, Output: out, CacheWrite: in, CacheRead: in}}
 	if !ok {
 		return p
 	}
-	p.CacheWrite = max(in, scaleRate(in, table.CacheWrite, table.Input))
+	p.CacheWrite = min(max(in, scaleRate(in, table.CacheWrite, table.Input)), config.MaxNanoUSDPerToken)
 	if table.CacheRead < in {
 		p.CacheRead = table.CacheRead
 	}

@@ -107,3 +107,22 @@ func TestW1bTeacherPricesAgreeWithTheMeteredFallback(t *testing.T) {
 		t.Fatalf("teacher %+v, metered %+v", got, want)
 	}
 }
+
+// An operator rate at the config cap, and one nano-USD either side, must still
+// give prices Manvi's budget package validates. This reads the cap from config,
+// so it also fails if Manvi's own cap ever falls below Vani's.
+func TestW1bConfiguredPricesAtTheConfigCapValidate(t *testing.T) {
+	table, ok := anthropic.PriceOf("claude-opus-5-5")
+	if !ok {
+		t.Fatal("no opus entry")
+	}
+	for _, in := range []int64{config.MaxNanoUSDPerToken - 1, config.MaxNanoUSDPerToken} {
+		got := configuredPrices(in, in, table, true)
+		if err := got.Validate(); err != nil {
+			t.Errorf("input %d: %v (cache write %d)", in, err, got.CacheWrite)
+		}
+		if got.CacheWrite < in {
+			t.Errorf("input %d: cache write %d fell below input", in, got.CacheWrite)
+		}
+	}
+}
