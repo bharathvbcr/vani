@@ -272,11 +272,12 @@ func listOneBoard(ctx context.Context, src sources.Source, b sources.Board) (lis
 			err = fmt.Errorf("adapter %s/%s panicked: %s", b.ATS, oneLine(b.Token, maxBoardNameRunes), oneLine(panicText(r), maxPanicRunes))
 		}
 	}()
-	listed, err = src.List(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget), b)
+	listCtx, adapterSkipped := srcutil.CountBadRows(srcutil.WithRetryBudget(ctx, srcutil.BoardRetryBudget))
+	listed, err = src.List(listCtx, b)
 	if err != nil {
 		return listed, err
 	}
-	return storableListing(ctx, b, listed)
+	return storableListing(ctx, b, listed, adapterSkipped())
 }
 
 // failsBoardOnBadRow is the adapters that keep failing their board on a row
@@ -302,14 +303,16 @@ var failsBoardOnBadRow = map[posting.ATS]bool{
 // otherwise skipped and counted through the run's BadRowSink, so the listing
 // reconciles as a short one and the stored postings it left out are held, not
 // aged. Without a sink, or past srcutil.MaxGone rows, the board fails. The
-// sink adds to anything the adapter itself reported for this listing: the rows
-// are different rows. The error names the row's position and the field, never
+// bound is on the rows the adapter skipped (adapterSkipped) and the rows skipped
+// here together, out of every row the board sent. The sink adds to what the
+// adapter itself reported for this listing: the rows are different rows, and
+// this call reports only its own. The error names the row's position and the field, never
 // the value.
-func storableListing(ctx context.Context, b sources.Board, listed []posting.Posting) ([]posting.Posting, error) {
+func storableListing(ctx context.Context, b sources.Board, listed []posting.Posting, adapterSkipped int) ([]posting.Posting, error) {
 	if len(listed) == 0 {
 		return listed, nil
 	}
-	rows := srcutil.NewRows(ctx, b, len(listed))
+	rows := srcutil.NewRowsAfter(ctx, b, len(listed)+adapterSkipped, adapterSkipped)
 	kept := make([]posting.Posting, 0, len(listed))
 	for i, p := range listed {
 		sp, err := srcutil.Storable(b, p)

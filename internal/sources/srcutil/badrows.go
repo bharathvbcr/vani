@@ -3,6 +3,7 @@ package srcutil
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
@@ -46,6 +47,7 @@ type Rows struct {
 	sink    BadRowSink
 	b       sources.Board
 	total   int
+	prior   int // rows an earlier stage of this listing skipped; counted against the bound, not reported
 	skipped int
 	first   string
 }
@@ -55,6 +57,34 @@ type Rows struct {
 func NewRows(ctx context.Context, b sources.Board, total int) *Rows {
 	sink, _ := ctx.Value(badRowsKey{}).(BadRowSink)
 	return &Rows{sink: sink, b: b, total: total}
+}
+
+// NewRowsAfter starts counting for a listing of total rows on b, of which an
+// earlier stage already skipped already. The bound is on both together, so two
+// stages that each stay inside it cannot together leave out more than it
+// allows; Done reports only the rows this Rows skipped, so the sum a sink
+// receives across the stages stays exact.
+func NewRowsAfter(ctx context.Context, b sources.Board, total, already int) *Rows {
+	r := NewRows(ctx, b, total)
+	r.prior = max(already, 0)
+	return r
+}
+
+// CountBadRows returns ctx with its BadRowSink wrapped so that the rows an
+// adapter reports are also counted, and the function that reads the count. The
+// wrapped sink forwards every report unchanged. With no sink on ctx it returns
+// ctx and a count of zero: an adapter then fails on its first bad row itself.
+func CountBadRows(ctx context.Context) (context.Context, func() int) {
+	sink, _ := ctx.Value(badRowsKey{}).(BadRowSink)
+	if sink == nil {
+		return ctx, func() int { return 0 }
+	}
+	var n atomic.Int64
+	counting := func(b sources.Board, skipped int, first string) {
+		n.Add(int64(skipped))
+		sink(b, skipped, first)
+	}
+	return context.WithValue(ctx, badRowsKey{}, BadRowSink(counting)), func() int { return int(n.Load()) }
 }
 
 // Add counts n more rows of the listing.
@@ -78,14 +108,14 @@ func (r *Rows) Bad(err error) error {
 	if r.first == "" {
 		r.first = err.Error()
 	}
-	if r.skipped > MaxGone(r.total) {
+	if r.skipped+r.prior > MaxGone(r.total) {
 		return r.over(err)
 	}
 	return nil
 }
 
 func (r *Rows) over(err error) error {
-	return fmt.Errorf("%w (%d bad rows of %d, over the %d the board may leave out)", err, r.skipped, r.total, MaxGone(r.total))
+	return fmt.Errorf("%w (%d bad rows of %d, over the %d the board may leave out)", err, r.skipped+r.prior, r.total, MaxGone(r.total))
 }
 
 // Done ends the listing. It returns an error when the rows skipped turn out to
@@ -96,7 +126,7 @@ func (r *Rows) Done() error {
 	if r.sink == nil || r.skipped == 0 {
 		return nil
 	}
-	if r.skipped > MaxGone(r.total) {
+	if r.skipped+r.prior > MaxGone(r.total) {
 		return r.over(fmt.Errorf("rows could not be read: %s", r.first))
 	}
 	r.sink(r.b, r.skipped, r.first)

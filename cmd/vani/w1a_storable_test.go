@@ -231,18 +231,18 @@ func TestW1aNoSinkOrTooManyBadRowsFailsTheBoard(t *testing.T) {
 		}
 		return out
 	}
-	if _, err := storableListing(context.Background(), b, rows(1)); err == nil || !strings.Contains(err.Error(), "row 1 of 10") {
+	if _, err := storableListing(context.Background(), b, rows(1), 0); err == nil || !strings.Contains(err.Error(), "row 1 of 10") {
 		t.Errorf("no sink: err %v", err)
 	}
 	var sk w1aSink
 	ctx := srcutil.WithBadRowSink(context.Background(), sk.sink)
-	if got, err := storableListing(ctx, b, rows(srcutil.MaxGone(10))); err != nil || len(got) != 9 {
+	if got, err := storableListing(ctx, b, rows(srcutil.MaxGone(10)), 0); err != nil || len(got) != 9 {
 		t.Errorf("at the bound: kept %d, err %v", len(got), err)
 	}
-	if _, err := storableListing(ctx, b, rows(srcutil.MaxGone(10)+1)); err == nil {
+	if _, err := storableListing(ctx, b, rows(srcutil.MaxGone(10)+1), 0); err == nil {
 		t.Errorf("over the bound: want a board error")
 	}
-	if _, err := storableListing(ctx, b, rows(10)); err == nil {
+	if _, err := storableListing(ctx, b, rows(10), 0); err == nil {
 		t.Errorf("every row bad: want a board error")
 	}
 }
@@ -265,7 +265,7 @@ func TestW1aSeamAndAdapterSkipsAdd(t *testing.T) {
 	rows := boardPostings(b, 30)
 	rows[4].Title = ""
 	rows[5].Title = ""
-	got, err := storableListing(ctx, b, rows)
+	got, err := storableListing(ctx, b, rows, 0)
 	if err != nil || len(got) != 28 {
 		t.Fatalf("kept %d, err %v", len(got), err)
 	}
@@ -287,7 +287,7 @@ func TestW1aFailTheBoardSetKeepsFailing(t *testing.T) {
 		b := sources.Board{ATS: ats, Token: "t/s", Company: "X"}
 		rows := boardPostings(b, 20)
 		rows[6].URL = "javascript:alert(1)"
-		if _, err := storableListing(ctx, b, rows); err == nil || !strings.Contains(err.Error(), "row 7 of 20") {
+		if _, err := storableListing(ctx, b, rows, 0); err == nil || !strings.Contains(err.Error(), "row 7 of 20") {
 			t.Errorf("%s: err %v, want a board error naming row 7", ats, err)
 		}
 	}
@@ -295,7 +295,7 @@ func TestW1aFailTheBoardSetKeepsFailing(t *testing.T) {
 		b := sources.Board{ATS: ats, Token: "t", Company: "X"}
 		rows := boardPostings(b, 20)
 		rows[6].URL = "javascript:alert(1)"
-		if got, err := storableListing(ctx, b, rows); err != nil || len(got) != 19 {
+		if got, err := storableListing(ctx, b, rows, 0); err != nil || len(got) != 19 {
 			t.Errorf("%s: kept %d, err %v, want the row skipped", ats, len(got), err)
 		}
 	}
