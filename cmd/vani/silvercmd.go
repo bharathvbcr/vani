@@ -437,7 +437,7 @@ func (e *env) teacherPairs(o teacherOpts, jr *teacherReply) error {
 	res, err := run.Run(ctx, works)
 	after, afterErr := teacherSettled(context.WithoutCancel(ctx), ledgerPath)
 	jr.Run = e.teacherSummary(eval.TeacherResult{Considered: res.Considered, Skipped: res.Skipped, Asked: res.Asked, Stored: res.Stored,
-		Unread: res.Unread, Unusable: res.Unusable, Stopped: res.Stopped, SpentNano: res.SpentNano},
+		Unread: res.Unread, Unusable: res.Unusable, Stopped: res.Stopped, SpentNano: res.SpentNano, SpentUnknown: res.SpentUnknown},
 		ps.Stored, len(works), before, beforeErr, after, afterErr, llmCap)
 	jr.Run.LimitUSD = float64(limit) / 1e9
 	if cn, sn, serr := capFile.State(day); serr == nil {

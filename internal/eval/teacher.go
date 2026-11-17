@@ -673,6 +673,9 @@ type TeacherResult struct {
 	// not be read after the run, Run returns an error rather than a 0 that would
 	// read as "spent nothing".
 	SpentNano int64
+	// SpentUnknown is true when that read failed: SpentNano is then not a
+	// measurement and a display must say "unknown", not 0.
+	SpentUnknown bool
 }
 
 // TeacherStoppedAtLimit is TeacherResult.Stopped when the spend limit, not a
@@ -889,6 +892,7 @@ feed:
 	wg.Wait()
 
 	if spent, serr := r.Spent(context.WithoutCancel(ctx)); serr != nil {
+		res.SpentUnknown = true
 		fatal = errors.Join(fatal, fmt.Errorf("eval: the spend could not be read after the run, so what it cost is unknown: %w", serr))
 	} else {
 		res.SpentNano = spent - base

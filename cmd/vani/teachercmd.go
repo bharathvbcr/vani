@@ -599,8 +599,15 @@ func (e *env) teacherSummary(res eval.TeacherResult, already, planned int, befor
 	fmt.Fprintf(e.stdout, "teacher: asked %d, stored %d (%d with an unusable slot), no reading %d, already stored %d\n",
 		res.Asked, res.Stored, res.Unusable, res.Unread, res.Skipped+already)
 	if err := cmp.Or(beforeErr, afterErr); err != nil {
-		out.MeteredUSD, out.LedgerError = dollars(res.SpentNano), err.Error()
-		fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (resolved delta: settled plus kept reservations, at least this run's own) %s\n", err, usd(res.SpentNano))
+		out.LedgerError = err.Error()
+		if res.SpentUnknown {
+			// The gate's own meter could not be read either: there is no figure, and 0
+			// would read as "nothing spent".
+			fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); the gate-metered spend is unknown (its meter could not be read)\n", err)
+		} else {
+			out.MeteredUSD = dollars(res.SpentNano)
+			fmt.Fprintf(e.stdout, "teacher: the budget ledger could not be read back (%v); gate-metered spend (resolved delta: settled plus kept reservations, at least this run's own) %s\n", err, usd(res.SpentNano))
+		}
 	} else {
 		out.SettledUSD, out.RetainedUSD = dollars(after.SpentNanoUSD-before.SpentNanoUSD), dollars(after.RetainedNanoUSD-before.RetainedNanoUSD)
 		out.RemainingTodayUSD = dollars(max(capNano-after.CommittedNanoUSD(), 0))
