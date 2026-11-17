@@ -47,7 +47,7 @@ type DetailStep struct {
 	Reuse func(i int) posting.Posting
 
 	// Gone is the error Fetch returns for a row closed since the listing. Nil
-	// when no row can be gone. A gone new row is left out; a gone stored row is kept (returned as stored, or held when its text is unusable) and counted Unanswered, since the listing still names it. Both are bounded by MaxGone.
+	// when no row can be gone. A gone row is left out, within the bound.
 	Gone error
 	// GoneErr is the board's error when more rows are gone than MaxGone allows,
 	// or all of them are with nothing reused. Required with Gone.
@@ -85,10 +85,6 @@ type DetailResult struct {
 	// BadRowSink as a shortfall, so the listing reads as short and their stored
 	// postings are kept, not aged.
 	Held int
-	// TooLarge rows answered a detail over the body cap (ErrBodyTooLarge). Each
-	// was skipped as a bad row (Rows.Bad), so the listing reads as short and a
-	// stored posting among them is kept, not aged.
-	TooLarge int
 }
 
 // Run does the step. ctx is checked before every request. The error is the
@@ -119,47 +115,22 @@ func (d DetailStep) Run(ctx context.Context) (DetailResult, error) {
 		p, err := d.Fetch(ctx, i)
 		switch {
 		case err != nil && d.Gone != nil && errors.Is(err, d.Gone):
-			// Many gone at once is the detail endpoint failing, not postings
-			// closing, and would empty a healthy board; stored rows count
-			// toward that bound too, and are reported as Gone as well.
+			// Closed between the listing and its detail; leaving it out is the
+			// truth. Many at once is the detail endpoint failing, not postings
+			// closing, and would empty a healthy board.
 			if res.Gone++; res.Gone > allowed || (res.Gone == len(d.Plan.Fetch) && res.Reused == 0) {
 				return res, d.GoneErr(res.Gone, len(d.Plan.Fetch))
 			}
-			if n < d.Plan.New {
-				// A new row closed between the listing and its detail; it is
-				// not stored, so leaving it out ages nothing.
-				continue
-			}
-			// A stored row the listing still names is not proven closed by one
-			// 404 (a CDN blip answers the same): it is kept as a miss, not left
-			// out, which would age it as absent. A closed job leaves the listing
-			// and ages out then.
-			if d.Plan.unusableAt(n) {
-				if !misses.canHold {
-					return res, d.fetchErr(i, fmt.Errorf("%w (a stored row with unreadable text answered gone)", ErrCannotHold))
-				}
-				res.Held++
-			} else {
-				reuse(i)
-			}
-			res.Unanswered++
-			continue
-		case err != nil && ctx.Err() == nil && errors.Is(err, ErrBodyTooLarge):
-			// One posting too large to read fails every run of its board if it
-			// fails the board. It is reported as a bad row instead: skipped,
-			// bounded with the other bad rows, and its stored posting, if any,
-			// held by the short listing. Without a sink Bad returns err and the
-			// board fails as it always did.
-			if berr := bad.Bad(fmt.Errorf("row %d: detail too large: %w", i, err)); berr != nil {
-				return res, d.fetchErr(i, berr)
-			}
-			res.TooLarge++
 			continue
 		case err != nil:
 			// A partial listing would age healthy postings as absent, so only a
 			// transient miss the plan can absorb is left for a later run.
 			if !misses.Take(ctx, n, err) {
-				return res, d.fetchErr(i, misses.Refusal(ctx, n, err))
+				err = misses.Refusal(ctx, n, err)
+				if d.FetchErr != nil {
+					err = d.FetchErr(i, err)
+				}
+				return res, err
 			}
 			if d.Plan.unusableAt(n) {
 				res.Held++
@@ -200,14 +171,6 @@ func (d DetailStep) Run(ctx context.Context) (DetailResult, error) {
 		err = bad.Done()
 	}
 	return res, err
-}
-
-// fetchErr words err, the failure of row i's request, as the adapter's FetchErr.
-func (d DetailStep) fetchErr(i int, err error) error {
-	if d.FetchErr != nil {
-		return d.FetchErr(i, err)
-	}
-	return err
 }
 
 // Postings is the listed postings of slots, in order.

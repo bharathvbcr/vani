@@ -66,10 +66,8 @@ func TestGoneDetailsAreLeftOutUnderTheBound(t *testing.T) {
 	}
 }
 
-func TestGoneStoredRowIsKeptNotAgedAsAbsent(t *testing.T) {
-	// A stored posting whose re-read answers 404 while the listing still names it is
-	// not proven closed (a CDN blip answers the same): it is returned as stored, not
-	// left out, which would age it as absent.
+func TestGoneStoredRowIsLeftOutSoItAges(t *testing.T) {
+	// A stored posting whose re-read answers 404 closed: it must not be returned.
 	a := board(20)
 	a.bad = map[string]srctest.Reply{idOf(3): notFound()}
 	stored := []posting.Posting{storedPosting(idOf(3), stamp)}
@@ -80,15 +78,13 @@ func TestGoneStoredRowIsKeptNotAgedAsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
 	for _, p := range got {
-		found = found || p.Key == stored[0].Key
+		if p.Key == stored[0].Key {
+			t.Fatal("a posting whose detail is gone was returned")
+		}
 	}
-	if !found {
-		t.Fatal("a stored posting still on the listing was left out when its detail answered gone")
-	}
-	if len(got) != 20 {
-		t.Fatalf("%d postings, want 20", len(got))
+	if len(got) != 19 {
+		t.Fatalf("%d postings, want 19", len(got))
 	}
 }
 

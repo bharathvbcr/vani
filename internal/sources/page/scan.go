@@ -49,6 +49,7 @@ const (
 // that stopped early is never a complete one). Work is linear in len(doc).
 func scanHTML(doc string) scanned {
 	var out scanned
+	foreign := 0 // open <svg> and <math> elements around the scan point
 	for i := 0; i < len(doc); {
 		j := strings.IndexByte(doc[i:], '<')
 		if j < 0 {
@@ -65,6 +66,11 @@ func scanHTML(doc string) scanned {
 			continue
 		}
 		if i+1 >= len(doc) || !isLetter(doc[i+1]) {
+			if foreign > 0 && strings.HasPrefix(doc[i:], "</") {
+				if n := endTagName(doc, i+2); n == "svg" || n == "math" {
+					foreign--
+				}
+			}
 			i++
 			continue
 		}
@@ -80,6 +86,10 @@ func scanHTML(doc string) scanned {
 			break
 		}
 		switch name {
+		case "svg", "math":
+			if !selfClosed(doc, k, end) {
+				foreign++
+			}
 		case "body":
 			if out.bodyStart == 0 {
 				out.bodyStart = end
@@ -101,8 +111,10 @@ func scanHTML(doc string) scanned {
 				out.links = append(out.links, link{href: html.UnescapeString(href), text: htmltext.Text(text, 200)})
 			}
 		case "script", "style", "textarea", "title":
-			if selfClosed(doc, k, end) {
-				// <title/> or <script/> in SVG or XHTML has no body and no closing tag.
+			if foreign > 0 && selfClosed(doc, k, end) {
+				// Inside <svg> or <math>, <title/> or <script/> has no body and no
+				// closing tag. In HTML it is a start tag: the element runs to its
+				// closer, and with none the rest of the document is its body.
 				break
 			}
 			closeAt := htmltext.IndexFold(doc[end:], "</"+name)
@@ -147,6 +159,15 @@ func commentEnd(doc string, pos int) (next int, ok bool) {
 	default:
 		return pos + b + 4, true
 	}
+}
+
+// endTagName is the lowercase name of the end tag whose name starts at pos.
+func endTagName(doc string, pos int) string {
+	k := pos
+	for k < len(doc) && isNameByte(doc[k]) {
+		k++
+	}
+	return htmltext.LowerASCII(doc[pos:k])
 }
 
 // selfClosed is whether the tag whose name ends at k and whose ">" ends just
