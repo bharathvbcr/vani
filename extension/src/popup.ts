@@ -1,5 +1,5 @@
 // Popup: act on the current page and manage saved answers.
-import type { Answer, Bank, FieldInfo } from "./types";
+import { type Answer, type Bank, type FieldInfo, ownAnswer } from "./types";
 import { BANK_FULL, MAX_BANK_BYTES, answerKey, bankBytes, exportBank } from "./bank";
 import { ANSWER_KEY_BY_JARVIS, CONTACT_BY_ID, NOT_RUN_NOTE, contactEdits, contactItems, omitContactAnswers, readImport } from "./contacts";
 import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
@@ -345,7 +345,7 @@ $("#modal-edit-save").onclick = async () => {
   if (!editingKey) return;
   const next = ($("#edit-value") as HTMLTextAreaElement).value.trim();
   const review = ($("#edit-review") as HTMLInputElement).checked;
-  const a = current?.answers[editingKey];
+  const a = current ? ownAnswer(current.answers, editingKey) : undefined;
   const kind = a?.kind ?? "text";
   const val = kind === "checkbox" || kind === "select" || kind === "radio"
     ? next.split(",").map(s => s.trim()).filter(Boolean)
@@ -619,7 +619,7 @@ async function runCopy(): Promise<void> {
   await bg({ type: "contactsCopied", set: true });
   for (const key of imported.stored) {
     const answer = ANSWER_KEY_BY_JARVIS[key];
-    if (answer && current?.answers[answer]) {
+    if (answer && current && ownAnswer(current.answers, answer)) {
       await bg({ type: "deleteAnswer", key: answer });
       delete current.answers[answer];
     }

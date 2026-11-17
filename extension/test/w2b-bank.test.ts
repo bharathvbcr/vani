@@ -14,10 +14,14 @@ describe("71: import refuses prototype-shaped keys and changes no prototype", ()
   const file = (answers: string) => `{"version":1,"answers":${answers},"settings":{"captureSelfId":false,"disabledHosts":[]}}`;
   const row = (key: string) => JSON.stringify({ ...answer(key) });
 
-  test("__proto__, constructor and prototype as an answer key refuse the import", () => {
-    for (const key of ["__proto__", "constructor", "prototype"]) {
-      const json = file(`{${JSON.stringify(key)}:${row(key)}}`);
-      expect(() => parseBank(json), key).toThrow(/not allowed/);
+  // Fable ruling: only "__proto__" is refused (assigning it swaps the prototype). "constructor" and "prototype" are
+  // harmless own keys, accepted, and no prototype changes: criterion 71 is met by intent.
+  test("__proto__ as an answer key refuses the import; constructor and prototype are accepted as own keys", () => {
+    expect(() => parseBank(file(`{"__proto__":${row("__proto__")}}`))).toThrow(/not allowed/);
+    for (const key of ["constructor", "prototype"]) {
+      const { bank } = parseBank(file(`{${JSON.stringify(key)}:${row(key)}}`));
+      expect(Object.hasOwn(bank.answers, key), key).toBe(true);
+      expect(Object.getPrototypeOf(bank.answers)).toBe(Object.prototype);
     }
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     expect(Object.getPrototypeOf({})).toBe(Object.prototype);

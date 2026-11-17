@@ -1,7 +1,7 @@
 // Background service worker: the single writer to the answer bank, and the
 // keyboard shortcut. It makes no network requests.
 import { createLock } from "./guards";
-import type { Answer, Bank } from "./types";
+import { type Answer, type Bank, ownAnswer } from "./types";
 import { type CaptureResult, MAX_OPTIONS, MAX_VALUE_CHARS, hostDisabled, mergeCapture, mergeCaptureDelta, parseBank } from "./bank";
 import {
   logActivity,
@@ -439,7 +439,10 @@ async function bumpFills(keys: string[]): Promise<void> {
   for (const k of keys) tally.set(k, (tally.get(k) ?? 0) + 1);
   const inBrowser = () => update(b => {
     const answers = { ...b.answers };
-    for (const [k, n] of tally) if (answers[k]) answers[k] = { ...answers[k]!, fills: answers[k]!.fills + n };
+    for (const [k, n] of tally) {
+      const a = ownAnswer(answers, k);
+      if (a) answers[k] = { ...a, fills: a.fills + n };
+    }
     return { ...b, answers };
   });
   if (await storageMode() !== "mac-app") { await inBrowser(); return; }
@@ -448,7 +451,7 @@ async function bumpFills(keys: string[]): Promise<void> {
     if (rev === null) { await inBrowser(); return; } // the Mac app went away since the mode check
     const upsert: Answer[] = [];
     for (const [k, n] of tally) {
-      const a = bank.answers[k];
+      const a = ownAnswer(bank.answers, k);
       if (a) upsert.push({ ...a, fills: a.fills + n });
     }
     if (upsert.length === 0) return;
@@ -541,7 +544,7 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return { ok: true };
     case "editAnswer":
       await update(b => {
-        const a = b.answers[msg.key];
+        const a = ownAnswer(b.answers, msg.key);
         if (!a || !Array.isArray(msg.value)) return b;
         const value = msg.value.slice(0, MAX_OPTIONS).map(v => String(v).slice(0, MAX_VALUE_CHARS)).filter(Boolean);
         const review = typeof msg.review === "boolean" ? msg.review : a.review;

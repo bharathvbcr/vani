@@ -1,4 +1,4 @@
-import { type Answer, type Bank, type FieldInfo, type FieldKind, type Sensitivity, CHOICE_KINDS, emptyBank } from "./types";
+import { type Answer, type Bank, type FieldInfo, type FieldKind, type Sensitivity, CHOICE_KINDS, emptyBank, ownAnswer } from "./types";
 import { autocompleteKey, dialCodeOnly, normalizeLabel, signature, tokens } from "./normalize";
 import { classify, untouchable } from "./classify";
 import { intentOf } from "./intents";
@@ -65,7 +65,7 @@ export function mergeBanks(base: Bank, incoming: Bank): Bank {
     answers[k] = a;
   }
   for (const [k, a] of Object.entries(incoming.answers)) {
-    const have = answers[k];
+    const have = ownAnswer(answers, k);
     if (have) {
       if (a.updatedAt > have.updatedAt) answers[k] = a;
     } else if (Object.keys(answers).length < MAX_ANSWERS) {
@@ -151,7 +151,7 @@ export function ownerIndex(answers: Record<string, Answer>): OwnerIndex {
   };
   return {
     find(f, sens) {
-      const direct = Object.hasOwn(answers, answerKey(f)) ? answers[answerKey(f)] : undefined;
+      const direct = ownAnswer(answers, answerKey(f));
       if (direct) return direct;
       computed++;
       const want = conceptKey(f.label, f.autocomplete);
@@ -162,7 +162,7 @@ export function ownerIndex(answers: Record<string, Answer>): OwnerIndex {
       }
       let best: Answer | undefined;
       for (const k of byConcept.get(want) ?? []) {
-        const a = Object.hasOwn(answers, k) ? answers[k] : undefined;
+        const a = ownAnswer(answers, k);
         if (!a || a.sensitivity !== sens || !kindsCompatible(a.kind, f.kind)) continue;
         // The stored row is re-classified from its key and every wording joined (parseBank): a
         // wording that would change that reading (to secret, which drops the row, or to self_id)
@@ -246,7 +246,7 @@ export function mergeCapture(bank: Bank, fields: FieldInfo[], host: string, now:
         const key = answerKey(f);
         const want = intentOf(f.label);
         let removed = false;
-        if (out.answers[key]) {
+        if (ownAnswer(out.answers, key)) {
           delete out.answers[key];
           removed = true;
         }
@@ -347,12 +347,12 @@ export function mergeCaptureDelta(bank: Bank, fields: FieldInfo[], host: string,
   const upsert: Answer[] = [];
   const deleteKeys: string[] = [];
   for (const [k, a] of Object.entries(result.bank.answers)) {
-    if (bank.answers[k] !== a) {
+    if (ownAnswer(bank.answers, k) !== a) {
       upsert.push(a);
     }
   }
   for (const k of Object.keys(bank.answers)) {
-    if (!result.bank.answers[k]) {
+    if (!ownAnswer(result.bank.answers, k)) {
       deleteKeys.push(k);
     }
   }
@@ -363,8 +363,6 @@ export function mergeCaptureDelta(bank: Bank, fields: FieldInfo[], host: string,
 const KINDS: ReadonlySet<string> = new Set<FieldKind>([
   "text", "email", "tel", "url", "number", "date", "textarea", "select", "radio", "checkbox", "file", "password", "hidden", "other",
 ]);
-
-const UNSAFE_KEYS: ReadonlySet<string> = new Set(["__proto__", "constructor", "prototype"]);
 
 function isStrArray(x: unknown, cap: number): x is string[] {
   return Array.isArray(x) && x.length <= cap && x.every(s => typeof s === "string" && s.length <= MAX_VALUE_CHARS);
@@ -397,9 +395,10 @@ export function parseBank(json: string): { bank: Bank; droppedSecret: number } {
     if (!a || typeof a !== "object" || a.key !== key || typeof key !== "string" || key.length < 2 || key.length > 200) {
       throw new Error(`answer ${JSON.stringify(key).slice(0, 60)} is malformed`);
     }
-    // Answers live in a plain object that every reader indexes by key. "__proto__" would swap its prototype on
-    // assignment, and the other two would read as inherited members of any bank that lacks them.
-    if (UNSAFE_KEYS.has(key)) throw new Error(`answer key ${JSON.stringify(key)} is not allowed`);
+    // Answers live in a plain object. Assigning "__proto__" would swap its prototype, so that one key is refused
+    // (normalizeLabel never produces it). "constructor" and "prototype" are ordinary own keys; readers reach them
+    // through ownAnswer, which never answers an absent key with an Object.prototype member.
+    if (key === "__proto__") throw new Error(`answer key ${JSON.stringify(key)} is not allowed`);
     if (typeof a.kind !== "string" || !KINDS.has(a.kind)) throw new Error(`answer ${key}: unknown kind`);
     if (!isStrArray(a.value, MAX_OPTIONS) || !isStrArray(a.labels, MAX_LABELS) || !isStrArray(a.signatures, MAX_SIGNATURES)) {
       throw new Error(`answer ${key}: value, labels or signatures malformed`);

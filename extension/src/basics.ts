@@ -5,7 +5,7 @@
 // capture as a form you filled by hand and are stored under the key a form's
 // field resolves to (its autocomplete meaning, else its question), so Fill
 // needs nothing new to use them, and the answers table edits and deletes them.
-import type { Bank, FieldInfo, FieldKind } from "./types";
+import { type Bank, type FieldInfo, type FieldKind, ownAnswer } from "./types";
 import { BANK_FULL, BASICS_HOST, MAX_VALUE_CHARS, answerKey } from "./bank";
 import { INTENTS, intentOf } from "./intents";
 import { isCaptureReply } from "./messages";
@@ -85,7 +85,7 @@ export function basicsValues(bank: Bank | null, contacts?: Readonly<Record<strin
     if (b.group === "contact") {
       // A Jarvis read replaces the bank for these boxes. Null means that read
       // did not happen, so the bank values stay visible rather than looking empty.
-      out[b.id] = contacts ? (contacts[b.id] ?? "") : (bank?.answers[answerKey(info(b, []))]?.value.join(", ") ?? "");
+      out[b.id] = contacts ? (contacts[b.id] ?? "") : ((bank ? ownAnswer(bank.answers, answerKey(info(b, []))) : undefined)?.value.join(", ") ?? "");
       continue;
     }
     // Self-identification stays out of the popup while self-ID is off (Fill ignores it then too).
