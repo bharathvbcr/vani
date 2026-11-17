@@ -129,6 +129,7 @@ function trulyVisible(el: HTMLElement): boolean {
   const r = el.getBoundingClientRect();
   if (!(r.width >= 1 && r.height >= 1)) return false;
   const de = el.ownerDocument.documentElement, body = el.ownerDocument.body;
+  if (view && hiddenByClipPath(el, view)) return false;
   // The ancestors that can clip this control are the ones on its containing-block chain: a fixed control, or an
   // absolute one whose containing block lies above an ancestor, is not clipped by that ancestor. The root and body
   // are skipped: their overflow belongs to the viewport, and body is 0 px tall when its children are positioned.
@@ -155,7 +156,92 @@ function trulyVisible(el: HTMLElement): boolean {
   }
   const sx = view?.scrollX ?? 0, sy = view?.scrollY ?? 0;
   if (r.right + sx <= 0 || r.bottom + sy <= 0) return false;
+  if (view && parkedByTransform(el, view, r, sx, sy, Math.max(de.clientWidth, de.clientHeight))) return false;
   return r.left + sx < Math.max(de.scrollWidth, de.clientWidth) && r.top + sy < Math.max(de.scrollHeight, de.clientHeight);
+}
+
+/** A CSS length or percentage in px against `size`; NaN for a unit this does not resolve (em, calc...), which counts as unknown. */
+function cssLen(tok: string, size: number): number {
+  const m = /^(-?\d*\.?\d+)(px|%)?$/.exec(tok.trim());
+  if (!m) return Number.NaN;
+  const n = parseFloat(m[1]!);
+  return m[2] === "%" ? (n / 100) * size : m[2] === "px" || n === 0 ? n : Number.NaN;
+}
+
+/**
+ * Whether a computed clip-path leaves nothing of a box w x h showing: an inset whose two sides meet or pass each
+ * other on either axis (inset(100%), inset(50%)), a circle or ellipse of radius 0, a polygon of zero area. A value
+ * it cannot resolve (calc, em, a path(), a keyword radius) is treated as showing something: the cheap test errs
+ * toward reading the control.
+ */
+export function clipsToNothing(clipPath: string | undefined, w: number, h: number): boolean {
+  const m = /^\s*(inset|circle|ellipse|polygon)\(([^)]*)\)/.exec(clipPath ?? "");
+  if (!m) return false;
+  const body = m[2]!;
+  switch (m[1]) {
+    case "inset": {
+      const sides = body.split(/\s+round\s+/)[0]!.trim().split(/\s+/);
+      if (sides.length < 1 || sides.length > 4) return false;
+      const [t, r, b = t, l = r] = [sides[0]!, sides[1] ?? sides[0]!, sides[2], sides[3]];
+      const v = cssLen(t, h) + cssLen(b!, h), x = cssLen(r, w) + cssLen(l!, w);
+      return v >= h || x >= w;
+    }
+    case "circle": {
+      const rad = body.split(/\s+at\s+/)[0]!.trim();
+      return rad !== "" && cssLen(rad, Math.sqrt((w * w + h * h) / 2)) === 0;
+    }
+    case "ellipse": {
+      const rad = body.split(/\s+at\s+/)[0]!.trim().split(/\s+/);
+      return rad.length === 2 && (cssLen(rad[0]!, w) === 0 || cssLen(rad[1]!, h) === 0);
+    }
+    default: {
+      const pts = body.split(",").map(p => p.trim().split(/\s+/)).filter(p => p.length === 2).map(([px, py]) => [cssLen(px!, w), cssLen(py!, h)] as const);
+      if (pts.length < 3 || pts.some(([px, py]) => Number.isNaN(px) || Number.isNaN(py))) return false;
+      let area = 0;
+      for (let i = 0; i < pts.length; i++) { const a = pts[i]!, c = pts[(i + 1) % pts.length]!; area += a[0] * c[1] - c[0] * a[1]; }
+      return Math.abs(area) < 1e-6;
+    }
+  }
+}
+
+/** A clip-path on the control or an ancestor that clips it to nothing (a page hides a control it fills this way). */
+function hiddenByClipPath(el: HTMLElement, view: Window): boolean {
+  let n: HTMLElement | null = el;
+  for (let i = 0; n && i < CLIP_DEPTH; i++, n = n.parentElement) {
+    const cp = view.getComputedStyle(n).clipPath;
+    if (!cp || cp === "none") continue;
+    const b = n.getBoundingClientRect();
+    if (clipsToNothing(cp, b.width, b.height)) return true;
+  }
+  return false;
+}
+
+/**
+ * A transform (on the control or an ancestor) that parks the box more than a screen away from where layout put
+ * it. getBoundingClientRect includes the transform, so a translateX(99999px) box also stretches the document's
+ * scrollable area and passes the area test; the untransformed position is the offsetParent chain's. Skipped for a
+ * fixed control and where the chain cannot be followed (a shadow root), which then read as unmoved.
+ */
+function parkedByTransform(el: HTMLElement, view: Window, r: DOMRect, sx: number, sy: number, screen: number): boolean {
+  let transformed = false;
+  let n: HTMLElement | null = el;
+  for (let i = 0; n && i < CLIP_DEPTH && !transformed; i++, n = n.parentElement) {
+    const cs = view.getComputedStyle(n);
+    transformed = (!!cs.transform && cs.transform !== "none") || (!!cs.translate && cs.translate !== "none");
+  }
+  if (!transformed || typeof el.offsetLeft !== "number") return false;
+  let left = 0, top = 0;
+  let o: HTMLElement | null = el;
+  for (let i = 0; o && i < CLIP_DEPTH * 4; i++) {
+    left += o.offsetLeft; top += o.offsetTop;
+    const next: HTMLElement | null = o.offsetParent as HTMLElement | null;
+    if (!next) break;
+    left -= next.scrollLeft; top -= next.scrollTop;
+    o = next;
+  }
+  if (!o || (o.localName !== "body" && o.localName !== "html")) return false; // fixed, hidden or a shadow boundary: not followable
+  if (view.getComputedStyle(el).position === "fixed") return false;
+  return Math.abs(r.left + sx - left) > screen || Math.abs(r.top + sy - top) > screen;
 }
 
 /** The element whose box `el` is laid out in, for overflow clipping: null for a fixed one (the viewport). */

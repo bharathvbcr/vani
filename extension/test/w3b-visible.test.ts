@@ -1,7 +1,7 @@
 // Slice w3b (ft-bf5e): capture reads only controls a person could see. Fake elements stand in for the layout
 // (bun has no DOM); each case is one way a page hides a control it wants to set a value in.
 import { describe, expect, test } from "bun:test";
-import { visibleForCapture } from "../src/extract";
+import { clipsToNothing, visibleForCapture } from "../src/extract";
 
 type Box = { left: number; top: number; width: number; height: number };
 interface Fake {
@@ -11,6 +11,11 @@ interface Fake {
   labels?: Fake[];
   overflow: string;
   position: string;
+  clipPath?: string;
+  transform?: string;
+  offsetLeft?: number;
+  offsetTop?: number;
+  offsetParent?: unknown;
   localName: string;
   type: string;
   scrollLeft: number;
@@ -18,7 +23,7 @@ interface Fake {
   ownerDocument: unknown;
 }
 
-const view = { scrollX: 0, scrollY: 0, getComputedStyle: (p: Fake) => ({ overflowX: p.overflow, overflowY: p.overflow, position: p.position }) };
+const view = { scrollX: 0, scrollY: 0, getComputedStyle: (p: Fake) => ({ overflowX: p.overflow, overflowY: p.overflow, position: p.position, clipPath: p.clipPath ?? "none", transform: p.transform ?? "none", translate: "none" }) };
 const body = {};
 const doc = { defaultView: view, body, documentElement: { scrollWidth: 1200, clientWidth: 1200, scrollHeight: 3000, clientHeight: 800 } };
 
@@ -40,6 +45,39 @@ function el(box: Box, extra: { visible?: boolean; parent?: Fake; overflow?: stri
 }
 const ok = (f: Fake): boolean => visibleForCapture(f as unknown as HTMLElement);
 const shown: Box = { left: 40, top: 120, width: 300, height: 32 };
+
+describe("w3b: clip-path and transform hiding", () => {
+  test("clipsToNothing: insets that meet, zero radii, zero-area polygons", () => {
+    for (const v of ["inset(100%)", "inset(50%)", "inset(0 50%)", "inset(50% 0)", "inset(0px 150px)", "inset(0 0 100% 0)", "circle(0)", "circle(0px at 50% 50%)", "ellipse(0 40px at 50% 50%)", "polygon(0 0, 0 0, 0 0)", "polygon(0px 0px, 100% 100%, 50% 50%)"]) {
+      expect(clipsToNothing(v, 300, 32), v).toBe(true);
+    }
+    for (const v of [undefined, "none", "inset(4px round 3px)", "inset(10%)", "inset(0 49%)", "circle(50% at 50% 50%)", "circle(closest-side)", "ellipse(10px 10px)", "polygon(0 0, 100% 0, 100% 100%, 0 100%)", "polygon(calc(1px + 1%) 0, 0 0, 0 0)", "path('M0 0')"]) {
+      expect(clipsToNothing(v, 300, 32), String(v)).toBe(false);
+    }
+  });
+  test("a clip-path on the control or an ancestor that shows nothing stores nothing", () => {
+    expect(ok(Object.assign(el(shown), { clipPath: "inset(100%)" }))).toBe(false);
+    expect(ok(Object.assign(el(shown), { clipPath: "inset(4px)" }))).toBe(true);
+    const clipped = Object.assign(el(shown), { clipPath: "circle(0)" });
+    expect(ok(el(shown, { parent: clipped }))).toBe(false);
+  });
+  test("a transform that parks a control more than a screen from where layout put it stores nothing, a small one does not", () => {
+    const parent = Object.assign(el({ left: 0, top: 0, width: 800, height: 0 }), { localName: "body", offsetLeft: 0, offsetTop: 0, offsetParent: null });
+    const at = (dx: number, dy: number): Fake => Object.assign(el({ ...shown, left: shown.left + dx, top: shown.top + dy }), { transform: "matrix(1,0,0,1,0,0)", offsetLeft: shown.left, offsetTop: shown.top, offsetParent: parent });
+    // The transformed box stretches the document's scrollable area, as in a browser, so the area test alone passes it.
+    const de = doc.documentElement;
+    const [w, h] = [de.scrollWidth, de.scrollHeight];
+    de.scrollWidth = 200000; de.scrollHeight = 200000;
+    try {
+      expect(ok(at(12, 8))).toBe(true);
+      expect(ok(at(99999, 0)), "translateX(99999px) is far from its layout box").toBe(false);
+      expect(ok(at(0, 99999))).toBe(false);
+      expect(ok(Object.assign(at(99999, 0), { transform: "none" })), "without a transform the area test is all there is").toBe(true);
+    } finally {
+      de.scrollWidth = w; de.scrollHeight = h;
+    }
+  });
+});
 
 describe("w3b: visibleForCapture", () => {
   test("a normal control counts, including one far down a long page", () => {
