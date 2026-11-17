@@ -70,7 +70,7 @@ func reviveDuplicate(ctx context.Context, l ledger.Ledger, rec ledger.Record, p 
 // clears every duplicate annotation the record holds.
 func reviveEvent(rec ledger.Record, p posting.Posting, hash string, now time.Time, twin posting.Key, why string) ledger.Event {
 	ann := map[string]string{DescHashKey: hash, DuplicateOfKey: ""}
-	if sourceHash(rec.Posting.Description) != sourceHash(p.Description) {
+	if _, changed := textChange(rec, hash, p); changed {
 		if score, keep := keepAcrossEdit(rec, p); keep {
 			for k, v := range keptAnnotations(rec, score) {
 				ann[k] = v

@@ -244,7 +244,8 @@ func (rc *Reconciler) reconcileIn(ctx context.Context, g ledger.Ledger, b source
 			// nothing about it: the stored summary, if any, stands.
 			p.Form = rec.Posting.Form
 		}
-		rendered := known && rec.Posting.DescriptionHash() != hash
+		rendered, changed := textChange(rec, hash, p)
+		rendered, changed = known && rendered, known && changed
 		// relist is what a same-content listing stores over a known record.
 		relist := relisted(rec.Posting, p, full)
 
@@ -286,7 +287,7 @@ func (rc *Reconciler) reconcileIn(ctx context.Context, g ledger.Ledger, b source
 			} else {
 				s.Unchanged++
 			}
-		case rendered && sourceHash(rec.Posting.Description) != sourceHash(p.Description):
+		case changed:
 			if score, keep := keepAcrossEdit(rec, p); keep {
 				// A near-identical edit that touches no authorization, work-mode or
 				// seniority sentence: the triage still stands.
@@ -531,6 +532,28 @@ func refreshFields(stored, relist posting.Posting) bool {
 		stored.Department != relist.Department || stored.URL != relist.URL ||
 		stored.ApplyURL != relist.ApplyURL || stored.Company != relist.Company ||
 		!stored.Form.Equal(relist.Form)
+}
+
+// textChange compares the listed text (p, whose DescriptionHash is hash) with
+// the text rec was stored with. rendered means the full hash differs; changed
+// means the board's own text differs, which re-triages.
+//
+// A record whose body is evicted and cannot be read back (rec.BodyEvicted after
+// ledger.Get: its Description is empty, not its text) is never changed text on
+// that account. It is judged on the description hash its last write recorded
+// (DescHashKey); with no such hash the answer is unknown, and unknown is not
+// changed. That hash is of the full text, so a differing one cannot tell a
+// re-rendering from an edit and counts as an edit, as it always did.
+func textChange(rec ledger.Record, hash string, p posting.Posting) (rendered, changed bool) {
+	if rec.BodyEvicted {
+		stored := rec.Annotations[DescHashKey]
+		differs := stored != "" && stored != hash
+		return differs, differs
+	}
+	if rec.Posting.DescriptionHash() == hash {
+		return false, false
+	}
+	return true, sourceHash(rec.Posting.Description) != sourceHash(p.Description)
 }
 
 // sourceHash identifies the board's own text in a stored or listed
