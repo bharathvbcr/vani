@@ -490,7 +490,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	paths, err := config.ResolveDefault()
 	if err != nil {
 		fmt.Fprintf(stderr, "vani: %v\n", err)
-		return exitRuntime
+		return exitCode("", err)
 	}
 	if paths.Warning != "" {
 		fmt.Fprintf(stderr, "vani: warning: %s\n", paths.Warning)
@@ -683,7 +683,8 @@ func exitCode(command string, err error) int {
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
 		return exitOK
-	case errors.As(err, new(usageError)), errors.As(err, new(unsupportedError)):
+	case errors.As(err, new(usageError)), errors.As(err, new(unsupportedError)),
+		errors.Is(err, config.ErrRelativePath):
 		return exitUsage
 	case command == "daemon" && errors.Is(err, errConfigRestart):
 		return exitConfigRestart

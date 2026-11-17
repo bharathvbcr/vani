@@ -20,8 +20,8 @@ func TestW5aRunRefusesRelativeEnv(t *testing.T) {
 			t.Setenv("VANI_CONFIG", c.cfg)
 			t.Setenv("VANI_STATE_DIR", c.state)
 			var o, e bytes.Buffer
-			if code := run([]string{"status"}, &o, &e); code != exitRuntime {
-				t.Fatalf("exit %d, want %d (stderr %q)", code, exitRuntime, e.String())
+			if code := run([]string{"status"}, &o, &e); code != exitUsage {
+				t.Fatalf("exit %d, want %d (stderr %q)", code, exitUsage, e.String())
 			}
 			if !strings.Contains(e.String(), c.want) {
 				t.Errorf("stderr %q does not name %s", e.String(), c.want)
