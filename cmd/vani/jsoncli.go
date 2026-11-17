@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/ledger"
 )
 
@@ -38,6 +39,7 @@ const (
 	codeRuntime     = "runtime"
 	codeUnsupported = "unsupported" // the global --json on a command with no JSON form
 	codeBusy        = "busy"        // another vani holds the ledger; retry when it is done
+	codeStale       = "stale"       // a save built on a copy another writer has since changed; read again
 )
 
 // jsonLeaf is one leaf command: the words that name it, as usageTemplate
@@ -313,6 +315,8 @@ func envelopeCode(err error) string {
 		return codeUsage
 	case errors.Is(err, ledger.ErrLocked):
 		return codeBusy
+	case errors.Is(err, config.ErrStale):
+		return codeStale
 	default:
 		return codeRuntime
 	}

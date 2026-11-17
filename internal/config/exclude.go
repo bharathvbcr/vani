@@ -1,6 +1,10 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -356,26 +360,92 @@ func remoteMatch(entries []string, scope string, all bool) string {
 	return first
 }
 
+// excludeList is one of Exclude's lists with its bound and the key its entries
+// compare by.
+type excludeList struct {
+	name    string
+	entries *[]string
+	max     int
+	fold    func(string) string
+}
+
+// lists names every list of x: the one table validate, Revision and Merge walk.
+func (x *Exclude) lists() []excludeList {
+	return []excludeList{
+		{"exclude.titles", &x.Titles, MaxExcludeEntries, fold},
+		{"exclude.title_unless", &x.TitleUnless, MaxExcludeEntries, fold},
+		{"exclude.companies", &x.Companies, MaxExcludeEntries, fold},
+		{"exclude.locations", &x.Locations, MaxExcludeEntries, location.NormArea},
+		{"exclude.only_locations", &x.OnlyLocations, MaxExcludeEntries, location.NormArea},
+		{"exclude.descriptions", &x.Descriptions, MaxExcludeDescriptions, fold},
+	}
+}
+
+// ErrStale means the exclusions changed since the caller read them (the
+// revision it holds no longer matches), so nothing was written. The caller
+// reads again.
+var ErrStale = errors.New("config: the exclusions changed since they were read; read them again")
+
+// Revision identifies the exclusions' content: equal revisions mean equal
+// lists, entries in order. A save that names the revision it read is refused
+// with ErrStale when another writer changed them in between.
+func (x Exclude) Revision() string {
+	h := sha256.New()
+	var n [8]byte
+	for _, l := range x.lists() {
+		binary.BigEndian.PutUint64(n[:], uint64(len(*l.entries)))
+		h.Write(n[:])
+		for _, e := range *l.entries {
+			binary.BigEndian.PutUint64(n[:], uint64(len(e)))
+			h.Write(n[:])
+			h.Write([]byte(e))
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Merge returns x without the entries of remove, then with the entries of add
+// that it does not already hold. Each list compares entries by its own key
+// (case and whitespace for phrases, the normalized area for locations); an
+// entry with an empty key is never added. It is the additive form of a save:
+// what the caller did not name is kept, so an entry another writer added in
+// between survives. The result is not validated.
+func (x Exclude) Merge(add, remove Exclude) Exclude {
+	out := x.Clone()
+	adds, removes := add.Clone(), remove.Clone()
+	as, rs := adds.lists(), removes.lists()
+	for i, l := range out.lists() {
+		drop := map[string]bool{}
+		for _, e := range *rs[i].entries {
+			drop[l.fold(e)] = true
+		}
+		var kept []string
+		have := map[string]bool{}
+		for _, e := range *l.entries {
+			if k := l.fold(e); !drop[k] {
+				kept = append(kept, e)
+				have[k] = true
+			}
+		}
+		for _, e := range *as[i].entries {
+			if k := l.fold(e); k != "" && !have[k] {
+				have[k] = true
+				kept = append(kept, e)
+			}
+		}
+		*l.entries = kept
+	}
+	return out
+}
+
 // validate reports each bad list or entry through add.
 func (x Exclude) validate(add func(string, ...any)) {
-	for _, l := range []struct {
-		name    string
-		entries []string
-		max     int
-		fold    func(string) string
-	}{
-		{"exclude.titles", x.Titles, MaxExcludeEntries, fold},
-		{"exclude.title_unless", x.TitleUnless, MaxExcludeEntries, fold},
-		{"exclude.companies", x.Companies, MaxExcludeEntries, fold},
-		{"exclude.locations", x.Locations, MaxExcludeEntries, location.NormArea},
-		{"exclude.only_locations", x.OnlyLocations, MaxExcludeEntries, location.NormArea},
-		{"exclude.descriptions", x.Descriptions, MaxExcludeDescriptions, fold},
-	} {
-		if len(l.entries) > l.max {
-			add("%s has %d entries; at most %d", l.name, len(l.entries), l.max)
+	for _, l := range x.lists() {
+		if len(*l.entries) > l.max {
+			add("%s has %d entries; at most %d", l.name, len(*l.entries), l.max)
 		}
 		seen := map[string]bool{}
-		for i, v := range l.entries {
+		for i, v := range *l.entries {
 			k := l.fold(v)
 			switch {
 			case !utf8.ValidString(v):

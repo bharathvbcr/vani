@@ -118,7 +118,10 @@ and work while a run holds the ledger.
 - `vani watchlist add|remove|domain|icon` edits the boards (`watchlist remove` writes a tombstone so the next run closes open postings unless `--keep-postings` is passed; `--close-postings` closes postings for an already-removed board).
 - `vani watchlist discover` reads a third-party site and never edits the watchlist, except
   `--profile --add N`, which adds the top N corroborated new boards (ask the owner first).
-- `vani config motivation|exclude [--set]` reads or replaces those config fields.
+- `vani config motivation|exclude [--set]` reads or replaces those config fields. For `exclude`, prefer
+  `--patch` (stdin `{"add":{...},"remove":{...}}`, applied to what is saved now) or
+  `--set --revision R` (R from a read; a changed config is refused with code `stale`); `--set` alone
+  is last writer wins.
 - `vani track use` copies a track into the config.
 - `vani logos refresh` fetches board icons.
 - `vani lca import` and `vani employer import` load public datasets.
