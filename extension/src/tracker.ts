@@ -146,7 +146,7 @@ export function createTracker(d: TrackerDeps): Tracker {
 
   function snapshot(all = false): void {
     try {
-      const scan = scanForm(d.doc);
+      const scan = scanForm(d.doc, { strict: true });
       wireRoots(scan.roots);
       peak = Math.max(peak, scan.refs.length);
       for (const r of scan.refs) {

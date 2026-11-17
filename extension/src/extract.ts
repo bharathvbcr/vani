@@ -114,7 +114,42 @@ function kindOf(el: HTMLElement): FieldKind {
   }
 }
 
-function visible(el: HTMLElement): boolean {
+/** How many ancestors the clipping test climbs. */
+const CLIP_DEPTH = 16;
+
+/**
+ * A control a person could see and use: at least 1 CSS px each way, inside the document's scrollable area (not
+ * parked at left:-9999px), not transparent or visibility:hidden (checkVisibility where the browser has it) and
+ * not clipped to nothing by an ancestor. A page hides a control it wants to set a value in exactly like this,
+ * so capture asks for all of it; fill keeps the lighter test (scanForm's `strict`).
+ */
+function trulyVisible(el: HTMLElement): boolean {
+  const view = el.ownerDocument.defaultView;
+  if (typeof el.checkVisibility === "function" && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
+  const r = el.getBoundingClientRect();
+  if (!(r.width >= 1 && r.height >= 1)) return false;
+  const de = el.ownerDocument.documentElement;
+  const sx = view?.scrollX ?? 0, sy = view?.scrollY ?? 0;
+  if (r.right + sx <= 0 || r.bottom + sy <= 0) return false;
+  if (r.left + sx >= Math.max(de.scrollWidth, de.clientWidth) || r.top + sy >= Math.max(de.scrollHeight, de.clientHeight)) return false;
+  let p = el.parentElement;
+  for (let n = 0; p && n < CLIP_DEPTH; p = p.parentElement, n++) {
+    const cs = view?.getComputedStyle(p);
+    if (!cs) break;
+    if (cs.overflowX === "visible" && cs.overflowY === "visible") continue;
+    const pr = p.getBoundingClientRect();
+    if (!(pr.width >= 1 && pr.height >= 1)) return false;
+  }
+  return true;
+}
+
+function visibleEl(el: HTMLElement, strict: boolean): boolean {
+  if (strict) {
+    if (trulyVisible(el)) return true;
+    // A custom-styled radio or checkbox hides its native input; the label is what the user clicks.
+    const lab = (el as HTMLInputElement).labels?.[0];
+    return !!lab && trulyVisible(lab);
+  }
   if (el.getClientRects().length === 0) {
     // Custom-styled radios and checkboxes often hide the native input; their
     // visible <label> is what the user clicks, so count it.
@@ -123,6 +158,14 @@ function visible(el: HTMLElement): boolean {
   }
   const cs = el.ownerDocument.defaultView?.getComputedStyle(el);
   return cs ? cs.visibility !== "hidden" : true;
+}
+
+/** Whether capture would read this control (see trulyVisible). Exported for the tests. */
+export const visibleForCapture = (el: HTMLElement): boolean => visibleEl(el, true);
+
+export interface ScanOptions {
+  /** Capture's visibility test instead of fill's: a control must be seen, sized and on the page to count. */
+  strict?: boolean;
 }
 
 /**
@@ -409,7 +452,8 @@ function scopeId(o: object, s: Scopes): number {
 }
 
 /** Every fillable question under root, in document order, plus how complete that is. */
-export function scanForm(root: ParentNode = document): FormScan {
+export function scanForm(root: ParentNode = document, opts: ScanOptions = {}): FormScan {
+  const visible = (el: HTMLElement): boolean => visibleEl(el, opts.strict === true);
   const w: Walk = { cands: [], roots: [], scanned: 0, capped: false, t0: performance.now() };
   walk(root, w, 0);
 

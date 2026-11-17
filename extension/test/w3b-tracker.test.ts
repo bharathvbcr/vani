@@ -30,5 +30,6 @@ describe("w3b: provenance of captured fields", () => {
     const s = await scenarios();
     expect(s.explicitSent).toBe(3);
     expect(s.explicitAdded).toBe(3);
+    expect(s.explicitStrict, "every capture scan asks for the strict visibility test").toBe(1);
   }, 20_000);
 });
