@@ -953,6 +953,10 @@
   .scraper-note:empty { display: none; }
   .scraper-note:not(:empty) { margin: 8px 0 0; }
   .scraper-search { margin-top: 8px; }
+  .jobsite-search { margin-top: 8px; }
+  .jobsite-row { display: flex; gap: 6px; margin-top: 6px; }
+  .jobsite-row input { flex: 1; min-width: 0; }
+  .jobsite-row button { flex: 1; }
   .search-icon .ico { display: block; }
   .scraper-meta {
     display: flex;
@@ -1434,6 +1438,18 @@
         <div class="scraper-tools">
           <button type="button" id="export-csv" class="sm" disabled title="Export listings to CSV">CSV</button>
           <button type="button" id="export-json" class="sm" disabled title="Export listings to JSON">JSON</button>
+        </div>
+      </div>
+      <div class="jobsite-search" role="group" aria-labelledby="jobsite-head">
+        <div id="jobsite-head" class="muted scraper-note">Search a job site yourself. Vani opens its search in a new tab and reads nothing from it.</div>
+        <div class="jobsite-row">
+          <input type="search" id="jobsite-q" maxlength="200" placeholder="Job title or keywords" aria-label="Job title or keywords">
+          <input type="text" id="jobsite-loc" maxlength="100" placeholder="Location (optional)" aria-label="Location">
+        </div>
+        <div class="jobsite-row">
+          <button type="button" class="sm" data-jobsite="linkedin" title="Open LinkedIn's job search in a new tab">LinkedIn</button>
+          <button type="button" class="sm" data-jobsite="glassdoor" title="Open Glassdoor's job search in a new tab (set the location there)">Glassdoor</button>
+          <button type="button" class="sm" data-jobsite="naukri" title="Open Naukri's job search in a new tab">Naukri</button>
         </div>
       </div>
       <div id="scraper-scope" class="muted scraper-note"></div>

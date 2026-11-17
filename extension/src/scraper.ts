@@ -15,6 +15,7 @@ import { ID_PARAMS, isWorkdaySharedHost, postingKey } from "./applied";
 import { excerpt, isPagerText, sameListing } from "./crawler";
 import { type JobReadContext, htmlToText, navigationHref, postingIsCurrent, routeChanged } from "./jobinfo";
 import { scorePillText } from "./joblist";
+import { unreadSite, unreadSiteText } from "./jobsites";
 
 const WORKDAY_JOBS_HOST = /(^|\.)myworkdayjobs\.com$/;
 /** A Workday host: tenant-labelled, or the shared wd{N}.myworkdaysite.com. */
@@ -72,6 +73,8 @@ export interface ScrapeResult {
    * when most of the page's job links name a posting and these do not (postingLinks). Absent when none.
    */
   skipped?: number;
+  /** Set when the page is on a job site whose pages Vani does not read (jobsites.ts): why nothing was read. */
+  refused?: string;
 }
 
 /** A board count past this is not believed. */
@@ -1270,6 +1273,11 @@ export function scrapePageJobs(
   const currentDoc = doc !== undefined ? doc : (typeof document !== "undefined" ? document : null);
   const host = targetHost ?? (typeof location !== "undefined" ? location.hostname : "example.com");
   const page = scrubPageUrl(pageUrl ?? (typeof location !== "undefined" ? location.href : ""));
+  const blocked = unreadSite(host);
+  if (blocked) {
+    // Read nothing from it, the document included: its terms forbid automated reading.
+    return { host, pageUrl: page, pageTitle: "", totalFound: 0, jobs: [], unread: 0, refused: unreadSiteText(blocked) };
+  }
   if (!currentDoc) {
     return { host, pageUrl: page, pageTitle: "", totalFound: 0, jobs: [], unread: 0 };
   }

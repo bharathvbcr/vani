@@ -45,6 +45,63 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Job-site search launcher: LinkedIn, Glassdoor, Naukri (2026-11-17): what is left
+
+The owner asked for browser-only scraping "with search terms" for LinkedIn, Naukri and Glassdoor,
+"while not breaking their terms". All three forbid automated reading (extension/README.md). The
+owner chose a launcher plus detection instead: the popup opens each site's own search in a tab and
+reads nothing. Left:
+
+- **Search URLs not tried live.** The formats come from third-party descriptions. Click each
+  button once and check that the site shows the search.
+- **LinkedIn and Indeed Scrape kept (owner's choice).** `scrapeLinkedIn` and `scrapeIndeed` in
+  `extension/src/scraper.ts`, and Crawl all pages on those hosts, remain. LinkedIn §8.2 forbids
+  browser plugins that scrape. The `jobsites.ts` `readsPages` flag is the one switch that would
+  turn LinkedIn's reader off.
+- **Glassdoor terms read only in excerpts.** Its terms page answered 403 to a fetch on 2026-11-17.
+  The wording is from third-party copies. Naukri's page answered 403 too, and its clause was read
+  from search excerpts.
+- **naukrigulf.com is not covered.** Its terms are stricter (no extraction "whether automatic or
+  manual"). It is neither detected nor refused.
+
+## Job-board adapters: Himalayas and Remote OK (2026-11-17): what is left
+
+The owner asked for adapters for "generalized job posting platforms like LinkedIn, Glassdoor and
+more". They then chose public-API job boards over scraping. PLAN.md P19 and LEGAL.md keep LinkedIn,
+Glassdoor and Indeed browser-only through the extension. Two adapters were built: `hm` (Himalayas
+search API) and `ro` (Remote OK API). Left:
+
+- **Remotive: not built, owner decision.** Its API docs invite use, at most 4 calls a day and 24 h
+  delayed. Its robots.txt (2026-11-17) disallows `/api/*`, `/*category=` and `/*search=` for every
+  agent, which covers the endpoint and both of its filters. `category=software-dev` listed 16 jobs.
+- **The Muse, USAJobs, Adzuna: not built.** The Muse's API docs answered 403 to a fetch, so neither
+  its endpoint nor its terms are verified. USAJobs needs an API key plus a contact email in a
+  request header, and Adzuna needs an app id and key. A key is a secret and an email is personal
+  data, so both need the owner's say.
+- **Fetch frequency is bounded by the run schedule, not the adapter.** A daily run is what the data
+  supports (Himalayas refreshes daily). Each extra `run-once` or `run-request` re-lists:
+  - Himalayas costs at most 52 requests per term, at the per-host pace.
+  - Remote OK costs one request.
+
+  Neither publishes a daily cap for keyless use. A Himalayas key (60/min, 10,000/day) would need
+  secret handling.
+- **Himalayas' shared keyless allowance runs out.** The first live dry run (2026-11-17) answered 429
+  with Retry-After 39 s, right after about 15 manual probes. The board was left unchanged to retry
+  next run, as a throttled board should be. A second run minutes later listed 928 postings in 47
+  pages ("machine learning engineer", country=US, seniority=Senior).
+- **Duplicates of employer boards.** A job listed both on Himalayas and on a watched employer board
+  folds only when `twinOf` matches (same link, or identical company|title|location), or when the
+  near-duplicate annotation catches the description. A job board's location ("United States") rarely
+  matches the employer's ("San Francisco, CA"), so expect near-duplicate annotations rather than
+  exact folds. Not measured on live data.
+- **Source credit.** The posting URL is the job board's own page, which is the link back both sites
+  require. The digest names the source only through that link and the board's `hm`/`ro` code;
+  there is no "via Himalayas" text. Adding a source field to `posting.Posting` is a contract change.
+- **freehire discovery.** `internal/discover/freehire` still reports `himalayas` jobs as "no Vani
+  adapter reads this source" (its test pins that). A freehire suggestion of a Himalayas job cannot
+  become a per-employer board, so that answer stays right until discovery learns to suggest the
+  `hm` board.
+
 ## Profile discovery and the 15,000 cap (2026-11-11): what is left
 
 `watchlist discover --profile` ([`SETUP.md`](SETUP.md) / `cmd/vani/discoverprofile.go`) and the shared posting

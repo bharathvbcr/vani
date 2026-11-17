@@ -4,6 +4,7 @@
 
 import { type CrawlProgress, type CrawlReport, type Http, type PageDeps, type PageScrape, crawlListing, describeCrawl, describeSend, readBody, sendCrawl } from "./crawler";
 import type { UserTargetProfile } from "./relevance";
+import { unreadSite, unreadSiteText } from "./jobsites";
 import { scrapePageJobs, scrubPageUrl, workdayCompany } from "./scraper";
 
 const MAX_PAGE_TITLE_BYTES = 300;
@@ -55,7 +56,13 @@ const bytes = (s: string): number => new TextEncoder().encode(s).length;
  */
 export async function runCrawlToVani(deps: CrawlRunDeps, saveSearch: boolean, signal: AbortSignal, onStatus: (text: string) => void): Promise<{ text: string; report: CrawlReport }> {
   const host = (() => { try { return new URL(deps.pageUrl).hostname; } catch { return ""; } })();
-  const scrape = (d: Document, url: string): PageScrape => {
+  const blocked = unreadSite(host);
+  if (blocked) {
+    // No page is read, clicked through or fetched on a site whose terms forbid it.
+    const report: CrawlReport = { mode: "pages", jobs: [], listed: 0, requests: 0, parts: 0, shortened: 0, complete: false, notes: [unreadSiteText(blocked)] };
+    return { text: `${unreadSiteText(blocked)} Nothing was sent.`, report };
+  }
+  const scrape =(d: Document, url: string): PageScrape => {
     const r = scrapePageJobs(d, host, deps.profile, url);
     return { jobs: r.jobs.map(j => ({ title: j.title, company: j.company, location: j.location, url: j.url, snippet: j.description || j.snippet, posted: j.posted })), unread: r.unread, ...(r.boardTotal !== undefined ? { boardTotal: r.boardTotal } : {}) };
   };

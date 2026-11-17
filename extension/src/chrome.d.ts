@@ -44,6 +44,8 @@ declare namespace chrome {
     function query(q: { active: boolean; currentWindow: boolean }): Promise<Tab[]>;
     /** The tab's own URL. Throws when the tab is gone. */
     function get(tabId: number): Promise<Tab>;
+    /** Opens a new tab at `url`; needs no permission. */
+    function create(p: { url: string; active?: boolean }): Promise<Tab>;
     /** Without `frameId` every frame with a listener receives it and the promise takes the first reply; frames.ts always names one. */
     function sendMessage<T = unknown>(tabId: number, message: unknown, options?: { frameId?: number }): Promise<T>;
     const onUpdated: { addListener(cb: (tabId: number, changeInfo: { status?: string; url?: string }) => void): void };

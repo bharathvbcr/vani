@@ -11,7 +11,8 @@ import { intentOf } from "./intents";
 import { boardTotalText, exportJobsAsCSV, exportJobsAsJSON, scrubPageUrl, type ScrapedJob, type ScrapeResult, skippedText, unreadText } from "./scraper";
 import { type IngestSource, sendable } from "./ingest";
 import { sendScrape } from "./crawler";
-import { type RelevanceResult } from "./relevance";
+import { type RelevanceResult, targetProfileFromBank } from "./relevance";
+import { JOB_SITES, searchDefaults, searchUrl } from "./jobsites";
 import { scoreWord } from "./jobrow";
 import type { PortalInfo } from "./portal";
 import type { FormAuditReport } from "./formaudit";
@@ -556,6 +557,7 @@ async function refresh(): Promise<void> {
   const r = await bg<{ bank?: Bank; mode?: "mac-app" | "browser"; note?: string | null; error?: string }>({ type: "getBank" });
   if (r.error || !r.bank) { status("Could not read your saved answers.", "error", r.error ?? "no reply from the extension"); return; }
   current = r.bank;
+  prefillJobSites(current);
   mode = r.mode ?? "browser";
   note = r.note ?? null;
   await loadContacts();
@@ -1387,7 +1389,40 @@ function renderScraper(): void {
   for (const j of filtered) list.append(jobCard(j));
 }
 
+/** Fills the empty job-site search boxes from the saved profile; what the user typed is kept. */
+function prefillJobSites(bank: Bank | null): void {
+  const q = $("#jobsite-q") as HTMLInputElement | null;
+  const loc = $("#jobsite-loc") as HTMLInputElement | null;
+  if (!q || !loc || !bank) return;
+  const d = searchDefaults(targetProfileFromBank(bank));
+  if (!q.value) q.value = d.terms;
+  if (!loc.value) loc.value = d.location;
+}
+
+/** The job-site buttons: each opens that site's own search in a new tab, on the user's click, and reads nothing from it. */
+function initJobSites(): void {
+  for (const btn of Array.from(document.querySelectorAll<HTMLButtonElement>("[data-jobsite]"))) {
+    btn.onclick = async () => {
+      const site = JOB_SITES.find(s => s.id === btn.dataset.jobsite);
+      if (!site) return;
+      const terms = ($("#jobsite-q") as HTMLInputElement | null)?.value ?? "";
+      const location = ($("#jobsite-loc") as HTMLInputElement | null)?.value ?? "";
+      const url = searchUrl(site.id, terms, location);
+      if (!url) {
+        toast(terms.trim() ? `${site.name} searches need letters or digits in the job title.` : "Type a job title or keywords first.");
+        return;
+      }
+      try {
+        await chrome.tabs.create({ url });
+      } catch (e) {
+        toast(`Could not open ${site.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    };
+  }
+}
+
 function initScraper(): void {
+  initJobSites();
   const scrapeBtn = $("#scrape-page-btn");
   if (scrapeBtn) {
     scrapeBtn.onclick = async () => {
@@ -1403,6 +1438,10 @@ function initScraper(): void {
         const r = await chrome.tabs.sendMessage<ScrapeResult>(tab.id, { type: "scrapeJobs" }, { frameId: 0 }).catch(() => null);
         if (!r || !Array.isArray(r.jobs)) {
           toast("This page did not answer. Reload it, then scrape again.");
+          return;
+        }
+        if (typeof r.refused === "string" && r.refused) {
+          toast(r.refused);
           return;
         }
         scrapeGen += 1;
