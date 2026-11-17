@@ -128,26 +128,56 @@ function trulyVisible(el: HTMLElement): boolean {
   if (typeof el.checkVisibility === "function" && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false;
   const r = el.getBoundingClientRect();
   if (!(r.width >= 1 && r.height >= 1)) return false;
-  const de = el.ownerDocument.documentElement;
+  const de = el.ownerDocument.documentElement, body = el.ownerDocument.body;
+  // The ancestors that can clip this control are the ones on its containing-block chain: a fixed control, or an
+  // absolute one whose containing block lies above an ancestor, is not clipped by that ancestor. The root and body
+  // are skipped: their overflow belongs to the viewport, and body is 0 px tall when its children are positioned.
+  let scroller: HTMLElement | null = null;
+  if (view) {
+    let cur: HTMLElement = el;
+    for (let n = 0; n < CLIP_DEPTH; n++) {
+      const p = containingBlock(cur, view);
+      if (!p || p === body || p === de) break;
+      const cs = view.getComputedStyle(p);
+      if (cs.overflowX !== "visible" || cs.overflowY !== "visible") {
+        const pr = p.getBoundingClientRect();
+        if (!(pr.width >= 1 && pr.height >= 1)) return false;
+        if (!scroller && /auto|scroll|overlay/.test(`${cs.overflowX} ${cs.overflowY}`)) scroller = p;
+      }
+      cur = p;
+    }
+  }
+  if (scroller) {
+    // Inside a scroller (an SPA's app root) a control below the fold is far past the document's own height: only
+    // one parked before the start of the scroller's content, which no scrolling reaches, is off the page.
+    const sr = scroller.getBoundingClientRect();
+    return r.right - sr.left + scroller.scrollLeft > 0 && r.bottom - sr.top + scroller.scrollTop > 0;
+  }
   const sx = view?.scrollX ?? 0, sy = view?.scrollY ?? 0;
   if (r.right + sx <= 0 || r.bottom + sy <= 0) return false;
-  if (r.left + sx >= Math.max(de.scrollWidth, de.clientWidth) || r.top + sy >= Math.max(de.scrollHeight, de.clientHeight)) return false;
+  return r.left + sx < Math.max(de.scrollWidth, de.clientWidth) && r.top + sy < Math.max(de.scrollHeight, de.clientHeight);
+}
+
+/** The element whose box `el` is laid out in, for overflow clipping: null for a fixed one (the viewport). */
+function containingBlock(el: HTMLElement, view: Window): HTMLElement | null {
+  const position = view.getComputedStyle(el).position;
+  if (position === "fixed") return null;
   let p = el.parentElement;
-  for (let n = 0; p && n < CLIP_DEPTH; p = p.parentElement, n++) {
-    const cs = view?.getComputedStyle(p);
-    if (!cs) break;
-    if (cs.overflowX === "visible" && cs.overflowY === "visible") continue;
-    const pr = p.getBoundingClientRect();
-    if (!(pr.width >= 1 && pr.height >= 1)) return false;
-  }
-  return true;
+  if (position !== "absolute") return p;
+  for (let n = 0; p && n < CLIP_DEPTH; p = p.parentElement, n++) if (view.getComputedStyle(p).position !== "static") return p;
+  return null;
+}
+
+/** A hidden native checkbox or radio is its visible label's to click; any other input hidden for good is hidden. */
+function labelledControl(el: HTMLElement): HTMLLabelElement | undefined {
+  const i = el as HTMLInputElement;
+  return i.localName === "input" && (i.type === "checkbox" || i.type === "radio") ? i.labels?.[0] : undefined;
 }
 
 function visibleEl(el: HTMLElement, strict: boolean): boolean {
   if (strict) {
     if (trulyVisible(el)) return true;
-    // A custom-styled radio or checkbox hides its native input; the label is what the user clicks.
-    const lab = (el as HTMLInputElement).labels?.[0];
+    const lab = labelledControl(el);
     return !!lab && trulyVisible(lab);
   }
   if (el.getClientRects().length === 0) {
