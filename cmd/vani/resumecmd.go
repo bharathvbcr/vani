@@ -214,6 +214,7 @@ func (e *env) resumeConfig(ctx context.Context, withModel bool) (resumeWiring, e
 	}
 	if filepath.IsAbs(e.stateDir) { // builds are exclusive per state dir, and their temp folders swept
 		rc.WorkDir, rc.LockDir = filepath.Join(e.stateDir, "resumes", ".tmp"), e.stateDir
+		rc.ChoiceDir = filepath.Join(e.stateDir, "resumes", ".choices")
 	}
 	if withModel {
 		rc.Model = rkbresume.Model

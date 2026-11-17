@@ -207,6 +207,11 @@ type Config struct {
 	// fit step waits for a "chrome" lock, so no two resumes drive Chrome at once.
 	// Empty takes no lock.
 	LockDir string
+	// ChoiceDir, when set, is where a model reply that validated is kept while the
+	// build that paid for it fails after it (rkb fit or the deadline), so a retry
+	// of the same inputs reuses it instead of paying again (choicekeep.go). Empty
+	// keeps nothing.
+	ChoiceDir string
 }
 
 // Result is a built resume and the record of how it was built. Every field
@@ -306,6 +311,9 @@ func (c Config) normalize() (Config, *Error) {
 	}
 	if c.LockDir != "" && !filepath.IsAbs(c.LockDir) {
 		return c, fail(CodeConfig, "the resume lock folder must be an absolute path")
+	}
+	if c.ChoiceDir != "" && !filepath.IsAbs(c.ChoiceDir) {
+		return c, fail(CodeConfig, "the kept-choice folder must be an absolute path")
 	}
 	if c.Runner == nil {
 		c.Runner = rkbexec.ExecRunner{}
