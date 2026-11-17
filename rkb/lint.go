@@ -332,7 +332,7 @@ var compareRe = regexp.MustCompile(`(?i)→|×|\bvs\.?\s|\bversus\b|\bthan\b|\bf
 func hasComparison(plain string) bool { return compareRe.MatchString(plain) }
 
 func testingCentric(raw, plain string, cv map[string]*ClaimView) string {
-	pat := regexp.MustCompile(`(?i)\b(?:` + strings.Join(cfg.Rules.TestingTerms, "|") + `)\b`)
+	pat := configTermsRe("testing_terms", cfg.Rules.TestingTerms)
 	if m := regexp.MustCompile(`^\s*\*\*(.+?)\*\*`).FindStringSubmatch(raw); m != nil {
 		lead := tokenRe.ReplaceAllStringFunc(m[1], func(t string) string {
 			if c := cv[tokenRe.FindStringSubmatch(t)[1]]; c != nil {
@@ -396,7 +396,7 @@ func lint(c *Composed, cf *ClaimsFile, final bool, ecoPath string) *lintResult {
 	var testing, uncompared []string
 	ids := map[string]bool{}
 	var allText []string
-	numWord := regexp.MustCompile(`(?i)\b(` + strings.Join(rules.NumberWords, "|") + `)\b`)
+	numWord := configTermsRe("number_words", rules.NumberWords)
 
 	for _, ref := range c.allBullets() {
 		b := ref.B
@@ -771,13 +771,20 @@ func lint(c *Composed, cf *ClaimsFile, final bool, ecoPath string) *lintResult {
 func finalPreconditions(c *Composed, cf *ClaimsFile, ecoPath string) []string {
 	var errs []string
 	if c.BankSHA != "" && c.BankPath != "" {
-		if cur := sha256File(c.BankPath); cur != "" && cur != c.BankSHA {
+		// A bank that cannot be hashed is not a bank that matches: say so
+		// rather than pass the check unrun.
+		if cur, err := sha256FileErr(c.BankPath); err != nil {
+			errs = append(errs, "bank.json cannot be hashed, so the composed resume cannot be checked against it: "+err.Error())
+		} else if cur != c.BankSHA {
 			errs = append(errs, "the composed resume was made from an older bank.json (reviews or wording changed since); re-compose it")
 		}
 	}
-	if cf.ResumeHash != c.resumeHash() {
-		errs = append(errs, "claims.json was exported for different content; re-run `rkb claims export --used-in` on this resume")
+	if cur, err := currentClaimValues(); err != nil {
+		errs = append(errs, "Claims.tex cannot be read, so claims.json could not be checked against the current claim values: "+err.Error())
+	} else if cf.ResumeHash != c.resumeHash(cur) {
+		errs = append(errs, "claims.json was exported for different content (a rendered field or a Claims.tex value changed since); re-run `rkb claims export --used-in` on this resume")
 	}
+	errs = append(errs, renderResume(c, cf, true).R.coverage(cf)...)
 	if h := ageHours(cf.Generated); h > cfg.FreshHours {
 		errs = append(errs, fmt.Sprintf("claims.json is %.0f h old (max %.0f); re-export", h, cfg.FreshHours))
 	}
@@ -888,7 +895,7 @@ func writeSheet(c *Composed, cf *ClaimsFile, p, round string) {
 	if err != nil || rnd < 1 || rnd > 2 {
 		die("--round %q: expected 1 or 2", round)
 	}
-	sh := Sheet{Round: rnd, Target: c.Meta.Target, ResumeHash: c.resumeHash(),
+	sh := Sheet{Round: rnd, Target: c.Meta.Target, ResumeHash: c.resumeHash(claimViewValues(cf)),
 		Instructions: "See references/validation-protocol.md, 'Reader validation'. Set top-level reviewer to your name. Fill ONLY your persona's object (hr or hm) on every item, never both: verdict 'pass' or 'revise'; on revise a one-sentence note and a rewrite that keeps every figure exactly as written. Judge whether the text conveys the need, reading it in the context of the whole page (page_text). " + readerOwnerRules}
 	// The whole page goes on every round: a reader judges a bullet in context
 	// (repetition, what the section already said), not as an isolated line.

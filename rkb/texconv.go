@@ -139,10 +139,12 @@ func texToMD(s string, unknown map[string]bool) string {
 			name := m[1]
 			k := i + len(m[0])
 			if strings.HasPrefix(name, "clm") {
-				cm := reClmCmd.FindStringSubmatch(s[i:])
-				out.WriteString("{{" + cm[1] + "}}")
-				i += len(cm[0])
-				continue
+				if cm := reClmCmd.FindStringSubmatch(s[i:]); cm != nil {
+					out.WriteString("{{" + cm[1] + "}}")
+					i += len(cm[0])
+					continue
+				}
+				// a bare \clm names no claim macro: keep it as plain text
 			}
 			switch name {
 			case "textbf", "textit", "emph", "texttt", "text", "mbox", "textsc", "underline":

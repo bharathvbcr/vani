@@ -129,6 +129,7 @@ func main() {
 		fmt.Println("rkb " + version)
 		return
 	}
+	watchSignals()
 	loadConfig()
 	cmd, rest := os.Args[1], os.Args[2:]
 	sub := func(names string) (string, []string) {

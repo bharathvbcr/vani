@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -111,9 +110,7 @@ func cmdLatex(a *args) {
 			die("latex: %v", err)
 		}
 		for i := 0; i < 2; i++ {
-			cmd := exec.Command("pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-output-directory="+outDir, rel)
-			cmd.Dir = cv
-			o, err := cmd.CombinedOutput()
+			o, err := runCmd(timeoutLatex, runOpts{Dir: cv, Combined: true}, "pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-output-directory="+outDir, rel)
 			if err != nil {
 				lines := strings.Split(string(o), "\n")
 				die("pdflatex failed:\n%s", strings.Join(lines[max(0, len(lines)-25):], "\n"))

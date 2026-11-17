@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 )
@@ -43,7 +42,7 @@ func similarity(a, b []string) float64 {
 }
 
 func atsCheck(pdf, txt string) (float64, []string) {
-	gotB, err := exec.Command("pdftotext", "-enc", "UTF-8", pdf, "-").Output()
+	gotB, err := runCmd(timeoutPoppler, runOpts{}, "pdftotext", "-enc", "UTF-8", pdf, "-")
 	if err != nil {
 		die("pdftotext (poppler) is needed: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -156,19 +159,90 @@ func loadConfigFrom(path string) (string, error) {
 		return "", fmt.Errorf("embedded config.json: %v", err)
 	}
 	if path == "" {
+		if err := cfg.Validate(); err != nil {
+			return "", fmt.Errorf("embedded config.json: %v", err)
+		}
 		return "embedded default", nil
 	}
 	b, err = os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
-	if err := checkKeyCase(b, reflect.TypeOf(cfg)); err != nil {
+	// A key the file spells wrongly is refused, not ignored: the setting it
+	// meant would silently stay at the default.
+	if err := checkKnownKeys(b, reflect.TypeOf(cfg)); err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return "", fmt.Errorf("config %s: %v", path, err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return "", fmt.Errorf("config %s: %v", path, err)
+	}
 	return path + " (over the embedded default)", nil
+}
+
+// termsRe is `(?i)\b(?:t1|t2|…)\b` over regexp terms, the one constructor for
+// the testing_terms and number_words checks, so Validate and lint compile the
+// same pattern.
+func termsRe(terms []string) (*regexp.Regexp, error) {
+	return regexp.Compile(`(?i)\b(?:` + strings.Join(terms, "|") + `)\b`)
+}
+
+// configTermsRe is termsRe for a list Validate has already accepted; a list
+// that was set without validating stops rkb with the compile error instead of
+// panicking.
+func configTermsRe(key string, terms []string) *regexp.Regexp {
+	re, err := termsRe(terms)
+	if err != nil {
+		die("config.json: bullet_rules.%s does not compile: %v", key, err)
+	}
+	return re
+}
+
+// Validate refuses a config value that would fail or panic later: a pattern
+// that does not compile, or a density range that is not [number, number,
+// unit-string]. Every regexp the config feeds is compiled here, once, so no
+// check can meet a bad one at run time. Unknown keys are refused earlier, at
+// decode.
+func (c *Config) Validate() error {
+	r := &c.Rules
+	for _, l := range []struct {
+		key   string
+		terms []string
+	}{{"testing_terms", r.TestingTerms}, {"number_words", r.NumberWords}} {
+		if _, err := termsRe(l.terms); err != nil {
+			return fmt.Errorf("bullet_rules.%s does not compile: %v", l.key, err)
+		}
+		for i, t := range l.terms {
+			if _, err := regexp.Compile(t); err != nil {
+				return fmt.Errorf("bullet_rules.%s[%d] %q does not compile: %v", l.key, i, t, err)
+			}
+		}
+	}
+	for _, l := range []struct {
+		key  string
+		pats []string
+	}{{"extra_banned", r.ExtraBanned}, {"dup_phrases", r.DupPhrases}, {"parity_differentiators", r.ParityDifferentiators}} {
+		for i, p := range l.pats {
+			if _, err := regexp.Compile(`(?i)\b(?:` + p + `)\b`); err != nil {
+				return fmt.Errorf("bullet_rules.%s[%d] %q does not compile: %v", l.key, i, p, err)
+			}
+		}
+	}
+	if _, err := compileMechanisms(r.Mechanisms); err != nil {
+		return err
+	}
+	for _, k := range sortedKeys(c.Layout.DensityRanges) {
+		rg := c.Layout.DensityRanges[k]
+		_, loOK := rg[0].(float64)
+		_, hiOK := rg[1].(float64)
+		unit, hasUnit := rg[2], rg[2] != nil
+		if _, isStr := unit.(string); !loOK || !hiOK || (hasUnit && !isStr) {
+			return fmt.Errorf("layout.density_range.%s must be [number, number, \"unit\"], got %v", k, rg)
+		}
+	}
+	return nil
 }
 
 func templateHTML() string {
@@ -294,13 +368,42 @@ func sha1hex(s string) string {
 	return hex.EncodeToString(h[:])[:12]
 }
 
+// sha256File hashes a regular file of at most maxQuoteFile bytes, streaming
+// it. "" means unreadable, not a regular file (a directory, a device, a FIFO)
+// or over the cap: callers treat that as a source that cannot be vouched for.
+// A caller that must not carry on without the hash uses sha256FileErr, which
+// says why there is none.
 func sha256File(p string) string {
-	b, err := os.ReadFile(p)
+	h, _ := sha256FileErr(p)
+	return h
+}
+
+// sha256FileErr is sha256File with the reason: the hash, or "" and an error.
+func sha256FileErr(p string) (string, error) {
+	f, err := os.Open(p)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
+	defer func() { _ = f.Close() }() // read-only handle
+	st, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !st.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", p)
+	}
+	if st.Size() > maxQuoteFile {
+		return "", fmt.Errorf("%s is over the %d MiB hashing limit", p, maxQuoteFile>>20)
+	}
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, maxQuoteFile+1)) // the file may grow after Stat
+	if err != nil {
+		return "", err
+	}
+	if n > maxQuoteFile {
+		return "", fmt.Errorf("%s grew past the %d MiB hashing limit while it was read", p, maxQuoteFile>>20)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func nowISO() string { return time.Now().Format(time.RFC3339) }
@@ -315,7 +418,77 @@ func ageHours(iso string) float64 {
 
 func die(f string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, "rkb: "+f+"\n", a...)
-	os.Exit(2)
+	exitNow(2)
+}
+
+var (
+	exitMu       sync.Mutex
+	exitCleanups []func()
+
+	// exitRun serialises exitNow: the first caller runs the cleanups and exits,
+	// every other caller blocks until that exit.
+	exitRun sync.Mutex
+	// interrupted holds the exit code of the signal that interrupted the
+	// process (130 or 143), or 0. The watcher sets it before it cancels
+	// anything, so a caller that dies on the killed command's error still
+	// exits with the signal's code.
+	interrupted atomic.Int32
+)
+
+// exitNow ends the process after running the cleanups scratchDir registered:
+// os.Exit skips deferred calls, so a folder made with scratchDir would
+// otherwise survive every die() and stop. After a signal the exit code is the
+// signal's, whoever calls.
+func exitNow(code int) {
+	exitRun.Lock() // never unlocked: this path ends in os.Exit
+	exitMu.Lock()
+	fns := exitCleanups
+	exitCleanups = nil
+	exitMu.Unlock()
+	for i := len(fns) - 1; i >= 0; i-- {
+		fns[i]()
+	}
+	if c := interrupted.Load(); c != 0 {
+		code = int(c)
+	}
+	os.Exit(code)
+}
+
+// addExitCleanup registers fn to run from exitNow and returns a function that
+// withdraws it once the resource is gone.
+func addExitCleanup(fn func()) (remove func()) {
+	exitMu.Lock()
+	exitCleanups = append(exitCleanups, fn)
+	idx := len(exitCleanups) - 1
+	exitMu.Unlock()
+	return func() {
+		exitMu.Lock()
+		switch {
+		case idx == len(exitCleanups)-1:
+			exitCleanups = exitCleanups[:idx] // the common case: nothing registered after it
+		case idx < len(exitCleanups):
+			exitCleanups[idx] = func() {}
+		}
+		exitMu.Unlock()
+	}
+}
+
+// scratchDir makes a private temp folder and returns it with its cleanup. The
+// cleanup is idempotent and also runs from exitNow, so the folder is removed
+// on a normal return (defer cleanup()), a panic, a die and a stop alike. Use
+// it for any folder that holds copies of the person's documents.
+func scratchDir(prefix string) (string, func(), error) {
+	watchSignals() // a signal must remove the folder too
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return "", func() {}, err
+	}
+	var once sync.Once
+	cleanup := func() { once.Do(func() { _ = os.RemoveAll(dir) }) } // best-effort: the folder holds only copies
+	exitMu.Lock()
+	exitCleanups = append(exitCleanups, cleanup)
+	exitMu.Unlock()
+	return dir, cleanup, nil
 }
 
 func sortedKeys[V any](m map[string]V) []string {

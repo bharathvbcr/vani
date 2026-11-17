@@ -750,17 +750,96 @@ func (c *Composed) leads() []leadRef {
 	return out
 }
 
-// resumeHash identifies the exact content a claims export was made for.
-func (c *Composed) resumeHash() string {
+// resumeHash identifies the exact content a claims export was made for: every
+// field the renderers print (header, section titles, kinds and leads, skills
+// lines, entry title, members, org, dates, stack, location, sub, lead and
+// layout, bullets) and the value of every figure token those fields use.
+// vals maps a claim id to its value; a token with no value hashes as absent,
+// so a claim that appears or disappears also changes the hash. Each field is
+// length-prefixed, so no two different resumes encode to the same bytes.
+func (c *Composed) resumeHash(vals map[string]string) string {
 	var b strings.Builder
-	b.WriteString(c.Header.Name)
-	for _, r := range c.allBullets() {
-		b.WriteString("\x00" + r.B.ID + "\x01" + r.B.Text)
+	put := func(k, v string) { fmt.Fprintf(&b, "%s=%d:%s;", k, len(v), v) }
+	put("name", c.Header.Name)
+	put("headline", c.Header.Headline)
+	for i, x := range c.Header.Contact {
+		put(fmt.Sprintf("contact%d", i), x)
 	}
-	for _, l := range c.leads() {
-		b.WriteString("\x00" + l.Key + "\x01" + l.Text)
+	for si, s := range c.Sections {
+		p := fmt.Sprintf("s%d.", si)
+		put(p+"title", s.Title)
+		put(p+"kind", s.Kind)
+		put(p+"lead", s.Lead)
+		put(p+"bulleted", fmt.Sprint(s.Bulleted))
+		for i, bl := range s.Bullets {
+			put(fmt.Sprintf("%sb%d.id", p, i), bl.ID)
+			put(fmt.Sprintf("%sb%d", p, i), bl.Text)
+		}
+		for i, l := range s.Lines {
+			put(fmt.Sprintf("%sl%d.label", p, i), l.Label)
+			put(fmt.Sprintf("%sl%d", p, i), l.Text)
+		}
+		for ei, e := range s.Entries {
+			q := fmt.Sprintf("%se%d.", p, ei)
+			put(q+"id", e.ID)
+			put(q+"title", e.Title)
+			put(q+"org", e.Org)
+			put(q+"dates", e.Dates)
+			put(q+"stack", e.Stack)
+			put(q+"location", e.Location)
+			put(q+"sub", e.Sub)
+			put(q+"lead", e.Lead)
+			put(q+"layout", e.Layout)
+			for i, m := range e.Members {
+				put(fmt.Sprintf("%smember%d", q, i), m)
+			}
+			for i, bl := range e.Bullets {
+				put(fmt.Sprintf("%sb%d.id", q, i), bl.ID)
+				put(fmt.Sprintf("%sb%d", q, i), bl.Text)
+			}
+		}
+	}
+	ids := map[string]bool{}
+	for _, m := range tokenRe.FindAllStringSubmatch(b.String(), -1) {
+		ids[m[1]] = true
+	}
+	for _, id := range sortedKeys(ids) {
+		if v, ok := vals[id]; ok {
+			put("claim."+id, v)
+		} else {
+			put("claim."+id+".absent", "")
+		}
 	}
 	return sha1hex(b.String())
+}
+
+// claimValues maps claim id to value, for the resumeHash of a claims export.
+func claimValues(claims map[string]*Claim) map[string]string {
+	out := make(map[string]string, len(claims))
+	for id, cl := range claims {
+		out[id] = cl.Value
+	}
+	return out
+}
+
+// claimViewValues is the same map as read back from a claims.json.
+func claimViewValues(cf *ClaimsFile) map[string]string {
+	out := make(map[string]string, len(cf.Claims))
+	for id, cv := range cf.Claims {
+		out[id] = cv.Value
+	}
+	return out
+}
+
+// currentClaimValues reads the values Claims.tex holds now. A configured file
+// that cannot be read or parsed is an error: a hash check that cannot see the
+// claim values must not read as one that matched.
+func currentClaimValues() (map[string]string, error) {
+	cl, errs, _ := parseClaimsFiles(cfg.ClaimsTex, inRoot)
+	if len(errs) > 0 {
+		return nil, errors.New(strings.Join(errs, "; "))
+	}
+	return claimValues(cl), nil
 }
 
 func (c *Composed) boldFigures() bool { return c.Meta.BoldFigures == nil || *c.Meta.BoldFigures }
@@ -803,6 +882,12 @@ func cmdCompose(a *args) {
 	if out == "" {
 		out = strings.TrimSuffix(sel, ".json") + ".composed.json"
 	}
+	// The printed hash covers the claim values, so without them it could never
+	// match an export: stop rather than print a hash that only looks real.
+	vals, err := currentClaimValues()
+	if err != nil {
+		die("compose: Claims.tex unreadable, so the resume hash cannot be computed: %v", err)
+	}
 	writeJSON(out, c)
-	fmt.Printf("wrote %s (%d bullets, hash %s)\n", out, len(c.allBullets()), c.resumeHash())
+	fmt.Printf("wrote %s (%d bullets, hash %s)\n", out, len(c.allBullets()), c.resumeHash(vals))
 }

@@ -51,12 +51,15 @@ type StatementView struct {
 }
 
 type ClaimsFile struct {
-	Generated  string                    `json:"generated"`
-	ResumeHash string                    `json:"resume_hash"`
-	Selection  string                    `json:"selection"`
-	VMReport   map[string]string         `json:"vm_report"`
-	Claims     map[string]*ClaimView     `json:"claims"`
-	Statements map[string]*StatementView `json:"statements"`
+	Generated  string `json:"generated"`
+	ResumeHash string `json:"resume_hash"`
+	// ClaimsTexHash is claimsTexHash() at export: the Claims.tex files the
+	// verification state was read from. Empty means an older rkb wrote it.
+	ClaimsTexHash string                    `json:"claims_tex_sha256,omitempty"`
+	Selection     string                    `json:"selection"`
+	VMReport      map[string]string         `json:"vm_report"`
+	Claims        map[string]*ClaimView     `json:"claims"`
+	Statements    map[string]*StatementView `json:"statements"`
 	// Guards: the export records refuted sentences (RefutedSentences,
 	// StatementView.Refuted). 0 means an older rkb wrote it and the
 	// refuted-wording check cannot run on it.
@@ -86,11 +89,62 @@ type resolver struct {
 	used       map[string]bool
 	unverified map[string]bool
 	missing    map[string]bool
+	// field names the part of the resume being rendered; uses records, once
+	// per field and wording, every text that carried a figure token. It is
+	// the one record of which tokens a render resolved: claims export, the
+	// final gates and docx all read it, so they cannot disagree about it.
+	field string
+	uses  []fieldUse
+	seen  map[string]bool
 }
+
+// fieldUse is one rendered text that carries at least one figure token.
+type fieldUse struct{ Field, Text string }
 
 func newResolver(cf *ClaimsFile, final, bold bool) *resolver {
 	return &resolver{claims: cf.Claims, final: final, bold: bold,
-		used: map[string]bool{}, unverified: map[string]bool{}, missing: map[string]bool{}}
+		used: map[string]bool{}, unverified: map[string]bool{}, missing: map[string]bool{}, seen: map[string]bool{}}
+}
+
+// note records s as a text of the current field when it holds a figure token.
+func (r *resolver) note(s string) {
+	if !tokenRe.MatchString(s) {
+		return
+	}
+	k := r.field + "\x00" + s
+	if r.seen[k] {
+		return
+	}
+	r.seen[k] = true
+	r.uses = append(r.uses, fieldUse{r.field, s})
+}
+
+// coverage lists every rendered figure token that is not double-verified in
+// the exact text it is printed in: unregistered, not double-verified, or
+// without a confirmed blind pass for this wording. Empty means every token
+// the render resolved is verified.
+func (r *resolver) coverage(cf *ClaimsFile) []string {
+	var out []string
+	for _, u := range r.uses {
+		done := map[string]bool{}
+		for _, m := range tokenRe.FindAllStringSubmatch(u.Text, -1) {
+			id := m[1]
+			if done[id] {
+				continue
+			}
+			done[id] = true
+			cv := cf.Claims[id]
+			switch {
+			case cv == nil:
+				out = append(out, fmt.Sprintf("%s: %s is not in claims.json", u.Field, id))
+			case !cv.DoubleVerified:
+				out = append(out, fmt.Sprintf("%s: %s not double-verified (%s)", u.Field, id, strings.Join(cv.Problems, "; ")))
+			case !contains(cv.ConfirmedSentences, sentenceHash(u.Text, id)):
+				out = append(out, fmt.Sprintf("%s: %s has not been blind-checked in THIS text", u.Field, id))
+			}
+		}
+	}
+	return out
 }
 
 func (r *resolver) value(id string) (string, bool) {
@@ -108,6 +162,7 @@ func (r *resolver) value(id string) (string, bool) {
 }
 
 func (r *resolver) text(s string) string {
+	r.note(s)
 	s = tokenRe.ReplaceAllStringFunc(s, func(m string) string {
 		v, _ := r.value(tokenRe.FindStringSubmatch(m)[1])
 		return v
@@ -125,6 +180,7 @@ func (r *resolver) text(s string) string {
 }
 
 func (r *resolver) html(s string) string {
+	r.note(s)
 	var b strings.Builder
 	last := 0
 	for _, loc := range tokenRe.FindAllStringSubmatchIndex(s, -1) {
@@ -195,10 +251,13 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 	var body []string
 	hd := c.Header
 
+	R.field = "header name"
 	txt = append(txt, strings.ToUpper(R.text(hd.Name)))
+	R.field = "header headline"
 	if hd.Headline != "" {
 		txt = append(txt, R.text(hd.Headline))
 	}
+	R.field = "header contact"
 	var cl []string
 	for _, x := range hd.Contact {
 		if x != "" {
@@ -206,10 +265,13 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 		}
 	}
 	txt = append(txt, strings.Join(cl, " | "))
+	R.field = "header name"
 	body = append(body, `<header class="top">`, `<h1>`+R.html(hd.Name)+`</h1><div class="namerule"></div>`)
 	if hd.Headline != "" {
+		R.field = "header headline"
 		body = append(body, `<div class="headline">`+R.html(hd.Headline)+`</div>`)
 	}
+	R.field = "header contact"
 	var cs strings.Builder
 	cs.WriteString(`<div class="contact">`)
 	for _, x := range hd.Contact {
@@ -221,6 +283,7 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 	bulletList := func(bs []*Bullet) {
 		body = append(body, "<ul>")
 		for _, b := range bs {
+			R.field = "bullet " + b.ID
 			txt = append(txt, "- "+R.text(b.Text))
 			body = append(body, fmt.Sprintf(`<li data-id="%s">%s</li>`, html.EscapeString(b.ID), R.html(b.Text)))
 		}
@@ -231,6 +294,7 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 		txt = append(txt, "", strings.ToUpper(s.Title))
 		body = append(body, fmt.Sprintf(`<section data-kind="%s"><h2>%s</h2>`, s.Kind, html.EscapeString(s.Title)))
 		if s.Lead != "" {
+			R.field = "section lead " + s.Title
 			txt = append(txt, R.text(s.Lead))
 			body = append(body, `<div class="seclead">`+R.html(s.Lead)+`</div>`)
 		}
@@ -257,7 +321,8 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 				cls += " labeled"
 			}
 			body = append(body, `<div class="`+cls+`">`)
-			for _, l := range s.Lines {
+			for i, l := range s.Lines {
+				R.field = fmt.Sprintf("%s line %d", s.Title, i+1)
 				t, h := R.text(l.Text), "<span>"+R.html(l.Text)+"</span>"
 				if l.Label != "" {
 					t = R.text(l.Label) + ": " + t
@@ -278,18 +343,28 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 				if right == "" {
 					right, rcls = e.Stack, "d stack"
 				}
+				rightField := "entry " + e.ID + " dates"
+				if e.Dates == "" {
+					rightField = "entry " + e.ID + " stack"
+				}
+				R.field = "entry " + e.ID + " title"
 				tl := R.text(full)
 				if e.Org != "" && !stacked {
+					R.field = "entry " + e.ID + " org"
 					tl += ", " + R.text(e.Org)
 				}
 				if right != "" {
+					R.field = rightField
 					tl += " | " + R.text(right)
 				}
 				txt = append(txt, "", tl)
+				R.field = "entry " + e.ID + " title"
 				left := `<span class="ttl">` + R.html(full) + `</span>`
 				if e.Org != "" && !stacked {
+					R.field = "entry " + e.ID + " org"
 					left += ", " + R.html(e.Org)
 				}
+				R.field = rightField
 				body = append(body, `<div class="entry">`,
 					fmt.Sprintf(`<div class="eh"><span class="t">%s</span><span class="%s">%s</span></div>`, left, rcls, R.html(right)))
 				var sub []string
@@ -307,6 +382,7 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 				}
 				if len(sub) > 0 {
 					var st, sh []string
+					R.field = "entry " + e.ID + " sub"
 					for _, x := range sub {
 						st = append(st, R.text(x))
 						sh = append(sh, R.html(x))
@@ -315,6 +391,7 @@ func renderResume(c *Composed, cf *ClaimsFile, final bool) rendered {
 					body = append(body, `<div class="sub">`+strings.Join(sh, ", ")+`</div>`)
 				}
 				if e.Lead != "" {
+					R.field = "entry " + e.ID + " lead"
 					txt = append(txt, R.text(e.Lead))
 					body = append(body, `<div class="lead">`+R.html(e.Lead)+`</div>`)
 				}

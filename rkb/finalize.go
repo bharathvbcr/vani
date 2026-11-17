@@ -38,6 +38,30 @@ type Manifest struct {
 	Attested map[string]string `json:"attested,omitempty"`
 }
 
+// manifestInputs hashes the inputs that exist (an unset or absent optional
+// input is skipped). One that exists but cannot be hashed (over the cap, not a
+// regular file, unreadable) is a problem naming the reason: the manifest must
+// not record an empty hash as if the input had been checked.
+func manifestInputs(paths []string) (map[string]string, []string) {
+	in := map[string]string{}
+	var probs []string
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		h, err := sha256FileErr(p)
+		if err != nil {
+			probs = append(probs, "cannot hash input: "+err.Error())
+			continue
+		}
+		in[p] = h
+	}
+	return in, probs
+}
+
 // outputsFor renders every format into outDir (and the LaTeX into texDir).
 func outputsFor(c *Composed, cf *ClaimsFile, sel, outDir, texDir string, final, strict bool, pages int) (rendered, FitReport, string, float64, int, string) {
 	r := renderResume(c, cf, final)
@@ -64,13 +88,13 @@ func outputsFor(c *Composed, cf *ClaimsFile, sel, outDir, texDir string, final, 
 		if pdflatex, err := exec.LookPath("pdflatex"); err == nil && pdflatex != "" {
 			cv := inRoot(cfg.CVDir)
 			absTex, _ := filepath.Abs(tex)
-			outGen, err := os.MkdirTemp("", "rkb-pdflatex-")
+			outGen, cleanupGen, err := scratchDir("rkb-pdflatex-")
 			if err == nil {
-				defer func() { _ = os.RemoveAll(outGen) }() // best-effort temp cleanup
+				defer cleanupGen()
 				for i := 0; i < 2; i++ {
-					cmd := exec.Command("pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-output-directory="+outGen, absTex)
-					cmd.Dir = cv // the generated LaTeX \inputs the CV sources relative to it
-					_ = cmd.Run()
+					// cv is the working directory: the generated LaTeX \inputs the CV sources relative to it.
+					// A failed or timed-out pass leaves no PDF, which the read below turns into "no PDF".
+					_, _ = runCmd(timeoutLatex, runOpts{Dir: cv}, "pdflatex", "-interaction=nonstopmode", "-halt-on-error", "-output-directory="+outGen, absTex)
 				}
 				if b, err := os.ReadFile(filepath.Join(outGen, base+".pdf")); err == nil {
 					writeFile(pdfPath, string(b))
@@ -118,7 +142,7 @@ func cmdFinalize(a *args) {
 	eco := a.get("eco", "")
 	pages := a.intFlag("pages", max(c.Meta.Pages, 1), 1, 20)
 	out := a.get("out-dir", filepath.Join(inRoot(cfg.HTMLOutDir), slug(c.basename(sel), 60)))
-	m := Manifest{Resume: sel, ResumeHash: c.resumeHash(), Checks: map[string]string{},
+	m := Manifest{Resume: sel, ResumeHash: c.resumeHash(claimViewValues(cf)), Checks: map[string]string{},
 		Inputs: map[string]string{}, Outputs: map[string]string{}}
 	stop := func(step string, problems []string) {
 		fmt.Printf("FINALIZE STOPPED at %s:\n", step)
@@ -128,6 +152,12 @@ func cmdFinalize(a *args) {
 		os.Exit(1)
 	}
 
+	switch {
+	case cf.ClaimsTexHash == "":
+		stop("claims export", []string{cfPath + " records no Claims.tex hash (an older rkb wrote it), so rkb cannot tell whether Claims.tex changed after it was verified; re-verify required: run `rkb claims export --used-in <resume>` again"})
+	case cf.ClaimsTexHash != claimsTexHash():
+		stop("claims export", []string{fmt.Sprintf("%v Claims.tex changed since %s was exported (%s); re-verify and export again", cfg.ClaimsTex, cfPath, cf.Generated)})
+	}
 	R := lint(c, cf, true, eco)
 	if len(R.Errors) > 0 {
 		stop("lint --final", R.Errors)
@@ -140,21 +170,25 @@ func cmdFinalize(a *args) {
 	// Only when every gate has passed are the files copied (each atomically)
 	// to the output folder, so a stopped finalize never leaves a half-updated
 	// set of "final" files behind, and the previous good release stays intact.
-	stage, err := os.MkdirTemp("", "rkb-finalize-")
+	// The stage holds the resume text and contact lines: scratchDir removes it
+	// on return, panic, stop and die (a failed fit dies inside outputsFor).
+	stage, cleanupStage, err := scratchDir("rkb-finalize-")
 	if err != nil {
 		die("staging folder: %v", err)
 	}
-	defer func() { _ = os.RemoveAll(stage) }() // best-effort: the stage holds only copies
+	defer cleanupStage()
 	stop = func(step string, problems []string) {
 		fmt.Printf("FINALIZE STOPPED at %s (nothing in %s was changed):\n", step, out)
 		for _, p := range problems {
 			fmt.Println("  - " + p)
 		}
-		_ = os.RemoveAll(stage) // best-effort: the stage holds only copies
-		os.Exit(1)
+		exitNow(1)
 	}
 	stageTex := filepath.Join(stage, "tex")
 	r, rep, sdocx, dfs, dp, stex := outputsFor(c, cf, sel, stage, stageTex, true, true, pages)
+	if probs := r.R.coverage(cf); len(probs) > 0 || len(r.R.unverified) > 0 {
+		stop("figure coverage", append(probs, fmt.Sprintf("%d rendered figure(s) are not double-verified", len(r.R.unverified))))
+	}
 	if rep.Status != 0 {
 		printFit(rep)
 		stop("fit --strict", []string{rep.Advice})
@@ -184,12 +218,12 @@ func cmdFinalize(a *args) {
 	}
 	// The inputs must not have changed while rendering (another agent editing
 	// the bank or the log mid-finalize would make the manifest lie).
-	for _, p := range []string{sel, c.BankPath, cfPath, eco, inRoot(cfg.VerifyLog)} {
-		if p != "" && fileExists(p) {
-			m.Inputs[p] = sha256File(p)
-		}
+	inputs, probs := manifestInputs([]string{sel, c.BankPath, cfPath, eco, inRoot(cfg.VerifyLog)})
+	if len(probs) > 0 {
+		stop("inputs", probs)
 	}
-	if c.BankSHA != "" && m.Inputs[c.BankPath] != "" && m.Inputs[c.BankPath] != c.BankSHA {
+	m.Inputs = inputs
+	if c.BankSHA != "" && c.BankPath != "" && m.Inputs[c.BankPath] != c.BankSHA {
 		stop("inputs", []string{c.BankPath + " changed while finalize was running; re-run it"})
 	}
 	base := filepath.Join(out, c.basename(sel))

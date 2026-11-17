@@ -343,13 +343,11 @@ func docxPages(docx string) int {
 		return -1
 	}
 	defer func() { _ = os.RemoveAll(tmp) }() // best-effort temp cleanup
-	cmd := exec.Command(so, "--headless", "--convert-to", "pdf", "--outdir", tmp, docx)
-	cmd.Env = append(os.Environ(), "HOME="+tmp)
-	if err := cmd.Run(); err != nil {
+	if _, err := runCmd(timeoutOffice, runOpts{Env: append(os.Environ(), "HOME="+tmp)}, so, "--headless", "--convert-to", "pdf", "--outdir", tmp, docx); err != nil {
 		return -1
 	}
 	pdf := filepath.Join(tmp, strings.TrimSuffix(filepath.Base(docx), ".docx")+".pdf")
-	out, err := exec.Command("pdfinfo", pdf).Output()
+	out, err := runCmd(timeoutPoppler, runOpts{}, "pdfinfo", pdf)
 	if err != nil {
 		return -1
 	}
@@ -361,7 +359,8 @@ func docxPages(docx string) int {
 }
 
 // exportDocx writes the .docx, stepping the font down (to 9.5pt) if Word
-// layout runs past the target page count.
+// layout runs past the target page count. It does not gate on figure
+// verification: `rkb docx` does (cmdDocx), finalize through lint --final.
 func exportDocx(c *Composed, cf *ClaimsFile, out string, pages int, fs float64) (float64, int) {
 	if fs == 0 {
 		fs = 10
@@ -384,6 +383,15 @@ func cmdDocx(a *args) {
 	pages := a.intFlag("pages", max(c.Meta.Pages, 1), 1, 20)
 	fs := a.floatFlag("font-pt", 10, 6, 16)
 	out := a.get("out", filepath.Join(a.get("out-dir", "."), c.basename(sel)+".docx"))
+	// The Word file prints figures bold with no unverified marker, so a
+	// standalone export is refused while any rendered figure is unverified,
+	// by the same check as render --final.
+	if probs := renderResume(c, cf, true).R.coverage(cf); len(probs) > 0 {
+		for _, p := range probs {
+			fmt.Println("ERROR " + p)
+		}
+		die("docx blocked: %d rendered figure(s) are not double-verified in the text they appear in (use `rkb build` for a draft)", len(probs))
+	}
 	fs, n := exportDocx(c, cf, out, pages, fs)
 	msg := fmt.Sprintf("wrote %s (Times New Roman %.1fpt", out, fs)
 	if n >= 0 {
