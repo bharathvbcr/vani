@@ -9,7 +9,8 @@ const info = (label: string): FieldInfo => ({ kind: "text", label, name: "", aut
 // The user typed in every field these scenarios touch: the events are script-made, so the tracker is told to trust them (createTracker isTrusted).
 const FIELD_EL = { nodeType: 1 };
 const real = await import("../src/extract");
-mock.module("../src/extract", () => ({ ...real, scanForm: () => ({ roots: [], refs: ["Favourite colour", "Favourite editor", "Favourite shell"].map(l => ({ info: info(l), els: [FIELD_EL], widget: "native", manual: "" })) }) }));
+// The tracker reads one touched field back with readRefValue; the fake fields hold their value in info.
+mock.module("../src/extract", () => ({ ...real, readRefValue: (r: { info: FieldInfo }) => r.info.value, scanForm: () => ({ roots: [], refs: ["Favourite colour", "Favourite editor", "Favourite shell"].map(l => ({ info: info(l), els: [FIELD_EL], widget: "native", manual: "" })) }) }));
 (globalThis as Record<string, unknown>).MutationObserver = class { observe() {} disconnect() {} };
 const { createTracker } = await import("../src/tracker");
 
