@@ -31,6 +31,9 @@ func Label(in io.Reader, out io.Writer, recs []ledger.Record, s *Store, names Na
 	sc.Buffer(make([]byte, 0, 1024), maxInputLine)
 	written := 0
 	for i, r := range recs {
+		if r.BodyEvicted {
+			return written, fmt.Errorf("eval: %s has no posting text loaded; refusing to label (and hash) empty text", r.Key)
+		}
 		if err := showPosting(out, i+1, len(recs), r, names, false); err != nil {
 			return written, err
 		}
@@ -84,6 +87,9 @@ func LabelAudit(in io.Reader, out io.Writer, picks []AuditPick, recs []ledger.Re
 	for i, r := range recs {
 		if r.Key != picks[i].Key {
 			return written, fmt.Errorf("eval: pick %d is %s but its posting is %s", i+1, picks[i].Key, r.Key)
+		}
+		if r.BodyEvicted {
+			return written, fmt.Errorf("eval: %s has no posting text loaded; refusing to label (and hash) empty text", r.Key)
 		}
 		if err := showPosting(out, i+1, len(recs), r, names, blind); err != nil {
 			return written, err

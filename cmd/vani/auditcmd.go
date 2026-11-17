@@ -273,6 +273,35 @@ func (d *auditDraw) recordOf(k posting.Key) (ledger.Record, bool) {
 	return prefilterRecord(d.prefilter, k)
 }
 
+// withText gives every record in recs its description. The jobs read behind
+// the audit keeps the text of a dropped, closed or duplicate posting out unless
+// it is marked (jobsTextScope), and a card or a label for one needs it, so the
+// bodiless ones are read back from the ledger here. A body that cannot be read
+// is an error naming the posting, never an empty description.
+func (e *env) withText(recs []ledger.Record) error {
+	var rd *ledger.Reader
+	for i := range recs {
+		r := &recs[i]
+		if !r.BodyEvicted {
+			continue
+		}
+		if rd == nil {
+			var release func()
+			var err error
+			if rd, _, _, release, err = e.jobsReader(); err != nil {
+				return fmt.Errorf("audit: read the posting text of %s: %w", r.Key, err)
+			}
+			defer release()
+		}
+		d, err := rd.Body(r.Key)
+		if err != nil {
+			return fmt.Errorf("audit: the posting text of %s cannot be read back: %w", r.Key, err)
+		}
+		r.Posting.Description, r.BodyEvicted = d, false
+	}
+	return nil
+}
+
 // checkAuditDraw validates the draw flags the audit commands share.
 func checkAuditDraw(q eval.AuditQuotas, seed string) error {
 	for _, n := range []int{q.Scored, q.Dropped, q.Closed} {
@@ -709,6 +738,9 @@ func (e *env) cmdAudit(args []string) error {
 		}
 		recs = append(recs, r)
 	}
+	if err := e.withText(recs); err != nil {
+		return err
+	}
 	names, err := e.evalNames()
 	if err != nil {
 		return err
@@ -864,6 +896,11 @@ func (e *env) answerAudit(k posting.Key, verdict, reason, source string, p float
 	if !ok {
 		return auditAnswerJSON{}, fmt.Errorf("audit answer: %s is not in the ledger", k)
 	}
+	one := []ledger.Record{r}
+	if err := e.withText(one); err != nil {
+		return auditAnswerJSON{}, err
+	}
+	r = one[0]
 	answer := eval.Entry{Key: k, Labels: map[string]string{eval.WouldApply: verdict}, Source: src, PSelect: prob}
 	if reason != "" {
 		answer.Labels[eval.WouldApplyReason] = reason
