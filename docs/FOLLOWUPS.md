@@ -2118,8 +2118,16 @@ Left open:
   Hugging Face), Avature (`av`: Two Sigma), SmartRecruiters (`sr`: ServiceNow), Oracle HCM (`oc`:
   JPMorgan Chase), IBM careers (`ib`: IBM, Confluent), D. E. Shaw (`ds`), Atlassian (`at`),
   Rippling (`rp`), and XML job feeds (`fd`: Shopify) are now implemented as dedicated adapters
-  and merged to `main`. Remaining unsupported: Meta, Uber, Arm (iCIMS), Synopsys (Radancy),
-  Aurora (custom), Citadel (custom).
+  and merged to `main`. Remaining unsupported: Meta, Uber, Aurora (custom), Citadel (custom).
+  Arm (`careers.arm.com`) and Synopsys (`careers.synopsys.com`) are TalentBrew (`tb`) sites, and
+  GitLab is Greenhouse (`gh gitlab`); a scratch `run-once --list-only` on 2026-11-17 read GitLab
+  253, Arm 150 (the detail cap; 452 listed) and Synopsys 149 (713 listed), all with title,
+  location and description. GitLab and Arm went on the live watchlist that day. Synopsys answers
+  a closed job 302 to `/` while its sitemap still lists it, which failed the whole board; `tb`
+  now counts a job page redirected to its site's home page as gone, within MaxGone. Add Synopsys
+  only once a `vani` with that change is installed. **Sitemap gap:** Arm's sitemap names 452
+  `/job/` pages against `data-total-results="571"` on its search page (Synopsys: 713 against
+  750); `tb` reads only the sitemap, so about 119 Arm jobs are not seen.
 - **An unnamed Swift test failure under load.** It was seen twice on 2026-10-22/23. The first time,
   the logo-cap agent's `swift test` ran beside a full Go run. The second time, the final-main
   `swift test` (642 tests, "1 failure (0 unexpected)") ran beside `bun test`. Neither run kept the

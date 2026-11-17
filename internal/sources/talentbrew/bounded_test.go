@@ -331,9 +331,10 @@ func TestOneNewJobGoneAmongStoredIsNotABoardFailure(t *testing.T) {
 	}
 }
 
-// Only a 404 means closed. A 410, a server error, a page that is not a job
-// page and a body over the cap are failures that fail the board, never gone
-// (goneparity pins the same for every adapter).
+// Only a 404 (or a redirect to the site's home page, senthome_test.go) means
+// closed. A 410, a server error, a page that is not a job page answered at the
+// job's own address and a body over the cap are failures that fail the board,
+// never gone (goneparity pins the same for every adapter).
 func TestOnlyA404IsGone(t *testing.T) {
 	cases := map[string]srctest.Reply{
 		"410":                {Status: 410, Body: []byte("gone")},

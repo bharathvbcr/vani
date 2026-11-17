@@ -32,10 +32,16 @@
 // schema.org fields behind that template and writes a line only for a range
 // that is well formed.
 //
-// A job that closed answers its page 404 (a 62 KB page, no redirect). Only
-// that is "gone", bounded by srcutil.MaxGone as in smartrecruiters: a 200 page
-// with no JobPosting is a template this source does not know, not a closed job,
-// and fails the board.
+// A job that closed answers its page 404 on Intuit and Citi (a 62 KB page, no
+// redirect). careers.synopsys.com instead answers 302 with "Location: /" and
+// the client lands on the site's home page (job 102886742736, still in the
+// sitemap on 2026-11-17). Those two are "gone": a 404, and a job page that
+// sent the request to its own site's home page.
+// Together they are bounded by srcutil.MaxGone as in smartrecruiters, so a
+// site that sends every job page home fails the board. A 200 answered at the
+// job's own address with no JobPosting is a template this source does not
+// know, not a closed job, and fails the board; so does a redirect to another
+// host.
 //
 // robots.txt of jobs.intuit.com and jobs.citi.com (GET 2026-10-28, 39 bytes
 // each) is "User-agent: *" and "Disallow:/search-jobs/". The sitemap and the
@@ -138,9 +144,10 @@ var (
 	jobPath = regexp.MustCompile(`^/job/([A-Za-z0-9%._~-]{1,1000})/([A-Za-z0-9%._~-]{1,1000})/([0-9]{1,10})/([0-9]{1,20})$`)
 )
 
-// errDetailGone is a job page answering 404 under a sitemap that listed it:
-// the job closed after the sitemap was written.
-var errDetailGone = errors.New("detail is gone (HTTP 404)")
+// errDetailGone is a job page answering 404, or sending the request to its
+// own site's home page, under a sitemap that listed it: the job closed after
+// the sitemap was written.
+var errDetailGone = errors.New("detail is gone (HTTP 404, or sent to the home page)")
 
 // Stats counts what one List did. Every listed job is counted once, in Reused,
 // Fetched, Refreshed, Prefiltered, Deferred, Gone or Unanswered.
@@ -527,7 +534,7 @@ func (s *source) details(ctx context.Context, pace *srcutil.Pacer, b sources.Boa
 		// Deliberately not ErrBoardNotFound: the sitemap answered.
 		Gone: errDetailGone,
 		GoneErr: func(gone, fetch int) error {
-			return fmt.Errorf("%d of %d job pages are gone (HTTP 404); the site is not answering", gone, fetch)
+			return fmt.Errorf("%d of %d job pages are gone (HTTP 404, or sent to the home page); the site is not answering", gone, fetch)
 		},
 		FetchErr: func(i int, err error) error { return fmt.Errorf("job %s: %w", rows[i].id, err) },
 	}.Run(ctx)
@@ -542,16 +549,34 @@ func (s *source) detail(ctx context.Context, pace *srcutil.Pacer, b sources.Boar
 	if err := pace.Wait(ctx); err != nil {
 		return posting.Posting{}, err
 	}
-	page, err := srcutil.GetBodyLimit(ctx, s.d, r.loc, "text/html,application/xhtml+xml", maxDetailBody)
+	tr := srcutil.NewTracker(s.d)
+	page, err := srcutil.GetBodyLimit(ctx, tr, r.loc, "text/html,application/xhtml+xml", maxDetailBody)
 	if err != nil {
 		if errors.Is(err, srcutil.ErrBoardNotFound) {
 			return posting.Posting{}, errDetailGone
 		}
 		return posting.Posting{}, err
 	}
+	if sentHome(tr.Final(), host) {
+		return posting.Posting{}, errDetailGone
+	}
 	jp, ok := findJobPosting(string(page), host, company, r.id)
 	if !ok {
 		return posting.Posting{}, fmt.Errorf("%w: the page has no JobPosting for job %s", ErrShape, r.id)
 	}
 	return jp.posting(b, r, key, seen)
+}
+
+// sentHome reports whether a job page's answer came from the home page of the
+// site's own host: the site redirected a closed job there (Synopsys answers
+// 302 "Location: /"). Only the root is read so, because it is the one target
+// seen live; any other page (a search page, an error or maintenance page, a
+// rewritten job address, another host) is left to fail the board on its
+// missing JobPosting rather than have the job counted closed.
+func sentHome(final *url.URL, host string) bool {
+	if final == nil || !strings.EqualFold(final.Hostname(), host) {
+		return false
+	}
+	p := final.EscapedPath()
+	return p == "" || p == "/"
 }

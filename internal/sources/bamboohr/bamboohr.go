@@ -29,7 +29,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -159,46 +158,24 @@ func detailURL(token, id string) string {
 	return "https://" + host(token) + "/careers/" + url.PathEscape(id) + "/detail"
 }
 
-// tracker remembers where the list request ended: the final URL of the
-// response, which is not the one asked for when the client followed a
-// redirect, and the Location of a redirect it did not.
-type tracker struct {
-	d        egress.Doer
-	final    *url.URL
-	location string
-}
-
-func (t *tracker) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	if t.d == nil {
-		return nil, errors.New("sources: no http doer configured")
-	}
-	resp, err := t.d.Do(ctx, req)
-	if resp != nil {
-		if resp.Request != nil {
-			t.final = resp.Request.URL
-		}
-		t.location = resp.Header.Get("Location")
-	}
-	return resp, err
-}
-
-// movedAway reports whether the list request was sent away from the careers
-// page, and the host and path it went to ("" when only the fact is known). It
-// is the redirect itself that says so, whichever way the client met it: it
-// followed it (the answer came from another URL), it refused the hop to a
-// host that is not allowed (a *url.Error wrapping egress.ErrNotAllowed; the
-// request's own host being refused is a bare error and not this), or it
-// returned the 3xx unfollowed.
-func (t *tracker) movedAway(token string, err error) (dest string, moved bool) {
-	if t.final != nil && !(strings.EqualFold(t.final.Hostname(), host(token)) && (t.final.Path == "/careers" || strings.HasPrefix(t.final.Path, "/careers/"))) {
-		return t.final.Hostname() + t.final.Path, true
+// movedAway reports whether the list request, read through t, was sent away
+// from the careers page, and the host and path it went to ("" when only the
+// fact is known). It is the redirect itself that says so, whichever way the
+// client met it: it followed it (the answer came from another URL), it
+// refused the hop to a host that is not allowed (a *url.Error wrapping
+// egress.ErrNotAllowed; the request's own host being refused is a bare error
+// and not this), or it returned the 3xx unfollowed.
+func movedAway(t *srcutil.Tracker, token string, err error) (dest string, moved bool) {
+	if final := t.Final(); final != nil && !(strings.EqualFold(final.Hostname(), host(token)) && (final.Path == "/careers" || strings.HasPrefix(final.Path, "/careers/"))) {
+		return final.Hostname() + final.Path, true
 	}
 	var se *egress.StatusError
 	if errors.As(err, &se) && se.Code >= 300 && se.Code < 400 {
-		if u, perr := url.Parse(t.location); perr == nil && u.Hostname() != "" {
+		location := t.Location()
+		if u, perr := url.Parse(location); perr == nil && u.Hostname() != "" {
 			return u.Hostname() + u.Path, true
 		}
-		return t.location, true
+		return location, true
 	}
 	var ue *url.Error
 	if errors.As(err, &ue) && errors.Is(err, egress.ErrNotAllowed) {
@@ -219,13 +196,13 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, err
 	}
 	var resp listResponse
-	tr := &tracker{d: s.d}
+	tr := srcutil.NewTracker(s.d)
 	err := srcutil.GetJSONLimit(ctx, tr, listURL(b.Token), maxListBody, &resp)
 	// The redirect is read before the error, and even when there is none: a
 	// followed one usually lands on an HTML page, so the failure is a decode
 	// error that says nothing of it, and a page that does decode is another
 	// board's, not this one's.
-	if dest, moved := tr.movedAway(b.Token, err); moved {
+	if dest, moved := movedAway(tr, b.Token, err); moved {
 		return nil, fmt.Errorf("bamboohr %q: %w: the careers list went to %q (no such board, or its careers page is off, expired or suspended)", b.Token, ErrBoardNotFound, dest)
 	}
 	if err != nil {

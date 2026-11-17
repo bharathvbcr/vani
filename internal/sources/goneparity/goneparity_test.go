@@ -443,7 +443,10 @@ func TestGoneBoundParity(t *testing.T) {
 	}
 }
 
-// Non-404 failures are never gone, on any adapter.
+// Non-404 failures are never gone, on any adapter. (A TalentBrew job page
+// redirected to its site's home page is gone; that is a followed redirect, not
+// a status answered at the job's address, and talentbrew's senthome_test.go
+// pins it.)
 func TestNotGoneParity(t *testing.T) {
 	for _, f := range all() {
 		for name, rep := range map[string]srctest.Reply{
