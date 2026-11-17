@@ -221,12 +221,20 @@ func (s *source) readTerm(ctx context.Context, term string, filters map[string][
 	if err != nil {
 		return nil, err
 	}
-	// A page cannot list more jobs than the search matches; a total under the
-	// rows served cannot vouch that page 1 holds every match.
-	if err := srcutil.TotalCoversRows(first.total, len(first.jobs)); err != nil {
+	// A page cannot list more distinct jobs than the search matches; a total
+	// under the distinct jobs served cannot vouch that page 1 holds every match.
+	// A row that failed to decode has no id and is not counted: it is the bad-row
+	// handling's, so a total equal to the raw row count is still a whole page.
+	distinct := make(map[string]bool, len(first.jobs))
+	for _, d := range first.jobs {
+		if d.err == nil {
+			distinct[d.j.id] = true
+		}
+	}
+	if err := srcutil.TotalCoversRows(first.total, len(distinct)); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrShape, err)
 	}
-	if first.total == len(first.jobs) {
+	if first.total == len(first.jobs) || first.total == len(distinct) {
 		return first.jobs, nil
 	}
 	// Two views of page 1 hold at most twice the rows page 1 sent, so a larger
