@@ -85,16 +85,25 @@ func (e *env) lcaImport(args []string) error {
 	if err != nil {
 		return fmt.Errorf("lca import %s: %w", path, err)
 	}
-	x, err := lca.Update(lcaIndexPath(e.stateDir), part)
+	x, replaced, err := lca.Update(lcaIndexPath(e.stateDir), part)
 	if err != nil {
 		return fmt.Errorf("lca index: %w", err)
+	}
+	var replacedNames []string
+	for _, s := range replaced {
+		replacedNames = append(replacedNames, s.Name)
 	}
 	return e.reply(*asJSON, struct {
 		File        string `json:"file"`
 		Employers   int    `json:"employers"`
 		FiscalYears []int  `json:"fiscal_years"`
-	}{filepath.Base(path), x.Employers(), nonNil(x.Coverage())}, nil, func() {
+		// Replaced names the earlier files this one replaced: same fiscal year.
+		Replaced []string `json:"replaced,omitempty"`
+	}{filepath.Base(path), x.Employers(), nonNil(x.Coverage()), replacedNames}, nil, func() {
 		fmt.Fprintf(e.stdout, "imported %s: %d employers, fiscal years %v\n", filepath.Base(path), x.Employers(), x.Coverage())
+		if len(replacedNames) > 0 {
+			fmt.Fprintf(e.stdout, "replaced the earlier file(s) for the same fiscal year: %s\n", strings.Join(replacedNames, ", "))
+		}
 	})
 }
 

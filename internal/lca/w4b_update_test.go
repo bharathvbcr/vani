@@ -37,7 +37,7 @@ func TestW4bUpdateChild(t *testing.T) {
 	path := os.Getenv("W4B_PATH")
 	child, _ := strconv.Atoi(os.Getenv("W4B_CHILD"))
 	for i := 0; i < w4bPerChild; i++ {
-		_, err := Update(path, w4bPartial(child, i))
+		_, _, err := Update(path, w4bPartial(child, i))
 		switch {
 		case err == nil:
 			fmt.Printf("ok %d-%d\n", child, i)
@@ -101,7 +101,7 @@ func TestW4bUpdateAcrossProcesses(t *testing.T) {
 // A lock held past the bound is a clean ErrBusy and the index is untouched.
 func TestW4bUpdateBusy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "index.json")
-	if _, err := Update(path, w4bPartial(0, 0)); err != nil {
+	if _, _, err := Update(path, w4bPartial(0, 0)); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := os.ReadFile(path)
@@ -113,7 +113,7 @@ func TestW4bUpdateBusy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	if _, err := Update(path, w4bPartial(1, 0)); !errors.Is(err, indexutil.ErrBusy) {
+	if _, _, err := Update(path, w4bPartial(1, 0)); !errors.Is(err, indexutil.ErrBusy) {
 		t.Fatalf("Update under a held lock = %v, want ErrBusy", err)
 	}
 	after, _ := os.ReadFile(path)

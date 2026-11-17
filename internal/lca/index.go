@@ -50,20 +50,63 @@ func NewIndex() *Index {
 // replaces the earlier one, so re-importing a file never double-counts. The
 // index takes ownership of p's maps.
 func (x *Index) Merge(p Partial) error {
+	_, err := x.merge(p, false)
+	return err
+}
+
+// MergeReplacingYear is Merge for an import: it also drops every other source
+// whose fiscal year (see PrimaryFY) is p's, because DOL publishes one file per
+// fiscal year, so a different file for the same year is a correction or a
+// later cumulative quarter of it, and adding both would double its counts. It
+// returns the sources it dropped.
+func (x *Index) MergeReplacingYear(p Partial) ([]SourceMeta, error) {
+	return x.merge(p, true)
+}
+
+func (x *Index) merge(p Partial, replaceYear bool) ([]SourceMeta, error) {
 	if p.Source.SHA256 == "" {
-		return errors.New("lca: partial has no source sha256")
+		return nil, errors.New("lca: partial has no source sha256")
 	}
 	if err := validateEmployers(p.Employers); err != nil {
-		return err
+		return nil, err
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.sources == nil {
 		x.sources = map[string]Partial{}
 	}
+	var dropped []SourceMeta
+	if fy := PrimaryFY(p); replaceYear && fy != 0 {
+		for _, old := range sortedSources(x.sources) {
+			if old.Source.SHA256 != p.Source.SHA256 && PrimaryFY(old) == fy {
+				dropped = append(dropped, old.Source)
+				delete(x.sources, old.Source.SHA256)
+			}
+		}
+	}
 	x.sources[p.Source.SHA256] = p
 	x.rebuild()
-	return nil
+	return dropped, nil
+}
+
+// PrimaryFY is the fiscal year holding most of a source's counted cases (the
+// earliest on a tie), or 0 for a source with none. A file carries a few cases
+// of neighbouring years (a decision date just past a boundary), which must not
+// make it replace those years' own files.
+func PrimaryFY(p Partial) int {
+	total := map[int]int{}
+	for _, byFY := range p.Employers {
+		for fy, c := range byFY {
+			total[fy] += c.H1B + c.H1BWithdrawn + c.H1B1 + c.E3
+		}
+	}
+	best, bestN := 0, 0
+	for _, fy := range sortedKeys(total) {
+		if total[fy] > bestN {
+			best, bestN = fy, total[fy]
+		}
+	}
+	return best
 }
 
 // Sources returns metadata of the merged files, ordered by sha256.
@@ -215,11 +258,12 @@ var ErrBusy = indexutil.ErrBusy
 // Update is the import path: under the index's lock it merges p into the index
 // at path (an absent file is an empty index) and saves it, so two imports never
 // overwrite each other's rows. A corrupt index or a refused partial leaves the
-// file as it was; a lock held past indexutil.LockWait is ErrBusy.
-func Update(path string, p Partial) (*Index, error) {
+// file as it was; a lock held past indexutil.LockWait is ErrBusy. The sources
+// that p replaced, a corrected file for the same fiscal year, are returned.
+func Update(path string, p Partial) (*Index, []SourceMeta, error) {
 	path, release, err := indexutil.Lock(context.Background(), path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer release()
 	x, err := Load(path)
@@ -227,15 +271,16 @@ func Update(path string, p Partial) (*Index, error) {
 		x, err = NewIndex(), nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := x.Merge(p); err != nil {
-		return nil, err
+	dropped, err := x.MergeReplacingYear(p)
+	if err != nil {
+		return nil, nil, err
 	}
 	if err := x.Save(path); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return x, nil
+	return x, dropped, nil
 }
 
 // Load reads an index written by Save. A corrupted, truncated, unknown-version
