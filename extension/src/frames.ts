@@ -371,9 +371,10 @@ export function mergeFill(r: FanOut<FillReply>): FillOutcome[] {
   return r.answered.flatMap(a => a.reply.outcomes);
 }
 
-export function sumCaptures(r: FanOut<CaptureReply>): Required<CaptureReply> {
-  const s = { added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0, skippedFull: 0, unchanged: 0 };
+export function sumCaptures(r: FanOut<CaptureReply>): Required<Omit<CaptureReply, "refused">> & { refused?: string } {
+  const s: Required<Omit<CaptureReply, "refused">> & { refused?: string } = { added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0, skippedFull: 0, unchanged: 0 };
   for (const { reply: c } of r.answered) {
+    if (c.refused !== undefined && s.refused === undefined) s.refused = c.refused;
     s.added += c.added; s.updated += c.updated; s.skippedSecret += c.skippedSecret;
     s.skippedSelfId += c.skippedSelfId; s.skippedEmpty += c.skippedEmpty; s.skippedFull += c.skippedFull ?? 0; s.unchanged += c.unchanged ?? 0;
   }

@@ -52,4 +52,21 @@ out.retryAfterThrow = await scenario(async () => { if (++m === 1) throw new Erro
   await t.flush("first", true).catch(() => null);
   await t.flush("second", true);
 });
+// R5 (round 2): an explicit Save when the background refuses with a reason reports that reason, not a count.
+{
+  const win = Object.assign(target(), { location: { href: "https://jobs.example/apply" } });
+  const doc = Object.assign(target(), { nodeType: 9, defaultView: win, visibilityState: "visible" });
+  const t = createTracker({ doc: doc as unknown as Document, host: "jobs.example", getBank: async () => null, send: async () => ({ error: "the answer bank could not be read" }), commitMs: 10 });
+  doc.fire("change");
+  const r = await t.flush("saved", true);
+  t.dispose();
+  out.refusedExplicit = r?.refused === "the answer bank could not be read" && r.failed ? 1 : 0;
+}
+// R6 (round 2): a bank known to disable the host keeps the page from sending, even when a later read fails.
+{
+  let reads = 0;
+  out.knownDisabledThenNull = await scenario(async () => (++reads === 1 ? { ...emptyBank(), settings: { captureSelfId: false, disabledHosts: ["Jobs.Example."] } } : null), async (doc, win) => {
+    doc.fire("change"); await sleep(40); doc.fire("change"); await sleep(40); win.fire("pagehide"); await sleep(40);
+  });
+}
 console.log(JSON.stringify(out));

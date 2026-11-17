@@ -3,6 +3,8 @@
 import { describe, expect, test } from "bun:test";
 import { exportBank, mergeBanks, mergeCapture, mergeCaptureDelta, parseBank } from "../src/bank";
 import { autocompleteKey } from "../src/normalize";
+import { sumCaptures } from "../src/frames";
+import { isCaptureReply } from "../src/messages";
 import { matchField } from "../src/match";
 import { basicsValues } from "../src/basics";
 import { type LocalArea, createStore } from "../src/store";
@@ -62,6 +64,18 @@ describe("a 'Constructor' field round-trips", () => {
       const m = matchField(field(label, ""), bank, "jobs.example");
       expect(m, label).toBeNull();
     }
+  });
+});
+
+describe("a refused save carries its reason to the popup", () => {
+  const zero = { added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0 };
+  test("isCaptureReply accepts a bounded string refusal and sumCaptures keeps the first one", () => {
+    expect(isCaptureReply({ ...zero, refused: "capture is turned off for this site" })).toBe(true);
+    expect(isCaptureReply({ ...zero, refused: 3 })).toBe(false);
+    expect(isCaptureReply({ ...zero, refused: "x".repeat(501) })).toBe(false);
+    const sum = sumCaptures({ asked: 2, failed: [], answered: [{ reply: { ...zero, refused: "first" } }, { reply: { ...zero, refused: "second" } }] } as never);
+    expect(sum.refused).toBe("first");
+    expect(sumCaptures({ asked: 1, failed: [], answered: [{ reply: zero }] } as never).refused).toBeUndefined();
   });
 });
 

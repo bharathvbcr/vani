@@ -15,5 +15,8 @@ describe("w2badv: pagehide fail-closed must not lose a legitimate capture", () =
     expect(sends.transientNullAfterGoodRead, "one null read after a good one must not erase the known bank").toBeGreaterThan(0);
     // Not a break: a throwing read leaves the pending set intact and the next flush sends it.
     expect(sends.retryAfterThrow).toBe(1);
+    // Round 2: an explicit Save carries the background's refusal reason, and a known disabled host sends nothing.
+    expect(sends.refusedExplicit, "explicit Save with a refusal reports it").toBe(1);
+    expect(sends.knownDisabledThenNull, "a known disabled host is not overridden by a later null read").toBe(0);
   }, 20_000);
 });

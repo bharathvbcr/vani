@@ -8,6 +8,7 @@
 // (a search page) only an explicit Save saves. The DOM and the chrome
 // messaging are injected so the DOM test page can drive it.
 import type { Bank, FieldInfo } from "./types";
+import { emptyBank } from "./types";
 import { answerKey, hostDisabled, mergeCapture } from "./bank";
 import { classify } from "./classify";
 import { scanForm } from "./extract";
@@ -32,8 +33,8 @@ export interface TrackerDeps {
   doc: Document;
   host: string;
   getBank(): Promise<Bank | null>;
-  /** Send fields for storage; resolves with the counts, or null if the background did not accept them. */
-  send(fields: FieldInfo[]): Promise<CaptureReply | null>;
+  /** Send fields for storage; resolves with the counts, `{ error }` when the background refused them with a reason, or null if it did not answer. */
+  send(fields: FieldInfo[]): Promise<CaptureReply | { error: string } | null>;
   /** The page changed shape (debounced, with a maximum wait so a mutation storm cannot starve it). */
   onDom?: () => void;
   onResult?: (r: FlushResult) => void;
@@ -183,18 +184,23 @@ export function createTracker(d: TrackerDeps): Tracker {
   async function run(reason: string, explicit: boolean): Promise<FlushResult | null> {
     if (pending.size === 0) return null;
     if (!explicit && peak < MIN_FORM_FIELDS) return null; // not a form: only Save keeps it
-    const bank = await d.getBank().catch(() => null);
-    lastBank = bank;
-    // Fail closed: a bank that could not be read cannot say whether this host is disabled, so nothing is sent.
-    if (!bank || hostDisabled(bank, d.host)) return null;
-    const selfId = bank.settings.captureSelfId;
+    const read = await d.getBank().catch(() => null);
+    if (read) lastBank = read; // a failed read never erases a bank this tracker already knows
+    const bank = read ?? lastBank;
+    // A bank this tracker knows says the host is disabled: nothing leaves the page. With no bank at all the
+    // background decides (it checks disabledHosts against a fresh bank and refuses when it cannot read one).
+    if (bank && hostDisabled(bank, d.host)) return null;
+    const selfId = bank?.settings.captureSelfId ?? false;
     const { fields, skipped } = unsent(selfId);
-    const diff = pendingDiff(bank, fields, d.host, explicit);
+    const diff = pendingDiff(bank ?? emptyBank(), fields, d.host, explicit);
     const batch = diff.send.slice(0, MAX_SEND);
-    const reply = batch.length > 0 ? await d.send(batch) : null;
+    const raw = batch.length > 0 ? await d.send(batch) : null;
+    const refused = raw !== null && "error" in raw ? raw.error : undefined;
+    const reply = raw !== null && !("error" in raw) ? raw : null;
     if (reply) markSent(batch, selfId);
     const res: FlushResult = {
       added: 0, updated: 0, skippedSecret: 0, skippedSelfId: 0, skippedEmpty: 0, ...(reply ?? {}),
+      ...(refused !== undefined ? { refused } : {}),
       unchanged: diff.unchanged + skipped, reason, failed: batch.length > 0 && reply === null, notSent: diff.send.length - batch.length,
     };
     d.onResult?.(res);
@@ -204,20 +210,21 @@ export function createTracker(d: TrackerDeps): Tracker {
   /**
    * On pagehide the page may be gone before an awaited bank read returns, so
    * decide from the last bank this tracker saw and send without waiting. If no
-   * bank was ever read (or the last read failed) nothing is sent: it is not
-   * known whether this host is disabled.
+   * bank was ever read the whole pending set is sent: the background merges it
+   * and is the authority on disabledHosts (it checks a fresh bank, failing
+   * closed). A known bank that disables this host keeps the page from sending.
    */
   function flushNow(): void {
     snapshot();
-    if (pending.size === 0 || peak < MIN_FORM_FIELDS || !lastBank || hostDisabled(lastBank, d.host)) return;
-    const base = lastBank;
+    if (pending.size === 0 || peak < MIN_FORM_FIELDS || (lastBank && hostDisabled(lastBank, d.host))) return;
+    const base = lastBank ?? emptyBank();
     const selfId = base.settings.captureSelfId;
     const batch = pendingDiff(base, unsent(selfId).fields, d.host, false).send.slice(0, MAX_SEND);
     if (batch.length === 0) return;
     // Remember what was just sent, so pagehide followed by visibilitychange does not send it twice.
-    lastBank = mergeCapture(base, batch, d.host, new Date()).bank;
+    if (lastBank) lastBank = mergeCapture(base, batch, d.host, new Date()).bank;
     markSent(batch, selfId);
-    void d.send(batch).then(r => { if (r === null) unmarkSent(batch); }, () => unmarkSent(batch));
+    void d.send(batch).then(r => { if (r === null || "error" in r) unmarkSent(batch); }, () => unmarkSent(batch));
   }
 
   function flush(reason: string, explicit = false): Promise<FlushResult | null> {
@@ -231,7 +238,8 @@ export function createTracker(d: TrackerDeps): Tracker {
     clearTimeout(commitTimer);
     commitTimer = setTimeout(() => {
       snapshot();
-      void d.getBank().then(b => { lastBank = b; }, () => undefined); // what the flush on pagehide will compare against
+      // What the flush on pagehide will compare against. A failed or empty read keeps the bank already known.
+      void d.getBank().then(b => { if (b) lastBank = b; }, () => undefined);
     }, ms);
   }
 

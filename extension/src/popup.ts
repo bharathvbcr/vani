@@ -1692,6 +1692,11 @@ $("#save").onclick = async () => {
   try {
     const r = await toFrames<CaptureReply>({ type: "capture" }, { registered });
     const c = sumCaptures(r);
+    if (c.refused && c.added + c.updated === 0) {
+      status(`Not saved: ${c.refused}` + notAnswered(r), "warn");
+      toast("Not saved");
+      return;
+    }
     status(`Saved ${c.added + c.updated} answers` + (c.unchanged ? ` (${c.unchanged} already saved)` : "") + (c.skippedSecret ? `; ${c.skippedSecret} sensitive fields not saved.` : ".") + (c.skippedFull ? ` ${c.skippedFull} not saved: ${BANK_FULL}` : "") + notAnswered(r), "ok");
     toast(`Saved ${c.added + c.updated} answers!`);
     await refresh();

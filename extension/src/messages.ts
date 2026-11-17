@@ -286,7 +286,8 @@ export interface ScanReply {
 }
 export interface FillReply { outcomes: FillOutcome[] }
 /** `unchanged` counts answers the bank already held, which a repeat save skips. */
-export type CaptureReply = Omit<CaptureResult, "bank"> & { unchanged?: number };
+/** `refused`: why a save was turned away (capture off for the site, bank unreadable), shown instead of a count of 0. */
+export type CaptureReply = Omit<CaptureResult, "bank"> & { unchanged?: number; refused?: string };
 /** `rev` is the Mac app's revision of `bank`; absent when the bank is kept in the browser (which has none). */
 export type BankReply = { bank: Bank; mode: "mac-app" | "browser"; note: string | null; rev?: number } | { error: string };
 
@@ -298,7 +299,7 @@ export function isFillReply(r: unknown): r is FillReply {
 }
 
 export function isCaptureReply(r: unknown): r is CaptureReply {
-  return isRecord(r) && COUNTS.every(k => isCount(r[k])) && (r.unchanged === undefined || isCount(r.unchanged)) && (r.skippedFull === undefined || isCount(r.skippedFull));
+  return isRecord(r) && COUNTS.every(k => isCount(r[k])) && (r.unchanged === undefined || isCount(r.unchanged)) && (r.skippedFull === undefined || isCount(r.skippedFull)) && (r.refused === undefined || (typeof r.refused === "string" && r.refused.length <= 500));
 }
 
 export function isScanReply(r: unknown): r is ScanReply {

@@ -111,7 +111,8 @@ let tracker: Tracker;
 
 function announce(r: FlushResult): void {
   const saved = r.added + r.updated;
-  if (r.failed) toast("Could not save answers: the extension's storage did not accept them");
+  if (r.refused) toast(`Not saved: ${r.refused}`);
+  else if (r.failed) toast("Could not save answers: the extension's storage did not accept them");
   else if (saved > 0) toast(`Saved ${saved} answers (${r.reason})` + (r.skippedSecret ? `; ${r.skippedSecret} sensitive fields not saved` : "") + (r.skippedFull ? `; ${r.skippedFull} not saved: ${BANK_FULL}` : "") + (r.notSent ? `; ${r.notSent} more waiting for the next save` : ""));
   else if (r.skippedFull) toast(`Not saved: ${BANK_FULL}`);
   else if (r.reason === "saved") toast(`Nothing new to save (${r.unchanged} answers already saved)`);
@@ -2049,7 +2050,8 @@ if (!window.__vaniApply && !coveredByParent()) {
       const key = applicationKey(location.href);
       const r = await send<CaptureReply | { error: string }>({ type: "capture", host: location.hostname, fields, ...(key ? { postingKey: key } : {}) });
       bankMemo.invalidate(); // the scan that follows must see what was just saved
-      return r && "added" in r ? r : null;
+      if (r && "added" in r) return r;
+      return r && typeof r.error === "string" ? { error: r.error } : null;
     },
     onDom: () => { void scheduleScan(); },
     onResult: r => announce(r),
