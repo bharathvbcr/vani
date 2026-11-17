@@ -70,7 +70,19 @@ func TestW2AQuoteHasFigure(t *testing.T) {
 		{"| p95 | 94 |", "94 ms", false},
 		{"| p95 | 94 |", "94", true},
 		{"latency fell from 470 ms to 94 ms (-80%)", "470 → 94 ms (-80%)", true},
-		{"latency fell from 470 ms to 94 ms", "470 → 94 ms (-80%)", false},
+		// the percentage is computed from the two quoted figures: no line carries it
+		{"latency fell from 470 ms to 94 ms", "470 → 94 ms (-80%)", true},
+		{"month before reminders: 18% of loans returned late\nmonth after reminders: 7% of loans returned late", "18% → 7% of loans", true},
+		{"month after reminders: 7% of loans returned late", "18% → 7% of loans", false},
+		{"before 12 calls; after 3 calls", "12 → 3 calls (-75%)", true},
+		// a stated percentage that is not the arithmetic of the quoted pair is not exempt
+		{"latency fell from 470 ms to 94 ms", "470 → 94 ms (-50%)", false},
+		// both operands must be in the quote
+		{"latency is now 94 ms", "470 → 94 ms (-80%)", false},
+		{"latency was 470 ms", "470 → 94 ms (-80%)", false},
+		// a quoted pair does not excuse a percentage it does not produce, and a
+		// computed percentage never excuses an operand that is missing
+		{"after: 3 calls", "12 → 3 calls (-75%)", false},
 		{"1,200 requests per run", "1.2k", true},
 		{"no figure here at all", "94 ms", false},
 		{"anything", "no number", true},

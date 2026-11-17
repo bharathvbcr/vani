@@ -2,6 +2,7 @@ package main
 
 import (
 	"html"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,24 +68,81 @@ func quoteInNorm(t, quote string) bool {
 // with no unit is matched on value alone; one with a unit needs that unit in
 // the quote ("94" in a table next to a "ms" header does not carry it). A
 // found value with no number at all has nothing to tie, so it passes.
+//
+// A figure the verifier computed is exempt: a percentage (or multiple) that is
+// the change or ratio of two other figures in found ("470 -> 94 ms (-80%)") is
+// printed in no source line. It is exempt only when both of those figures are
+// themselves in the quote, so the arithmetic is checked on quoted values.
 func quoteHasFigure(quote, found string) bool {
 	q := figuresIn(quote)
-	for _, f := range figuresIn(found) {
-		ok := false
-		for _, g := range q {
-			if f.Class != "" && g.Class == "" {
-				continue
-			}
-			if sameQuantity(f, g, 1) || sameQuantity(g, f, 1) {
-				ok = true
-				break
+	fs := figuresIn(found)
+	inQuote := make([]bool, len(fs))
+	for i, f := range fs {
+		inQuote[i] = figureIn(f, q)
+	}
+	for i, f := range fs {
+		if inQuote[i] {
+			continue
+		}
+		derived := false
+		for a := range fs {
+			for b := range fs {
+				if a != i && b != i && a != b && inQuote[a] && inQuote[b] && derivedFrom(f, fs[a], fs[b]) {
+					derived = true
+				}
 			}
 		}
-		if !ok {
+		if !derived {
 			return false
 		}
 	}
 	return true
+}
+
+// figureIn reports whether q holds f: the same quantity, with f's unit when f
+// names one.
+func figureIn(f figure, q []figure) bool {
+	for _, g := range q {
+		if f.Class != "" && g.Class == "" {
+			continue
+		}
+		if sameQuantity(f, g, 1) || sameQuantity(g, f, 1) {
+			return true
+		}
+	}
+	return false
+}
+
+// derivedFrom reports whether d is the percentage change from `from` to `to`
+// (-80% for 470 -> 94), the percentage `to` is of `from`, or the multiple
+// `to`/`from` or `from`/`to`, to the precision d is written with. The sign is
+// ignored: "-80%" and "80% faster" state the same change. Both operands must
+// be real quantities, not percentages themselves.
+func derivedFrom(d, from, to figure) bool {
+	if from.Class == "pct" || to.Class == "pct" || (d.Class != "pct" && d.Class != "mult") {
+		return false
+	}
+	x, y := numVal(from.Tok)*from.Mult, numVal(to.Tok)*to.Mult
+	if from.Class == "time" && to.Class == "time" {
+		x, y = x*from.TimeScale, y*to.TimeScale
+	}
+	if x == 0 || y == 0 || math.IsNaN(x) || math.IsNaN(y) {
+		return false
+	}
+	dv := math.Abs(numVal(d.Tok))
+	tol := precision(d.Tok) + 1e-9
+	var cands []float64
+	if d.Class == "pct" {
+		cands = []float64{math.Abs(y-x) / math.Abs(x) * 100, math.Abs(y) / math.Abs(x) * 100}
+	} else {
+		cands = []float64{math.Abs(y / x), math.Abs(x / y)}
+	}
+	for _, c := range cands {
+		if math.Abs(dv-c) <= tol {
+			return true
+		}
+	}
+	return false
 }
 
 const maxQuoteFile = 64 << 20

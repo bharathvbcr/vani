@@ -135,7 +135,10 @@ type figure struct {
 }
 
 var (
-	reMultSfx = regexp.MustCompile(`^(?:[kK]|M|B|[bB]n|(?i:thousand|million|billion))\b`)
+	// A letter multiplier (3k, 1.2M, 2B) must touch its number; a word
+	// multiplier may follow a space ("1.2 million"), so it reads as the same
+	// value as "1.2M".
+	reMultSfx = regexp.MustCompile(`^(?:(?:[kK]|M|B|[bB]n)|\s*(?i:thousand|million|billion))\b`)
 	reUnitSfx = regexp.MustCompile(`^\s?(%|×|(?i:percentage points?|percent|pp\b|x\b|ns\b|us\b|ms\b|seconds?\b|secs?\b|s\b|minutes?\b|mins?\b|hours?\b|hrs?\b|h\b|days?\b|weeks?\b))`)
 	unitTail  = strings.NewReplacer("µ", "u", "μ", "u")
 )
@@ -150,6 +153,7 @@ var timeUnits = map[string]float64{
 }
 
 func multiplierOf(sfx string) float64 {
+	sfx = strings.TrimSpace(sfx)
 	switch strings.ToLower(sfx) {
 	case "k", "thousand":
 		return 1e3
