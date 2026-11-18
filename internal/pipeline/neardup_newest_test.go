@@ -7,8 +7,9 @@ import (
 )
 
 // A deadline that has run out before decide starts (a stall, here a 1ns
-// budget) must still leave the newest posting decided; older ones are cut and
-// the run is Partial. Card ft-ae057be0ac19ae51ab9d56474ff7ee7c.
+// budget) must still leave the newest posting decided when its candidate has
+// no candidates of its own (so its status is known: x is decided too, which is
+// why two postings are examined); older ones are cut and the run is Partial. Card ft-ae057be0ac19ae51ab9d56474ff7ee7c.
 func TestNearDupNewestIsDecidedWhenTheDeadlineIsAlreadySpent(t *testing.T) {
 	l := openLedger(t)
 	jd, jd2 := words("duty", 100), words("task", 100)
@@ -17,7 +18,7 @@ func TestNearDupNewestIsDecidedWhenTheDeadlineIsAlreadySpent(t *testing.T) {
 	x := ndAdd(t, l, "3", "Globex", "Designer", "Remote", jd2, t0.Add(2*time.Minute))
 	y := ndAdd(t, l, "4", "Globex", "Designer", "Remote", jd2, t0.Add(3*time.Minute)) // newest: a duplicate of x
 	rep := annotate(t, l, t1, NearDupOptions{Deadline: time.Nanosecond})
-	if !rep.Partial || rep.Examined != 1 || rep.Duplicates != 1 || rep.Compared != 1 || rep.Written != 1 || rep.Records != 4 {
+	if !rep.Partial || rep.Examined != 2 || rep.Duplicates != 1 || rep.Compared != 1 || rep.Written != 1 || rep.Records != 4 {
 		t.Fatalf("report %+v", rep)
 	}
 	wantDuplicate(t, l, y, x)
@@ -39,7 +40,7 @@ func TestNearDupNewestSimilarityIsBoundedWhenTheDeadlineIsSpent(t *testing.T) {
 			return 0.5, true, nil
 		},
 	})
-	if rep.Examined != 1 || rep.Candidates != 1 || rep.SimilaritySkipped != 1 || calls != 0 || !rep.Partial {
+	if rep.Examined != 2 || rep.Candidates != 1 || rep.SimilaritySkipped != 1 || calls != 0 || !rep.Partial {
 		t.Fatalf("report %+v, similarity calls %d", rep, calls)
 	}
 	if got := rec(t, l, b).Annotations[AnnDupCandidateOf]; got != string(a) {

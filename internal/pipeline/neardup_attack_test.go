@@ -54,9 +54,11 @@ func atkRun(t *testing.T, l ledger.Ledger, opt NearDupOptions) NearDupReport {
 	return annotate(t, l, t1, opt)
 }
 
-// Hitting the candidate cap under a spent deadline: the newest posting's 50
-// capped candidates are compared and nothing else is read, however many older
-// postings there are, and the one similarity reading is skipped, not made.
+// Hitting the candidate cap under a spent deadline: the newest posting's
+// first candidate has none of its own and is decided, the second has one whose
+// status is unknown, so the newest is left undecided: nothing is written,
+// only those two descriptions are read however many older postings there are,
+// and no similarity reading is made.
 func TestNearDupAttackNewestAtTheCandidateCapIsBoundedWork(t *testing.T) {
 	l := openLedger(t)
 	const older = NearDupMaxCandidates + 10
@@ -74,13 +76,13 @@ func TestNearDupAttackNewestAtTheCandidateCapIsBoundedWork(t *testing.T) {
 			return 0.5, true, nil
 		},
 	})
-	// Shingled is the descriptions read: the newest and its 50 capped candidates only.
-	if rep.Records != older+1 || rep.Examined != 1 || rep.CandidatesCapped != 1 || rep.Compared != NearDupMaxCandidates ||
-		rep.Shingled != NearDupMaxCandidates+1 || rep.Candidates != 1 || rep.SimilaritySkipped != 1 || calls != 0 || !rep.Partial || rep.Written != 1 {
+	// Examined is the oldest posting (a leaf). Shingled is the descriptions read: none beyond the first pairs.
+	if rep.Records != older+1 || rep.Examined != 1 || rep.Compared != 0 || rep.Shingled > 2 ||
+		rep.Candidates != 0 || calls != 0 || !rep.Partial || rep.Written != 0 {
 		t.Fatalf("report %+v, similarity calls %d", rep, calls)
 	}
-	if got := rec(t, l, newest).Annotations[AnnDupCandidateOf]; got != string(keys[0]) {
-		t.Fatalf("candidate of %q, want the earliest %q", got, keys[0])
+	if got := rec(t, l, newest).Annotations; len(got) != 0 {
+		t.Fatalf("the undecided newest posting was annotated: %v", got)
 	}
 	for _, k := range keys {
 		if !reflect.DeepEqual(rec(t, l, k), before[indexOfKey(before, k)]) {
@@ -99,9 +101,9 @@ func indexOfKey(rs []ledger.Record, k posting.Key) int {
 }
 
 // A long chain of copies, each one's candidates undecided because the deadline
-// cut them: the newest does not recurse into them (no description beyond its
-// own capped candidates is read), nothing is written for the older ones, and
-// nothing panics on their nil outcomes.
+// cut them: the newest does not recurse into them (at most two descriptions
+// are read), is left undecided rather than guessed, nothing is written, and
+// nothing panics on the nil outcomes.
 func TestNearDupAttackNewestDoesNotRecurseIntoCutCandidates(t *testing.T) {
 	l := openLedger(t)
 	jd := words("duty", 100)
@@ -111,11 +113,10 @@ func TestNearDupAttackNewestDoesNotRecurseIntoCutCandidates(t *testing.T) {
 		keys = append(keys, ndAdd(t, l, fmt.Sprintf("c%03d", i), "Acme", "Engineer", "Remote", jd, t0.Add(time.Duration(i)*time.Second)))
 	}
 	rep := atkRun(t, l, NearDupOptions{Deadline: time.Nanosecond})
-	if !rep.Partial || rep.Examined != 1 || rep.Duplicates != 1 || rep.Written != 1 || rep.Shingled != NearDupMaxCandidates+1 || rep.CandidatesCapped != 1 {
+	if !rep.Partial || rep.Examined != 1 || rep.Duplicates != 0 || rep.Written != 0 || rep.Shingled > 2 {
 		t.Fatalf("report %+v", rep)
 	}
-	wantDuplicate(t, l, keys[n-1], keys[0])
-	wantLive(t, l, keys[:n-1]...)
+	wantLive(t, l, keys...)
 	for _, k := range keys[:n-1] {
 		if a := rec(t, l, k).Annotations; len(a) != 0 {
 			t.Fatalf("%s annotated by a cut run: %v", k, a)
@@ -123,9 +124,9 @@ func TestNearDupAttackNewestDoesNotRecurseIntoCutCandidates(t *testing.T) {
 	}
 }
 
-// The newest posting's own outcome under a spent deadline equals a full run's
-// when there is no chain to get wrong: identical copies, identical FirstSeen
-// (the key order breaks the ties), so the newest is the greatest key.
+// Identical copies with identical FirstSeen (the key order breaks the ties):
+// a full run makes the greatest key a duplicate of the least, and a spent
+// deadline writes nothing rather than a guess.
 func TestNearDupAttackIdenticalFirstSeenTiesBreakByKey(t *testing.T) {
 	build := func() (ledger.Ledger, []posting.Key) {
 		l := openLedger(t)
@@ -139,7 +140,7 @@ func TestNearDupAttackIdenticalFirstSeenTiesBreakByKey(t *testing.T) {
 	full, _ := build()
 	cr := atkRun(t, cut, NearDupOptions{Deadline: time.Nanosecond})
 	fr := atkRun(t, full, NearDupOptions{})
-	if !cr.Partial || cr.Examined != 1 || cr.Duplicates != 1 || fr.Partial || fr.Duplicates != 4 {
+	if !cr.Partial || cr.Examined != 1 || cr.Written != 0 || fr.Partial || fr.Duplicates != 4 {
 		t.Fatalf("cut %+v full %+v", cr, fr)
 	}
 	// The key sorting last is the newest: in both runs it is a duplicate of the key sorting first.
@@ -152,7 +153,7 @@ func TestNearDupAttackIdenticalFirstSeenTiesBreakByKey(t *testing.T) {
 			first = r.Key
 		}
 	}
-	wantDuplicate(t, cut, newest, first)
+	wantLive(t, cut, newest, first)
 	wantDuplicate(t, full, newest, first)
 }
 
@@ -167,7 +168,7 @@ func TestNearDupAttackNewestWithEmptyOrWordlessTitle(t *testing.T) {
 	ndAdd(t, l, "3", "Acme", "", "Remote", jd, t0.Add(2*time.Minute))     // no title: never a record
 	ndAdd(t, l, "4", "", "Engineer", "Remote", jd, t0.Add(3*time.Minute)) // no company
 	rep := atkRun(t, l, NearDupOptions{Deadline: time.Nanosecond})
-	if rep.Records != 2 || rep.Examined != 1 || rep.Duplicates != 1 || !rep.Partial {
+	if rep.Records != 2 || rep.Examined != 2 || rep.Duplicates != 1 || !rep.Partial {
 		t.Fatalf("report %+v", rep)
 	}
 	wantDuplicate(t, l, b, a)

@@ -478,17 +478,21 @@ type nearDup struct {
 // mid-way is left undecided, because deciding on part of its pairs could clear
 // an annotation a full run keeps.
 //
-// newest is the one exemption: the newest posting is always decided, whatever
-// the deadline and however long a stall before the phase began, so a loaded
-// machine cannot leave the stage examining nothing. The work is bounded: that
-// posting's own capped candidates (titleMatches) and one reading of each
-// candidate pair inside the similarity budget, which a spent deadline leaves
-// at nothing and counts as skipped. Its earlier candidates are settled by the
-// ordinary, deadline-bound decide; one the deadline cut is taken as a survivor
-// (the pair is compared as if it were live) and reported as Partial, so
-// "decided" for the newest posting means every candidate it has was compared,
-// not that every posting behind it was settled. A cancelled caller context
-// still stops it: the exemption is from the deadline only.
+// newest is the one exemption from the deadline: the newest posting is decided
+// whenever the status of every candidate it has is known without further
+// comparison work, however long a stall before the phase began. Each
+// candidate is settled by the ordinary, deadline-bound decide; one the
+// deadline cut is settled anyway only when it has no title candidates of its
+// own (decideLeaf: it cannot be demoted, and there is nothing to compare). A
+// cut candidate that does have candidates has an unknown status, so the newest
+// posting is left undecided (the run is Partial and nothing is written for
+// it), because a guess could write a terminal Duplicate that a full run would
+// not. So a spent deadline may write less than a full run, never something
+// different. The work is bounded: the newest posting's own capped candidates,
+// one O(1) leaf decision each, and one reading of each candidate pair inside
+// the similarity budget, which a spent deadline leaves at nothing and counts
+// as skipped. A cancelled caller context still stops it: the exemption is
+// from the deadline only.
 func (d *nearDup) decide(i int, newest bool) bool {
 	if d.out[i] != nil {
 		return true
@@ -509,17 +513,20 @@ func (d *nearDup) decide(i int, newest bool) bool {
 	capped := false
 	if a.company != "" && len(a.title) > 0 {
 		var cands []dupMatch
-		if a.candsReady {
-			cands, capped = a.cands, a.capped
-		} else {
-			cands, capped = titleMatches(a, i, d.recs, d.index)
-		}
+		cands, capped = d.candidates(i)
 		for _, tm := range cands {
 			if !d.decide(tm.j, false) {
-				if !newest || d.pctx.Err() != nil {
+				// The deadline cut candidate j. Only the newest posting goes on,
+				// and only when j has nothing of its own to be demoted by: then j
+				// is certainly a survivor, and deciding it is O(1) work. Any other
+				// j has an unknown status, and the newest is not decided from a
+				// guess (Duplicate is terminal).
+				if !newest || d.pctx.Err() != nil || !d.decideLeaf(tm.j) {
+					d.cut = true
 					return false
 				}
-			} else if d.out[tm.j].demoted {
+			}
+			if d.out[tm.j].demoted {
 				continue
 			}
 			b := d.recs[tm.j]
@@ -608,6 +615,31 @@ func (d *nearDup) decide(i int, newest bool) bool {
 	}
 	d.out[i] = o
 	return true
+}
+
+// candidates is posting i's earlier title matches, from the pre-warm when it
+// ran.
+func (d *nearDup) candidates(i int) (cands []dupMatch, capped bool) {
+	a := d.recs[i]
+	if a.company == "" || len(a.title) == 0 {
+		return nil, false
+	}
+	if a.candsReady {
+		return a.cands, a.capped
+	}
+	return titleMatches(a, i, d.recs, d.index)
+}
+
+// decideLeaf decides posting j past the deadline when it has no title
+// candidates: nothing to compare and nothing to recurse into, so it is a
+// survivor in every run and its outcome is the one a full run gives (no
+// annotation, or one cleared). It reports false, deciding nothing, when j has
+// candidates or the caller's context is cancelled.
+func (d *nearDup) decideLeaf(j int) bool {
+	if cands, _ := d.candidates(j); len(cands) > 0 || d.pctx.Err() != nil {
+		return false
+	}
+	return d.decide(j, true)
 }
 
 // cosine takes the optional similarity's reading of one candidate pair inside
