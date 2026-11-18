@@ -1085,6 +1085,7 @@ describe("sender context: no page message steers a native call", () => {
     extensionTab: { tab: { id: 7, url: EXT + "popup.html" }, frameId: 0, url: EXT + "popup.html" },
     topFrame: { tab: { id: 5, url: A }, frameId: 0, url: A },
     subframe: { tab: { id: 5, url: A }, frameId: 3, url: A },
+    unknown: { url: EVIL },
   };
   const kinds = Object.keys(senders) as SenderKind[];
   const keys = () => Object.keys(SENDER_POLICY) as PolicyKey[];
@@ -1105,7 +1106,7 @@ describe("sender context: no page message steers a native call", () => {
     resumeDelete: { url: A }, resumePreview: {}, resumeShow: { name: "R.pdf", pdf }, attachResume: { name: "R.pdf", pdf, pickedAt: "" },
     fillClaim: {}, fillSettled: {}, fillRun: {},
   };
-  const WORDS: Record<SenderKind, string> = { popup: "the popup", extensionTab: "an extension page in a tab", topFrame: "a page", subframe: "a page" };
+  const WORDS: Record<SenderKind, string> = { popup: "the popup", extensionTab: "an extension page in a tab", topFrame: "a page", subframe: "a page", unknown: "an unrecognised sender" };
 
   test("every type x kind: refused exactly where the table says, and a refusal runs nothing", async () => {
     for (const k of keys()) {

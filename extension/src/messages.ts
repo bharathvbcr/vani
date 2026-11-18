@@ -154,7 +154,6 @@ export type ToContent =
 export const UNKNOWN_MESSAGE = "unknown message type";
 
 const optBool = (x: unknown) => x === undefined || typeof x === "boolean";
-const optTab = (m: Record<string, unknown>) => m.tabId === undefined || typeof m.tabId === "number";
 /** A tab id the background will pass to chrome.tabs.get. A float or a negative is not one. */
 const optTabId = (m: Record<string, unknown>) => m.tabId === undefined || (typeof m.tabId === "number" && Number.isInteger(m.tabId) && m.tabId >= 0 && m.tabId <= Number.MAX_SAFE_INTEGER);
 const optOrdinal = (x: unknown) => x === undefined || (typeof x === "number" && Number.isInteger(x) && x >= 0 && x <= 10000);
@@ -182,14 +181,14 @@ export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, un
   jobStart: m => m.kind === "suggest" || m.kind === "draft" || m.kind === "resume" || m.kind === "resumeJob",
   jobPoll: m => typeof m.job === "string",
   sameQuestion: m => label(m.a) && label(m.b),
-  appliedSignal: optTab,
-  appliedPending: optTab,
+  appliedSignal: optTabId,
+  appliedPending: optTabId,
   jobRow: () => true,
   jobKey: () => true,
-  appliedMark: optTab,
-  appliedDismiss: optTab,
+  appliedMark: optTabId,
+  appliedDismiss: optTabId,
   frameReady: () => true,
-  frames: optTab,
+  frames: optTabId,
   ingestJobs: m => ingestJobsProblem(m) === null,
   coverGet: () => true,
   coverInfo: m => typeof m.url === "string",
@@ -207,13 +206,15 @@ export const TO_BACKGROUND: { [K in ToBackground["type"]]: (m: Record<string, un
 };
 
 /**
- * The four kinds of sender, told apart by the browser's own sender and never by the message:
+ * The kinds of sender, told apart by the browser's own sender and never by the message:
  *   popup        an extension page in no tab (the toolbar popup);
  *   extensionTab an extension page opened in a tab of its own (the browser says its URL is this extension's);
  *   topFrame     a content script in a page's top frame;
- *   subframe     a content script in a frame inside a page.
+ *   subframe     a content script in a frame inside a page;
+ *   unknown      a sender in no tab whose URL is not this extension's (another extension, devtools, a web page):
+ *                it holds no right, whatever it sends.
  */
-export type SenderKind = "popup" | "extensionTab" | "topFrame" | "subframe";
+export type SenderKind = "popup" | "extensionTab" | "topFrame" | "subframe" | "unknown";
 export const isPageKind = (k: SenderKind): boolean => k === "topFrame" || k === "subframe";
 
 /** What the browser says about one message's sender, built once per message (senderContext); handlers read only this. */
@@ -245,7 +246,9 @@ export function senderContext(sender: SenderLike, ownURL: string, named?: unknow
   };
   const inTab = sender.tab !== undefined && sender.tab !== null;
   const own = ownURL !== "" && typeof sender.url === "string" && sender.url.startsWith(ownURL);
-  const kind: SenderKind = !inTab ? "popup" : own ? "extensionTab" : sender.frameId === 0 ? "topFrame" : "subframe";
+  // A sender in no tab is the popup only when it names no URL (Safari may omit it) or one of this extension's own pages.
+  const tablessKind: SenderKind = sender.url === undefined || own ? "popup" : "unknown";
+  const kind: SenderKind = !inTab ? tablessKind : own ? "extensionTab" : sender.frameId === 0 ? "topFrame" : "subframe";
   const frame = hostOf(sender.url);
   const tabURL = inTab ? sender.tab?.url : undefined;
   const top = kind === "subframe" ? hostOf(tabURL) : null;
@@ -322,7 +325,7 @@ export const SENDER_POLICY: { [K in PolicyKey]: readonly SenderKind[] } = {
   fillRun: POPUP,
 };
 
-const KIND_WORDS: Record<SenderKind, string> = { popup: "the popup", extensionTab: "an extension page in a tab", topFrame: "a page", subframe: "a page" };
+const KIND_WORDS: Record<SenderKind, string> = { popup: "the popup", extensionTab: "an extension page in a tab", topFrame: "a page", subframe: "a page", unknown: "an unrecognised sender" };
 
 /**
  * Null when this sender may send this message; otherwise the refusal to reply with. A page sender's message

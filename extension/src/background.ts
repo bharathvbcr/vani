@@ -445,7 +445,7 @@ const MAX_JOB_URL = 2048;
 
 /** The sender's URL for a jobFind, or the refusal to reply with when the browser gave none or one past the bound. */
 function jobPageURL(ctx: SenderContext): string | { error: string; code: "bad_request" } {
-  if (ctx.url === undefined) return { error: "no page URL", code: "bad_request" };
+  if (ctx.url === undefined || ctx.url === "") return { error: "no page URL", code: "bad_request" };
   if (ctx.url.length > MAX_JOB_URL) return { error: "page URL too long", code: "bad_request" };
   return ctx.url;
 }

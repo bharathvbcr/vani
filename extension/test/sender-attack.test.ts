@@ -2,7 +2,7 @@
 // origin tricks, rights per kind and oversized input, against the real background behind a fake chrome.
 // Its own copy of the harness: the background registers its listener once per load.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { type PolicyKey, SENDER_POLICY, isPageKind } from "../src/messages";
+import { type PolicyKey, SENDER_POLICY, checkToBackground, isPageKind } from "../src/messages";
 
 type Listener = (msg: unknown, sender: object, sendResponse: (r?: unknown) => void) => boolean;
 const g = globalThis as Record<string, unknown>;
@@ -369,4 +369,64 @@ describe("attack: regression against 4a53b96 for embed-URL frames", () => {
     expect(urls.length).toBeGreaterThanOrEqual(1);
     expect(urls[0]).toContain("12345");
   });
+});
+
+describe("attack round 2: a sender in no tab is the popup only when it is this extension's", () => {
+  const foreign = ["https://evil.example/", "chrome-extension://otherextensionidxxxxxxxxxxxxxxxxx/popup.html", "devtools://devtools/bundled/devtools_app.html", "about:blank", "", EXT.slice(0, -1) + "x/popup.html", "https://evil.example/" + EXT];
+  const sets = { type: "setSettings", settings: { captureSelfId: true } };
+  test("a tabless sender with a foreign URL is refused a popup-only message and touches nothing", async () => {
+    for (const url of foreign) {
+      const before = JSON.stringify(local);
+      const r = await ask(sets, { url });
+      expect([url, refused(r)]).toEqual([url, true]);
+      expect([url, JSON.stringify(local), nativeSent.length, tabSent.length]).toEqual([url, before, 0, 0]);
+    }
+  });
+  test("a tabless sender with a foreign URL is refused every popup-only key", async () => {
+    const keys = (Object.keys(SENDER_POLICY) as PolicyKey[]).filter(k => SENDER_POLICY[k].includes("popup") && !SENDER_POLICY[k].includes("topFrame"));
+    expect(keys.length).toBeGreaterThan(3);
+    for (const k of keys) {
+      const r = await ask({ type: k.split(".")[0], op: k.split(".")[1], key: "k", settings: {}, json: "{}", value: [], url: "https://a.example/", set: true, overwrite: true, items: [], text: "t" }, { url: "https://evil.example/" });
+      expect([k, (r.replies[0] as { code?: string })?.code]).toEqual([k, "bad_request"]);
+      expect(nativeSent.length).toBe(0);
+    }
+  });
+  test("with no own URL (getURL failed) a tabless sender that names a URL fails closed; one that names none stays the popup", async () => {
+    ownRoot = "";
+    expect(refused(await ask(sets, { url: EXT + "popup.html" }))).toBe(true);
+    expect(refused(await ask(sets, { url: "https://evil.example/" }))).toBe(true);
+    expect(refused(await ask(sets, {}))).toBe(false);
+  });
+  test("the real popup (own URL, no tab), a tabless sender with no URL, and an extension page in a tab keep their rights", async () => {
+    expect(refused(await ask(sets, { url: EXT + "popup.html" }))).toBe(false);
+    expect(refused(await ask(sets, {}))).toBe(false);
+    expect(refused(await ask(sets, extTab))).toBe(false);
+  });
+});
+
+describe("attack round 2: an empty page URL is no URL", () => {
+  test("jobRow and jobKey from a frame whose URL is empty are refused and ask the host nothing", async () => {
+    for (const type of ["jobRow", "jobKey"]) {
+      const r = await ask({ type }, { tab: { id: 3, url: "https://a.example/" }, frameId: 0, url: "" });
+      expect([type, refused(r)]).toEqual([type, true]);
+    }
+    expect(nativeSent.filter(m => m.op === "jobFind")).toEqual([]);
+  });
+});
+
+describe("attack round 2: every tabId a popup names is checked as strictly as chrome.tabs.get needs", () => {
+  const bad = [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 2, 1e300, "3", null, {}];
+  for (const type of ["appliedSignal", "appliedPending", "appliedMark", "appliedDismiss", "frames"]) {
+    test(type + " refuses a malformed tabId at the shape check", async () => {
+      for (const tabId of bad) {
+        expect([type, String(tabId), "error" in checkToBackground({ type, tabId })]).toEqual([type, String(tabId), true]);
+        nativeSent = [];
+        const r = await ask({ type, tabId }, popup);
+        expect([type, String(tabId), typeof (r.replies[0] as { error?: unknown } | undefined)?.error]).toEqual([type, String(tabId), "string"]);
+        expect(nativeSent).toEqual([]);
+        expect(tabSent).toEqual([]);
+      }
+      for (const tabId of [undefined, 0, 7]) expect([type, tabId, "error" in checkToBackground({ type, tabId })]).toEqual([type, tabId, false]);
+    });
+  }
 });

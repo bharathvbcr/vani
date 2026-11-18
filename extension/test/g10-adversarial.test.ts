@@ -113,7 +113,7 @@ describe("adversarial: sender shapes", () => {
   });
 
   test("a sender with no tab and any other shape (id, url, frameId, origin) is popup-shaped: page types are refused and nothing is sent", async () => {
-    for (const sender of [{ id: "clhaobdmkmapebgnmpcfmakbfakmgfip" }, { url: "chrome-extension://clhaobdmkmapebgnmpcfmakbfakmgfip/popup.html" }, { frameId: 0 }, { frameId: 3, documentId: "d" }, { origin: "null" }]) {
+    for (const sender of [{ id: "clhaobdmkmapebgnmpcfmakbfakmgfip" }, { frameId: 0 }, { frameId: 3, documentId: "d" }, { origin: "null" }]) {
       for (const k of keys().filter(pageOnly)) {
         const natives = nativeSent.length;
         const r = await ask({ type: typeOf(k), ...(contactsBody[k] ?? valid[k]) }, sender);
@@ -121,6 +121,11 @@ describe("adversarial: sender shapes", () => {
         expect(nativeSent.length).toBe(natives);
       }
     }
+  });
+
+  test("a tabless sender that names a URL is unrecognised where this runtime cannot say its own URL (fails closed)", async () => {
+    const r = await ask({ type: "attachResume", name: "R.pdf", pdf: pdfOf(32), pickedAt: "" }, { url: "chrome-extension://clhaobdmkmapebgnmpcfmakbfakmgfip/popup.html" });
+    expect(r.replies).toEqual([{ error: "attachResume is not accepted from an unrecognised sender", code: "bad_request" }]);
   });
 
   test("tab null/undefined is no tab; any other tab value (0, '', false, []) is a page: popup-only types refused, router never throws", async () => {
