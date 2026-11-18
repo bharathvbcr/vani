@@ -2,7 +2,7 @@
 // tab's job page, binds one (Choose PDF), opens it in Preview (View) and unbinds it
 // (Remove). The bytes stay in the Mac app. View asks the app to open Preview; the
 // popup never receives the file.
-import type { ToBackground } from "./messages";
+import type { ExtensionToBackground } from "./messages";
 import { MAX_RESUME_BYTES, parseResumeInfo, parseResumeOpen, resumeKey, toBase64 } from "./resume";
 
 export interface ResumeRowEls {
@@ -14,7 +14,7 @@ export interface ResumeRowEls {
   remove: HTMLButtonElement;
 }
 
-type Send = <T>(msg: ToBackground) => Promise<T>;
+type Send = <T>(msg: ExtensionToBackground) => Promise<T>;
 
 const kb = (n: number) => `${Math.max(1, Math.round(n / 1024))} KB`;
 

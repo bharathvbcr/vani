@@ -248,7 +248,7 @@ describe("attachResume and tabId across frames", () => {
 
   test("every ToContent type has an ACCEPT check, and the shape tables list the same types", () => {
     expect(Object.keys(ACCEPT).sort()).toEqual(Object.keys(TO_CONTENT).sort());
-    expect(Object.keys(SENDER_POLICY).sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
+    expect([...new Set(Object.keys(SENDER_POLICY).map(k => k.split(".")[0]))].sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
   });
 });
 

@@ -29,7 +29,7 @@ import {
   DRAFT_JOB_TIMEOUT_MS, type FieldSuggestion, OLDER_VANI, SUGGEST_TIMEOUT_MS, type SuggestField, type SuggestRequest,
   buildSuggestRequest, runJob, runSuggest,
 } from "./suggestjob";
-import type { CaptureReply, DraftResponse, FillReply, ScanReply, ToBackground } from "./messages";
+import type { CaptureReply, DraftResponse, FillReply, ScanReply, PageToBackground } from "./messages";
 import { FILL_BUSY, contentListener, fillClaimHeld, fillInvokedByHolder, releaseFillClaim, tryClaimFill } from "./frames";
 import { unreadSite } from "./jobsites";
 import { detectPortal, type PortalInfo } from "./portal";
@@ -57,7 +57,7 @@ import { matchAll, settleAmbiguous } from "./samequestion";
 
 const PANEL_LIST = 8;
 
-function send<T>(msg: ToBackground): Promise<T> {
+function send<T>(msg: PageToBackground): Promise<T> {
   return chrome.runtime.sendMessage<T>(msg);
 }
 
@@ -148,7 +148,7 @@ async function vaniRelevance(estimate: RelevanceResult): Promise<RelevanceResult
   const url = location.href;
   if (!vaniRow || vaniRow.url !== url || Date.now() - vaniRow.at > VANI_ROW_TTL_MS) {
     try {
-      const r = await send<FindRow | { error: string }>({ type: "jobRow", url });
+      const r = await send<FindRow | { error: string }>({ type: "jobRow" });
       vaniRow = { url, at: Date.now(), result: r && typeof r === "object" ? r : { row: null } };
     } catch {
       return estimate; // the worker is not there: not cached, so the next scan asks again
@@ -221,7 +221,7 @@ function observeDom(roots: readonly Node[]): (onChange: () => void) => () => voi
 /** The resume chosen for this page's job, from the Mac app (through the background); a reason when there is none. */
 async function coverForThisJob(): Promise<CoverFetch> {
   try {
-    return parseCoverGet(await send<unknown>({ type: "coverGet", url: location.href }));
+    return parseCoverGet(await send<unknown>({ type: "coverGet" }));
   } catch {
     return parseCoverGet({ error: "the extension's background did not answer", code: "background" });
   }
@@ -229,7 +229,7 @@ async function coverForThisJob(): Promise<CoverFetch> {
 
 async function resumeForThisJob(): Promise<ResumeFetch> {
   try {
-    return parseResumeGet(await send<unknown>({ type: "resumeGet", url: location.href }));
+    return parseResumeGet(await send<unknown>({ type: "resumeGet" }));
   } catch {
     return parseResumeGet({ error: "the extension's background did not answer", code: "background" });
   }
@@ -734,7 +734,7 @@ function renderScrapedDrawer(res: ScrapeResult): void {
     pageUrl: location.href,
     pageTitle: document.title,
     profile: targetProfileFromBank(lastBank),
-    send: m => send<unknown>(m as ToBackground),
+    send: m => send<unknown>(m as PageToBackground),
   }), () => againBox.checked, toast);
   saveRow.append(again, saveBtn, result, crawl);
   drawer.append(saveRow);
@@ -743,7 +743,7 @@ function renderScrapedDrawer(res: ScrapeResult): void {
 
 /** Send every scraped job to Vani, in bounded batches (crawler.ts sendScrape), and say what Vani answered; a failure is reported, never swallowed. */
 async function saveScrapeToVani(res: ScrapeResult, saveSearch: boolean, onBatch: (from: number, to: number, total: number) => void): Promise<string> {
-  return (await sendScrape(res, saveSearch, m => send<unknown>(m as ToBackground), onBatch)).text;
+  return (await sendScrape(res, saveSearch, m => send<unknown>(m as PageToBackground), onBatch)).text;
 }
 
 /** How long a message stays up before a rescan may replace it with the coverage line. */
@@ -1918,7 +1918,7 @@ const resumeOffer = createResumeOffer({
   job: () => jobInfo(),
   find: async () => {
     try {
-      const r = await send<{ key: string | null; ambiguous?: boolean } | { error: string } | undefined>({ type: "jobKey", url: location.href });
+      const r = await send<{ key: string | null; ambiguous?: boolean } | { error: string } | undefined>({ type: "jobKey" });
       if (r && typeof r === "object" && "error" in r && typeof r.error === "string") return { error: r.error };
       if (r && typeof r === "object" && "key" in r && (r.key === null || (typeof r.key === "string" && r.key !== ""))) {
         return r.ambiguous === true ? { key: null, ambiguous: true } : { key: r.key };
@@ -1938,7 +1938,7 @@ const resumeOffer = createResumeOffer({
   },
   pick: pickPdf,
   save: async (name, pdf) => {
-    const r = await send<{ ok?: boolean; error?: string } | undefined>({ type: "resumePut", url: location.href, name, pdf });
+    const r = await send<{ ok?: boolean; error?: string } | undefined>({ type: "resumePut", name, pdf });
     return r?.error ? { error: r.error } : {};
   },
   open: r => openHeldResume(

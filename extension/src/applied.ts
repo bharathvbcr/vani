@@ -18,7 +18,7 @@
 //                    only when asked
 //   createAppliedFlow the content script's side: ask, show, accept or dismiss
 import { createLock } from "./guards";
-import type { ToBackground } from "./messages";
+import type { PageToBackground } from "./messages";
 
 /** internal/joburl.MaxBytes: a longer page URL is not sent, never cut. */
 export const MAX_URL_BYTES = 2048;
@@ -338,7 +338,7 @@ export interface AppliedUi {
 }
 
 export interface FlowDeps {
-  send(msg: ToBackground): Promise<unknown>;
+  send(msg: PageToBackground): Promise<unknown>;
   ui: AppliedUi;
   href(): string;
   now?(): number;
@@ -378,7 +378,7 @@ export function createAppliedFlow(d: FlowDeps): AppliedFlow {
       if (url === null) return; // not an http(s) page: nothing to look up
       asking = true;
       let r: unknown;
-      try { r = await d.send({ type: "appliedSignal", url }); } catch { return; } finally { asking = false; }
+      try { r = await d.send({ type: "appliedSignal" }); } catch { return; } finally { asking = false; }
       // An unreachable app, an untracked page and an ambiguous one are all silent: this is a convenience, not a gate.
       const reply = typeof r === "object" && r !== null ? r as { offer?: unknown; shownInTop?: unknown } : {};
       if (!isOffer(reply.offer)) return;

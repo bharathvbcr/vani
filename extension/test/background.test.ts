@@ -2,7 +2,7 @@
 // every message gets an answer, and one it does not know is an error object, never undefined.
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { MAX_BANK_BYTES } from "../src/bank";
-import { SENDER_POLICY, type ToBackground, TO_BACKGROUND, checkToBackground, checkToContent } from "../src/messages";
+import { type PolicyKey, SENDER_POLICY, type SenderKind, TO_BACKGROUND, checkToBackground, checkToContent, isPageKind } from "../src/messages";
 import { MAX_RESUME_BYTES, toBase64 } from "../src/resume";
 
 type Listener = (msg: unknown, sender: object, sendResponse: (r?: unknown) => void) => boolean;
@@ -10,6 +10,8 @@ type Listener = (msg: unknown, sender: object, sendResponse: (r?: unknown) => vo
 const g = globalThis as Record<string, unknown>;
 const saved = { chrome: g.chrome, browser: g.browser };
 let listener: Listener | undefined;
+/** This extension's own URL root in the fake chrome: a sender on it is an extension page. */
+const EXT = "chrome-extension://testextensionidxxxxxxxxxxxxxxxx/";
 let local: Record<string, unknown> = {};
 /** When set, chrome.storage.local.set rejects with this message (a browser whose extension storage cannot be written). */
 let localSetFails: string | null = null;
@@ -49,6 +51,7 @@ beforeAll(async () => {
         runtime.lastError = undefined;
       },
       connectNative() { throw new Error("no host"); },
+      getURL: (p: string) => EXT + p,
       lastError: undefined,
     },
     storage: {
@@ -157,8 +160,9 @@ describe("frame registry messages", () => {
     // A tab with no frame id is still not a frame.
     expect(await ask({ type: "frameReady" }, { tab: { id: 7 } })).toEqual({ async: true, replies: [{ error: "not from a frame", code: "bad_request" }] });
     expect(await ask({ type: "frames", tabId: 7 }, {})).toEqual({ async: true, replies: [{ frames: [5, 0] }] });
-    // A content script in tab 8 naming tab 7 gets its own tab's (none), never tab 7's.
-    expect(await ask({ type: "frames", tabId: 7 }, { tab: { id: 8 }, frameId: 0, url: "https://a.example/" })).toEqual({ async: true, replies: [{ frames: [] }] });
+    // A content script in tab 8 gets its own tab's (none); one that names tab 7 is refused, never obeyed.
+    expect(await ask({ type: "frames" }, { tab: { id: 8 }, frameId: 0, url: "https://a.example/" })).toEqual({ async: true, replies: [{ frames: [] }] });
+    expect(await ask({ type: "frames", tabId: 7 }, { tab: { id: 8 }, frameId: 0, url: "https://a.example/" })).toEqual({ async: false, replies: [{ error: "frames from a page carries no tabId", code: "bad_request" }] });
     expect(await ask({ type: "frames", tabId: "7" }, {})).toEqual({ async: false, replies: [{ error: "malformed frames message" }] });
   });
 
@@ -324,11 +328,19 @@ describe("attachResume routing", () => {
 
 describe("sender policy", () => {
   const page = { tab: { id: 5 }, frameId: 0, url: "https://a.example/" };
-  const types = () => Object.keys(SENDER_POLICY) as ToBackground["type"][];
+  const keys = () => Object.keys(SENDER_POLICY) as PolicyKey[];
+  const typeOf = (k: string) => k.split(".")[0]!;
+  const pageOnly = (k: PolicyKey) => SENDER_POLICY[k].every(isPageKind);
+  const popupOnly = (k: PolicyKey) => SENDER_POLICY[k].every(s => !isPageKind(s));
   const own = "https://boards.greenhouse.io/acme/jobs/1";
   const bankJson = JSON.stringify({ version: 1, answers: {}, settings: { captureSelfId: true, disabledHosts: ["x.example"] } });
+  const contactsBody: Record<string, Record<string, unknown>> = {
+    "contacts.get": { op: "get", key: "email" }, "contacts.choose": { op: "choose", label: "Email", kind: "email" },
+    "contacts.put": { op: "put", key: "email", text: "synthetic@example.test" }, "contacts.list": { op: "list" },
+    "contacts.import": { op: "import", items: [{ key: "email", text: "synthetic@example.test" }] },
+  };
   /** One valid message per type, so a refusal can only be the sender's. */
-  const valid: { [K in ToBackground["type"]]: Record<string, unknown> } = {
+  const valid: { [K in keyof typeof TO_BACKGROUND]: Record<string, unknown> } = {
     getBank: {}, capture: { host: "vani-basics", fields: [] }, filled: { keys: [] },
     setSettings: { settings: { captureSelfId: true } }, deleteAnswer: { key: "k" }, editAnswer: { key: "k", value: ["v"] },
     replaceBank: { json: bankJson }, draft: { question: "Why?" },
@@ -345,29 +357,32 @@ describe("sender policy", () => {
   };
 
   test("the policy table and the shape table name exactly the same message types, each with a valid policy", () => {
-    expect(Object.keys(SENDER_POLICY).sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
+    expect([...new Set(keys().map(typeOf))].sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
     expect(Object.keys(valid).sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
-    for (const p of Object.values(SENDER_POLICY)) expect(["popup", "content", "either"]).toContain(p);
+    for (const p of Object.values(SENDER_POLICY)) {
+      expect(p.length).toBeGreaterThan(0);
+      for (const kind of p) expect(["popup", "extensionTab", "topFrame", "subframe"]).toContain(kind);
+    }
     for (const [t, m] of Object.entries(valid)) expect([t, checkToBackground({ type: t, ...m })]).toEqual([t, { msg: { type: t, ...m } }]);
   });
 
   test("a popup-only message from a page (sender.tab set) is refused and writes nothing", async () => {
-    for (const t of types().filter(t => SENDER_POLICY[t] === "popup")) {
+    for (const k of keys().filter(popupOnly)) {
       const before = JSON.stringify(local);
       const natives = nativeSent.length;
-      const r = await ask({ type: t, ...valid[t] }, page);
-      expect(r.replies).toEqual([{ error: `${t} is not accepted from a page`, code: "bad_request" }]);
+      const r = await ask({ type: typeOf(k), ...(contactsBody[k] ?? valid[typeOf(k)]) }, page);
+      expect(r.replies).toEqual([{ error: `${k} is not accepted from a page`, code: "bad_request" }]);
       expect(JSON.stringify(local)).toBe(before);
       expect(nativeSent.length).toBe(natives);
     }
   });
 
   test("a page-only message from the popup (no tab) is refused and asks nothing", async () => {
-    for (const t of types().filter(t => SENDER_POLICY[t] === "content")) {
+    for (const k of keys().filter(pageOnly)) {
       const before = JSON.stringify(local);
       const natives = nativeSent.length;
-      const r = await ask({ type: t, ...valid[t] }, {});
-      expect(r.replies).toEqual([{ error: `${t} is not accepted from the popup`, code: "bad_request" }]);
+      const r = await ask({ type: typeOf(k), ...(contactsBody[k] ?? valid[typeOf(k)]) }, {});
+      expect(r.replies).toEqual([{ error: `${k} is not accepted from the popup`, code: "bad_request" }]);
       expect(JSON.stringify(local)).toBe(before);
       expect(nativeSent.length).toBe(natives);
     }
@@ -433,15 +448,21 @@ describe("resume messages", () => {
   const claimed = "https://boards.greenhouse.io/other/jobs/2";
   const last = () => nativeSent.at(-1) as { op?: string; key?: string } | undefined;
 
-  test("a content script gets the resume keyed by its own frame's URL, not the one its message claims", async () => {
-    const r = await ask({ type: "resumeGet", url: claimed }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+  test("a content script gets the resume keyed by its own frame's URL; a message that names another URL is refused", async () => {
+    const before = nativeSent.length;
+    expect((await ask({ type: "resumeGet", url: claimed }, { tab: { id: 3, url: own }, frameId: 0, url: own })).replies).toEqual([{ error: "resumeGet from a page carries no url", code: "bad_request" }]);
+    expect(nativeSent.length).toBe(before);
+    const r = await ask({ type: "resumeGet" }, { tab: { id: 3, url: own }, frameId: 0, url: own });
     expect(last()).toEqual({ op: "resumeGet", key: own });
     // No Mac app here: an unreachable app is a coded reply, which Fill shows as a reason.
     expect(r.replies).toEqual([{ error: "the Vani Apply Mac app isn't reachable", code: "unreachable" }]);
   });
 
   test("a content script's resumePut binds to its own page too", async () => {
-    await ask({ type: "resumePut", url: claimed, name: "Resume_Test.pdf", pdf: btoa("%PDF-1.4\n%%EOF\n") }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    const before = nativeSent.length;
+    expect((await ask({ type: "resumePut", url: claimed, name: "Resume_Test.pdf", pdf: btoa("%PDF-1.4\n%%EOF\n") }, { tab: { id: 3, url: own }, frameId: 0, url: own })).replies[0]).toMatchObject({ code: "bad_request" });
+    expect(nativeSent.length).toBe(before);
+    await ask({ type: "resumePut", name: "Resume_Test.pdf", pdf: btoa("%PDF-1.4\n%%EOF\n") }, { tab: { id: 3, url: own }, frameId: 0, url: own });
     expect(last()).toMatchObject({ op: "resumePut", key: own, name: "Resume_Test.pdf" });
   });
 
@@ -475,8 +496,13 @@ describe("resume messages", () => {
   });
 
   test("a content script's View uses its own frame URL", async () => {
-    await ask({ type: "resumePreview", url: claimed }, { tab: { id: 3, url: own }, frameId: 0, url: own });
+    await ask({ type: "resumePreview" }, { tab: { id: 3, url: own }, frameId: 0, url: own });
     expect(last()).toEqual({ op: "resumeOpen", key: own });
+    const before = nativeSent.length;
+    for (const claim of [{ url: claimed }, { key: claimed }, { tabId: 9 }]) {
+      expect((await ask({ type: "resumePreview", ...claim }, { tab: { id: 3, url: own }, frameId: 0, url: own })).replies[0]).toMatchObject({ code: "bad_request" });
+    }
+    expect(nativeSent.length).toBe(before);
   });
 
   test("resumeShow from the popup is refused, and a page's bad PDF never reaches the Mac app", async () => {
@@ -526,7 +552,7 @@ describe("resume messages", () => {
     };
     try {
       const r = await ask(
-        { type: "resumePreview", url: claimed },
+        { type: "resumePreview" },
         { tab: { id: 3, url: own }, frameId: 4, url: frame },
       );
       expect(nativeSent.filter(m => (m as { op?: string }).op === "resumeOpen").map(m => (m as { key?: string }).key)).toContain(own);
@@ -545,12 +571,15 @@ describe("resume messages", () => {
     await new Promise(r => setTimeout(r, 0));
   }
 
-  test("a key or tab id from a content script is ignored: it opens its own frame", async () => {
+  test("a key or tab id from a content script is refused; it opens only its own frame", async () => {
     const before = nativeSent.length;
-    await ask(
+    const r = await ask(
       { type: "resumePreview", key: claimed, tabId: 99 },
       { tab: { id: 3, url: own }, frameId: 0, url: own },
     );
+    expect(r.replies[0]).toMatchObject({ code: "bad_request" });
+    expect(nativeSent.length).toBe(before);
+    await ask({ type: "resumePreview" }, { tab: { id: 3, url: own }, frameId: 0, url: own });
     expect(nativeSent.slice(before)).toEqual([{ op: "resumeOpen", key: own }]);
   });
 
@@ -581,8 +610,9 @@ describe("resume messages", () => {
 
   test("a resume saved from a frame is shown when the top page has none", async () => {
     tabsById = [{ id: 40, url: topPage }];
-    // The message claims a different job. Only the browser's frame URL is recorded.
-    await ask({ type: "frameReady", url: job(9) }, { tab: { id: 40 }, frameId: 4, url: job(2) });
+    // A message that claims a different job is refused. Only the browser's frame URL is recorded.
+    expect((await ask({ type: "frameReady", url: job(9) }, { tab: { id: 40 }, frameId: 4, url: job(2) })).replies[0]).toMatchObject({ code: "bad_request" });
+    await ask({ type: "frameReady" }, { tab: { id: 40 }, frameId: 4, url: job(2) });
     nativeReply = m => {
       const key = (m as { key?: string }).key;
       const op = (m as { op?: string }).op;
@@ -785,8 +815,8 @@ describe("message checks", () => {
     expect(checkToBackground({ type: "jobStart", kind: "rm", request: {} })).toEqual({ error: "malformed jobStart message" });
     // The keyed resume build is a job kind of its own, and its lookup is bounded like jobRow's.
     expect(checkToBackground({ type: "jobStart", kind: "resumeJob", request: { key: "gh:acme:1" } })).toEqual({ msg: { type: "jobStart", kind: "resumeJob", request: { key: "gh:acme:1" } } as never });
-    expect(checkToBackground({ type: "jobKey", url: "x".repeat(2049) })).toEqual({ error: "malformed jobKey message" });
-    expect(checkToBackground({ type: "jobKey" })).toEqual({ error: "malformed jobKey message" });
+    // The posting URL is the browser's sender URL: its bound is checked where it is read (jobRow and jobKey handlers).
+    expect(checkToBackground({ type: "jobKey" })).toEqual({ msg: { type: "jobKey" } });
   });
 });
 
@@ -1041,5 +1071,192 @@ describe("capture from a page honours disabledHosts", () => {
   test("the popup (no tab) is not subject to the page rule: the owner's own save lands", async () => {
     local = { vaniBank: bankWith(["vani-basics"]) };
     expect((await ask({ type: "capture", host: "vani-basics", fields: [field] })).replies[0]).toMatchObject({ added: 1 });
+  });
+});
+
+// Card ft-8ab8faff3c5f2995adea11dd40bc17a4: the sender context is built once from the browser's sender, and a page message
+// carries no URL or tab id. Every type x kind below runs through the real listener.
+describe("sender context: no page message steers a native call", () => {
+  const EVIL = "https://evil.example/steal";
+  const A = "https://a.example/jobs/1";
+  const B = "https://b.example/search?q=x";
+  const senders: Record<SenderKind, object> = {
+    popup: {},
+    extensionTab: { tab: { id: 7, url: EXT + "popup.html" }, frameId: 0, url: EXT + "popup.html" },
+    topFrame: { tab: { id: 5, url: A }, frameId: 0, url: A },
+    subframe: { tab: { id: 5, url: A }, frameId: 3, url: A },
+  };
+  const kinds = Object.keys(senders) as SenderKind[];
+  const keys = () => Object.keys(SENDER_POLICY) as PolicyKey[];
+  const typeOf = (k: string) => k.split(".")[0]!;
+  const pdf = btoa("%PDF-1.4\n%%EOF\n");
+  const job = { title: "Staff Engineer", company: "Acme", location: "Remote", url: "https://careers.acme.com/jobs/1", snippet: "Build things" };
+  /** One valid body per key; url and tabId fields are what a page must not send. */
+  const body: Record<PolicyKey, Record<string, unknown>> = {
+    getBank: {}, capture: { host: "vani-basics", fields: [] }, filled: { keys: [] }, setSettings: { settings: { captureSelfId: true } },
+    deleteAnswer: { key: "k" }, editAnswer: { key: "k", value: ["v"] }, replaceBank: { json: "{}" }, draft: { question: "Why?" },
+    "contacts.get": { op: "get", key: "email" }, "contacts.choose": { op: "choose", label: "Email", kind: "email" },
+    "contacts.put": { op: "put", key: "email", text: "synthetic@example.test" }, "contacts.list": { op: "list" },
+    "contacts.import": { op: "import", items: [{ key: "email", text: "synthetic@example.test" }] },
+    contactsCopied: {}, jobStart: { kind: "suggest", request: {} }, jobPoll: { job: "j1" }, sameQuestion: { a: "A", b: "B" },
+    appliedSignal: {}, appliedPending: {}, jobRow: {}, jobKey: {}, appliedMark: {}, appliedDismiss: {}, frameReady: {}, frames: {},
+    ingestJobs: { page: { url: A, title: "Jobs" }, saveSearch: false, jobs: [job] },
+    coverGet: {}, coverInfo: { url: A }, coverOpen: { url: A }, resumeGet: {}, resumeInfo: { url: A }, resumePut: { name: "R.pdf", pdf },
+    resumeDelete: { url: A }, resumePreview: {}, resumeShow: { name: "R.pdf", pdf }, attachResume: { name: "R.pdf", pdf, pickedAt: "" },
+    fillClaim: {}, fillSettled: {}, fillRun: {},
+  };
+  const WORDS: Record<SenderKind, string> = { popup: "the popup", extensionTab: "an extension page in a tab", topFrame: "a page", subframe: "a page" };
+
+  test("every type x kind: refused exactly where the table says, and a refusal runs nothing", async () => {
+    for (const k of keys()) {
+      for (const kind of kinds) {
+        const before = { local: JSON.stringify(local), natives: nativeSent.length, tabs: tabSent.length };
+        const r = (await ask({ type: typeOf(k), ...body[k] }, senders[kind])).replies[0] as { error?: string; code?: string };
+        const refusal = { error: `${k} is not accepted from ${WORDS[kind]}`, code: "bad_request" };
+        if (SENDER_POLICY[k].includes(kind)) {
+          expect([k, kind, r]).not.toEqual([k, kind, refusal]);
+        } else {
+          expect([k, kind, r]).toEqual([k, kind, refusal]);
+          expect([k, kind, JSON.stringify(local), nativeSent.length, tabSent.length]).toEqual([k, kind, before.local, before.natives, before.tabs]);
+        }
+      }
+    }
+  });
+
+  test("a page message that carries a URL or a tab id is refused for every type and both frame kinds, and no native call or frame ask follows", async () => {
+    const natives0 = nativeSent.length;
+    const tabs0 = tabSent.length;
+    for (const k of keys()) {
+      for (const kind of ["topFrame", "subframe"] as const) {
+        for (const poison of [{ url: EVIL }, { tabId: 99 }, { url: EVIL, tabId: 99 }]) {
+          const before = { local: JSON.stringify(local), natives: nativeSent.length, tabs: tabSent.length };
+          const r = (await ask({ type: typeOf(k), ...body[k], ...poison }, senders[kind])).replies[0] as { code?: string; error?: string };
+          expect([k, kind, poison, r.code]).toEqual([k, kind, poison, "bad_request"]);
+          expect([k, kind, JSON.stringify(local), nativeSent.length, tabSent.length]).toEqual([k, kind, before.local, before.natives, before.tabs]);
+        }
+      }
+    }
+    expect(JSON.stringify(nativeSent.slice(natives0))).not.toContain("evil.example");
+    expect(JSON.stringify(tabSent.slice(tabs0))).not.toContain("evil.example");
+  });
+
+  test("a page's clean messages reach the host under the browser's sender URL, never one a message names", async () => {
+    nativeReply = () => ({ row: null });
+    const natives0 = nativeSent.length;
+    try {
+      const sent = () => nativeSent.at(-1) as Record<string, unknown>;
+      await ask({ type: "jobRow" }, senders.topFrame);
+      expect(sent()).toMatchObject({ op: "jobFind", url: A });
+      await ask({ type: "jobKey" }, senders.subframe);
+      expect(sent()).toMatchObject({ op: "jobFind", url: A });
+      await ask({ type: "coverGet" }, senders.topFrame);
+      expect(JSON.stringify(sent())).toContain("a.example/jobs/1");
+      expect(JSON.stringify(nativeSent.slice(natives0))).not.toContain("evil.example");
+      // The sender's URL has the bound the message's had (2048): a longer one is refused, not sent.
+      const long = { tab: { id: 5, url: A }, frameId: 0, url: A + "?q=" + "x".repeat(2100) };
+      const before = nativeSent.length;
+      for (const type of ["jobRow", "jobKey"]) expect((await ask({ type }, long)).replies[0]).toMatchObject({ code: "bad_request" });
+      expect(nativeSent.length).toBe(before);
+    } finally {
+      nativeReply = undefined;
+    }
+  });
+
+  test("[102] appliedSignal from a page asks the host about the sender's URL; appliedMark from a page acts on its own tab and refuses a named one", async () => {
+    nativeReply = () => ({ row: null });
+    try {
+      const natives = nativeSent.length;
+      const natives0 = natives;
+      expect((await ask({ type: "appliedSignal", url: EVIL }, senders.topFrame)).replies[0]).toMatchObject({ code: "bad_request" });
+      expect(nativeSent.length).toBe(natives);
+      await ask({ type: "appliedSignal" }, senders.topFrame);
+      expect(nativeSent.at(-1)).toMatchObject({ op: "jobFind", url: A });
+      expect(JSON.stringify(nativeSent.slice(natives0))).not.toContain("evil.example");
+      for (const k of ["appliedMark", "appliedDismiss", "appliedPending"]) {
+        expect((await ask({ type: k, tabId: 9 }, senders.topFrame)).replies[0]).toMatchObject({ code: "bad_request" });
+      }
+    } finally {
+      nativeReply = undefined;
+    }
+  });
+
+  test("[101] ingestJobs from a page must name a page on the sender's origin; saveSearch for another site is refused and reaches no host", async () => {
+    nativeReply = () => ({ ok: true });
+    try {
+      for (const kind of ["topFrame", "subframe"] as const) {
+        for (const saveSearch of [true, false]) {
+          const natives = nativeSent.length;
+          const r = (await ask({ type: "ingestJobs", page: { url: B, title: "Jobs" }, saveSearch, jobs: [job] }, senders[kind])).replies[0];
+          expect([kind, saveSearch, r]).toEqual([kind, saveSearch, { error: "ingestJobs page.url is not on the sender's origin", code: "bad_request" }]);
+          expect(nativeSent.length).toBe(natives);
+        }
+      }
+      // Malformed, opaque and look-alike origins are refused too; the sender's own origin is accepted.
+      for (const url of ["not a url", "about:blank", "https://a.example.evil.example/", "http://a.example/jobs/1", "https://a.example:8443/x"]) {
+        const natives = nativeSent.length;
+        const r = (await ask({ type: "ingestJobs", page: { url, title: "Jobs" }, saveSearch: false, jobs: [job] }, senders.topFrame)).replies[0] as { error?: string };
+        expect([url, nativeSent.length, typeof r.error]).toEqual([url, natives, "string"]);
+      }
+      const noOrigin = { tab: { id: 5 }, frameId: 0, origin: "null", url: A };
+      expect((await ask({ type: "ingestJobs", page: { url: A, title: "Jobs" }, saveSearch: true, jobs: [job] }, noOrigin)).replies[0]).toMatchObject({ code: "bad_request" });
+      const natives = nativeSent.length;
+      await ask({ type: "ingestJobs", page: { url: "https://a.example/search?q=eng", title: "Jobs" }, saveSearch: true, jobs: [job] }, senders.topFrame);
+      expect(nativeSent.slice(natives).map(m => (m as { op?: string; save_search?: boolean }))).toMatchObject([{ op: "jobsIngest", save_search: true }]);
+      // The popup is in no page: it names the page it means.
+      await ask({ type: "ingestJobs", page: { url: B, title: "Jobs" }, saveSearch: true, jobs: [job] }, senders.popup);
+      expect(nativeSent.at(-1)).toMatchObject({ op: "jobsIngest" });
+    } finally {
+      nativeReply = undefined;
+    }
+  });
+
+  test("[103] contacts: a page may only get and choose; every other operation is bad_request and reaches no host", async () => {
+    nativeReply = () => ({ ok: true });
+    try {
+      for (const op of ["put", "list", "import"]) {
+        for (const kind of ["topFrame", "subframe"] as const) {
+          const natives = nativeSent.length;
+          const r = (await ask({ type: "contacts", ...body[`contacts.${op}` as PolicyKey] }, senders[kind])).replies[0];
+          expect([op, kind, r]).toEqual([op, kind, { error: `contacts.${op} is not accepted from a page`, code: "bad_request" }]);
+          expect(nativeSent.length).toBe(natives);
+        }
+      }
+      for (const op of ["get", "choose"]) {
+        const natives = nativeSent.length;
+        await ask({ type: "contacts", ...body[`contacts.${op}` as PolicyKey] }, senders.topFrame);
+        expect(nativeSent.slice(natives)).toMatchObject([{ op: "contacts", request: { op } }]);
+      }
+      // What the popup does today still works: put, get, list, import.
+      for (const op of ["put", "get", "list", "import"]) {
+        const natives = nativeSent.length;
+        await ask({ type: "contacts", ...body[`contacts.${op}` as PolicyKey] }, senders.popup);
+        expect(nativeSent.slice(natives)).toMatchObject([{ op: "contacts", request: { op } }]);
+      }
+    } finally {
+      nativeReply = undefined;
+    }
+  });
+
+  test("an extension page in a tab acts for the tab it names (or the active one), never the tab it sits in", async () => {
+    activeTabs = [{ id: 9 }];
+    tabReply = () => ({ outcomes: [] });
+    try {
+      tabSent.length = 0;
+      await ask({ type: "fillRun" }, senders.extensionTab);
+      expect(tabSent.length).toBeGreaterThan(0);
+      expect(tabSent.every(s => s.tabId === 9)).toBe(true);
+      // Named by the extension page, validated: tab 8, not its own tab 7.
+      tabSent.length = 0;
+      tabsById = [{ id: 8, url: A }];
+      await ask({ type: "fillRun", tabId: 8 }, senders.extensionTab);
+      expect(tabSent.length).toBeGreaterThan(0);
+      expect(tabSent.every(s => s.tabId === 8)).toBe(true);
+      // appliedPending without a tabId is no tab (the popup's way), not the sitting tab.
+      expect((await ask({ type: "appliedPending" }, senders.extensionTab)).replies).toEqual([{ offer: null }]);
+    } finally {
+      activeTabs = [];
+      tabReply = () => undefined;
+      tabsById = [];
+    }
   });
 });

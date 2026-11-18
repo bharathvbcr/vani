@@ -2,7 +2,7 @@
 import { type Answer, type Bank, type FieldInfo, ownAnswer } from "./types";
 import { BANK_FULL, MAX_BANK_BYTES, answerKey, bankBytes, exportBank, hostDisabled, withHostDisabled } from "./bank";
 import { ANSWER_KEY_BY_JARVIS, CONTACT_BY_ID, NOT_RUN_NOTE, contactEdits, contactItems, omitContactAnswers, readImport } from "./contacts";
-import type { CaptureReply, FillReply, ScanReply, ToBackground } from "./messages";
+import type { CaptureReply, FillReply, ScanReply, ExtensionToBackground } from "./messages";
 import { type FanOut, sumCaptures, mergeFill, notAnswered, toFrames } from "./frames";
 import { type Coverage, type FrameAnswer, type PageQuestion, type TabCoverage, coverageLine, noteLines, questionRows, tabCoverage } from "./coverage";
 import { type Offer, offerSubject } from "./applied";
@@ -27,7 +27,7 @@ import { type HomeView, bankSummary, basicsCompleteness, compactCount, friendlyE
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T;
 
-function bg<T>(msg: ToBackground): Promise<T> {
+function bg<T>(msg: ExtensionToBackground): Promise<T> {
   return chrome.runtime.sendMessage<T>(msg);
 }
 
@@ -926,7 +926,7 @@ async function sendToVani(
 ): Promise<{ ok: boolean; text: string }> {
   return sendScrape(scrape, saveSearch, async m => {
     try {
-      return await bg<unknown>(m as ToBackground);
+      return await bg<unknown>(m as ExtensionToBackground);
     } catch (e) {
       throw new Error(friendlyError(e).line);
     }

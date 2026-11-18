@@ -253,7 +253,7 @@ describe("flow", () => {
   test("a submit asks about the job and sends the page without its query", async () => {
     const { flow, sent, ui } = setup();
     await flow.submitted();
-    expect(sent).toEqual([{ type: "appliedSignal", url: "https://x.example/a" }]);
+    expect(sent).toEqual([{ type: "appliedSignal" }]); // the page is named by the browser's sender, never by the message
     expect(ui).toEqual(["offer:gh:acme:1"]);
   });
 
