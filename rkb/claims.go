@@ -148,7 +148,7 @@ func parseClaimsFiles(files []string, resolve func(string) string) (map[string]*
 type LogEntry struct {
 	Pass         int    `json:"pass"`
 	Kind         string `json:"kind,omitempty"` // figure | statement
-	Verdict      string `json:"verdict"`
+	Verdict      Verdict `json:"verdict"`
 	Method       string `json:"method"`
 	By           string `json:"by"`
 	At           string `json:"at"`
@@ -261,16 +261,17 @@ func (e LogEntry) dedupeKey() string {
 	for _, s := range e.Sources {
 		srcs += s.Path + "@" + s.SHA + ";"
 	}
-	return strings.Join([]string{fmt.Sprint(e.Pass), e.Kind, e.Verdict, e.Method, e.By, e.Value, e.Found,
+	return strings.Join([]string{fmt.Sprint(e.Pass), e.Kind, string(e.Verdict), e.Method, e.By, e.Value, e.Found,
 		e.SourcePath, e.SourceSHA, e.SentenceHash, e.TextHash, e.Quote, srcs}, "\x00")
 }
 
 // ---------------------------------------------------------------- validator report
 
 var vmLine = regexp.MustCompile(`^\[(PRIMARY|LEDGER|SKIP|FAIL|UNBACKED)\s*\]\s+(\S+)\s+(.*)$`)
-var verdictRank = map[string]int{"PRIMARY": 0, "LEDGER": 1, "SKIP": 2, "UNBACKED": 3, "FAIL": 4}
-
-type vmResult struct{ Verdict, Detail string }
+type vmResult struct {
+	Verdict Verdict
+	Detail  string
+}
 
 // parseVM keeps the WORST verdict per check id, so a FAIL can never be hidden
 // by a later PASS line for the same check.
@@ -307,8 +308,8 @@ func parseVM(p string) (map[string]vmResult, time.Time) {
 			continue
 		}
 		old, ok := out[m[2]]
-		if !ok || verdictRank[m[1]] > verdictRank[old.Verdict] {
-			out[m[2]] = vmResult{m[1], truncate(m[3], 300)}
+		if v := Verdict(m[1]); !ok || v.validatorRank() > old.Verdict.validatorRank() {
+			out[m[2]] = vmResult{v, truncate(m[3], 300)}
 		}
 	}
 	return out, when
@@ -348,107 +349,6 @@ func claimUsage(c *Composed) map[string][]string {
 		}
 	}
 	return u
-}
-
-// ---------------------------------------------------------------- evaluate
-
-type evalResult struct {
-	P1, P2OK  bool
-	P1Verdict string
-	Confirmed []string
-	Problems  []string
-	Refuted   map[string]string // sentence hash -> verdict: evidence
-}
-
-// refutingFigure: blind-pass verdicts that say the sentence's wording or value
-// is wrong (as opposed to a pass that is missing, stale or badly filled in).
-var refutingFigure = map[string]bool{"SCOPE": true, "MISMATCH": true}
-
-func evaluate(cl *Claim, log VerifyLog, vm map[string]vmResult, sentences []string) evalResult {
-	var r evalResult
-	entries := log[cl.ID]
-	var current []LogEntry
-	voided := 0
-	for _, e := range entries {
-		if e.Value == cl.Value {
-			current = append(current, e)
-		} else {
-			voided++
-		}
-	}
-	vmr, hasVM := vm[cl.Check]
-	if hasVM && (vmr.Verdict == "PRIMARY" || vmr.Verdict == "LEDGER") {
-		r.P1, r.P1Verdict = true, vmr.Verdict
-	}
-	if !r.P1 {
-		var stale []string
-		for _, e := range current {
-			if e.Pass == 1 && e.Verdict == "CONFIRMED" && e.Found != "" && e.SourcePath != "" && !circularSource(e.SourcePath) {
-				if why := manualSourceProblem(e); why != "" {
-					stale = append(stale, fmt.Sprintf("%s: manual pass 1 refused, %s", cl.ID, why))
-					continue
-				}
-				r.P1, r.P1Verdict = true, "MANUAL"
-			}
-		}
-		if !r.P1 {
-			r.Problems = append(r.Problems, stale...)
-		}
-	}
-	if hasVM && (vmr.Verdict == "FAIL" || vmr.Verdict == "UNBACKED") {
-		r.P1 = false
-		r.Problems = append(r.Problems, fmt.Sprintf("validator %s: %s", vmr.Verdict, truncate(vmr.Detail, 120)))
-	}
-	if !r.P1 {
-		msg := "pass 1 missing"
-		if hasVM {
-			msg += " (validator " + vmr.Verdict + ")"
-		}
-		r.Problems = append(r.Problems, msg)
-	}
-	r.P2OK = len(sentences) > 0
-	for _, s := range sentences {
-		h := sentenceHash(s, cl.ID)
-		var latest *LogEntry
-		for i := range current {
-			e := &current[i]
-			if e.Pass == 2 && e.SentenceHash == h {
-				latest = e
-			}
-		}
-		switch {
-		case latest == nil:
-			r.P2OK = false
-			r.Problems = append(r.Problems, "pass 2 missing for: "+truncate(maskedSentence(s, cl.ID), 70))
-		case latest.Verdict != "CONFIRMED":
-			r.P2OK = false
-			r.Problems = append(r.Problems, fmt.Sprintf("latest blind pass %s: %s", latest.Verdict, truncate(latest.Evidence, 110)))
-			if refutingFigure[latest.Verdict] {
-				if r.Refuted == nil {
-					r.Refuted = map[string]string{}
-				}
-				r.Refuted[h] = latest.Verdict + ": " + truncate(latest.Evidence, 200)
-			}
-		case circularSource(latest.SourcePath):
-			r.P2OK = false
-			r.Problems = append(r.Problems, "pass 2 cited a claims/resume/KB file, not an artifact: "+latest.SourcePath)
-		default:
-			sha := sha256File(inRoot(latest.SourcePath))
-			if sha == "" && isUnmountedSibling(codeRoot(), latest.SourcePath) && latest.SourceSHA != "" {
-				sha = latest.SourceSHA
-			}
-			if sha == "" || (latest.SourceSHA != "" && sha != latest.SourceSHA) {
-				r.P2OK = false
-				r.Problems = append(r.Problems, "pass 2 source changed or deleted since it was read: "+latest.SourcePath)
-			} else {
-				r.Confirmed = append(r.Confirmed, h)
-			}
-		}
-	}
-	if voided > 0 {
-		r.Problems = append(r.Problems, fmt.Sprintf("%d logged pass(es) void: value changed since", voided))
-	}
-	return r
 }
 
 // manualSourceProblem says why a manual pass 1 no longer holds, "" when it
@@ -503,10 +403,10 @@ func evalStatement(key, text string, sources []string, attested string, log Veri
 		if sv.Problem == "" {
 			sv.Problem = "statement pass 2 missing"
 		}
-	case latest.Verdict != "CONFIRMED":
-		sv.Problem = "statement pass 2 " + latest.Verdict + ": " + truncate(latest.Evidence, 120)
-		if latest.Verdict == "UNSUPPORTED" {
-			sv.Refuted = latest.Verdict + ": " + truncate(latest.Evidence, 200)
+	case latest.Verdict != VerdictConfirmed:
+		sv.Problem = "statement pass 2 " + string(latest.Verdict) + ": " + truncate(latest.Evidence, 120)
+		if latest.Verdict == VerdictUnsupported {
+			sv.Refuted = string(latest.Verdict) + ": " + truncate(latest.Evidence, 200)
 		}
 	default:
 		fresh := true
@@ -571,8 +471,8 @@ func claimsExport(a *args) {
 	}
 	ok := 0
 	for id, cl := range claims {
-		r := evaluate(cl, log, vm, usage[id])
-		dv := r.P1 && r.P2OK
+		r := Assess(cl, log, vm, usage[id])
+		dv := r.DoubleVerified()
 		if dv {
 			ok++
 		}
@@ -600,13 +500,13 @@ func claimsStatus(a *args) {
 			bad++
 			continue
 		}
-		r := evaluate(cl, log, vm, usage[id])
+		r := Assess(cl, log, vm, usage[id])
 		tag := "OK  "
-		if !r.P1 || !r.P2OK {
+		if !r.DoubleVerified() {
 			tag = "TODO"
 			bad++
 		}
-		line := fmt.Sprintf("[%s] %-26s p1=%-8s p2=%d/%d  %s", tag, id, orDash(r.P1Verdict), len(r.Confirmed), len(usage[id]), truncate(cl.Value, 40))
+		line := fmt.Sprintf("[%s] %-26s p1=%-8s p2=%d/%d  %s", tag, id, orDash(string(r.P1Verdict)), len(r.Confirmed), len(usage[id]), truncate(cl.Value, 40))
 		if tag == "TODO" {
 			line += "  <- " + strings.Join(r.Problems, "; ")
 		}
@@ -681,10 +581,10 @@ func claimsWorksheet(a *args) {
 		if !ok {
 			continue
 		}
-		r := evaluate(cl, log, vm, usage[id])
+		r := Assess(cl, log, vm, usage[id])
 		for _, s := range usage[id] {
 			h := sentenceHash(s, id)
-			if !all && contains(r.Confirmed, h) {
+			if !all && r.Confirms(h) {
 				continue
 			}
 			hint := cl.Source
@@ -761,8 +661,7 @@ func claimsIngest(a *args) {
 		if by == "" {
 			die("%s has no \"verifier\"; the blind verifier must name itself", f)
 		}
-		switch strings.ToLower(by) {
-		case "author", "drafter", "me", "self", "user":
+		if !independentVerifier(by) {
 			die("%s: verifier %q is not an independent blind verifier", f, by)
 		}
 		if len(ws.Items) == 0 {
@@ -951,8 +850,8 @@ func circularSource(p string) bool {
 	return abs == filepath.Clean(inRoot(cfg.KnowledgeJSON))
 }
 
-func report(verdict, id, ev string, ok, bad *int) {
-	if verdict == "CONFIRMED" {
+func report(verdict Verdict, id, ev string, ok, bad *int) {
+	if verdict == VerdictConfirmed {
 		*ok++
 	} else {
 		*bad++
@@ -1044,7 +943,7 @@ func claimsVM(a *args) {
 	vm, _ := parseVM(p)
 	t := map[string]int{}
 	for _, r := range vm {
-		t[r.Verdict]++
+		t[string(r.Verdict)]++
 	}
 	b, _ := marshalNoEscape(t)
 	fmt.Printf("wrote %s: %s\n", p, b)

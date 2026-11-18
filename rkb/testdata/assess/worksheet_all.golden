@@ -1,0 +1,793 @@
+$ rkb claims worksheet career/CurriculumVitae/resume/resumes/fixture.json --all --out ws-all2.json --vm-report report.vm.txt
+exit: 0
+--- stdout ---
+wrote ws-all2.json: 20 figure sentence(s) and 30 statement(s) need a blind pass
+--- ws-all2.json ---
+{
+  "instructions": "You are a blind verifier. You have NOT seen the resume's figures. Work only from project artifacts under code_root (never from Claims.tex, resumes, CVs, knowledge.json or the portfolio site).\nSet \"verifier\" to your name (e.g. \"blind-verifier-1\").\nkind=figure: find the [MASKED] figure yourself using source_hint/check_id ('#' in hints hides digits). Fill answer.found_value with ONLY the figure, in value_shape ('#' = digit; convert units or compute a ratio if the source states it differently and show that in scope_note), keeping both ends of a range or before/after pair. answer.quote = verbatim source line, answer.source_path = path relative to code_root, answer.line. answer.scope_ok=false with scope_note if the sentence claims more than the source supports (faster vs parity, pilot vs general, other hardware/baseline/subset, or a figure measured on one phase or part of something the sentence names as a whole: e.g. one stage of a pipeline timed and sold as the whole pipeline).\nkind=statement: list every non-numeric factual assertion in the sentence ([figure] marks checked figures; ignore them). answer.supported=true only if EVERY assertion is supported by the code or docs; give answer.quotes=[{path, line, quote}] (paths relative to code_root, or {url, quote} for an https source listed in sources_hint, e.g. a published paper) covering them, and answer.unsupported=[...] for any that are not.\nEmployer or client work under NDA has no artifact here: mark it supported=false with \"no artifact (employer work)\" and never use side projects as evidence for it. A value rounded or truncated at its stated precision is the same value. Keep helper files out of the user's folders.\nIf you cannot find something, leave it empty and say where you looked. Never infer from the sentence.",
+  "code_root": "<ROOT>",
+  "repos": {},
+  "verifier": "",
+  "items": [
+    {
+      "kind": "figure",
+      "claim": "clmAlpha",
+      "sentence": "Measured the alpha stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "90c4ac6a1f7f",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.alpha",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmBravo",
+      "sentence": "Measured the bravo stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "8b958acbca77",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.bravo",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmCharlie",
+      "sentence": "Measured the charlie stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "6d9880638f9e",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.charlie",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmDelta",
+      "sentence": "Measured the delta stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "50f0b43000cf",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.delta",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmEcho",
+      "sentence": "Measured the echo stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "3e467f8f2cb7",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.echo",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmFoxtrot",
+      "sentence": "Measured the foxtrot stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "4dd2e6afafbe",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.foxtrot",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmGolf",
+      "sentence": "Measured the golf stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "dcefa15c7312",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.golf",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmHotel",
+      "sentence": "Measured the hotel stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "210cb9c12002",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.hotel",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmIndia",
+      "sentence": "Measured the india stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "1e0a1969b2e9",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.india",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmJuliet",
+      "sentence": "Measured the juliet stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "0b4236100aea",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.juliet",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmJuliet",
+      "sentence": "Measured the juliet stage at [MASKED] in variant 1: the harness replays the same inputs each run.",
+      "sentence_hash": "7006f5cb23bf",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.juliet",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmLima",
+      "sentence": "Measured the lima stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "37d1c98bf006",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.lima",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmMike",
+      "sentence": "Measured the mike stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "f1addbb6753d",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.mike",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmNovember",
+      "sentence": "Measured the november stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "dfb3f25c2c3e",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.november",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmOscar",
+      "sentence": "Measured the oscar stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "4ca1a36b9758",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmPapa",
+      "sentence": "Measured the papa stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "ab3a4825c8ae",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.papa",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmQuebec",
+      "sentence": "Measured the quebec stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "d3fb8b3bd8a4",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.quebec",
+      "scope_notes": "CAUTION: measured on one phase only",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmRomeo",
+      "sentence": "Measured the romeo stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "d3ce1583a214",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.romeo",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmSierra",
+      "sentence": "Measured the sierra stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "23c12a1bdaae",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.sierra",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "figure",
+      "claim": "clmTango",
+      "sentence": "Measured the tango stage at [MASKED] in variant 0: the harness replays the same inputs each run.",
+      "sentence_hash": "fd303ba1c784",
+      "source_hint": "projects/lab/src.txt",
+      "check_id": "lab.tango",
+      "value_shape": "## ms",
+      "answer": {
+        "found_value": "",
+        "line": null,
+        "quote": "",
+        "scope_note": "",
+        "scope_ok": null,
+        "source_path": ""
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-alpha-0",
+      "sentence": "Measured the alpha stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "f07680ff04f9",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-bravo-0",
+      "sentence": "Measured the bravo stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "4eaf86084d61",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-charlie-0",
+      "sentence": "Measured the charlie stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "2291b47d91bc",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-delta-0",
+      "sentence": "Measured the delta stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "bcbaa94db11c",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-echo-0",
+      "sentence": "Measured the echo stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "d83dac4fd0e8",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-foxtrot-0",
+      "sentence": "Measured the foxtrot stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "3aea2ee167fc",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-golf-0",
+      "sentence": "Measured the golf stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "14e9172db029",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-hotel-0",
+      "sentence": "Measured the hotel stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "f6a175cc7699",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-india-0",
+      "sentence": "Measured the india stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "1e47139bc23e",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-juliet-0",
+      "sentence": "Measured the juliet stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "1d9b3b74416a",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-juliet-1",
+      "sentence": "Measured the juliet stage at [figure] in variant 1: the harness replays the same inputs each run.",
+      "text_hash": "9c29e8ec2377",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-lima-0",
+      "sentence": "Measured the lima stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "c9721bb6ae3f",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-mike-0",
+      "sentence": "Measured the mike stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "7c2b09781ed8",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-november-0",
+      "sentence": "Measured the november stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "e154d4c2fb57",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-oscar-0",
+      "sentence": "Measured the oscar stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "9a8ff1ede92b",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-papa-0",
+      "sentence": "Measured the papa stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "d2e011f4362e",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-quebec-0",
+      "sentence": "Measured the quebec stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "f8f0f76fed49",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-romeo-0",
+      "sentence": "Measured the romeo stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "bd5f9bb00da1",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-sierra-0",
+      "sentence": "Measured the sierra stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "56c16e17eb58",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "fig-tango-0",
+      "sentence": "Measured the tango stage at [figure] in variant 0: the harness replays the same inputs each run.",
+      "text_hash": "08e554432a3c",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-confirmed",
+      "sentence": "Wrote the lab harness in plain Go.",
+      "text_hash": "6034164ae1b2",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-unsupported",
+      "sentence": "Ran the lab harness on a cluster.",
+      "text_hash": "d05b630ea3f9",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-missing",
+      "sentence": "Documented the lab harness.",
+      "text_hash": "75f663569a61",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-stale",
+      "sentence": "Tested the lab harness nightly.",
+      "text_hash": "af3558617b55",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-nosrc",
+      "sentence": "Maintained the lab harness.",
+      "text_hash": "53ad8ce11ad8",
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-badsrc",
+      "sentence": "Packaged the lab harness.",
+      "text_hash": "eaec482d56f6",
+      "sources_hint": [
+        "projects/lab/missing.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-circular",
+      "sentence": "Reviewed the lab harness.",
+      "text_hash": "f771c126ac09",
+      "sources_hint": [
+        "career/CurriculumVitae/core/Claims.tex"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-attested",
+      "sentence": "Shipped the lab harness to a client.",
+      "text_hash": "5312d121a809",
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "st-other",
+      "sentence": "Profiled the lab harness.",
+      "text_hash": "266c637900f9",
+      "sources_hint": [
+        "projects/lab/src.txt"
+      ],
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    },
+    {
+      "kind": "statement",
+      "key": "lead:figs",
+      "sentence": "A synthetic lab for claim states.",
+      "text_hash": "11e58febde6b",
+      "answer": {
+        "quotes": [],
+        "scope_note": "",
+        "supported": null,
+        "unsupported": []
+      }
+    }
+  ]
+}

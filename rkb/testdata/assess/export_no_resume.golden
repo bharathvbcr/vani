@@ -1,0 +1,217 @@
+$ rkb claims export --out claims-bare.json --vm-report report.vm.txt
+exit: 0
+--- stdout ---
+wrote claims-bare.json: 20 claims, 0 double-verified for the sentences they are used in
+--- claims-bare.json ---
+{
+  "generated": "<NOW>",
+  "resume_hash": "",
+  "claims_tex_sha256": "b6375cc7764658357af99fcd04e560abc8ebc7e702815bffeedbbcb48cf8f2c1",
+  "selection": "",
+  "vm_report": {
+    "mtime": "2025-01-15T12:00:00Z",
+    "path": "report.vm.txt"
+  },
+  "claims": {
+    "clmAlpha": {
+      "value": "10 ms",
+      "kind": "time",
+      "check": "lab.alpha",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmBravo": {
+      "value": "20 ms",
+      "kind": "time",
+      "check": "lab.bravo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmCharlie": {
+      "value": "30 ms",
+      "kind": "time",
+      "check": "lab.charlie",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmDelta": {
+      "value": "40 ms",
+      "kind": "time",
+      "check": "lab.delta",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "validator FAIL: value differs: 41 ms",
+        "pass 1 missing (validator FAIL)"
+      ]
+    },
+    "clmEcho": {
+      "value": "50 ms",
+      "kind": "time",
+      "check": "lab.echo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "validator UNBACKED: no artifact",
+        "pass 1 missing (validator UNBACKED)"
+      ]
+    },
+    "clmFoxtrot": {
+      "value": "60 ms",
+      "kind": "time",
+      "check": "lab.foxtrot",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmGolf": {
+      "value": "70 ms",
+      "kind": "time",
+      "check": "lab.golf",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmHotel": {
+      "value": "80 ms",
+      "kind": "time",
+      "check": "lab.hotel",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmIndia": {
+      "value": "90 ms",
+      "kind": "time",
+      "check": "lab.india",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmJuliet": {
+      "value": "11 ms",
+      "kind": "time",
+      "check": "lab.juliet",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmKilo": {
+      "value": "12 ms",
+      "kind": "time",
+      "check": "lab.kilo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmLima": {
+      "value": "13 ms",
+      "kind": "time",
+      "check": "lab.lima",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "1 logged pass(es) void: value changed since"
+      ]
+    },
+    "clmMike": {
+      "value": "14 ms",
+      "kind": "time",
+      "check": "lab.mike",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmNovember": {
+      "value": "15 ms",
+      "kind": "time",
+      "check": "lab.november",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmOscar": {
+      "value": "16 ms",
+      "kind": "time",
+      "check": "",
+      "source": "",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmPapa": {
+      "value": "17 ms",
+      "kind": "time",
+      "check": "lab.papa",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing (validator SKIP)"
+      ]
+    },
+    "clmQuebec": {
+      "value": "18 ms",
+      "kind": "time",
+      "check": "lab.quebec",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null,
+      "caution": "CAUTION: measured on one phase only"
+    },
+    "clmRomeo": {
+      "value": "19 ms",
+      "kind": "time",
+      "check": "lab.romeo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "clmRomeo: manual pass 1 refused, the source changed since it was read: projects/lab/src.txt",
+        "pass 1 missing"
+      ]
+    },
+    "clmSierra": {
+      "value": "21 ms",
+      "kind": "time",
+      "check": "lab.sierra",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    },
+    "clmTango": {
+      "value": "22 ms",
+      "kind": "time",
+      "check": "lab.tango",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": null
+    }
+  },
+  "statements": {},
+  "guards": 1
+}

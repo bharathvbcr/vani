@@ -228,15 +228,15 @@ func TestReaderSheetCarriesOwnerRules(t *testing.T) {
 	}
 }
 
-// The evaluate() side: a SCOPE or MISMATCH blind pass is recorded as a
+// The Assess() side: a SCOPE or MISMATCH blind pass is recorded as a
 // refutation of that sentence; a missing or unanswered pass is not.
 func TestEvaluateRecordsRefutations(t *testing.T) {
 	s := "**Cut the step {{clmB}} versus the old loop:** grouped the lookups into one pass."
 	h := sentenceHash(s, "clmB")
 	cl := &Claim{ID: "clmB", Value: "6.5×"}
 	for verdict, want := range map[string]bool{"SCOPE": true, "MISMATCH": true, "NO_SCOPE": false, "NOT_FOUND": false, "QUOTE_NOT_FOUND": false} {
-		log := VerifyLog{"clmB": {{Value: "6.5×", Pass: 2, SentenceHash: h, Verdict: verdict, Evidence: "phase only"}}}
-		r := evaluate(cl, log, nil, []string{s})
+		log := VerifyLog{"clmB": {{Value: "6.5×", Pass: 2, SentenceHash: h, Verdict: Verdict(verdict), Evidence: "phase only"}}}
+		r := Assess(cl, log, nil, []string{s})
 		if got := r.Refuted[h] != ""; got != want {
 			t.Errorf("verdict %s: refuted=%v, want %v", verdict, got, want)
 		}
