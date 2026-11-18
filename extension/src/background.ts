@@ -14,7 +14,7 @@ import {
   storageMode,
   updateBank,
 } from "./store";
-import { type FillReply, MAX_SAME_LABEL, type SenderContext, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground, isPageKind, senderContext } from "./messages";
+import { type FillReply, MAX_JOB_URL, MAX_SAME_LABEL, type SenderContext, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground, isPageKind, pageSentURL, senderContext } from "./messages";
 import { FILL_BUSY, type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
 import { createDrafter, draftHelp } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker, parseFindKey } from "./applied";
@@ -431,23 +431,32 @@ function refusedByApp(counts: Omit<CaptureResult, "bank">, dropped: number): Omi
   return { ...counts, added: counts.added - fromAdded, updated: counts.updated - (n - fromAdded), skippedSecret: counts.skippedSecret + n };
 }
 
-/** A field only an extension sender's message may carry (the page variants have none; checkSender refuses a page that sends one). */
+/** A field an extension sender's message may carry. A page's `url` is read only through pageSentURL (appliedSignal, jobRow, jobKey); a page's `key` is refused by checkSender. */
 const claimed = (m: object, field: "url" | "key"): string | undefined => {
   const v = (m as Record<string, unknown>)[field];
   return typeof v === "string" ? v : undefined;
 };
 
-/** The page a message is about: a page sender's own URL from the browser (its tab's when the frame's is unknown); an extension sender names the page it means. */
-const pageURL = (ctx: SenderContext, msg: object): string | undefined => (isPageKind(ctx.kind) ? ctx.url ?? ctx.tabURL ?? "" : claimed(msg, "url"));
+/**
+ * The page a message is about. A page sender: the URL it sent on appliedSignal, jobRow or jobKey when it is on the
+ * sender's own origin (pageSentURL; a single-page board changes the page URL without a new document, and the browser's
+ * sender.url keeps the one it loaded at), else the browser's URL for the frame (its tab's when the frame's is unknown).
+ * A url that was sent and fails pageSentURL gives undefined, never a guess (checkSender has refused it already). An
+ * extension sender names the page it means.
+ */
+function pageURL(ctx: SenderContext, msg: object): string | undefined {
+  if (!isPageKind(ctx.kind)) return claimed(msg, "url");
+  const sent = pageSentURL(msg, ctx);
+  if ("error" in sent) return undefined;
+  return sent.url ?? ctx.url ?? ctx.tabURL ?? "";
+}
 
-/** The longest page URL jobRow and jobKey ask the host about (the bound their message's URL had). */
-const MAX_JOB_URL = 2048;
-
-/** The sender's URL for a jobFind, or the refusal to reply with when the browser gave none or one past the bound. */
-function jobPageURL(ctx: SenderContext): string | { error: string; code: "bad_request" } {
-  if (ctx.url === undefined || ctx.url === "") return { error: "no page URL", code: "bad_request" };
-  if (ctx.url.length > MAX_JOB_URL) return { error: "page URL too long", code: "bad_request" };
-  return ctx.url;
+/** The page URL for a jobFind, or the refusal to reply with when there is none or one past the bound. */
+function jobPageURL(ctx: SenderContext, msg: object): string | { error: string; code: "bad_request" } {
+  const url = pageURL(ctx, msg);
+  if (url === undefined || url === "") return { error: "no page URL", code: "bad_request" };
+  if (url.length > MAX_JOB_URL) return { error: "page URL too long", code: "bad_request" };
+  return url;
 }
 
 /**
@@ -599,13 +608,13 @@ async function handle(msg: ToBackground, ctx: SenderContext): Promise<unknown> {
     case "appliedPending":
       return { offer: await applied.pending(ctx.tabId) };
     case "jobRow": {
-      const url = jobPageURL(ctx);
+      const url = jobPageURL(ctx, msg);
       if (typeof url !== "string") return url;
       return parseFindRow(await native({ op: "jobFind", url }));
     }
     case "jobKey": {
       // The same jobFind as jobRow, read for the posting's key (which every tracked job has, scored or not).
-      const url = jobPageURL(ctx);
+      const url = jobPageURL(ctx, msg);
       if (typeof url !== "string") return url;
       const f = parseFindKey(await native({ op: "jobFind", url }));
       return f.ok ? (f.ambiguous ? { key: null, ambiguous: true } : { key: f.key }) : { error: f.error, code: f.code };

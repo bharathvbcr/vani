@@ -24,10 +24,12 @@ type ContactsMessage =
   | { type: "contacts"; op: "import"; items: { key: string; text: string }[] };
 
 /**
- * What a content script sends. A page message names no URL and no tab: the background reads both from the
- * browser's sender (SenderContext), so a page, or a script that has been taken over, cannot point a message at
- * another posting or another tab. checkSender refuses one that carries either field anyway, and the content
- * scripts' `send` accepts only this type, so the compiler proves they do not add one.
+ * What a content script sends. A page message names no tab, and no URL except appliedSignal, jobRow and jobKey
+ * (PAGE_URL_TYPES), whose `url` is the page as it is now: the browser's sender URL is fixed when the document loads and
+ * misses history.pushState on single-page boards. pageSentURL accepts it only on the sender's own origin. The background
+ * reads everything else from the browser's sender (SenderContext), so a page, or a script that has been taken over,
+ * cannot point a message at another site or another tab. checkSender refuses any other message that carries either field,
+ * and the content scripts' `send` accepts only this type, so the compiler proves they do not add one.
  */
 export type PageToBackground =
   | { type: "getBank"; fresh?: boolean } // fresh: skip the background's 2 s memo (Fill: the Mac app may have changed behind it)
@@ -41,16 +43,16 @@ export type PageToBackground =
   | { type: "jobPoll"; job: string }
   /** Whether two wordings ask the same question, answered by the Mac app's on-device model. Two question labels, never a field value or a saved answer. */
   | { type: "sameQuestion"; a: string; b: string }
-  // Offering to mark a job Applied (applied.ts). The background looks the page up under the browser's own sender URL,
-  // keeps the offer for the sender's tab, and marks only on appliedMark.
-  | { type: "appliedSignal" }
+  // Offering to mark a job Applied (applied.ts). The background looks the page up under the URL the page sends only if it
+  // is on the sender's own origin (pageSentURL: a single-page board pushes new URLs the browser's sender.url never shows), else the sender URL; keeps the offer for the sender's tab, and marks only on appliedMark.
+  | { type: "appliedSignal"; url?: string }
   | { type: "appliedPending" }
   | { type: "appliedMark" }
   | { type: "appliedDismiss" }
   /** Vani's own jobs row for the sender's page (jobrow.ts), asked of the Mac app; `{ row: null }` when there is none. */
-  | { type: "jobRow" }
+  | { type: "jobRow"; url?: string }
   /** The posting key Vani tracks the sender's page under (jobFind), to build a resume for that job; `{ key: null }` when none. */
-  | { type: "jobKey" }
+  | { type: "jobKey"; url?: string }
   /** A content script started in the sender's frame (frames.ts): the frame is listed for the popup to ask. */
   | { type: "frameReady" }
   /** The registered frames of the sender's own tab. */
@@ -265,6 +267,29 @@ export function senderContext(sender: SenderLike, ownURL: string, named?: unknow
   };
 }
 
+/** The longest page URL a page message names, or jobRow and jobKey ask the host about. */
+export const MAX_JOB_URL = 2048;
+
+/** The only page messages that may carry a `url`: the page being viewed, which the browser's sender.url misses after history.pushState. */
+export const PAGE_URL_TYPES: ReadonlySet<string> = new Set(["appliedSignal", "jobRow", "jobKey"]);
+
+/**
+ * The page URL a page sender's message names: {} when it names none (or is not a PAGE_URL_TYPES message, which
+ * checkSender refuses for carrying one), {url} when it is a string within MAX_JOB_URL, an http(s) URL, and on exactly
+ * the origin the browser reports for the sender; otherwise {error}. A url that is sent and bad is never replaced by a guess.
+ */
+export function pageSentURL(msg: object, ctx: SenderContext): { url?: string } | { error: string } {
+  const own = Object.getOwnPropertyDescriptor(msg, "url");
+  if (own === undefined || !("type" in msg) || typeof msg.type !== "string" || !PAGE_URL_TYPES.has(msg.type)) return {};
+  const v: unknown = own.value;
+  if (typeof v !== "string" || v === "" || v.length > MAX_JOB_URL) return { error: "carries a url that is not a bounded string" };
+  let u: URL;
+  try { u = new URL(v); } catch { return { error: "carries a url that does not parse" }; }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return { error: "carries a url that is not http(s)" };
+  if (ctx.origin === null || u.origin !== ctx.origin) return { error: "carries a url that is not on the sender's origin" };
+  return { url: v };
+}
+
 /** The sender-table key: the message type, or `type.op` for a type whose operations differ in who may send them. */
 export type PolicyKey = Exclude<ToBackground["type"], "contacts"> | `contacts.${ContactsMessage["op"]}`;
 export const policyKey = (m: { type: ToBackground["type"]; op?: unknown }): PolicyKey =>
@@ -329,7 +354,8 @@ const KIND_WORDS: Record<SenderKind, string> = { popup: "the popup", extensionTa
 
 /**
  * Null when this sender may send this message; otherwise the refusal to reply with. A page sender's message
- * carries no `url` and no `tabId` (the browser's sender says both), no `key` for resumePreview, and an ingestJobs
+ * carries no `tabId` (the browser's sender says it), no `url` except on PAGE_URL_TYPES (and then one that
+ * pageSentURL accepts), no `key` for resumePreview, and an ingestJobs
  * `page.url` on the sender's own origin: a page cannot save a search for, or ingest jobs under, another site.
  */
 export function checkSender(msg: ToBackground, ctx: SenderContext): { error: string; code: "bad_request" } | null {
@@ -337,7 +363,12 @@ export function checkSender(msg: ToBackground, ctx: SenderContext): { error: str
   const refuse = (error: string) => ({ error, code: "bad_request" as const });
   if (!SENDER_POLICY[key].includes(ctx.kind)) return refuse(`${key} is not accepted from ${KIND_WORDS[ctx.kind]}`);
   if (!isPageKind(ctx.kind)) return null;
-  for (const f of ["url", "tabId"]) if (Object.hasOwn(msg, f)) return refuse(`${key} from a page carries no ${f}`);
+  if (Object.hasOwn(msg, "tabId")) return refuse(`${key} from a page carries no tabId`);
+  if (Object.hasOwn(msg, "url")) {
+    if (!PAGE_URL_TYPES.has(msg.type)) return refuse(`${key} from a page carries no url`);
+    const sent = pageSentURL(msg, ctx);
+    if ("error" in sent) return refuse(`${key} ${sent.error}`);
+  }
   if (msg.type === "resumePreview" && Object.hasOwn(msg, "key")) return refuse("resumePreview from a page carries no key");
   if (msg.type === "ingestJobs") {
     let pageOrigin: string | null = null;

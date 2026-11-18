@@ -148,7 +148,7 @@ async function vaniRelevance(estimate: RelevanceResult): Promise<RelevanceResult
   const url = location.href;
   if (!vaniRow || vaniRow.url !== url || Date.now() - vaniRow.at > VANI_ROW_TTL_MS) {
     try {
-      const r = await send<FindRow | { error: string }>({ type: "jobRow" });
+      const r = await send<FindRow | { error: string }>({ type: "jobRow", url });
       vaniRow = { url, at: Date.now(), result: r && typeof r === "object" ? r : { row: null } };
     } catch {
       return estimate; // the worker is not there: not cached, so the next scan asks again
@@ -1918,7 +1918,7 @@ const resumeOffer = createResumeOffer({
   job: () => jobInfo(),
   find: async () => {
     try {
-      const r = await send<{ key: string | null; ambiguous?: boolean } | { error: string } | undefined>({ type: "jobKey" });
+      const r = await send<{ key: string | null; ambiguous?: boolean } | { error: string } | undefined>({ type: "jobKey", url: location.href });
       if (r && typeof r === "object" && "error" in r && typeof r.error === "string") return { error: r.error };
       if (r && typeof r === "object" && "key" in r && (r.key === null || (typeof r.key === "string" && r.key !== ""))) {
         return r.ambiguous === true ? { key: null, ambiguous: true } : { key: r.key };
