@@ -254,17 +254,20 @@ func TestNearDupDeadlineIsReportedAsPartial(t *testing.T) {
 	jd := words("duty", 100)
 	ndAdd(t, l, "1", "Acme", "Engineer", "Remote", jd, t0)
 	dup := ndAdd(t, l, "2", "Acme", "Engineer", "Remote", jd, t1)
+	// The newest posting is always decided, even past a spent deadline (it has
+	// nothing to annotate here); the two older ones are what the deadline cuts.
+	ndAdd(t, l, "3", "Globex", "Designer", "Remote", words("task", 100), t1.Add(time.Minute))
 	before := l.All()
 	rep, err := AnnotateNearDuplicates(ctx, l, t1, NearDupOptions{Deadline: -time.Second})
 	if err != nil {
 		t.Fatalf("a deadline is a partial run, not an error: %v", err)
 	}
-	if !rep.Partial || rep.PartialInSimilarity || rep.Examined != 0 || rep.Records != 2 || rep.Written != 0 || !reflect.DeepEqual(l.All(), before) {
+	if !rep.Partial || rep.PartialInSimilarity || rep.Examined != 1 || rep.Records != 3 || rep.Written != 0 || !reflect.DeepEqual(l.All(), before) {
 		t.Fatalf("report %+v", rep)
 	}
 	// Run to completion the same ledger is not partial, and the duplicate lands.
 	rep = annotate(t, l, t1, NearDupOptions{})
-	if rep.Partial || rep.Examined != 2 || rep.Duplicates != 1 {
+	if rep.Partial || rep.Examined != 3 || rep.Duplicates != 1 {
 		t.Fatalf("full run %+v", rep)
 	}
 	if rec(t, l, dup).Status != posting.Duplicate {
