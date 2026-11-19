@@ -32,6 +32,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
@@ -121,6 +122,9 @@ type Store struct {
 	// newer is set when the file on disk is of a format newer than this
 	// build's: Save leaves it alone (see ErrNewerFormat).
 	newer bool
+	// seen is the file as Open found it, then as this Store last wrote it: Save
+	// reads the header again only when the file on disk is not that one.
+	seen fileIdentity
 	// changes counts the edits to m (Put, and each key Prune forgets).
 	changes uint64
 }
@@ -165,8 +169,43 @@ func (s *Store) markNewer(found int) string {
 	return fmt.Sprintf("empty: read-only: the store is format %d, newer than this build's format %d; left untouched (update this vani)", found, format)
 }
 
+// fileIdentity names a file by what a Stat shows: absent, or present with an
+// inode, size and modification time. known is false when it could not be read.
+type fileIdentity struct {
+	known, exists bool
+	info          os.FileInfo
+}
+
+func statIdentity(path string) fileIdentity {
+	fi, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileIdentity{known: true}
+	}
+	if err != nil {
+		return fileIdentity{}
+	}
+	return fileIdentity{known: true, exists: true, info: fi}
+}
+
+// same reports whether both name the same, unchanged file (or both no file).
+// An identity that could not be read is never the same as anything.
+func (a fileIdentity) same(b fileIdentity) bool {
+	if !a.known || !b.known || a.exists != b.exists {
+		return false
+	}
+	if !a.exists {
+		return true
+	}
+	return os.SameFile(a.info, b.info) && a.info.Size() == b.info.Size() && a.info.ModTime().Equal(b.info.ModTime())
+}
+
+// headerReads counts headerFormat calls, so a test can prove Save skips the
+// header read when the file is the one this Store last saw.
+var headerReads atomic.Int64
+
 // headerFormat reads only the Format field of the file at s.path.
 func (s *Store) headerFormat() (int, bool) {
+	headerReads.Add(1)
 	f, err := os.Open(s.path)
 	if err != nil {
 		return 0, false
@@ -183,6 +222,7 @@ func (s *Store) headerFormat() (int, bool) {
 func (s *Store) load() string {
 	f, err := os.Open(s.path)
 	if errors.Is(err, os.ErrNotExist) {
+		s.seen = fileIdentity{known: true}
 		return "empty: no store yet"
 	}
 	if err != nil {
@@ -193,6 +233,7 @@ func (s *Store) load() string {
 	if err != nil {
 		return "empty: " + err.Error()
 	}
+	s.seen = fileIdentity{known: true, exists: true, info: fi}
 	if !fi.Mode().IsRegular() {
 		return "empty: the store is not a regular file of a plausible size"
 	}
@@ -336,9 +377,13 @@ func (s *Store) Save() error {
 	defer lock.Release()
 	// Open's verdict can be stale: a resident daemon holds a store for long, and
 	// a newer build may have written the file since. Re-read the header under the lock.
-	if found, ok := s.headerFormat(); ok && found > format {
-		s.loaded = s.markNewer(found)
-		return ErrNewerFormat
+	// Only when the file is not the one this Store last saw: a header read
+	// decodes the whole file, too dear for every save of a store of tens of MB.
+	if now := statIdentity(s.path); (now.exists && !s.seen.same(now)) || !now.known {
+		if found, ok := s.headerFormat(); ok && found > format {
+			s.loaded = s.markNewer(found)
+			return ErrNewerFormat
+		}
 	}
 	sf := storeFile{Format: format, Version: s.version, Entries: make([]storeEntry, 0, len(s.m))}
 	for k, e := range s.m {
@@ -354,6 +399,7 @@ func (s *Store) Save() error {
 	if err := atomicfile.Write(s.path, buf.Bytes()); err != nil {
 		return fmt.Errorf("jobfacts: %w", err)
 	}
+	s.seen = statIdentity(s.path)
 	s.dirty = false
 	return nil
 }
