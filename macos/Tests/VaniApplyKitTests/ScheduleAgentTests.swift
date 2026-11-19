@@ -550,11 +550,30 @@ final class ScheduleAgentTests: XCTestCase {
     func testForceStopChildKillsADaemonThatIgnoresSigterm() throws {
         let r = try rig()
         let pidFile = r.dir.appendingPathComponent("pid")
-        let program = try r.script("echo $$ > '\(pidFile.path)'; trap '' TERM; while :; do sleep 0.05; done")
+        let pidPart = r.dir.appendingPathComponent("pid.part")
+        let go = r.dir.appendingPathComponent("go")
+        // The empty pid file exists first and the trap is installed only when `go` appears, so the
+        // window between "file exists" and "SIGTERM is ignored" is held open by the test. The pid is
+        // published by rename after the trap; the wait must not take the empty file for ready. The
+        // loop is capped at 5s so a missed `go` cannot spin.
+        let program = try r.script(
+            ": > '\(pidFile.path)'; i=0; "
+                + "while [ ! -f '\(go.path)' ] && [ \"$i\" -lt 250 ]; do i=$((i + 1)); sleep 0.02; done; "
+                + "trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; "
+                + "while :; do sleep 0.05; done")
         let slow = RelaunchPolicy(base: 30, cap: 30, stableAfter: 300)
         let (s, done) = supervise(r, attempt: { r.start(program) }, policy: slow, watch: 60, grace: 30)
-        XCTAssertTrue(waitUntil { FileManager.default.fileExists(atPath: pidFile.path) })
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return !isPublishedPid(raw)
+        }, "the empty pid file exists before the trap")
+        try Data("go\n".utf8).write(to: go)
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return isPublishedPid(raw)
+        }, "the pid is published only after the trap")
         let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        addTeardownBlock { _ = kill(pid, SIGKILL) } // this test's own child, should the code under test leave it
         let started = Date()
         s.forceStopChild()
         XCTAssertTrue(waitUntil(2) { kill(pid, 0) != 0 && errno == ESRCH }, "SIGKILL without waiting out the grace")
