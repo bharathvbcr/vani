@@ -321,7 +321,7 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 		// report is written and paid for already, so a failed append is said
 		// and fails the command without hiding the report.
 		runID := filepath.Base(strings.TrimSuffix(path, ".md"))
-		added, withheld, err := e.appendDoctorSilver(rep, in.Drops, runID, doctor.PromptSHA256(rq.Drops.System))
+		added, withheld, err := e.appendDoctorSilver(rep, in.Drops, runID, doctor.NewSilverRun(rq.Drops.System, dcfg.TargetSummary, in.Rules))
 		switch {
 		case err != nil:
 			failed = append(failed, "the drop verdicts were not added to "+doctor.SilverFile+": "+err.Error())

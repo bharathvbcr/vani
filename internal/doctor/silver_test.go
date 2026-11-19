@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,7 +36,7 @@ var keepNoWorkMode = func(s string) bool { return !strings.HasSuffix(s, ":work_m
 // none from a stratum keep refuses; appending twice under one run adds nothing.
 func TestSilverRowsAndIdempotentAppend(t *testing.T) {
 	rep, cases := silverRun()
-	prompt := PromptSHA256("system")
+	prompt := NewSilverRun("system", "summary", []string{"rule"})
 	rows, withheld := SilverRows(rep, cases, "20261113T090000Z", prompt, keepNoWorkMode)
 	if len(rows) != 2 || withheld != 1 {
 		t.Fatalf("rows %d withheld %d, want 2 and 1", len(rows), withheld)
@@ -76,7 +77,7 @@ func TestSilverRowsAndIdempotentAppend(t *testing.T) {
 // skipped on read, not fatal.
 func TestSilverAppendIsAllOrNothingAndSurvivesTornTails(t *testing.T) {
 	rep, cases := silverRun()
-	rows, _ := SilverRows(rep, cases, "r1", PromptSHA256("s"), keepNoWorkMode)
+	rows, _ := SilverRows(rep, cases, "r1", NewSilverRun("s", "t", nil), keepNoWorkMode)
 	path := filepath.Join(t.TempDir(), SilverFile)
 	s, _ := OpenSilverStore(path)
 	bad := append(append([]SilverRow{}, rows...), SilverRow{RunID: "r1", Key: "gh:b:1", Stratum: "dropped:x", Model: "m", PSelect: 0.5, Verdict: "maybe", Cause: "none", PromptSHA256: rows[0].PromptSHA256, TextSHA256: rows[0].TextSHA256})
@@ -111,7 +112,7 @@ func TestSilverAppendIsAllOrNothingAndSurvivesTornTails(t *testing.T) {
 
 func silverRow(key string, verdict, prompt string, at time.Time) SilverRow {
 	return SilverRow{V: SilverSchema, RunID: at.Format(time.RFC3339), At: at, Key: posting.Key(key), Stratum: "dropped:title:role_fit", PSelect: 0.5,
-		Verdict: verdict, Cause: "none", Model: "m", PromptSHA256: PromptSHA256(prompt), TextSHA256: PromptSHA256(key)}
+		Verdict: verdict, Cause: "none", Model: "m", PromptSHA256: PromptSHA256(prompt), SummarySHA256: PromptSHA256("sum"), RulesSHA256: PromptSHA256("rules"), TextSHA256: PromptSHA256(key)}
 }
 
 // The comparison shows no figure below the auditor's floors, keeps prompts
@@ -213,5 +214,136 @@ func TestSilverAgreementLeavesOutReadingSelectedLabels(t *testing.T) {
 	as = BuildSilverAgreement(rows, labels)
 	if as[0].OwnerYes != 0 || as[0].Status != "insufficient" || as[0].LabelsLeftOut != 4 {
 		t.Errorf("all-selected labels: %+v", as[0])
+	}
+}
+
+// labelledRows gives each of SilverMinYes yes and SilverMinNo no postings one
+// verdict built by mk, with the owner's label for it.
+func labelledRows(mk func(key, verdict string) SilverRow) ([]SilverRow, map[posting.Key]eval.Entry) {
+	labels := map[posting.Key]eval.Entry{}
+	var rows []SilverRow
+	for i := range SilverMinYes {
+		k := fmt.Sprintf("y%02d", i)
+		labels[posting.Key(k)] = eval.Entry{Labels: map[string]string{eval.WouldApply: "yes"}}
+		rows = append(rows, mk(k, DropWrong))
+	}
+	for i := range SilverMinNo {
+		k := fmt.Sprintf("n%02d", i)
+		labels[posting.Key(k)] = eval.Entry{Labels: map[string]string{eval.WouldApply: "no"}}
+		rows = append(rows, mk(k, DropCorrect))
+	}
+	return rows, labels
+}
+
+// Runs that differ in the summary, the rules or the model are separate rows,
+// never pooled; one configuration still pools its own runs.
+func TestSilverAgreementGroupsByPromptSummaryRulesAndModel(t *testing.T) {
+	base := func(mut func(*SilverRow)) func(string, string) SilverRow {
+		return func(k, v string) SilverRow {
+			r := silverRow(k, v, "p", silverT0)
+			if mut != nil {
+				mut(&r)
+			}
+			return r
+		}
+	}
+	variants := map[string]func(*SilverRow){
+		"summary": func(r *SilverRow) { r.SummarySHA256 = PromptSHA256("other summary") },
+		"rules":   func(r *SilverRow) { r.RulesSHA256 = PromptSHA256("other rules") },
+		"model":   func(r *SilverRow) { r.Model = "other-model" },
+		"prompt":  func(r *SilverRow) { r.PromptSHA256 = PromptSHA256("other prompt") },
+	}
+	for name, mut := range variants {
+		rowsA, labels := labelledRows(base(nil))
+		rowsB, _ := labelledRows(base(mut))
+		as := BuildSilverAgreement(append(rowsA, rowsB...), labels)
+		if len(as) != 2 {
+			t.Fatalf("%s: %d rows, want 2 (runs under different configurations were pooled): %+v", name, len(as), as)
+		}
+		for _, a := range as {
+			if a.Status != "ok" || a.OwnerYes != SilverMinYes || a.OwnerNo != SilverMinNo {
+				t.Errorf("%s: %+v, want each configuration scored alone", name, a)
+			}
+		}
+	}
+	// The same configuration at two times is one row.
+	rowsA, labels := labelledRows(base(nil))
+	later, _ := labelledRows(func(k, v string) SilverRow { return silverRow(k, v, "p", silverT0.Add(time.Hour)) })
+	if as := BuildSilverAgreement(append(rowsA, later...), labels); len(as) != 1 || as[0].Verdicts != SilverMinYes+SilverMinNo {
+		t.Errorf("one configuration split: %+v", as)
+	}
+}
+
+// Schema 1 rows (no summary or rules hash) are read and kept in a group of
+// their own, said to have no recorded summary or rules; they are never
+// written again.
+func TestSilverLegacyRowsAreGroupedApartAndNeverWritten(t *testing.T) {
+	legacy := func(k, v string) SilverRow {
+		r := silverRow(k, v, "p", silverT0)
+		r.V, r.SummarySHA256, r.RulesSHA256 = 1, "", ""
+		return r
+	}
+	current := func(k, v string) SilverRow { return silverRow(k, v, "p", silverT0.Add(time.Hour)) }
+	oldRows, labels := labelledRows(legacy)
+	newRows, _ := labelledRows(current)
+
+	path := filepath.Join(t.TempDir(), SilverFile)
+	var raw []byte
+	for _, r := range oldRows {
+		line, _ := json.Marshal(r)
+		raw = append(append(raw, line...), '\n')
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenSilverStore(path)
+	if err != nil || s.Skipped != 0 || len(s.Rows()) != len(oldRows) {
+		t.Fatalf("legacy rows: read %d skipped %d err %v", len(s.Rows()), s.Skipped, err)
+	}
+	if _, err := s.Append(oldRows[:1]); err == nil {
+		t.Error("a schema 1 row was appended")
+	}
+	if n, err := s.Append(newRows); err != nil || n != len(newRows) {
+		t.Fatalf("append current rows: %d %v", n, err)
+	}
+	as := BuildSilverAgreement(s.Rows(), labels)
+	if len(as) != 2 {
+		t.Fatalf("%d rows, want the legacy and the current group apart: %+v", len(as), as)
+	}
+	md := SilverMarkdown(as, 0)
+	if !strings.Contains(md, "summary and rules not recorded") || !strings.Contains(md, "model m") {
+		t.Errorf("markdown:\n%s", md)
+	}
+	bad := silverRow("k", DropWrong, "p", silverT0)
+	bad.V = 1 // schema 1 with a hash it cannot have
+	if bad.validate() == nil {
+		t.Error("a schema 1 row with a summary hash validated")
+	}
+	bad = silverRow("k", DropWrong, "p", silverT0)
+	bad.SummarySHA256 = "short"
+	if bad.validate() == nil {
+		t.Error("a schema 2 row with a malformed summary hash validated")
+	}
+}
+
+// The recorded hashes follow the summary and the rules, not their order.
+func TestNewSilverRunHashesSummaryAndRulesAsSet(t *testing.T) {
+	a := NewSilverRun("sys", "sum", []string{"r1", "r2"})
+	if b := NewSilverRun("sys", "sum", []string{"r2", "r1"}); a != b {
+		t.Error("rule order split the run")
+	}
+	for name, b := range map[string]SilverRun{
+		"summary": NewSilverRun("sys", "sum2", []string{"r1", "r2"}),
+		"rules":   NewSilverRun("sys", "sum", []string{"r1"}),
+		"joined":  NewSilverRun("sys", "sum", []string{"r1r2"}),
+		"system":  NewSilverRun("sys2", "sum", []string{"r1", "r2"}),
+		"none":    NewSilverRun("sys", "sum", nil),
+	} {
+		if a == b {
+			t.Errorf("%s did not change the run", name)
+		}
+	}
+	if len(a.SummarySHA256) != 64 || len(a.RulesSHA256) != 64 {
+		t.Errorf("hashes %+v", a)
 	}
 }

@@ -27,34 +27,43 @@ import (
 // neither the rescue rule nor the silver prior reads it. Only
 // BuildSilverAgreement does, against owner labels.
 const (
-	SilverFile   = "silver_doctor.jsonl"
-	SilverSchema = 1
+	SilverFile = "silver_doctor.jsonl"
+	// SilverSchema 2 adds the summary and rules hashes to a row. Schema 1
+	// rows are still read: they carry neither hash, so the comparison keeps
+	// them in groups of their own and never pools them with a schema 2 run.
+	SilverSchema       = 2
+	silverLegacySchema = 1
 	// maxSilverLine bounds one row as read back.
 	maxSilverLine = 4 << 10
 )
 
 // SilverRow is one drop verdict. It holds no free text: the model's why stays
 // in the report it came from. TextSHA256 hashes the posting text the doctor
-// was shown (title, company and description as sent), PromptSHA256 the drops
-// part's system prompt, so a comparison stays within one prompt.
+// was shown (title, company and description as sent). PromptSHA256 hashes the
+// drops part's system prompt (a compile-time constant), SummarySHA256 the
+// target summary the review judged against and RulesSHA256 the drop rules it
+// was shown, so a comparison stays within one configuration: prompt, summary,
+// rules and model. Schema 1 rows hold no summary or rules hash (both empty).
 type SilverRow struct {
-	V            int         `json:"v"`
-	RunID        string      `json:"run_id"`
-	At           time.Time   `json:"at"`
-	Key          posting.Key `json:"key"`
-	Stratum      string      `json:"stratum"`
-	PSelect      float64     `json:"p_select"`
-	Verdict      string      `json:"verdict"`
-	Cause        string      `json:"cause"`
-	Model        string      `json:"model"`
-	PromptSHA256 string      `json:"prompt_sha256"`
-	TextSHA256   string      `json:"text_sha256"`
+	V             int         `json:"v"`
+	RunID         string      `json:"run_id"`
+	At            time.Time   `json:"at"`
+	Key           posting.Key `json:"key"`
+	Stratum       string      `json:"stratum"`
+	PSelect       float64     `json:"p_select"`
+	Verdict       string      `json:"verdict"`
+	Cause         string      `json:"cause"`
+	Model         string      `json:"model"`
+	PromptSHA256  string      `json:"prompt_sha256"`
+	SummarySHA256 string      `json:"summary_sha256,omitempty"`
+	RulesSHA256   string      `json:"rules_sha256,omitempty"`
+	TextSHA256    string      `json:"text_sha256"`
 }
 
 func (r SilverRow) validate() error {
 	switch {
-	case r.V != SilverSchema:
-		return fmt.Errorf("schema %d, want %d", r.V, SilverSchema)
+	case r.V != SilverSchema && r.V != silverLegacySchema:
+		return fmt.Errorf("schema %d, want %d (or the legacy %d)", r.V, SilverSchema, silverLegacySchema)
 	case r.RunID == "" || r.Key == "" || r.Stratum == "" || r.Model == "":
 		return errors.New("run id, key, stratum and model are required")
 	case !(r.PSelect >= eval.MinInclusionProbability && r.PSelect <= 1):
@@ -65,6 +74,10 @@ func (r SilverRow) validate() error {
 		return fmt.Errorf("cause %q is not a drop cause", r.Cause)
 	case len(r.PromptSHA256) != 64 || len(r.TextSHA256) != 64:
 		return errors.New("prompt and text hashes are sha256 hex")
+	case r.V == SilverSchema && (len(r.SummarySHA256) != 64 || len(r.RulesSHA256) != 64):
+		return errors.New("summary and rules hashes are sha256 hex")
+	case r.V == silverLegacySchema && (r.SummarySHA256 != "" || r.RulesSHA256 != ""):
+		return errors.New("a schema 1 row holds no summary or rules hash")
 	}
 	return nil
 }
@@ -79,6 +92,26 @@ func TextSHA256(c DropCase) string {
 func PromptSHA256(system string) string {
 	h := sha256.Sum256([]byte(system))
 	return hex.EncodeToString(h[:])
+}
+
+// SilverRun is the configuration a drops review ran under, as the hashes a row
+// records: the system prompt, the target summary and the drop rules. The model
+// is the report's own.
+type SilverRun struct {
+	PromptSHA256  string
+	SummarySHA256 string
+	RulesSHA256   string
+}
+
+// NewSilverRun hashes a drops review's configuration. The rules are hashed
+// as a set (sorted, each length-prefixed), so their order does not split runs
+// and two different rule lists never collide on a joining character.
+func NewSilverRun(system, summary string, rules []string) SilverRun {
+	h := sha256.New()
+	for _, r := range slices.Sorted(slices.Values(rules)) {
+		fmt.Fprintf(h, "%d:%s", len(r), r)
+	}
+	return SilverRun{PromptSHA256: PromptSHA256(system), SummarySHA256: PromptSHA256(summary), RulesSHA256: hex.EncodeToString(h.Sum(nil))}
 }
 
 // SilverStore is the doctor's silver log. Rows are appended whole and
@@ -151,6 +184,9 @@ func (s *SilverStore) Append(rows []SilverRow) (int, error) {
 		if r.V == 0 {
 			r.V = SilverSchema
 		}
+		if r.V == silverLegacySchema {
+			return 0, fmt.Errorf("doctor silver: %s: schema %d rows are read, never written", r.Key, r.V)
+		}
 		if err := r.validate(); err != nil {
 			return 0, fmt.Errorf("doctor silver: %s: %w", r.Key, err)
 		}
@@ -203,7 +239,7 @@ func (s *SilverStore) Append(rows []SilverRow) (int, error) {
 // posting was sent (a finding on a key the run never sent is not the
 // doctor's judgment of a sampled drop) and whose stratum keep allows. withheld
 // counts the findings keep refused.
-func SilverRows(rep Report, cases []DropCase, runID, promptSHA string, keep func(stratum string) bool) (rows []SilverRow, withheld int) {
+func SilverRows(rep Report, cases []DropCase, runID string, run SilverRun, keep func(stratum string) bool) (rows []SilverRow, withheld int) {
 	byKey := make(map[string]DropCase, len(cases))
 	for _, c := range cases {
 		byKey[c.Key] = c
@@ -218,7 +254,7 @@ func SilverRows(rep Report, cases []DropCase, runID, promptSHA string, keep func
 			continue
 		}
 		rows = append(rows, SilverRow{V: SilverSchema, RunID: runID, At: rep.At, Key: posting.Key(c.Key), Stratum: c.Stratum, PSelect: c.PSelect,
-			Verdict: f.Verdict, Cause: f.Cause, Model: rep.Model, PromptSHA256: promptSHA, TextSHA256: TextSHA256(c)})
+			Verdict: f.Verdict, Cause: f.Cause, Model: rep.Model, PromptSHA256: run.PromptSHA256, SummarySHA256: run.SummarySHA256, RulesSHA256: run.RulesSHA256, TextSHA256: TextSHA256(c)})
 	}
 	return rows, withheld
 }
@@ -230,20 +266,25 @@ const (
 	SilverMinNo  = 30
 )
 
-// SilverAgreement is one prompt's doctor verdicts set against the owner's
-// would_apply answers on the same postings: the newest verdict per posting
-// under that prompt. Wrong-drop agreement is the share of owner-yes postings
+// SilverAgreement is one configuration's doctor verdicts set against the
+// owner's would_apply answers on the same postings: the newest verdict per
+// posting under that configuration (prompt, summary, rules and model: runs
+// that differ in any one are separate rows). A row with no SummarySHA256 and
+// RulesSHA256 is a schema 1 group, whose summary and rules were not recorded. Wrong-drop agreement is the share of owner-yes postings
 // the doctor called a wrong drop; correct-drop agreement the share of
 // owner-no postings it called a correct one. Unclear verdicts and maybe
 // answers count in neither. Labels drawn because a model reading disagreed or
 // sat near a yes (eval.SelectedOnReading) are not independent of the verdicts
 // being scored, so they are left out and counted in LabelsLeftOut.
 type SilverAgreement struct {
-	PromptSHA256 string `json:"prompt_sha256"`
-	Verdicts     int    `json:"verdicts"`
-	OwnerYes     int    `json:"owner_yes"`
-	OwnerNo      int    `json:"owner_no"`
-	Unclear      int    `json:"unclear_on_owner_labels"`
+	PromptSHA256  string `json:"prompt_sha256"`
+	Model         string `json:"model"`
+	SummarySHA256 string `json:"summary_sha256,omitempty"`
+	RulesSHA256   string `json:"rules_sha256,omitempty"`
+	Verdicts      int    `json:"verdicts"`
+	OwnerYes      int    `json:"owner_yes"`
+	OwnerNo       int    `json:"owner_no"`
+	Unclear       int    `json:"unclear_on_owner_labels"`
 	// LabelsLeftOut counts the judged postings whose would_apply answer was
 	// selected on a reading and so was not used.
 	LabelsLeftOut int    `json:"labels_left_out_selected_on_reading"`
@@ -259,25 +300,34 @@ type SilverAgreement struct {
 	CorrectHi   float64 `json:"correct_drop_rate_hi,omitempty"`
 }
 
-// BuildSilverAgreement compares the log with the owner's labels, per prompt.
+// silverGroup is the comparison's grouping key.
+type silverGroup struct{ prompt, model, summary, rules string }
+
+func (g silverGroup) String() string {
+	return g.prompt + "\x00" + g.model + "\x00" + g.summary + "\x00" + g.rules
+}
+
+// BuildSilverAgreement compares the log with the owner's labels, per
+// configuration (prompt, model, summary and rules hashes).
 // A label whose source is a reading-selected cell is not used.
 func BuildSilverAgreement(rows []SilverRow, labels map[posting.Key]eval.Entry) []SilverAgreement {
-	newest := map[string]map[posting.Key]SilverRow{}
+	newest := map[silverGroup]map[posting.Key]SilverRow{}
 	for _, r := range rows {
-		m := newest[r.PromptSHA256]
+		g := silverGroup{r.PromptSHA256, r.Model, r.SummarySHA256, r.RulesSHA256}
+		m := newest[g]
 		if m == nil {
 			m = map[posting.Key]SilverRow{}
-			newest[r.PromptSHA256] = m
+			newest[g] = m
 		}
 		if prev, ok := m[r.Key]; !ok || !r.At.Before(prev.At) {
 			m[r.Key] = r
 		}
 	}
 	out := []SilverAgreement{}
-	for _, p := range slices.Sorted(maps.Keys(newest)) {
-		a := SilverAgreement{PromptSHA256: p, Verdicts: len(newest[p])}
+	for _, g := range slices.SortedFunc(maps.Keys(newest), func(a, b silverGroup) int { return strings.Compare(a.String(), b.String()) }) {
+		a := SilverAgreement{PromptSHA256: g.prompt, Model: g.model, SummarySHA256: g.summary, RulesSHA256: g.rules, Verdicts: len(newest[g])}
 		var wrongYes, correctNo int
-		for k, r := range newest[p] {
+		for k, r := range newest[g] {
 			l := labels[k]
 			v := l.Labels[eval.WouldApply]
 			if v != "yes" && v != "no" {
@@ -325,7 +375,11 @@ func SilverMarkdown(as []SilverAgreement, skipped int) string {
 		b.WriteString("no data: the doctor's silver log is empty\n")
 	}
 	for _, a := range as {
-		fmt.Fprintf(&b, "- prompt %s: %d postings judged; on %d owner labels (%d yes, %d no; %d unclear verdicts left out)\n", a.PromptSHA256[:12], a.Verdicts, a.OwnerYes+a.OwnerNo, a.OwnerYes, a.OwnerNo, a.Unclear)
+		cfgNote := "summary " + short(a.SummarySHA256) + ", rules " + short(a.RulesSHA256)
+		if a.SummarySHA256 == "" && a.RulesSHA256 == "" {
+			cfgNote = "summary and rules not recorded (rows from before schema 2)"
+		}
+		fmt.Fprintf(&b, "- prompt %s, model %s, %s: %d postings judged; on %d owner labels (%d yes, %d no; %d unclear verdicts left out)\n", short(a.PromptSHA256), a.Model, cfgNote, a.Verdicts, a.OwnerYes+a.OwnerNo, a.OwnerYes, a.OwnerNo, a.Unclear)
 		if a.LabelsLeftOut > 0 {
 			fmt.Fprintf(&b, "  - %d owner labels left out: they were chosen because a model reading disagreed or sat near a yes, so they are not independent of the verdicts scored\n", a.LabelsLeftOut)
 		}
@@ -340,4 +394,12 @@ func SilverMarkdown(as []SilverAgreement, skipped int) string {
 		fmt.Fprintf(&b, "- %d lines of the log were not valid rows and were skipped\n", skipped)
 	}
 	return b.String()
+}
+
+// short is the first 12 hex digits of a hash, or "none" for no hash.
+func short(h string) string {
+	if h == "" {
+		return "none"
+	}
+	return h[:min(12, len(h))]
 }
