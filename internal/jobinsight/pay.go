@@ -395,8 +395,8 @@ func parsePay(text, dollar string) []Pay {
 		// The nearest pay or not-pay word before decides, unless a pay word
 		// right after names it ("equity plus $150,000 - $180,000 base").
 		win := text[max(0, a.start-before):a.start]
-		decided := nearestWord(lineTail(win))
-		if decided == "" && nearestWord(win) == "pay" {
+		decided := nearestWord(win)
+		if decided == "" && earlierPay(win) {
 			// A finished sentence before can still name the amounts after
 			// it as pay ("The base salary is below.\n$150,000"), but a
 			// not-pay word there no longer vetoes them.
@@ -738,10 +738,6 @@ func readPeriod(text string, end int) (near Period, nearEnd int, far []periodAt)
 // Every split of text into lines or sentences here uses this one set.
 const lineBreaks = "\n\r\v\f\u0085\u2028\u2029"
 
-// clauseEnds end a clause for nearestWord: a comma or a sentence stop or a
-// line break. A colon does not.
-const clauseEnds = ",;.!?" + lineBreaks
-
 // foldPeriodWindow lowers win's ASCII letters, reads "-" and "_" as spaces and
 // folds every Unicode space that is not a line break (a non-breaking space,
 // U+202F, an ideographic space) to one ASCII space, so "per\u00a0hour" matches
@@ -778,6 +774,9 @@ func fillerOnly(s string) bool {
 	for _, w := range strings.Fields(strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) {
 			return r
+		}
+		if unicode.IsSymbol(r) {
+			return '#' // an emoji or sign between: not a filler
 		}
 		return ' '
 	}, s)) {
@@ -842,75 +841,91 @@ func anyIn(ws []string, set map[string]bool) bool {
 	return false
 }
 
-// fillerWords sit between a not-pay word and a generic pay word without
-// changing what it modifies: "bonus target range", "bonus is between".
-var fillerWords = map[string]bool{
-	"is": true, "are": true, "was": true, "be": true, "of": true, "for": true, "the": true, "a": true, "an": true,
-	"to": true, "target": true, "typical": true, "expected": true, "our": true, "your": true, "this": true, "that": true,
+// earlierPay reports whether the nearest salary or not-pay word anywhere in s
+// is a salary word.
+func earlierPay(s string) bool {
+	w := wordSpans(strings.ToValidUTF8(s, " "))
+	for i := len(w) - 1; i >= 0; i-- {
+		switch {
+		case notPay[w[i].w]:
+			return false
+		case payWords[w[i].w] && !genericPay[w[i].w]:
+			return true
+		}
+	}
+	return false
 }
 
-// nearestWord is "pay" or "not" for the pay or not-pay word nearest the end
-// of s, or "" for neither. A genericPay word (range, between, compensation)
-// is transparent: from it the look goes back past generic words and
-// fillerWords within the same clause (no comma, stop or line break between;
-// a colon does not end one) to the nearest not-pay word, which makes it "not"
-// ("Bonus target range:", "Bonus range is between"), or the nearest salary
-// word, which makes it "pay". With neither, a bare generic word is "pay".
+// sentenceTail is s after the last sentence end in it: a ".", "!", "?" or ";".
+// A comma, a colon and a line break do not end one here (a heading line with
+// no stop, "Signing bonus\n$20,000 - $30,000", still says what its amount is).
+func sentenceTail(s string) string {
+	if i := strings.LastIndexAny(s, ".!?;"); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}
+
+// nearestWord is "pay" or "not" for what the words of the last sentence of s
+// say about the amount after them: the nearest salary word (payWords other
+// than genericPay) makes it "pay", the nearest notPay word "not". Every other
+// word, genericPay ones included, is transparent ("Bonus opportunity range",
+// "Equity grants are in a typical range"). A sentence with neither but a
+// generic pay word ("range", "between") reads "pay"; one with none reads "".
+//
+// A phrase break between a not-pay word and the generic words that end the
+// sentence makes those a label of their own, so the amount is "pay": a line
+// break, an unclosed "(", and a comma, dash (but not one right after a not-pay word), "and" or "or" with only generic
+// words after it ("Bonus, Compensation: $150,000", "Equity and compensation
+// range: $150,000"). A comma with other words after it ("Equity compensation,
+// if any, is a range of $50,000") does not break it.
 func nearestWord(s string) string {
-	s = strings.ToValidUTF8(s, " ")
-	w := wordSpans(s)
+	t := strings.ToValidUTF8(sentenceTail(s), " ")
+	w := wordSpans(t)
+	generic, allGeneric := false, true // allGeneric: every word after i is generic
 	for i := len(w) - 1; i >= 0; i-- {
+		if generic && phraseBreak(t, w, i, allGeneric) {
+			return "pay"
+		}
 		switch {
 		case notPay[w[i].w]:
 			return "not"
 		case genericPay[w[i].w]:
-			return genericVerdict(s, w, i)
+			generic = true
 		case payWords[w[i].w]:
 			return "pay"
 		}
+		allGeneric = allGeneric && genericPay[w[i].w]
+	}
+	if generic {
+		return "pay"
 	}
 	return ""
 }
 
-// genericVerdict is nearestWord's answer for the generic word w[i].
-func genericVerdict(s string, w []wordSpan, i int) string {
-	for j := i - 1; j >= 0; j-- {
-		if strings.ContainsAny(s[w[j].end:w[j+1].start], clauseEnds) {
-			break
-		}
-		switch {
-		case notPay[w[j].w]:
-			return "not"
-		case genericPay[w[j].w] || fillerWords[w[j].w]:
-		case payWords[w[j].w]:
-			return "pay"
-		default:
-			return "pay"
-		}
+// phraseBreak reports whether a phrase break stands between w[i] and the words
+// after it in t, or w[i] is "and" / "or" (see nearestWord).
+func phraseBreak(t string, w []wordSpan, i int, allGeneric bool) bool {
+	if allGeneric && (w[i].w == "and" || w[i].w == "or") {
+		return true
 	}
-	return "pay"
-}
-
-// lineTail is s after the last sentence that ended its line (".", "!" or "?"
-// then a line break): a finished statement does not say whether the amounts
-// after it are not pay. Google's "…relevant education or training.\nUS:
-// $188000 - $274000 (USD)" was read as not pay by the word "education". A
-// heading line without a full stop ("Salary range:\n$100,000 - $150,000")
-// still counts, and ParsePay still lets a pay word before the stop decide
-// when the tail has none.
-func lineTail(s string) string {
-	for end := len(s); ; {
-		i := strings.LastIndexAny(s[:end], lineBreaks)
-		if i < 0 {
-			return s
-		}
-		_, w := utf8.DecodeRuneInString(s[i:])
-		line := strings.TrimRightFunc(s[:i], unicode.IsSpace)
-		if line != "" && strings.ContainsRune(".!?", rune(line[len(line)-1])) {
-			return s[i+w:]
-		}
-		end = i
+	end := len(t)
+	if i+1 < len(w) {
+		end = w[i+1].start
 	}
+	gap := t[w[i].end:end]
+	if strings.ContainsAny(gap, lineBreaks) {
+		return true
+	}
+	if k := strings.LastIndex(gap, "("); k >= 0 && !strings.Contains(t[w[i].end+k:], ")") {
+		return true
+	}
+	if !allGeneric {
+		return false
+	}
+	// A dash right after a not-pay word joins them ("bonus-range", "Bonus -
+	// Compensation"); after any other word it starts a new phrase.
+	return strings.Contains(gap, ",") || (strings.ContainsAny(gap, "-–—") && !notPay[w[i].w])
 }
 
 // beforeWord finds a period word just before an amount: near when it is in the
