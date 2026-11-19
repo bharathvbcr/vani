@@ -991,6 +991,19 @@ type VectorStats struct {
 	// SpaceUnchecked is why CompactVectors compacted without knowing the free disk
 	// space (the check could not run); empty when it ran.
 	SpaceUnchecked string
+	// Damage is set when opening the log cut it back past a bad record or an
+	// incomplete tail (CompactVectors repairs what it opens, as Warm does).
+	Damage *VectorDamage
+}
+
+// VectorDamage is what a repair cost: the log was cut at Off, Bytes bytes from
+// there on are gone, and Kept records before it survive. Torn is a crash tail
+// (an append cut short); otherwise a record was structurally bad.
+type VectorDamage struct {
+	Off, Bytes int64
+	Kept       int
+	Torn       bool
+	Why        string
 }
 
 // VectorStatus reads the chunk-vector log in cacheDir without loading a model,
@@ -1145,6 +1158,7 @@ func (m *Matcher) openVectors(ctx context.Context, rep *Report, docs []Doc) *chu
 	}
 	if ev.Damaged != nil {
 		rep.noteVectors(ev.Damaged.err())
+		rep.VectorsDamage = &VectorDamage{Off: ev.Damaged.Off, Bytes: ev.Damaged.Bytes, Kept: ev.Damaged.Kept, Why: ev.Damaged.Why}
 	}
 	rep.VectorsTornBytes += ev.TornBytes
 	if ev.TornBytes > 0 {
@@ -1227,5 +1241,6 @@ func (m *Matcher) CompactVectors(ctx context.Context) (VectorStats, error) {
 	ev, err := s.compact(ctx, s.prio(), evictTo(s.maxBytes-s.maxBytes/8))
 	st := s.stats()
 	st.Evicted, st.Dropped, st.SpaceUnchecked = ev.Evicted, ev.Dropped, ev.SpaceUnchecked
+	st.Damage = rep.VectorsDamage
 	return st, err
 }

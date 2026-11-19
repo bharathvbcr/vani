@@ -172,17 +172,18 @@ type Report struct {
 
 	// The chunk-vector log (vectors.go). None of these changes how a posting is
 	// counted above: a posting whose vectors could not be used is embedded.
-	VectorsStale     int    // stored vectors skipped: the posting now chunks into a different count
-	VectorsCorrupt   int    // records that failed their checksum or shape, read or shed by a compaction
-	VectorsTornBytes int64  // bytes of an incomplete tail cut off (a crash or interrupted append)
-	VectorsRebuilt   bool   // the log was corrupt or the wrong width and was removed; vectors are re-embedded as max allows
-	VectorsAppended  int    // postings whose vectors were stored this call
-	VectorsRefused   int    // postings whose vectors could not be stored (bound reached, or ranked below everything it would evict; write failed)
-	VectorsEvicted   int    // postings dropped by a compaction (outside the live set, then lowest priority, then oldest)
-	VectorsCompacted bool   // the log was compacted
-	VectorsCount     int    // postings with stored vectors when the call ended
-	VectorsBytes     int64  // log size when the call ended
-	VectorsErr       string // first problem with the log, empty when none; scoring went on without it
+	VectorsStale     int           // stored vectors skipped: the posting now chunks into a different count
+	VectorsCorrupt   int           // records that failed their checksum or shape, read or shed by a compaction
+	VectorsTornBytes int64         // bytes of an incomplete tail cut off (a crash or interrupted append)
+	VectorsDamage    *VectorDamage // where the log was cut back and what it cost; nil when nothing was lost
+	VectorsRebuilt   bool          // the log was corrupt or the wrong width and was removed; vectors are re-embedded as max allows
+	VectorsAppended  int           // postings whose vectors were stored this call
+	VectorsRefused   int           // postings whose vectors could not be stored (bound reached, or ranked below everything it would evict; write failed)
+	VectorsEvicted   int           // postings dropped by a compaction (outside the live set, then lowest priority, then oldest)
+	VectorsCompacted bool          // the log was compacted
+	VectorsCount     int           // postings with stored vectors when the call ended
+	VectorsBytes     int64         // log size when the call ended
+	VectorsErr       string        // first problem with the log, empty when none; scoring went on without it
 
 	// The score cache (cache.go). A live eviction means the cache is smaller
 	// than the live set: that posting will be scored again by a later warm.
