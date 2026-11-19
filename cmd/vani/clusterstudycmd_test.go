@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -414,5 +415,28 @@ func TestInsideDir(t *testing.T) {
 		if got := insideDir(tc.path, tc.dir); got != tc.want {
 			t.Errorf("insideDir(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
 		}
+	}
+}
+
+// A per-run row whose reduction is undefined prints n/a with the reason in the
+// null column, never 0.000; a defined reduction still prints its share.
+func TestStrataMarkdownPrintsNAForAnUndefinedNullShare(t *testing.T) {
+	nan := clusterstudy.Num(math.NaN())
+	mk := func(red, share clusterstudy.Num) runAgainst {
+		return runAgainst{RunResult: clusterstudy.RunResult{ClusterCells: 3, Compared: clusterstudy.Compared{Reduction: red, NullAtOrAbove: share}}}
+	}
+	r := &strataReply{Fit: &fitReport{Runs: []fitRunReport{
+		{Algo: "emeans", K: 3, Seed: 1, Against: map[string]runAgainst{baselineCategory: mk(nan, nan), baselineAudit: mk(0.4, 0.125)}},
+	}}}
+	md := r.markdown()
+	if strings.Contains(md, "| 0.000 |") {
+		t.Errorf("an undefined null share printed as 0.000:\n%s", md)
+	}
+	if !strings.Contains(md, "n/a (reduction undefined)") || !strings.Contains(md, "0.125") {
+		t.Errorf("want n/a with the reason for the undefined row and 0.125 for the defined one:\n%s", md)
+	}
+	raw, err := json.Marshal(r.Fit.Runs[0].Against[baselineCategory])
+	if err != nil || !strings.Contains(string(raw), `"null_at_or_above":null`) {
+		t.Errorf("JSON should carry null: %s (%v)", raw, err)
 	}
 }

@@ -200,9 +200,11 @@ type Compared struct {
 	// stratification: the target is shuffled across postings (cell sizes and the
 	// positive count kept). A reduction inside this band is noise.
 	Null Interval `json:"null"`
-	// NullAtOrAbove is the share of null reductions at or above Reduction.
-	NullAtOrAbove float64 `json:"null_at_or_above"`
-	Resamples     int     `json:"resamples"`
+	// NullAtOrAbove is the share of null reductions at or above Reduction. It
+	// is NaN, never 0, when Reduction is NaN: no reduction is at or above an
+	// undefined one. As a Num it is null in JSON, "n/a" in the text report.
+	NullAtOrAbove Num `json:"null_at_or_above"`
+	Resamples     int `json:"resamples"`
 }
 
 // Compare measures cand against base on target. Both stratifications and the
@@ -251,12 +253,15 @@ func Compare(base, cand []int, target []bool, reps int, seed uint64) (Compared, 
 		c := withinOf(ci, cc, shuffled, all)
 		r := Reduction(float64(b.Plugin), float64(c.Plugin))
 		null = append(null, r)
-		if !math.IsNaN(r) && !math.IsNaN(float64(out.Reduction)) && r >= float64(out.Reduction) {
+		if !math.IsNaN(r) && r >= float64(out.Reduction) { // false when Reduction is NaN
 			atOrAbove++
 		}
 	}
 	ns := finiteSorted(null)
 	out.Null = Interval{Num(percentile(ns, 0.025)), Num(percentile(ns, 0.975))}
-	out.NullAtOrAbove = float64(atOrAbove) / float64(reps)
+	out.NullAtOrAbove = Num(float64(atOrAbove) / float64(reps))
+	if math.IsNaN(float64(out.Reduction)) {
+		out.NullAtOrAbove = Num(math.NaN())
+	}
 	return out, nil
 }

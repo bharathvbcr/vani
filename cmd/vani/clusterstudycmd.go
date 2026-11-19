@@ -534,6 +534,17 @@ func percent(x clusterstudy.Num) string {
 	return fmt.Sprintf("%.1f%%", 100*float64(x))
 }
 
+// nullShare prints the share of permutation-null reductions at or above the
+// observed one. An undefined reduction (a baseline with no within-stratum
+// variance, or an undefined candidate) has no such share: "n/a", not 0.000,
+// which would read as "no null run matched it".
+func nullShare(x clusterstudy.Num) string {
+	if math.IsNaN(float64(x)) {
+		return "n/a (reduction undefined)"
+	}
+	return fmt.Sprintf("%.3f", float64(x))
+}
+
 func (r *strataReply) markdown() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Strata comparison\n\ntarget: %s (%s, newest stored reading per posting)\n\n", r.Target, r.Model)
@@ -563,8 +574,8 @@ func (r *strataReply) markdown() string {
 		for _, name := range []string{baselineCategory, baselineAudit} {
 			a := run.Against[name]
 			c := a.Compared
-			fmt.Fprintf(&b, "%s | %d | %d | %s | %s | [%s, %s] | [%s, %s] | %.3f | %d/%d\n", run.Algo, run.K, run.Seed, name, percent(c.Reduction),
-				percent(c.Bootstrap.Lo), percent(c.Bootstrap.Hi), percent(c.Null.Lo), percent(c.Null.Hi), c.NullAtOrAbove, a.ClusterCells, c.Base.Cells)
+			fmt.Fprintf(&b, "%s | %d | %d | %s | %s | [%s, %s] | [%s, %s] | %s | %d/%d\n", run.Algo, run.K, run.Seed, name, percent(c.Reduction),
+				percent(c.Bootstrap.Lo), percent(c.Bootstrap.Hi), percent(c.Null.Lo), percent(c.Null.Hi), nullShare(c.NullAtOrAbove), a.ClusterCells, c.Base.Cells)
 		}
 	}
 	b.WriteString("\n## Fits (same init and k per row across algorithms; f64 MSE computed by the fit binary the same way for each)\n\n")
