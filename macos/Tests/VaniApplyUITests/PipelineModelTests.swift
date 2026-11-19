@@ -33,7 +33,9 @@ private struct PipelineFixture {
         now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         running="{\"ok\":true,\"state\":\"running\",\"trigger\":\"manual\",\"started_at\":\"$now\"}"
         case "$1" in
-        status) cat "$D/status.json"; exit 0 ;;
+        status)
+          if [ -f "$D/statusdown" ]; then echo 'vani: status: timed out reading the ledger' >&2; exit 1; fi
+          cat "$D/status.json"; exit 0 ;;
         run-once) ;;
         run-request)
           old=$(cat "$D/lastrun")
@@ -67,6 +69,13 @@ private struct PipelineFixture {
         *) exit 2 ;;
         esac
         case "$(cat "$D/mode")" in
+        recorded-then-status-down)
+          # vani records the run, then fails it; every status read from then on fails (a loaded host).
+          status "$running"
+          touch "$D/statusdown"
+          sleep 0.3
+          echo 'vani: run failed: the decision backend refused the request' >&2
+          exit 1 ;;
         refused)
           echo 'vani: ledger: directory is locked by another process: another vani holds it (the daemon)' >&2
           exit 1 ;;
@@ -268,6 +277,23 @@ final class PipelineModelTests: XCTestCase {
         try await eventually("the dropped request") { !m.waitingForDaemon }
         XCTAssertTrue(m.runError?.contains("dropped") == true, m.runError ?? "")
         XCTAssertEqual(m.status?.lastRun.trigger, .schedule, "the old record stays")
+    }
+
+    /// vani recorded the run and then failed it, but the status read after the exit fails: the old
+    /// record says nothing about this run, so the tab must not claim it "could not start".
+    func testAFailedRunWhoseRecordCannotBeReadIsNotReportedAsNotStarted() async throws {
+        let f = try PipelineFixture(self, mode: "recorded-then-status-down", lastRun: oldRun)
+        let m = try model(f)
+        await m.refresh()
+        await m.startRun(ManualRunOptions(noDigest: true))
+        try await eventually("the run's exit") { m.manualRun == nil && !m.startingRun }
+        XCTAssertNil(m.runError, "the run started: vani recorded it")
+        XCTAssertTrue(m.runUnverified?.contains("the decision backend refused") == true, m.runUnverified ?? "nil")
+        // Once the record can be read the note goes: the Last run section reports the run.
+        try FileManager.default.removeItem(at: f.dir.appendingPathComponent("statusdown"))
+        await m.refresh()
+        XCTAssertEqual(m.status?.lastRun.state, .running)
+        XCTAssertNil(m.runUnverified)
     }
 
     /// A daemon facet saying no daemon runs (or none at all, from an older vani)
