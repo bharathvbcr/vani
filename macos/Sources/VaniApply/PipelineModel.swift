@@ -43,7 +43,7 @@ final class PipelineModel {
     /// Why the last manual run could not start, or ended before vani recorded it.
     private(set) var runError: String?
     /// A manual run this app started ended with an error, and vani's record of it could not be
-    /// read afterwards (the status read failed or kept being superseded), so whether vani ever
+    /// read afterwards (the status read failed), so whether vani ever
     /// recorded it is not known. That is not "could not start": the run may well have started.
     /// Cleared when the next run starts, or when a status read shows the run's record.
     private(set) var runUnverified: String?
@@ -74,6 +74,8 @@ final class PipelineModel {
     private let announcer: RunAnnouncer?
     private let defaults: UserDefaults
     private var generation = 0
+    /// Callers whose read was superseded, waiting for the newer read that owns the result.
+    private var settleWaiters: [CheckedContinuation<ReadOutcome, Never>] = []
     private var watchTask: Task<Void, Never>?
     /// Bumped each time `follow` starts, so a cancelled follower does not clear the new one.
     private var followGeneration = 0
@@ -136,6 +138,20 @@ final class PipelineModel {
         let c = client()
         let result = await BlockingWork.run { try c.status() }
         guard gen == generation else { return .superseded } // a newer read superseded this one
+        let outcome = apply(result)
+        let waiting = settleWaiters
+        settleWaiters = []
+        for w in waiting { w.resume(returning: outcome) }
+        return outcome
+    }
+
+    /// The result of the newest read, once it lands. For a caller whose own read was superseded:
+    /// the newer read started after it, so its answer is as fresh as the caller needed.
+    private func newestRead() async -> ReadOutcome {
+        await withCheckedContinuation { settleWaiters.append($0) }
+    }
+
+    private func apply(_ result: Result<PipelineStatus, Error>) -> ReadOutcome {
         loading = false
         checkedAt = Date()
         switch result {
@@ -363,8 +379,9 @@ final class PipelineModel {
         // Re-read before letting go of the job, so the tab never shows the
         // record from before the run as this run's outcome.
         var read = await refresh()
-        // A read a newer one superseded left the old status in place: ask again, a few times at most.
-        for _ in 0..<3 where read == .superseded { read = await refresh() }
+        // A read a newer one superseded left the old status in place. That is not a failed read:
+        // a newer read is in flight, so take its result rather than give up or start another.
+        while read == .superseded { read = await newestRead() }
         let recorded = status?.lastRun.startedAt.map { $0 >= job.startedAt.addingTimeInterval(-2) } ?? false
         if code != 0 && !recorded {
             let why = VaniProcess.lastVaniLine(inLog: job.log) ?? "vani run-once exited \(code); see \(job.log.path)"
