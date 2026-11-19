@@ -63,7 +63,10 @@ type Server struct {
 
 	cmd    *exec.Cmd
 	exited chan struct{}
-	stderr *capped
+	// waitErr is cmd.Wait's result; it is written before exited is closed, so
+	// it is safe to read once exited is closed.
+	waitErr error
+	stderr  *capped
 	once   sync.Once
 }
 
@@ -131,7 +134,7 @@ func Start(ctx context.Context, cfg Config) (*Server, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("localserver: start: %w", err)
 	}
-	go func() { _ = cmd.Wait(); close(s.exited) }()
+	go func() { s.waitErr = cmd.Wait(); close(s.exited) }()
 
 	if err := s.waitHealthy(ctx, base+"/health", cfg.StartTimeout); err != nil {
 		s.Stop()
@@ -150,12 +153,17 @@ func (s *Server) waitHealthy(ctx context.Context, url string, timeout time.Durat
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
 	for {
+		// Exit first: a dead child is reported with its status at once, and a
+		// probe that something else answers on the same port is never taken for it.
+		if s.Exited() {
+			return s.exitedError()
+		}
 		if ok := probe(ctx, d, url); ok {
 			return nil
 		}
 		select {
 		case <-s.exited:
-			return errors.New("localserver: the server exited before it was ready")
+			return s.exitedError()
 		case <-deadline.C:
 			return fmt.Errorf("localserver: not ready after %s", timeout)
 		case <-ctx.Done():
@@ -204,6 +212,15 @@ func (s *Server) Exited() bool {
 	default:
 		return false
 	}
+}
+
+// exitedError is the start failure for a child that ended, with how it ended
+// ("exit status 3", "signal: killed"). Call it only once exited is closed.
+func (s *Server) exitedError() error {
+	if s.waitErr != nil {
+		return fmt.Errorf("localserver: the server exited before it was ready (%v)", s.waitErr)
+	}
+	return errors.New("localserver: the server exited before it was ready (exit status 0)")
 }
 
 func (s *Server) stderrTail() string {

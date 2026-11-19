@@ -34,6 +34,11 @@ func fakeServer(mode string) {
 	case "crash":
 		fmt.Fprintln(os.Stderr, "load_model: unsupported decision model type: lfm2-d1")
 		os.Exit(1)
+	case "exit3":
+		os.Exit(3)
+	case "sigkill":
+		_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+		time.Sleep(time.Hour)
 	case "never-ready":
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM)
@@ -112,6 +117,37 @@ func TestCrashIsReportedWithStderr(t *testing.T) {
 	_, err := Start(context.Background(), Config{Binary: fakeBinary(t, "crash"), Model: model(t), StartTimeout: 20 * time.Second})
 	if err == nil || !strings.Contains(err.Error(), "exited before it was ready") || !strings.Contains(err.Error(), "lfm2-d1") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A child that has already exited is reported at once, with how it exited,
+// not after the start timeout and not as a bare "exited".
+func TestExitedChildIsReportedAtOnceWithItsStatus(t *testing.T) {
+	for mode, want := range map[string]string{"exit3": "exit status 3", "sigkill": "signal: killed"} {
+		t.Run(mode, func(t *testing.T) {
+			start := time.Now()
+			_, err := Start(context.Background(), Config{Binary: fakeBinary(t, mode), Model: model(t), StartTimeout: time.Minute})
+			if err == nil || !strings.Contains(err.Error(), "exited before it was ready") || !strings.Contains(err.Error(), want) {
+				t.Fatalf("err = %v, want it to name %q", err, want)
+			}
+			if time.Since(start) > 5*time.Second {
+				t.Fatalf("took %s to notice the exit", time.Since(start))
+			}
+		})
+	}
+}
+
+func TestExitedAndExitErrAfterStop(t *testing.T) {
+	s, err := Start(context.Background(), Config{Binary: fakeBinary(t, "ok"), Model: model(t), StartTimeout: 20 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Exited() {
+		t.Fatal("a running server reported as exited")
+	}
+	s.Stop()
+	if !s.Exited() {
+		t.Fatal("a stopped server not reported as exited")
 	}
 }
 
