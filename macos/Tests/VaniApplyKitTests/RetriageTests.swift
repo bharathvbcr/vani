@@ -488,6 +488,144 @@ final class RetriageClientTests: XCTestCase {
     }
 }
 
+/// The owner pressing Stop in the app: the child gets SIGTERM, and a vani that handles it writes its reply on
+/// the way out (cmd/vani/jobsretriage.go), which the app must read so a paid call's cost is not lost.
+private final class StopBox<T>: @unchecked Sendable { var value: T? }
+
+final class RetriageStopReplyTests: XCTestCase {
+    private let paidCancelReply = #"{"error":"cancelled","code":"cancelled","cost":{"input_tokens":1790,"output_tokens":212,"usd":0.0072}}"#
+
+    /// A child that records its pid, then waits in short sleeps; on TERM it runs `onTerm` (a shell
+    /// fragment). With no `onTerm` it ignores TERM. A short sleep is no grandchild holding the pipes.
+    func child(_ onTerm: String?) throws -> (vani: URL, pidFile: URL) {
+        let dir = try tempDir(self)
+        let pid = dir.appendingPathComponent("pid")
+        let url = dir.appendingPathComponent("vani")
+        let trap = onTerm.map { "trap '\($0)' TERM" } ?? "trap '' TERM"
+        let body = "#!/bin/sh\n\(trap)\necho $$ > '\(pid.path)'\nwhile true; do sleep 0.1; done\n"
+        try Data(body.utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        return (url, pid)
+    }
+
+    private func replying(_ reply: String) throws -> (vani: URL, pidFile: URL) {
+        let file = try tempDir(self).appendingPathComponent("reply.json")
+        try Data(reply.utf8).write(to: file)
+        return try child("cat \(file.path); exit 1")
+    }
+
+    private func waitForPid(_ file: URL) throws -> pid_t {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if let text = try? String(contentsOf: file, encoding: .utf8),
+               let p = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)) { return p }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        throw XCTSkip("the fake never started")
+    }
+
+    /// Start `work`, wait until the child is up, set the flag, and return what `work` returned.
+    private func stopped<T: Sendable>(_ pidFile: URL, within limit: TimeInterval = 10,
+                                      _ work: @escaping @Sendable (CancelFlag) -> T) throws -> (value: T, seconds: TimeInterval) {
+        let box = StopBox<T>(), done = DispatchSemaphore(value: 0), cancel = CancelFlag()
+        Thread.detachNewThread { box.value = work(cancel); done.signal() }
+        _ = try waitForPid(pidFile)
+        let began = Date()
+        cancel.set()
+        XCTAssertEqual(done.wait(timeout: .now() + limit), .success, "a stopped call did not return")
+        return (try XCTUnwrap(box.value), Date().timeIntervalSince(began))
+    }
+
+    private func client(_ vani: URL) -> RetriageClient {
+        RetriageClient(runner: DraftRunner(vaniBinary: vani, key: { nil }, decisionKey: { nil }))
+    }
+
+    func testAStopAfterAPaidAnswerShowsWhatWasCharged() throws {
+        let (vani, pidFile) = try replying(paidCancelReply)
+        let c = client(vani)
+        let (outcome, _) = try stopped(pidFile) { c.run("k", cancellation: $0) }
+        let f = try XCTUnwrap(outcome.fail, "the paid reply the child wrote on TERM was thrown away")
+        XCTAssertEqual(f.code, "cancelled")
+        XCTAssertEqual(f.cost, RetriageCost(inputTokens: 1790, outputTokens: 212, usd: 0.0072))
+        let text = try XCTUnwrap(RetriagePresentation.errorText(for: f))
+        XCTAssertEqual(text.costNote, "Sonnet was asked and charged $0.007 before you stopped it.")
+    }
+
+    func testAStopWithAnUnpaidCancelReplyIsAPlainCancel() throws {
+        let (vani, pidFile) = try replying(#"{"error":"cancelled","code":"cancelled"}"#)
+        let c = client(vani)
+        let (outcome, _) = try stopped(pidFile) { c.run("k", cancellation: $0) }
+        XCTAssertEqual(outcome, .cancelled)
+    }
+
+    func testTheProcessLevelStopKeepsTheChildsReplyAndStillSaysCancelled() throws {
+        let (vani, pidFile) = try replying(paidCancelReply)
+        let (out, _) = try stopped(pidFile) { cancel in
+            VaniProcess.run(vani, arguments: [], environment: [:], timeout: 30, maxOutputBytes: 64 << 10, cancellation: cancel)
+        }
+        XCTAssertTrue(out.cancelled)
+        XCTAssertFalse(out.timedOut)
+        XCTAssertEqual(String(decoding: out.stdout, as: UTF8.self), paidCancelReply)
+    }
+
+    func testAChildThatIgnoresTermIsKilledWithinTheGraceAndHasNoCost() throws {
+        let (vani, pidFile) = try child(nil)
+        let (out, seconds) = try stopped(pidFile) { cancel in
+            VaniProcess.run(vani, arguments: [], environment: [:], timeout: 30, maxOutputBytes: 64 << 10, cancellation: cancel)
+        }
+        XCTAssertTrue(out.cancelled)
+        XCTAssertTrue(out.stdout.isEmpty)
+        XCTAssertLessThan(seconds, 2 * VaniProcess.terminationGrace + 1.5, "the stop sequence is bounded as it was")
+        let (vani2, pidFile2) = try child(nil)
+        let c = client(vani2)
+        let (outcome, _) = try stopped(pidFile2) { c.run("k", cancellation: $0) }
+        XCTAssertEqual(outcome, .cancelled)
+    }
+
+    func testGarbagePartialOrForeignRepliesOnTermAreAPlainCancel() throws {
+        let replies = [
+            "not json at all",
+            #"{"error":"cancelled","code":"cancelled","cost":{"usd":0.0072"#,
+            #"[{"error":"cancelled","code":"cancelled","cost":{"usd":0.0072}}]"#,
+            #"{"error":"cancelled","code":"cancelled","cost":{"usd":0.0072}} trailing"#,
+            #"{"error":"boom","code":"provider","cost":{"usd":0.0072}}"#,
+            #"{"error":"cancelled","cost":{"usd":0.0072}}"#,
+            #"{"error":"cancelled","code":7,"cost":{"usd":0.0072}}"#,
+            "",
+        ]
+        for reply in replies {
+            let (vani, pidFile) = try replying(reply)
+            let c = client(vani)
+            let (outcome, _) = try stopped(pidFile) { c.run("k", cancellation: $0) }
+            XCTAssertEqual(outcome, .cancelled, reply)
+        }
+    }
+
+    func testAReplyOverTheCeilingOnTermIsBoundedAndAPlainCancel() throws {
+        let big = #"{"error":"cancelled","code":"cancelled","cost":{"usd":0.0072},"pad":""# + String(repeating: "x", count: 200_000) + #""}"#
+        let (vani, pidFile) = try replying(big)
+        let (out, _) = try stopped(pidFile) { cancel in
+            VaniProcess.run(vani, arguments: [], environment: [:], timeout: 30, maxOutputBytes: 64 << 10, cancellation: cancel)
+        }
+        XCTAssertTrue(out.cancelled)
+        XCTAssertTrue(out.truncated)
+        XCTAssertEqual(out.stdout.count, 64 << 10, "kept bytes stay at the ceiling")
+        let (vani2, pidFile2) = try replying(big)
+        let c = client(vani2)
+        let (outcome, _) = try stopped(pidFile2) { c.run("k", cancellation: $0) }
+        XCTAssertEqual(outcome, .cancelled, "a cut reply is never read for a cost")
+    }
+
+    func testACancelSetAfterTheChildFinishedStillReturnsItsOwnResult() throws {
+        let fake = try tempDir(self).appendingPathComponent("vani")
+        try Data("#!/bin/sh\nprintf '%s' '{\"key\":\"k\"}'\n".utf8).write(to: fake)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fake.path)
+        let out = VaniProcess.run(fake, arguments: [], environment: [:], timeout: 10, maxOutputBytes: 1024, cancellation: CancelFlag())
+        XCTAssertFalse(out.cancelled)
+        XCTAssertEqual(out.status, 0)
+    }
+}
+
 extension RetriageOutcome {
     var fail: RetriageFailure? {
         if case let .failure(f) = self { return f }

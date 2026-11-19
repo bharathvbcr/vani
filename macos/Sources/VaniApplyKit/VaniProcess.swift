@@ -30,7 +30,9 @@ public enum VaniProcess {
         /// picks out only lines it knows carry no secret.
         public var stderr = Data()
         /// The caller's `CancelFlag` was set: the child was stopped (SIGTERM, then SIGKILL) and
-        /// reaped, and `stdout` is empty. Not a failure of the child.
+        /// reaped. `stdout` is whatever the child wrote before it ended (a vani that handles the
+        /// SIGTERM writes its reply on the way out), bounded as always, and empty when the child
+        /// had to be killed or left a pipe open. Not a failure of the child.
         public var cancelled = false
     }
 
@@ -68,6 +70,9 @@ public enum VaniProcess {
     private static let pollMilliseconds: Int32 = 100
     /// How often `run` looks at the caller's `CancelFlag` and its deadline while it waits.
     private static let cancelPollMilliseconds: Int32 = 25
+    /// How long a stopped child's pipes get to reach end of file, so the reply it wrote on its way
+    /// out is kept. Only a grandchild holding a pipe open can make it run out.
+    private static let drainGrace: TimeInterval = 0.2
 
     /// Runs `binary` and returns when it has exited and both of its pipes have ended, or at
     /// `timeout` seconds. A child still running then gets SIGTERM, and SIGKILL after
@@ -76,7 +81,8 @@ public enum VaniProcess {
     /// I/O threads always end with the call: they poll their pipes and stop when told to.
     ///
     /// `cancellation` lets another thread end the call early: once it is set the child gets the
-    /// same SIGTERM, then SIGKILL, and is reaped before the call returns `cancelled`. A flag set
+    /// same SIGTERM, then SIGKILL, and is reaped before the call returns `cancelled`, with the stdout the
+    /// child managed to write (see `Outcome.cancelled`). A flag set
     /// before the call starts nothing. It is looked at every `cancelPollMilliseconds`.
     ///
     /// `onStdout`, when set, is given every chunk of stdout as it is read, on the reader thread and
@@ -139,7 +145,14 @@ public enum VaniProcess {
         while !(pipesEnded && childExited) {
             if cancellation?.isSet == true {
                 stop(p, exited: exited)
-                return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: nil, cancelled: true)
+                // The readers have been draining all along. The output is read only once both pipes
+                // have ended: a reader still going owns its buffer.
+                guard done.wait(timeout: .now() + drainGrace) == .success else {
+                    return Outcome(status: nil, stdout: Data(), timedOut: false, launchError: nil, cancelled: true)
+                }
+                let truncated = box.out.count > maxOutputBytes
+                return Outcome(status: nil, stdout: truncated ? Data(box.out.prefix(maxOutputBytes)) : box.out, timedOut: false,
+                               launchError: nil, truncated: truncated, cancelled: true)
             }
             if DispatchTime.now() >= deadline {
                 stop(p, exited: exited)

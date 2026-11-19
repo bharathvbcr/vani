@@ -339,7 +339,7 @@ public struct RetriageBatchClient: Sendable {
         let invocation = runner.invoke(arguments: Self.arguments(keys, dryRun: false, skipRead: skipRead),
                                        timeout: runTimeout(postings: keys.count), usesModel: true, maxOutputBytes: Self.maxReplyBytes,
                                        extraEnvironment: ["VANI_NO_KEYCHAIN": "1"], cancellation: cancellation,
-                                       onStdout: { stream.feed($0) })
+                                       keepsCancelledReply: true, onStdout: { stream.feed($0) })
         switch invocation {
         case let .failure(reply):
             if reply.code == "cancelled" { return .cancelled }

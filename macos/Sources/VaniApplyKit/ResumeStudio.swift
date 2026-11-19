@@ -826,7 +826,7 @@ public struct ResumeStudioClient: Sendable {
         if let refusal = Self.refuse(key: key) { return .failure(refusal) }
         let invocation = runner.invoke(arguments: call.arguments, input: call.input, timeout: call.timeout, usesModel: call.usesModel,
                                        maxOutputBytes: call.maxBytes, extraEnvironment: ["VANI_NO_KEYCHAIN": "1"],
-                                       cancellation: cancellation)
+                                       cancellation: cancellation, keepsCancelledReply: true)
         switch invocation {
         case let .failure(reply):
             if reply.code == "cancelled" { return .cancelled }

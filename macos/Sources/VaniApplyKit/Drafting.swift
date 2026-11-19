@@ -564,11 +564,14 @@ public struct DraftRunner: Sendable {
 
     /// `vani <arguments>` through `prepare`, so the keys, launcher and refusal are the ones every
     /// other job gets. `extraEnvironment` is added to the launch's, after the keys; `cancellation`
-    /// ends the child early (the reply is then the failure code "cancelled"). Nothing is read from
+    /// ends the child early (the reply is then the failure code "cancelled"), unless `keepsCancelledReply`
+    /// is set and the child wrote one complete `{"code":"cancelled",...}` object on its way out: that
+    /// is handed back as the output, so a caller that reads the cost of a call the owner stopped after
+    /// the model was paid sees it. A caller that sets it must treat a cancelled reply as a stop. Nothing is read from
     /// the Keychain for a call with `usesModel` false.
     func invoke(arguments: [String], input: Data? = nil, timeout: TimeInterval? = nil, withDecisionKey: Bool = false,
                 usesModel: Bool = true, maxOutputBytes: Int = DraftRunner.maxOutputBytes,
-                extraEnvironment: [String: String] = [:], cancellation: CancelFlag? = nil,
+                extraEnvironment: [String: String] = [:], cancellation: CancelFlag? = nil, keepsCancelledReply: Bool = false,
                 onStdout: (@Sendable (Data) -> Void)? = nil) -> Invocation {
         let launch: Launch
         switch prepare(arguments, withDecisionKey: withDecisionKey, usesModel: usesModel) {
@@ -580,10 +583,19 @@ public struct DraftRunner: Sendable {
         let out = VaniProcess.run(launch.program, arguments: launch.arguments,
                                   environment: launch.environment.merging(extraEnvironment) { _, extra in extra }, input: input,
                                   timeout: t, maxOutputBytes: maxOutputBytes, cancellation: cancellation, onStdout: onStdout)
-        if out.cancelled { return .failure(.failure("cancelled", "vani \(name) was cancelled")) }
+        if out.cancelled {
+            if keepsCancelledReply, Self.isCancelledReply(out) { return .output(out) }
+            return .failure(.failure("cancelled", "vani \(name) was cancelled"))
+        }
         if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
         if out.timedOut { return .failure(.failure("timeout", "vani \(name) did not finish within \(Int(t)) s")) }
         return .output(out)
+    }
+
+    /// Whether a stopped child's stdout is one complete JSON object that says it was cancelled.
+    static func isCancelledReply(_ out: VaniProcess.Outcome) -> Bool {
+        guard !out.truncated, let object = (try? JSONSerialization.jsonObject(with: out.stdout)) as? [String: Any] else { return false }
+        return object["code"] as? String == "cancelled"
     }
 
     /// The model keys a job that spends budget is given; a reply when the Keychain read failed.
