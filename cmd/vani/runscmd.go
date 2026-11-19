@@ -117,11 +117,14 @@ func (e *env) findRun(id string) (runRef, error) {
 		if !st.Mode().IsRegular() {
 			return runRef{}, fmt.Errorf("run %s: its history entry is not a regular file", id)
 		}
-		r, err := readRunRecordFile(path)
+		r, err := readHistoryRecord(path)
 		if err != nil {
 			return runRef{}, fmt.Errorf("run %s: %w", id, err)
 		}
-		return runRef{ID: id, Source: "history", Path: path, Rec: *r}, nil
+		if r != nil {
+			return runRef{ID: id, Source: "history", Path: path, Rec: *r}, nil
+		}
+		// The entry vanished between Lstat and read: fall through as if absent.
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return runRef{}, fmt.Errorf("run %s: %w", id, err)
 	}
@@ -304,9 +307,12 @@ func (e *env) runsList(args []string) error {
 			out.Problems = append(out.Problems, runProblem{ID: f.ID, Error: "not a regular file"})
 			continue
 		}
-		r, rerr := readRunRecordFile(runHistoryPath(e.stateDir, f.ID))
+		r, rerr := readHistoryRecord(runHistoryPath(e.stateDir, f.ID))
 		if rerr != nil {
 			out.Problems = append(out.Problems, runProblem{ID: f.ID, Error: oneLine(rerr.Error(), 300)})
+			continue
+		}
+		if r == nil { // vanished since it was listed
 			continue
 		}
 		out.Runs = append(out.Runs, rowOf(f.ID, "history", *r, at))

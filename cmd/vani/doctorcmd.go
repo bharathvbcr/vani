@@ -385,9 +385,12 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 			problems = append(problems, f.ID+": not a regular file")
 			continue
 		}
-		r, err := readRunRecordFile(runHistoryPath(e.stateDir, f.ID))
+		r, err := readHistoryRecord(runHistoryPath(e.stateDir, f.ID))
 		if err != nil {
 			problems = append(problems, f.ID+": "+oneLine(err.Error(), doctorMaxRunRecordErr))
+			continue
+		}
+		if r == nil { // vanished since it was listed
 			continue
 		}
 		read = append(read, f)
