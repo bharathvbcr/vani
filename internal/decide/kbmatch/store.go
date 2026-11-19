@@ -76,11 +76,15 @@ type storeFile struct {
 type Store struct {
 	path string
 	f    storeFile
+	// fresh is the keys Put since the store was opened: this run's answers,
+	// the paid ones eviction exists to keep. They go only after every older
+	// answer is gone.
+	fresh map[string]struct{}
 }
 
 // NewStore is an empty store that will be saved at path.
 func NewStore(path string) *Store {
-	return &Store{path: path, f: storeFile{Version: StoreVersion, Entries: map[string]Entry{}}}
+	return &Store{path: path, f: storeFile{Version: StoreVersion, Entries: map[string]Entry{}}, fresh: map[string]struct{}{}}
 }
 
 // OpenStore reads the store at path; a missing file is an empty store.
@@ -162,25 +166,37 @@ func (s *Store) Lookup(key string, kb, text string) (Entry, bool) {
 }
 
 // Put records an answer, replacing any earlier one for key. The oldest are
-// dropped past MaxEntries.
+// dropped past MaxEntries. A new answer needs a time (a zero At would rank it
+// oldest); a file already holding zero-At entries still opens.
 func (s *Store) Put(key string, e Entry) error {
 	if err := checkEntry(key, e); err != nil {
 		return fmt.Errorf("kbmatch: %w", err)
 	}
+	if e.At.IsZero() {
+		return errors.New("kbmatch: an answer has no time")
+	}
 	s.f.Entries[key] = e
+	s.fresh[key] = struct{}{}
 	if len(s.f.Entries) > MaxEntries {
 		s.evictOldest(len(s.f.Entries) - MaxEntries)
 	}
 	return nil
 }
 
-// evictOldest drops the n oldest answers (all of them if n is larger).
+// evictOldest drops n answers (all of them if n is larger): answers from before
+// this open first, oldest At first, ties by key, then this run's answers in the
+// same order.
 func (s *Store) evictOldest(n int) {
 	keys := make([]string, 0, len(s.f.Entries))
 	for k := range s.f.Entries {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
+		_, fi := s.fresh[keys[i]]
+		_, fj := s.fresh[keys[j]]
+		if fi != fj {
+			return fj
+		}
 		a, b := s.f.Entries[keys[i]].At, s.f.Entries[keys[j]].At
 		if !a.Equal(b) {
 			return a.Before(b)
@@ -192,14 +208,24 @@ func (s *Store) evictOldest(n int) {
 	}
 }
 
-// Save writes the store atomically (0600). A store that would be larger than
-// maxFileBytes first drops its oldest answers (the same order as MaxEntries) until
+// encode is the exact bytes of the saved file, trailing newline included: the
+// size Save checks and the size OpenStore reads back are this one length.
+func (s *Store) encode() ([]byte, error) {
+	raw, err := json.MarshalIndent(s.f, "", " ")
+	if err != nil {
+		return nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	return append(raw, '\n'), nil
+}
+
+// Save writes the store atomically (0600). A store whose file would be larger than
+// maxFileBytes first drops answers (the same order as MaxEntries) until
 // it fits, so a full store still saves the newest answer instead of refusing and
 // losing every paid answer of the run. It never writes a file over the limit.
 func (s *Store) Save() error {
-	raw, err := json.MarshalIndent(s.f, "", " ")
+	raw, err := s.encode()
 	if err != nil {
-		return fmt.Errorf("kbmatch: %w", err)
+		return err
 	}
 	for len(raw) > maxFileBytes && len(s.f.Entries) > 0 {
 		// Drop in proportion to the overshoot (by the average entry size), at
@@ -207,14 +233,14 @@ func (s *Store) Save() error {
 		n := len(s.f.Entries)
 		drop := max(1, (len(raw)-maxFileBytes)*n/len(raw)+1)
 		s.evictOldest(drop)
-		if raw, err = json.MarshalIndent(s.f, "", " "); err != nil {
-			return fmt.Errorf("kbmatch: %w", err)
+		if raw, err = s.encode(); err != nil {
+			return err
 		}
 	}
 	if len(raw) > maxFileBytes {
 		return fmt.Errorf("kbmatch: the store would be larger than %d bytes", maxFileBytes)
 	}
-	return atomicfile.Write(s.path, append(raw, '\n'))
+	return atomicfile.Write(s.path, raw)
 }
 
 // Lock takes the store's run lock without waiting: two runs would spend twice

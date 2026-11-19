@@ -121,7 +121,7 @@ func TestLockWaitGetsLockWhenReleased(t *testing.T) {
 func TestOpenLockedRecovery(t *testing.T) {
 	p0 := filepath.Join(t.TempDir(), FileName)
 	s0 := NewStore(p0)
-	if err := s0.Put("k", Entry{Value: "core", KB: strings.Repeat("a", 64), Text: strings.Repeat("b", 64), Model: "m"}); err != nil {
+	if err := s0.Put("k", Entry{Value: "core", KB: strings.Repeat("a", 64), Text: strings.Repeat("b", 64), Model: "m", At: time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s0.Save(); err != nil {
