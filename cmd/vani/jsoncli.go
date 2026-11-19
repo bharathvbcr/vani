@@ -146,6 +146,9 @@ var jsonLeaves = []jsonLeaf{
 	{"cover", jsonAlways, ""},
 	{"contacts", jsonAlways, ""},
 	{"migrate rekey-fallback", jsonFlag, ""},
+	{"mcp servers", jsonAlways, ""},
+	{"mcp tools", jsonAlways, ""},
+	{"mcp call", jsonAlways, ""},
 	{"launchd plist", jsonNone, "its output is a launchd plist (XML) to install"},
 }
 

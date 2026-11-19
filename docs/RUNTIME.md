@@ -181,6 +181,7 @@ nothing and needs no file.
 | `vani teacher` (the second reader, and `--task would_apply_pair`, the pairwise auditor; `teacher report`, `cap` and `freeze` read or set files and ask nothing) | you | not used | environment only; a real run needs `--budget-usd`, and the auditor also its own cap file (below) |
 | `vani` in a terminal | you | environment, else Keychain | environment only |
 | `vani` in an agent shell | an agent | none with `VANI_NO_KEYCHAIN=1` | environment only |
+| `vani mcp` (gitpulse-mcp or devmap mcp, read-only tools; below) | an agent or you | not used | none |
 
 Keychain items present for this user on 2026-10-20: `openrouter-api-key` and
 `anthropic-api-key`. There is no Gemini item.
@@ -190,6 +191,26 @@ agent), so the config's 08:30 schedule did not fire. Since 2026-10-23 the app ca
 Pipeline ▸ Run on schedule (`macos/README.md`, the schedule agent); `vani status` says
 "schedule not kept" until a daemon announces itself. Whether the owner has turned it on is not
 checked here.
+
+### `vani mcp`: GitPulse and DevMap without the host's MCP connection
+
+`vani mcp servers|tools|call` (cmd/vani/mcpcmd.go, internal/mcpstdio) starts one local MCP server.
+It reads no config, state or key.
+
+- **Process.** Each command starts the server, asks it once and ends it. The servers are a fixed
+  table: `gitpulse` is `/Applications/GitPulse.app/Contents/MacOS/gitpulse-mcp`, else
+  `gitpulse-mcp` on PATH. `devmap` is `devmap mcp` from PATH.
+- **Environment.** The child gets only PATH, HOME and TMPDIR.
+- **Bounds.** Start and handshake: 15 s. Listing and call: 30 s by default, at most 120 s. One reply
+  line: 8 MiB. The arguments: 1 MiB.
+- **Security impact.** Any process that can run `vani` can now read what the two servers' read-only
+  tools return, with no per-tool prompt from an agent host. For GitPulse that includes other
+  sessions' terminal screens and inboxes (`gitpulse_terminal_read`, `gitpulse_inbox_read`).
+  - Nothing here widens write access. `call` runs a tool only when the server's own `tools/list`
+    marks it `readOnlyHint: true`, and refuses any other tool before sending anything.
+  - No flag, config key or environment variable adds a server or allows a writer.
+  - Error text is one line, bounded, with secret-looking values replaced.
+- **Approval.** Fable approved the read-only boundary, delegated by the owner on 2026-11-18.
 
 ## The knowledge base: only eligible bullets leave
 

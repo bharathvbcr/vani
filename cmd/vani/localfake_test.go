@@ -16,6 +16,7 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/config"
+	"github.com/bharathvbcr/Vani/internal/mcpstdio/mcpfake"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
@@ -25,6 +26,11 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv("VANI_FAKE_LLAMA") != "" {
 		fakeLlama()
+		return
+	}
+	// It is a fake MCP server too, for vani mcp (mcpcmd_test.go).
+	if os.Getenv(mcpfake.EnvVar) != "" {
+		mcpfake.Run()
 		return
 	}
 	// No test reads the real Keychain: keychain_test.go clears this per test

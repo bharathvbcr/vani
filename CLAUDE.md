@@ -51,7 +51,10 @@ GOWORK=off go -C /Users/bharath/Code/apps/Vani/decide test ./...
   duplicate, timeout, dependency down). A check that could not run must not look like a pass.
 - Bound every timeout, retry, body read and fan-out. Propagate `context.Context`.
 - Navigation: DevMap first (`devmap_status`, `devmap_search` with absolute `repo_path`), and
-  `gitpulse_insights` before editing. If either cannot answer, say so.
+  `gitpulse_insights` before editing. When the host's MCP connection to either is down, use the
+  `devmap` CLI and `vani --json mcp call gitpulse gitpulse_insights --args '{"repo_path":"…"}'`
+  (read-only tools only; skill: "When MCP is down"). If neither can answer, say so: a failed
+  check is a gap, not a pass.
 - Shell gate in this workspace: no `cd`, `$()`, heredocs; use `go -C` and absolute paths.
 - Running `vani` for the owner: the live config and state are the default pair,
   `~/Library/Application Support/Vani/config.json` and `.../Vani/state` (moved from `.state/` on

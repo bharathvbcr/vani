@@ -397,6 +397,15 @@ commands:
                              one-time: move fallback-keyed (x:) postings, and their marks, to the
                              keys titles that keep C++/C#/.NET apart give them (backs up first;
                              refuses a second run; takes the ledger lock)
+  mcp servers [--json]       the local MCP servers vani mcp can start (gitpulse, devmap) and
+                             whether each is installed; starts nothing
+  mcp tools SERVER [--schema TOOL] [--timeout D]
+                             start SERVER without an agent host and list its tools, each with
+                             read_only (the server's own readOnlyHint)
+  mcp call SERVER TOOL [--args JSON | --args-file PATH|-] [--timeout D]
+                             start SERVER, call one read-only TOOL and print its payload as
+                             {"server","tool","result_kind","result"}. A tool the server does not
+                             mark read-only is refused (mcp_write_refused); no flag allows it
   launchd plist [--binary P] [--label L]
                              print a launchd agent plist (never installs it); it pins the
                              config and state dir this command resolved
@@ -673,6 +682,8 @@ func (e *env) dispatch(args []string) error {
 		cmdErr = e.cmdRelevance(args[1:])
 	case "strata":
 		cmdErr = e.cmdStrata(args[1:])
+	case "mcp":
+		cmdErr = e.cmdMCP(args[1:])
 	case "doctor":
 		cmdErr = e.cmdDoctor(args[1:])
 	default:
