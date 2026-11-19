@@ -312,7 +312,8 @@ func (e *env) removeKeptMarker() {
 // run never finished, and a run is never repeated without being asked again.
 // A claim the earlier daemon kept on purpose (errClaimKept, marked by
 // runKeptFile) is the only copy of a request its caller believes is queued, so
-// it is put back as the pending request instead and runs once.
+// it is put back as the pending request instead; it runs once unless it has
+// expired by then (reportRestoredClaim says which).
 func (e *env) clearClaimedRequest() {
 	path := runsPath(e.stateDir, runClaimedFile)
 	if _, err := os.Lstat(path); err != nil {
@@ -336,7 +337,8 @@ func (e *env) clearClaimedRequest() {
 // cannot be put back again the claim and its marker stay for the next daemon.
 func (e *env) restoreKeptClaim(claimed string) {
 	pending := runsPath(e.stateDir, runRequestFile)
-	if _, err := putBackRequest(claimed, pending); err != nil {
+	kind, err := putBackRequest(claimed, pending)
+	if err != nil {
 		fmt.Fprintf(e.stderr, "vani: run request: the claim an earlier daemon kept could not be put back, and stays kept: %v\n", err)
 		return
 	}
@@ -345,7 +347,26 @@ func (e *env) restoreKeptClaim(claimed string) {
 		return
 	}
 	e.removeKeptMarker()
-	fmt.Fprintln(e.stderr, "vani: run request: the claim an earlier daemon kept was put back and runs once")
+	e.reportRestoredClaim(kind, pending)
+}
+
+// reportRestoredClaim says what becomes of a restored claim. Putting it back
+// does not promise a run: the serve drops a request older than
+// runRequestMaxAge (or one that is invalid) without running it.
+func (e *env) reportRestoredClaim(kind putBackKind, pending string) {
+	if kind == putBackNewerWins {
+		fmt.Fprintln(e.stderr, "vani: run request: the claim an earlier daemon kept was dropped: a newer request is pending and runs instead")
+		return
+	}
+	_, err := readRunRequest(pending, time.Now())
+	switch {
+	case err == nil:
+		fmt.Fprintln(e.stderr, "vani: run request: the claim an earlier daemon kept was put back as the pending request; it runs once at the next poll")
+	case errors.Is(err, errRequestStale):
+		fmt.Fprintf(e.stderr, "vani: run request: the claim an earlier daemon kept was put back as the pending request, but it is older than %s, so the next poll drops it without running it\n", runRequestMaxAge)
+	default:
+		fmt.Fprintf(e.stderr, "vani: run request: the claim an earlier daemon kept was put back as the pending request, but it is not valid (%v), so the next poll drops it without running it\n", err)
+	}
 }
 
 // pollRequestLoop serves run requests every requestPollInterval until ctx
