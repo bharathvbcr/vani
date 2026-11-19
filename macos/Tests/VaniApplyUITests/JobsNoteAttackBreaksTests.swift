@@ -49,4 +49,29 @@ final class JobsNoteAttackBreaksTests: XCTestCase {
         try await eventually("v2 saved") { self.noteCalls(f).contains { $0.contains("v2") } }
         XCTAssertNil(m.noteDrafts[a], "the newer draft was never saved: \(noteCalls(f)) drafts=\(m.noteDrafts)")
     }
+
+    /// A draft for a job the model knows nothing about (neither on the page nor the detail) must not
+    /// be written as a blank: that would clear a stored note the app never read.
+    func testABlankDraftForAnUnreadJobIsNotWrittenAsAClear() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        await m.refresh()
+        m.selection = "fx:unread:1"
+        m.editNote("fx:unread:1", "")
+        m.selection = b
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertTrue(noteCalls(f).isEmpty, "a clear was sent for a note this app never read: \(f.calls())")
+        XCTAssertNil(m.noteDrafts["fx:unread:1"])
+    }
+
+    /// Whitespace-only counts as blank; text for an unread job is still saved.
+    func testAWhitespaceDraftForAnUnreadJobIsDroppedButTextIsKept() async throws {
+        let f = try JobsFixture(self)
+        let m = model(f)
+        await m.refresh()
+        m.editNote("fx:unread:1", " \n ")
+        XCTAssertNil(m.noteDrafts["fx:unread:1"])
+        m.editNote("fx:unread:1", "hello")
+        XCTAssertEqual(m.noteDrafts["fx:unread:1"], "hello")
+    }
 }

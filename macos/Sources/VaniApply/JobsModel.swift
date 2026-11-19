@@ -636,8 +636,11 @@ final class JobsModel {
     }
 
     /// Keep what is typed in the note box for `key` as its draft (nothing when it equals the saved note).
+    /// A blank box for a job whose stored note this app never read keeps no draft: saving it would
+    /// clear a note nobody saw. Only an edit of a known note can clear it.
     func editNote(_ key: String, _ text: String) {
-        if text.trimmingCharacters(in: .whitespacesAndNewlines) == savedNote(key) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == savedNote(key) || (trimmed.isEmpty && savedNote(key) == nil) {
             noteDrafts[key] = nil
         } else {
             noteDrafts[key] = text
@@ -653,7 +656,7 @@ final class JobsModel {
         guard let text = noteDrafts[key] else { return false }
         if notesSaving.contains(key) { notesQueued.insert(key); return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == savedNote(key) { noteDrafts[key] = nil; return false }
+        if trimmed == savedNote(key) || (trimmed.isEmpty && savedNote(key) == nil) { noteDrafts[key] = nil; return false }
         guard trimmed.utf8.count <= JobsClient.maxNoteBytes else { return false }
         notesSaving.insert(key)
         let saved = await saveNote(key, text)
