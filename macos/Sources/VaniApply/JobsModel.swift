@@ -131,6 +131,8 @@ final class JobsModel {
     /// saved or typed back to the saved note; one that could not be saved stays, and the pane
     /// shows it again when the job is reopened.
     private(set) var noteDrafts: [String: String] = [:]
+    /// Whether any note draft is open (unsaved).
+    var hasNoteDrafts: Bool { !noteDrafts.isEmpty }
     private var notesSaving: Set<String> = []
     /// Jobs whose draft was committed while a save of the same job was in flight; the save that is
     /// running saves the newest draft once it ends (latest wins).
@@ -665,6 +667,30 @@ final class JobsModel {
             return await commitNote(key) || saved
         }
         return saved
+    }
+
+    /// How long a quit waits for open note drafts to be saved.
+    static let quitFlushTimeout: TimeInterval = 5
+
+    private var flushOutstanding = 0
+
+    /// Save every open note draft, waiting at most `timeout` seconds (a save already in flight counts).
+    /// Returns the keys whose drafts are still unsaved: a save that failed, an oversized draft, or one
+    /// still running at the deadline. The caller must not discard those silently (the app asks at quit).
+    func flushNoteDrafts(timeout: TimeInterval = JobsModel.quitFlushTimeout) async -> [String] {
+        let deadline = Date().addingTimeInterval(timeout)
+        let keys = noteDrafts.keys.sorted()
+        flushOutstanding += keys.count
+        for key in keys {
+            Task {
+                _ = await commitNote(key)
+                flushOutstanding -= 1
+            }
+        }
+        while (flushOutstanding > 0 || !notesSaving.isEmpty) && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return noteDrafts.keys.sorted()
     }
 
     @discardableResult
