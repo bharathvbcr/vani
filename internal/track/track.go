@@ -21,7 +21,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"unicode"
 	"unicode/utf16"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -294,22 +293,16 @@ func wordsText(data []byte) ([]byte, error) {
 	return []byte(string(utf16.Decode(units))), nil
 }
 
-// wordsLine normalises one line of the words file: invisible format characters
-// (Unicode Cf: zero-width space and joiners, word joiner, byte-order mark, soft
-// hyphen, bidi marks) are dropped wherever they stand, spaces collapse, and the
-// text is lower-cased. Dropped first, they cannot hide a leading '#' (a comment
-// would load as a term and mark the check as personal), and a line of nothing
-// else is empty, which LoadWords refuses by line number. Inside a term they are dropped too: the matcher's fold ignores
-// them, so the term matches the same text either way, and the stored term then
-// holds only what the owner can see.
+// wordsLine is one line of the words file as the matcher sees it: the matcher's
+// own fold (foldTerm), so "invisible" has one owner. Whatever the fold drops
+// (format and control characters, combining marks) cannot hide a leading '#'
+// (a comment would load as a term and mark the check as personal), cannot make
+// a blank line a term, and is not stored: the term holds only what the owner can
+// see and matches the same text it would have matched anyway. A line that is
+// empty after the fold is blank (LoadWords refuses it by line number if the raw
+// line was not blank); one that starts with '#' is a comment.
 func wordsLine(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.Is(unicode.Cf, r) || r == 0xfeff {
-			return -1
-		}
-		return r
-	}, s)
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+	return strings.TrimSpace(string(foldTerm(s).r))
 }
 
 // BuiltinWords returns the built-in list alone (Personal false).
