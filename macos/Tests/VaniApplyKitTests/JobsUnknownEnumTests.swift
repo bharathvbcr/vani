@@ -6,7 +6,7 @@ import XCTest
 /// that row to nil; it never fails the row's neighbours or the whole list.
 final class JobsUnknownEnumTests: XCTestCase {
     private func page(_ rows: [String]) -> Data {
-        Data(("{\"view\":\"new\",\"jobs\":[" + rows.joined(separator: ",") + "],\"total\":\(rows.count),\"shown\":\(rows.count)}").utf8)
+        Data(("{\"view\":\"new\",\"jobs\":[" + rows.joined(separator: ",") + "],\"total\":\(rows.count),\"shown\":\(rows.count),\"counts\":{\"new\":\(rows.count)}}").utf8)
     }
 
     func testAnUnknownMarkOrFreshSourceDegradesOnlyThatField() throws {
