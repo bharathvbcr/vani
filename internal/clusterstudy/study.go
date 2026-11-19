@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -201,6 +202,12 @@ func ReadFitSummary(path string) (FitSummary, error) {
 	if _, err := s.KeysDigest(); err != nil {
 		return FitSummary{}, err
 	}
+	type fitKey struct {
+		algo string
+		k    int
+		seed uint64
+	}
+	seen := make(map[fitKey]int, len(s.Runs))
 	for i, r := range s.Runs {
 		switch r.Algo {
 		case AlgoEmeansCPU, AlgoEmeansMetal, AlgoLloyd:
@@ -210,6 +217,11 @@ func ReadFitSummary(path string) (FitSummary, error) {
 		if r.K < 1 || r.K > s.N {
 			return FitSummary{}, formatErr("%s: run %d has k %d for %d rows", path, i, r.K, s.N)
 		}
+		fk := fitKey{r.Algo, r.K, r.Seed}
+		if first, dup := seen[fk]; dup {
+			return FitSummary{}, formatErr("%s: run %d repeats run %d (algorithm %s, k %d, seed %d): one fit is one seed", path, i, first, r.Algo, r.K, r.Seed)
+		}
+		seen[fk] = i
 		if !filepath.IsLocal(r.Assign) || !filepath.IsLocal(r.Centroids) {
 			return FitSummary{}, formatErr("%s: run %d names a file outside the summary's directory", path, i)
 		}
@@ -257,9 +269,12 @@ type SeedSpread struct {
 	// NullHi is each seed's permutation-null upper bound (Compared.Null.Hi), in
 	// the same order as Reductions; empty when the caller did not supply it.
 	NullHi []Num `json:"null_hi,omitempty"`
-	Median Num   `json:"median"`
-	Min    Num   `json:"min"`
-	Max    Num   `json:"max"`
+	// SeedIDs is each reduction's fit seed, in the same order; empty when the
+	// caller did not supply it.
+	SeedIDs []uint64 `json:"seed_ids,omitempty"`
+	Median  Num      `json:"median"`
+	Min     Num      `json:"min"`
+	Max     Num      `json:"max"`
 }
 
 // WithNullBand returns s with each seed's permutation-null upper bound
@@ -273,15 +288,36 @@ func (s SeedSpread) WithNullBand(hi []float64) SeedSpread {
 	return s
 }
 
+// WithSeedIDs returns s with each reduction's fit seed attached. A length that
+// differs from the reductions' is kept as given: Decide reads it as seeds it
+// cannot vouch for, never as a pass.
+func (s SeedSpread) WithSeedIDs(ids []uint64) SeedSpread {
+	s.SeedIDs = slices.Clone(ids)
+	return s
+}
+
 // seeds counts the seeds with a defined reduction.
+//
+// When the spread carries its seed ids each seed counts once, so one fit listed
+// twice is one seed; ids that do not line up with the reductions vouch for
+// none. A spread built without ids counts its defined reductions.
 func (s SeedSpread) seeds() int {
-	n := 0
-	for _, r := range s.Reductions {
-		if !math.IsNaN(float64(r)) && !math.IsInf(float64(r), 0) {
-			n++
-		}
+	if len(s.SeedIDs) != 0 && len(s.SeedIDs) != len(s.Reductions) {
+		return 0
 	}
-	return n
+	distinct := map[uint64]struct{}{}
+	n := 0
+	for i, r := range s.Reductions {
+		if math.IsNaN(float64(r)) || math.IsInf(float64(r), 0) {
+			continue
+		}
+		if len(s.SeedIDs) == 0 {
+			n++
+			continue
+		}
+		distinct[s.SeedIDs[i]] = struct{}{}
+	}
+	return n + len(distinct)
 }
 
 // clearsNull reports whether every seed's reduction is above its permutation

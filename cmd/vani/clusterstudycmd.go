@@ -436,6 +436,7 @@ func (e *env) compareFit(s clusterstudy.Study, baselines []clusterstudy.Baseline
 	type groupVals struct {
 		reductions, pooled []float64
 		nullHi             []float64 // each seed's permutation-null upper bound
+		seeds              []uint64
 		cells              []int
 		equal              bool
 	}
@@ -467,6 +468,7 @@ func (e *env) compareFit(s clusterstudy.Study, baselines []clusterstudy.Baseline
 			g.reductions = append(g.reductions, float64(res.Compared.Reduction))
 			g.pooled = append(g.pooled, float64(res.Compared.PooledReduction))
 			g.nullHi = append(g.nullHi, float64(res.Compared.Null.Hi))
+			g.seeds = append(g.seeds, run.Seed)
 			g.cells = append(g.cells, res.ClusterCells)
 			g.equal = g.equal && eq
 		}
@@ -489,7 +491,7 @@ func (e *env) compareFit(s clusterstudy.Study, baselines []clusterstudy.Baseline
 	spreads := map[groupKey]clusterstudy.SeedSpread{}
 	for _, gk := range order {
 		g := groups[gk]
-		sp := clusterstudy.Spread(gk.algo, gk.k, g.reductions).WithNullBand(g.nullHi)
+		sp := clusterstudy.Spread(gk.algo, gk.k, g.reductions).WithNullBand(g.nullHi).WithSeedIDs(g.seeds)
 		spreads[gk] = sp
 		fit.Groups = append(fit.Groups, groupReport{Baseline: gk.baseline, BaselineCells: cells[gk.baseline], Algo: gk.algo, K: gk.k,
 			ClusterCells: g.cells, EqualCells: g.equal, Reductions: sp, Pooled: clusterstudy.Spread(gk.algo, gk.k, g.pooled)})
