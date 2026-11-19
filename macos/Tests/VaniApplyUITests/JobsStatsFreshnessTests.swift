@@ -25,11 +25,23 @@ final class JobsStatsFreshnessTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: j).write(to: f.dir.appendingPathComponent("stats.json"))
     }
 
+    /// Turns Insights on and waits for the stats to land. Switching Insights on starts its own reload
+    /// (`showInsights`'s didSet), which races an explicit `refresh()`: whichever reaches its
+    /// generation bump second supersedes the other, and a superseded `refresh()` returns at once,
+    /// before the newest list has landed. So the test waits on the model's state, not on the return.
+    private func showInsightsAndSettle(_ m: JobsModel) async throws {
+        m.showInsights = true
+        let deadline = Date().addingTimeInterval(10)
+        while m.stats == nil || m.loading {
+            if Date() > deadline { return XCTFail("the first list's stats never landed") }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
     func testAFailedReloadClearsTheStatsAndShowsTheError() async throws {
         let f = try JobsFixture(self)
         let m = model(f)
-        m.showInsights = true
-        await m.refresh()
+        try await showInsightsAndSettle(m)
         XCTAssertEqual(m.stats?.total, JobsFixture.roles.count)
         XCTAssertNil(m.statsError)
 
@@ -52,8 +64,7 @@ final class JobsStatsFreshnessTests: XCTestCase {
     func testAnOlderListsStatsDoNotOverwriteANewerOnes() async throws {
         let f = try JobsFixture(self)
         let m = model(f)
-        m.showInsights = true
-        await m.refresh() // labels read, nothing in flight
+        try await showInsightsAndSettle(m) // labels read, nothing in flight
         let script = f.dir.appendingPathComponent("vani")
         var text = try String(contentsOf: script, encoding: .utf8)
         let hook = "\"impressions log\")"
