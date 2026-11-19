@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"context"
 	"errors"
 	"math"
 	"math/rand/v2"
@@ -57,7 +58,7 @@ func primStore(t *testing.T, slots int, ranks map[[16]byte]float64) *chunkStore 
 func primAppend(t *testing.T, s *chunkStore, ids ...int) {
 	t.Helper()
 	for _, i := range ids {
-		if n, ev, err := s.append([]vecRec{primRec(i)}); n != 1 || err != nil || ev.Refused != 0 {
+		if n, ev, err := s.append(context.Background(), []vecRec{primRec(i)}); n != 1 || err != nil || ev.Refused != 0 {
 			t.Fatalf("append %d: n=%d refused=%d err=%v", i, n, ev.Refused, err)
 		}
 	}
@@ -96,7 +97,7 @@ func TestVectorsAtTheBoundALowerRankedPostingIsRefused(t *testing.T) {
 
 	// 0.5 is below every stored posting: refused, and nothing is evicted for it.
 	ranks[primHash(5)] = 0.5
-	n, ev, err := s.append([]vecRec{primRec(5)})
+	n, ev, err := s.append(context.Background(), []vecRec{primRec(5)})
 	if n != 0 || ev.Refused != 1 || !errors.Is(err, ErrVectorsFull) {
 		t.Fatalf("n=%d refused=%d err=%v", n, ev.Refused, err)
 	}
@@ -109,7 +110,7 @@ func TestVectorsAtTheBoundALowerRankedPostingIsRefused(t *testing.T) {
 	// 2.5 outranks the two lowest: it evicts them (lowest first), never the better
 	// two. Same session: a rank refusal does not close the log to higher ranks.
 	ranks[primHash(6)] = 2.5
-	n, ev, err = s.append([]vecRec{primRec(6)})
+	n, ev, err = s.append(context.Background(), []vecRec{primRec(6)})
 	if n != 1 || err != nil || ev.Refused != 0 || ev.Evicted != 2 {
 		t.Fatalf("n=%d ev=%+v err=%v", n, ev, err)
 	}
@@ -126,7 +127,7 @@ func TestVectorsBatchAdmitsHighestRankFirstWhateverTheOrder(t *testing.T) {
 	s := primStore(t, 3, ranks)
 	primAppend(t, s, 1, 2)
 	// Room for one more record after eviction: the low one comes first in the batch.
-	n, ev, err := s.append([]vecRec{primRec(8), primRec(9)})
+	n, ev, err := s.append(context.Background(), []vecRec{primRec(8), primRec(9)})
 	if n != 1 || ev.Refused != 1 || !errors.Is(err, ErrVectorsFull) {
 		t.Fatalf("n=%d refused=%d err=%v", n, ev.Refused, err)
 	}
@@ -150,7 +151,7 @@ func TestVectorsOutsideTheLiveSetGoBeforeAnyRankedPosting(t *testing.T) {
 	}
 	s := primStore(t, 6, ranks)
 	primAppend(t, s, 4, 6, 3, 5, 2, 7)
-	n, ev, err := s.append([]vecRec{primRec(9)})
+	n, ev, err := s.append(context.Background(), []vecRec{primRec(9)})
 	if n != 1 || err != nil || ev.Evicted != 2 {
 		t.Fatalf("n=%d ev=%+v err=%v", n, ev, err)
 	}
@@ -162,7 +163,7 @@ func TestVectorsOutsideTheLiveSetGoBeforeAnyRankedPosting(t *testing.T) {
 func TestVectorsWithoutRanksTheOldestGoFirst(t *testing.T) {
 	s := primStore(t, 3, nil)
 	primAppend(t, s, 1, 2, 3)
-	n, ev, err := s.append([]vecRec{primRec(4)})
+	n, ev, err := s.append(context.Background(), []vecRec{primRec(4)})
 	if n != 1 || err != nil || ev.Evicted != 2 {
 		t.Fatalf("n=%d ev=%+v err=%v", n, ev, err)
 	}
@@ -179,7 +180,7 @@ func TestVectorsEqualRanksFallBackToAge(t *testing.T) {
 	ranks[primHash(5)] = 7
 	s := primStore(t, 4, ranks)
 	primAppend(t, s, 1, 2, 3, 4)
-	n, _, err := s.append([]vecRec{primRec(5)})
+	n, _, err := s.append(context.Background(), []vecRec{primRec(5)})
 	if n != 1 || err != nil {
 		t.Fatalf("an equal rank is not lower: n=%d err=%v", n, err)
 	}
@@ -197,7 +198,7 @@ func TestVectorsNaNRanksLowest(t *testing.T) {
 	ranks := map[[16]byte]float64{primHash(1): math.Inf(-1), primHash(2): 0, primHash(3): 0, primHash(4): 1}
 	s := primStore(t, 3, ranks)
 	primAppend(t, s, 1, 2, 3)
-	if n, _, err := s.append([]vecRec{primRec(4)}); n != 1 || err != nil {
+	if n, _, err := s.append(context.Background(), []vecRec{primRec(4)}); n != 1 || err != nil {
 		t.Fatalf("n=%d err=%v", n, err)
 	}
 	if have, _ := primHas(s, 1); len(have) != 0 {
@@ -209,7 +210,7 @@ func TestVectorsEmptyLiveSetEvictsEverythingStoredNotTheIncoming(t *testing.T) {
 	s := primStore(t, 3, nil)
 	primAppend(t, s, 1, 2, 3)
 	s.prioFn = func() vecPrio { return vecPrio{rank: map[[16]byte]float64{}} }
-	n, ev, err := s.append([]vecRec{primRec(4)})
+	n, ev, err := s.append(context.Background(), []vecRec{primRec(4)})
 	if n != 1 || err != nil || ev.Evicted != 3 {
 		t.Fatalf("n=%d ev=%+v err=%v", n, ev, err)
 	}
@@ -223,7 +224,7 @@ func TestVectorsOversizedRecordIsRefusedAndEvictsNothing(t *testing.T) {
 	primAppend(t, s, 1, 2, 3)
 	gen := s.gen
 	big := vecRec{h: primHash(50), vecs: primVecs(MaxPostingChunks, primDim)}
-	n, ev, err := s.append([]vecRec{big})
+	n, ev, err := s.append(context.Background(), []vecRec{big})
 	if n != 0 || ev.Refused != 1 || ev.Evicted != 0 || ev.Compacted || s.gen != gen || !errors.Is(err, ErrVectorsFull) {
 		t.Fatalf("n=%d ev=%+v err=%v", n, ev, err)
 	}
@@ -235,11 +236,11 @@ func TestVectorsOversizedRecordIsRefusedAndEvictsNothing(t *testing.T) {
 func TestVectorsDuplicateAndMalformedRecordsInABatch(t *testing.T) {
 	s := primStore(t, 4, nil)
 	bad := vecRec{h: primHash(9), vecs: nil}
-	n, ev, err := s.append([]vecRec{primRec(1), primRec(1), bad})
+	n, ev, err := s.append(context.Background(), []vecRec{primRec(1), primRec(1), bad})
 	if n != 1 || ev.Refused != 1 || err == nil {
 		t.Fatalf("n=%d refused=%d err=%v", n, ev.Refused, err)
 	}
-	if n, ev, err = s.append([]vecRec{primRec(1)}); n != 0 || ev.Refused != 0 || err != nil {
+	if n, ev, err = s.append(context.Background(), []vecRec{primRec(1)}); n != 0 || ev.Refused != 0 || err != nil {
 		t.Errorf("an unchanged posting is not a refusal: n=%d refused=%d err=%v", n, ev.Refused, err)
 	}
 }
@@ -285,7 +286,7 @@ func TestVectorsBoundAndEvictionOrderUnderRandomSequences(t *testing.T) {
 		for h, l := range s.idx {
 			before[h] = l
 		}
-		n, ev, _ := s.append(batch)
+		n, ev, _ := s.append(context.Background(), batch)
 		stored += n
 		refused += ev.Refused
 		if n+ev.Refused != len(batch) {
@@ -346,7 +347,7 @@ func TestVectorsCompactionStreams(t *testing.T) {
 			ranks[primHash(k)] = float64(k % 7)
 			batch = append(batch, vecRec{h: primHash(k), vecs: primVecs(MaxPostingChunks, dim)})
 		}
-		if n, _, err := s.append(batch); n != 20 || err != nil {
+		if n, _, err := s.append(context.Background(), batch); n != 20 || err != nil {
 			t.Fatalf("setup: n=%d err=%v", n, err)
 		}
 	}
@@ -356,7 +357,7 @@ func TestVectorsCompactionStreams(t *testing.T) {
 	}
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	ev, err := s.compact(vecPrio{rank: ranks}, evictTo(size/2))
+	ev, err := s.compact(context.Background(), vecPrio{rank: ranks}, evictTo(size/2))
 	runtime.ReadMemStats(&after)
 	if err != nil || !ev.Compacted || ev.Evicted < recs/3 || s.end > size/2 {
 		t.Fatalf("ev=%+v err=%v end %d of %d", ev, err, s.end, size)

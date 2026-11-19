@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"context"
 	"errors"
 	"math"
 	"os"
@@ -18,7 +19,7 @@ func writeVecLog(t *testing.T, dir string, recs []vecRec) string {
 		t.Fatal(err)
 	}
 	if len(recs) > 0 {
-		if _, _, err := s.append(recs); err != nil {
+		if _, _, err := s.append(context.Background(), recs); err != nil {
 			t.Fatal(err)
 		}
 	}

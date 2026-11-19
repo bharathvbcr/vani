@@ -68,6 +68,12 @@ const (
 	vecCompactMin = 4 << 20
 	// rescoreSaveEvery is how many rescored postings pass between score saves.
 	rescoreSaveEvery = 500
+	// warmSaveEvery is how many scored (embedded) postings pass between the
+	// score saves of Warm's embed loop. Each save writes the whole score file
+	// (22 MB live), so the interval trades writes for what a crash costs: at
+	// most this many plus one embed group (MaxBatch) scores, which the next
+	// Warm rebuilds from the chunk-vector log without embedding.
+	warmSaveEvery = 500
 )
 
 var (
@@ -75,6 +81,11 @@ var (
 	// compaction could not make room, so vectors were not stored. The scores
 	// are unaffected.
 	ErrVectorsFull = fmt.Errorf("%w: chunk-vector log is at its size bound", ErrCache)
+
+	// ErrVectorsNoSpace means a compaction was refused because the disk holds less
+	// free space than the new log needs. The old log is untouched and in use. The
+	// error wrapping it says how many bytes were needed and free.
+	ErrVectorsNoSpace = fmt.Errorf("%w: not enough free disk space to compact the chunk-vector log", ErrCache)
 
 	errVecCorrupt    = fmt.Errorf("%w: chunk-vector log is corrupt", ErrCache)
 	errVecStale      = errors.New("semantic: stored vectors are for a different chunking")
@@ -176,11 +187,33 @@ func evictTo(budget int64) vecPlan { return vecPlan{soft: budget, hard: budget, 
 // vecEvent is what a refresh or an append did besides the ordinary work.
 type vecEvent struct {
 	TornBytes int64 // incomplete trailing bytes cut off
-	Replaced  bool  // another model or ChunkVersion (or a torn header): the log was started anew
-	Compacted bool
-	Evicted   int // postings dropped by a compaction (outside the live set, then lowest priority, then oldest)
-	Dropped   int // records a compaction shed because they failed their checksum
-	Refused   int // postings an append did not store: no room (or none for one ranked that low), or a bad record
+	// Damaged is set when a structurally bad record was found and the log was cut
+	// back to the records before it.
+	Damaged *vecDamage
+	// TornAt locates the incomplete tail TornBytes counts (offset, bytes, records kept).
+	TornAt *vecDamage
+	// SpaceUnchecked is why a compaction ran without knowing the free disk space
+	// (the check could not run). Empty when it ran and passed, or no compaction ran.
+	SpaceUnchecked string
+	Replaced       bool // another model or ChunkVersion (or a torn header): the log was started anew
+	Compacted      bool
+	Evicted        int // postings dropped by a compaction (outside the live set, then lowest priority, then oldest)
+	Dropped        int // records a compaction shed because they failed their checksum
+	Refused        int // postings an append did not store: no room (or none for one ranked that low), or a bad record
+}
+
+// vecDamage is a structurally bad record refresh found: the log was truncated at
+// Off, so Bytes bytes (the bad record and everything after it, which cannot be
+// re-synchronised: records are length-prefixed with no marker) are gone and
+// Kept records before it survive.
+type vecDamage struct {
+	Off, Bytes int64
+	Kept       int
+	Why        string
+}
+
+func (d *vecDamage) err() error {
+	return fmt.Errorf("%w: chunk-vector log damaged at offset %d (%s): dropped %d bytes from there, kept the %d records before it", ErrCache, d.Off, d.Why, d.Bytes, d.Kept)
 }
 
 // parseTextHash turns a TextHash into the 16 bytes a record stores.
@@ -339,7 +372,9 @@ type chunkStore struct {
 	model      string
 	maxBytes   int64
 	compactMin int64
-	prioFn     func() vecPrio // what to keep when compacting; nil names no live set, so only age decides
+	prioFn     func() vecPrio                   // what to keep when compacting; nil names no live set, so only age decides
+	freeFn     func(dir string) (uint64, error) // free bytes a compaction may use; nil is freeBytes
+	spaceNote  string                           // why the last rewrite could not check free space
 
 	f      *os.File
 	gen    uint64
@@ -393,9 +428,11 @@ func (s *chunkStore) drop(h [16]byte) {
 // where the last whole record ends and how many bytes after it are an
 // incomplete tail (a length the file ends before, or a last record whose
 // checksum fails: a crash mid-append). A structurally impossible record anywhere
-// else (length, chunk count, width, a width unlike the rest) is errVecCorrupt;
-// payload checksums are verified when a record is read, and the last record's
-// here. scan never writes.
+// else (length, chunk count, width, a width unlike the rest) is errVecCorrupt,
+// returned with end at that record's offset: every record indexed before it is
+// good, and the caller decides what to do with the rest (refresh truncates
+// there). Payload checksums are verified when a record is read, and the last
+// record's here. scan never writes.
 func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, err error) {
 	off := start
 	var hdr [4 + recFixed]byte
@@ -410,7 +447,9 @@ func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, er
 		if ln < minRecLen || ln > maxRecLen {
 			return off, 0, vecCorrupt("record at %d has length %d", off, ln)
 		}
-		if off+4+ln > size {
+		past := off+4+ln > size
+		if past && size-off < 4+recFixed {
+			// Too short to say what the record was: only a crash cuts it here.
 			return off, size - off, nil
 		}
 		if _, err := r.ReadAt(hdr[4:], off+4); err != nil {
@@ -423,6 +462,12 @@ func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, er
 		}
 		if ln != recFixed+4*n*dim+4 {
 			return off, 0, vecCorrupt("record at %d: length %d does not fit %d chunks of width %d", off, ln, n, dim)
+		}
+		if past {
+			// Its own fields agree with its length, so the file simply ends
+			// inside it: a crash mid-append. A length that runs past the end but
+			// disagrees with the fields (above) is damage, not a torn tail.
+			return off, size - off, nil
 		}
 		if s.dim != 0 && int(dim) != s.dim {
 			return off, 0, vecCorrupt("record at %d has width %d, the log holds %d", off, dim, s.dim)
@@ -449,8 +494,11 @@ func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, er
 // a header for another model or ChunkVersion replaces the file, an unchanged
 // generation is scanned from where the last scan stopped, and a changed
 // generation (another process compacted) is scanned afresh. An incomplete tail
-// is truncated. Corruption is an errVecCorrupt error and leaves the file alone;
-// the caller decides to remove it. The caller holds the cache lock.
+// is truncated, and so is a log with a structurally bad record: it is cut back to
+// the records before it (ev.Damaged). A header that is not this format is an
+// errVecCorrupt error and leaves the file alone; the caller decides to remove it.
+// A read that fails is an ErrCache error, never an empty log. The caller holds
+// the cache lock.
 func (s *chunkStore) refresh() (ev vecEvent, err error) {
 	s.close()
 	s.full = false
@@ -489,7 +537,7 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 	case errors.Is(perr, errVecTornHeader), perr == nil && (h.version != ChunkVersion || h.model != s.model):
 		ev.Replaced = true
 		s.resetIndex()
-		if _, err = s.rewrite(nil); err != nil {
+		if _, err = s.rewrite(context.Background(), nil); err != nil {
 			return ev, err
 		}
 		return ev, nil
@@ -505,7 +553,17 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 	}
 	s.gen, s.hdrLen = h.gen, h.hdrLen
 	end, torn, serr := s.scan(f, size, start)
-	if serr != nil {
+	var dmg *vecDamage
+	switch {
+	case serr == nil:
+	case errors.Is(serr, errVecCorrupt):
+		// The records before the bad one were indexed and are good; the rest
+		// cannot be found again, so the log is cut back to them.
+		dmg = &vecDamage{Off: end, Bytes: size - end, Kept: len(s.idx), Why: serr.Error()}
+		torn = size - end
+	default:
+		// The log could not be read: that says nothing about its content, so the
+		// file is left alone and the caller sees an error, not an empty log.
 		s.resetIndex()
 		return ev, serr
 	}
@@ -516,7 +574,12 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 		if err = atomicfile.Sync(f); err != nil {
 			return ev, fmt.Errorf("%w: sync after truncate: %v", ErrCache, err)
 		}
-		ev.TornBytes = torn
+		if dmg != nil {
+			ev.Damaged = dmg
+		} else {
+			ev.TornBytes = torn
+			ev.TornAt = &vecDamage{Off: end, Bytes: torn, Kept: len(s.idx), Why: "incomplete tail"}
+		}
 	}
 	s.end, s.valid = end, true
 	return ev, nil
@@ -563,12 +626,23 @@ func (s *chunkStore) read(h [16]byte, n, dim int) ([][]float32, error) {
 // log under a new generation, fsyncs it, renames it over the log and syncs the
 // directory, then reopens it. A record that fails its checksum is shed, not
 // copied. Nothing is held in memory but one record and the write buffer. On a
-// failure before the rename the old log is untouched. keep nil starts an empty
-// log. It returns how many records were shed.
-func (s *chunkStore) rewrite(keep []vecKeep) (dropped int, err error) {
+// failure or a cancelled ctx before the rename the old log is untouched, still
+// open and still the one in use, and the new file is removed. Before it copies
+// anything it checks the disk holds the new log (ErrVectorsNoSpace); a check that
+// cannot run is recorded in s.spaceNote, not taken as a pass. keep nil starts an
+// empty log. It returns how many records were shed.
+func (s *chunkStore) rewrite(ctx context.Context, keep []vecKeep) (dropped int, err error) {
 	gen := nextGeneration(s.gen)
+	hdr := encodeVecHeader(s.model, gen)
 	tmpPath := s.path + ".tmp"
-	_ = os.Remove(tmpPath)
+	// A temp left by a crashed (disk-full) compaction holds the space this one
+	// needs: it is this store's own file, and the caller holds the cache lock.
+	if rerr := os.Remove(tmpPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return 0, fmt.Errorf("%w: remove stale compaction file: %v", ErrCache, rerr)
+	}
+	if err = s.checkSpace(ctx, keep, int64(len(hdr))); err != nil {
+		return 0, err
+	}
 	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("%w: compaction file: %v", ErrCache, err)
@@ -580,7 +654,6 @@ func (s *chunkStore) rewrite(keep []vecKeep) (dropped int, err error) {
 		}
 	}()
 	bw := bufio.NewWriterSize(tmp, 1<<20)
-	hdr := encodeVecHeader(s.model, gen)
 	if _, err = bw.Write(hdr); err != nil {
 		return 0, fmt.Errorf("%w: compaction write: %v", ErrCache, err)
 	}
@@ -590,6 +663,10 @@ func (s *chunkStore) rewrite(keep []vecKeep) (dropped int, err error) {
 	var buf []byte
 	dim := 0
 	for _, k := range keep {
+		if cerr := ctx.Err(); cerr != nil {
+			err = fmt.Errorf("%w: compaction cancelled: %w", ErrCache, cerr)
+			return dropped, err
+		}
 		size := k.loc.size()
 		if int64(cap(buf)) < size {
 			buf = make([]byte, size)
@@ -628,6 +705,12 @@ func (s *chunkStore) rewrite(keep []vecKeep) (dropped int, err error) {
 		err = fmt.Errorf("%w: compaction close: %v", ErrCache, err)
 		return dropped, err
 	}
+	// The last point a cancel can stop the compaction cleanly: past it the new log
+	// replaces the old one.
+	if cerr := ctx.Err(); cerr != nil {
+		err = fmt.Errorf("%w: compaction cancelled: %w", ErrCache, cerr)
+		return dropped, err
+	}
 	s.close()
 	if err = os.Rename(tmpPath, s.path); err != nil {
 		_ = os.Remove(tmpPath)
@@ -659,7 +742,7 @@ func (s *chunkStore) rewrite(keep []vecKeep) (dropped int, err error) {
 // names no live set) and, when they still exceed plan.soft bytes (a total file
 // size, header included), evicting them lowest priority first, the oldest
 // written among equals, as plan allows. The records kept stay in written order.
-func (s *chunkStore) compact(p vecPrio, plan vecPlan) (ev vecEvent, err error) {
+func (s *chunkStore) compact(ctx context.Context, p vecPrio, plan vecPlan) (ev vecEvent, err error) {
 	type cand struct {
 		vecKeep
 		rank float64
@@ -692,8 +775,13 @@ func (s *chunkStore) compact(p vecPrio, plan vecPlan) (ev vecEvent, err error) {
 	}
 	slices.SortFunc(keep, func(a, b vecKeep) int { return cmp.Compare(a.loc.off, b.loc.off) })
 	oldGen := s.gen
-	ev.Dropped, err = s.rewrite(keep)
+	s.spaceNote = ""
+	ev.Dropped, err = s.rewrite(ctx, keep)
 	ev.Compacted = s.gen != oldGen // the new log replaced the old one
+	ev.SpaceUnchecked = s.spaceNote
+	if !ev.Compacted {
+		ev.Evicted, ev.Dropped = 0, 0 // nothing changed: the old log still holds them
+	}
 	return ev, err
 }
 
@@ -749,7 +837,7 @@ func (s *chunkStore) needsCompaction() bool {
 
 // reset starts the log empty (a width change: nothing in it can be used).
 func (s *chunkStore) reset() error {
-	_, err := s.rewrite(nil)
+	_, err := s.rewrite(context.Background(), nil) // header only: nothing to copy, nothing to cancel
 	return err
 }
 
@@ -764,7 +852,7 @@ func (s *chunkStore) reset() error {
 // session. ev.Refused counts every record not stored. A failed write is rolled
 // back by truncating to the last good end; if that fails too the store refuses
 // further appends.
-func (s *chunkStore) append(recs []vecRec) (appended int, ev vecEvent, err error) {
+func (s *chunkStore) append(ctx context.Context, recs []vecRec) (appended int, ev vecEvent, err error) {
 	if s.f == nil || !s.valid || s.broken {
 		ev.Refused = len(recs)
 		return 0, ev, fmt.Errorf("%w: chunk-vector log is not open for appends", ErrCache)
@@ -832,10 +920,10 @@ func (s *chunkStore) append(recs []vecRec) (appended int, ev vecEvent, err error
 		encs = admitted
 		soft := max(s.maxBytes-s.maxBytes/8-total, s.hdrLen)
 		hard := max(s.maxBytes-total, s.hdrLen)
-		cev, cerr := s.compact(p, vecPlan{soft: soft, hard: hard, floor: floor})
+		cev, cerr := s.compact(ctx, p, vecPlan{soft: soft, hard: hard, floor: floor})
 		ev = cev
 		if cerr != nil {
-			if !s.valid || s.f == nil {
+			if !s.valid || s.f == nil || ctx.Err() != nil {
 				ev.Refused = refused + len(encs)
 				return 0, ev, cerr
 			}
@@ -851,7 +939,11 @@ func (s *chunkStore) append(recs []vecRec) (appended int, ev vecEvent, err error
 	}
 	if fit < len(encs) {
 		s.full = true
-		firstErr = ErrVectorsFull
+		if firstErr != nil && errors.Is(firstErr, ErrVectorsNoSpace) {
+			firstErr = errors.Join(firstErr, ErrVectorsFull) // keep the cause the caller must act on
+		} else {
+			firstErr = ErrVectorsFull
+		}
 		refused += len(encs) - fit
 	}
 	if fit == 0 {
@@ -907,6 +999,22 @@ type VectorStats struct {
 	// the live set, then lowest priority, then oldest) and records shed for a bad
 	// checksum.
 	Evicted, Dropped int
+	// SpaceUnchecked is why CompactVectors compacted without knowing the free disk
+	// space (the check could not run); empty when it ran.
+	SpaceUnchecked string
+	// Damage is set when opening the log cut it back past a bad record or an
+	// incomplete tail (CompactVectors repairs what it opens, as Warm does).
+	Damage *VectorDamage
+}
+
+// VectorDamage is what a repair cost: the log was cut at Off, Bytes bytes from
+// there on are gone, and Kept records before it survive. Torn is a crash tail
+// (an append cut short); otherwise a record was structurally bad.
+type VectorDamage struct {
+	Off, Bytes int64
+	Kept       int
+	Torn       bool
+	Why        string
 }
 
 // VectorStatus reads the chunk-vector log in cacheDir without loading a model,
@@ -1030,10 +1138,12 @@ func (r *Report) noteVectors(err error) {
 
 // openVectors opens the log under the cache lock and brings its index up to
 // date, repairing what it can: an incomplete tail is truncated (VectorsTornBytes),
-// another model or ChunkVersion starts the log anew, and a corrupt log is removed and
-// started anew (VectorsRebuilt: that loss costs re-embedding). nil means the log
+// a structurally bad record cuts the log back to the records before it (reported
+// once in VectorsErr with its offset and the bytes dropped), another model or
+// ChunkVersion starts the log anew, and a log whose header is not this format is
+// removed and started anew (VectorsRebuilt: nothing in it was usable). nil means the log
 // cannot be used this Warm (reported in VectorsErr); scoring goes on without it.
-func (m *Matcher) openVectors(rep *Report, docs []Doc) *chunkStore {
+func (m *Matcher) openVectors(ctx context.Context, rep *Report, docs []Doc) *chunkStore {
 	if m.vs == nil {
 		m.vs = newChunkStore(filepath.Join(m.dir, vectorLogFileName), m.model, m.vecBound())
 	}
@@ -1057,19 +1167,26 @@ func (m *Matcher) openVectors(rep *Report, docs []Doc) *chunkStore {
 		s.close()
 		return nil
 	}
+	if ev.Damaged != nil {
+		rep.noteVectors(ev.Damaged.err())
+		rep.VectorsDamage = &VectorDamage{Off: ev.Damaged.Off, Bytes: ev.Damaged.Bytes, Kept: ev.Damaged.Kept, Why: ev.Damaged.Why}
+	}
 	rep.VectorsTornBytes += ev.TornBytes
 	if ev.TornBytes > 0 {
-		rep.noteVectors(fmt.Errorf("%w: cut %d bytes of an incomplete tail", ErrCache, ev.TornBytes))
+		rep.noteVectors(fmt.Errorf("%w: cut %d bytes of an incomplete tail at offset %d, kept the %d records before it", ErrCache, ev.TornBytes, ev.TornAt.Off, ev.TornAt.Kept))
+		if rep.VectorsDamage == nil {
+			rep.VectorsDamage = &VectorDamage{Off: ev.TornAt.Off, Bytes: ev.TornAt.Bytes, Kept: ev.TornAt.Kept, Torn: true, Why: ev.TornAt.Why}
+		}
 	}
 	if s.needsCompaction() {
-		m.compactInto(rep, s)
+		m.compactInto(ctx, rep, s)
 	}
 	return s
 }
 
 // compactInto compacts s and adds the outcome to rep.
-func (m *Matcher) compactInto(rep *Report, s *chunkStore) {
-	ev, err := s.compact(s.prio(), evictTo(s.maxBytes-s.maxBytes/8))
+func (m *Matcher) compactInto(ctx context.Context, rep *Report, s *chunkStore) {
+	ev, err := s.compact(ctx, s.prio(), evictTo(s.maxBytes-s.maxBytes/8))
 	rep.addVectorEvent(ev)
 	rep.noteVectors(err)
 }
@@ -1078,15 +1195,18 @@ func (r *Report) addVectorEvent(ev vecEvent) {
 	r.VectorsEvicted += ev.Evicted
 	r.VectorsRefused += ev.Refused
 	r.VectorsCorrupt += ev.Dropped
+	if ev.SpaceUnchecked != "" {
+		r.noteVectors(fmt.Errorf("%w: compacted without checking free disk space: %s", ErrCache, ev.SpaceUnchecked))
+	}
 	r.VectorsCompacted = r.VectorsCompacted || ev.Compacted
 }
 
 // appendVectors stores the vectors of postings just embedded.
-func (m *Matcher) appendVectors(s *chunkStore, recs []vecRec, rep *Report) {
+func (m *Matcher) appendVectors(ctx context.Context, s *chunkStore, recs []vecRec, rep *Report) {
 	if s == nil || len(recs) == 0 {
 		return
 	}
-	n, ev, err := s.append(recs)
+	n, ev, err := s.append(ctx, recs)
 	rep.VectorsAppended += n
 	rep.addVectorEvent(ev)
 	rep.noteVectors(err)
@@ -1105,8 +1225,15 @@ func (m *Matcher) finishVectors(rep *Report, s *chunkStore) {
 // CompactVectors compacts the chunk-vector log now, under the cache lock:
 // superseded duplicates and corrupt records go, then postings outside the live
 // set (SetVectorPriority), then the lowest priority (the oldest written among
-// equals) until the log is an eighth under its bound. It loads no model. A corrupt log is an ErrCache error; Warm, not this,
-// removes and rebuilds it.
+// equals) until the log is an eighth under its bound. It loads no model. ctx
+// stops the copy: a cancelled compaction leaves the old log intact and in use and
+// no partial file. The copy runs under the cache lock because it ends by renaming
+// the new log over the old one, which every other Warm and CompactVectors (this
+// process's through warmMu, others' through the lock file) must not race; it
+// blocks them, not scoring from stored scores, for as long as the copy takes, so a
+// caller that cannot wait bounds it with ctx. It refuses with ErrVectorsNoSpace
+// (naming the bytes needed and free) when the disk cannot hold the new log. A log
+// with a bad header is an ErrCache error; Warm, not this, removes and rebuilds it.
 func (m *Matcher) CompactVectors(ctx context.Context) (VectorStats, error) {
 	m.warmMu.Lock()
 	defer m.warmMu.Unlock()
@@ -1120,13 +1247,14 @@ func (m *Matcher) CompactVectors(ctx context.Context) (VectorStats, error) {
 	}
 	defer unlock()
 	var rep Report
-	s := m.openVectors(&rep, nil)
+	s := m.openVectors(ctx, &rep, nil)
 	if s == nil {
 		return VectorStats{}, fmt.Errorf("%w: %s", ErrCache, rep.VectorsErr)
 	}
 	defer s.close()
-	ev, err := s.compact(s.prio(), evictTo(s.maxBytes-s.maxBytes/8))
+	ev, err := s.compact(ctx, s.prio(), evictTo(s.maxBytes-s.maxBytes/8))
 	st := s.stats()
-	st.Evicted, st.Dropped = ev.Evicted, ev.Dropped
+	st.Evicted, st.Dropped, st.SpaceUnchecked = ev.Evicted, ev.Dropped, ev.SpaceUnchecked
+	st.Damage = rep.VectorsDamage
 	return st, err
 }
