@@ -599,12 +599,8 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	// reuses w, and a failed start must never inherit the last run's stopped
 	// address.
 	w.localEndpoint = ""
-	errs := newBackendErrors()
 	w.mu.Lock()
-	w.backendErrs, w.boards, w.advance, w.semPre, w.backfill = errs, nil, nil, nil, nil
-	w.nearDup, w.exclusions, w.logos, w.shadow = nil, nil, nil, nil
-	w.explain, w.fetches = nil, nil
-	w.simOff, w.simNote = "", ""
+	w.setReportLocked(reportState{BackendErrs: newBackendErrors()})
 	// Written here, before any board is read and before runnerFor asks a
 	// backend. noteExplain and noteShadow read it from that goroutine.
 	w.recordGaps = advance
@@ -735,21 +731,40 @@ func (w *wired) pollInbox(ctx context.Context) (err error) {
 	return err
 }
 
-// reportState is the run-scoped report startRun clears and runReport reads.
+// reportState is the run-scoped report: the ONE list of the wired fields a
+// run owns and runReport reads. startRun resets it (setReportLocked with a
+// fresh reportState), saveReport and restoreReport copy it, so a field added
+// here is reset, saved and restored together, and one added to wired but not
+// here is outside the report. Fields are exported so the owner test can fill
+// every one by reflection.
 type reportState struct {
-	backendErrs *backendErrors
-	boards      *boardsReport
-	advance     *pipeline.AdvanceReport
-	semPre      *semanticReport
-	backfill    *escalateBackfillReport
-	nearDup     *nearDupSummary
-	exclusions  *exclusionSummary
-	logos       *logoSummary
-	shadow      *shadowNote
-	explain     *explainNote
-	fetches     map[boardKey]boardFetch
-	simOff      string
-	simNote     string
+	BackendErrs *backendErrors
+	Boards      *boardsReport
+	Advance     *pipeline.AdvanceReport
+	SemPre      *semanticReport
+	Backfill    *escalateBackfillReport
+	NearDup     *nearDupSummary
+	Exclusions  *exclusionSummary
+	Logos       *logoSummary
+	Shadow      *shadowNote
+	Explain     *explainNote
+	Fetches     map[boardKey]boardFetch
+	SimOff      string
+	SimNote     string
+}
+
+// reportLocked reads the report fields; w.mu must be held.
+func (w *wired) reportLocked() reportState {
+	return reportState{w.backendErrs, w.boards, w.advance, w.semPre, w.backfill, w.nearDup, w.exclusions,
+		w.logos, w.shadow, w.explain, w.fetches, w.simOff, w.simNote}
+}
+
+// setReportLocked replaces the report fields; w.mu must be held. It is the
+// only writer of them as a set.
+func (w *wired) setReportLocked(s reportState) {
+	w.backendErrs, w.boards, w.advance, w.semPre, w.backfill = s.BackendErrs, s.Boards, s.Advance, s.SemPre, s.Backfill
+	w.nearDup, w.exclusions, w.logos, w.shadow, w.explain = s.NearDup, s.Exclusions, s.Logos, s.Shadow, s.Explain
+	w.fetches, w.simOff, w.simNote = s.Fetches, s.SimOff, s.SimNote
 }
 
 // saveReport returns the report as it stands, for a pass that must not leave
@@ -757,17 +772,14 @@ type reportState struct {
 func (w *wired) saveReport() reportState {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return reportState{w.backendErrs, w.boards, w.advance, w.semPre, w.backfill, w.nearDup, w.exclusions,
-		w.logos, w.shadow, w.explain, w.fetches, w.simOff, w.simNote}
+	return w.reportLocked()
 }
 
 // restoreReport puts back what saveReport returned.
 func (w *wired) restoreReport(s reportState) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.backendErrs, w.boards, w.advance, w.semPre, w.backfill = s.backendErrs, s.boards, s.advance, s.semPre, s.backfill
-	w.nearDup, w.exclusions, w.logos, w.shadow, w.explain = s.nearDup, s.exclusions, s.logos, s.shadow, s.explain
-	w.fetches, w.simOff, w.simNote = s.fetches, s.simOff, s.simNote
+	w.setReportLocked(s)
 }
 
 // testHookAdvanceNew, set only by tests, replaces pollInbox's advance phase
