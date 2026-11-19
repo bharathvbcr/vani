@@ -589,10 +589,8 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 // here, before any board is read, when none can be built (runnerFor); a
 // --list-only run does not need one.
 func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pipeline.Runner, func(), error) {
-	d, err := egress.New(runEgressConfig(w.cfg.AllowedHosts))
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("egress: %w", err)
-	}
+	// The run's report is cleared before anything here can refuse the run, so
+	// a run that fails to start reports nothing rather than the last run's.
 	// A local decision model configured with a server is started for this run
 	// only, and only when the run will ask a backend something: a list-only
 	// run (advance false) never does, and loading a model for it costs seconds
@@ -601,12 +599,8 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	// reuses w, and a failed start must never inherit the last run's stopped
 	// address.
 	w.localEndpoint = ""
-	errs := newBackendErrors()
 	w.mu.Lock()
-	w.backendErrs, w.boards, w.advance, w.semPre, w.backfill = errs, nil, nil, nil, nil
-	w.nearDup, w.exclusions, w.logos, w.shadow = nil, nil, nil, nil
-	w.explain, w.fetches = nil, nil
-	w.simOff, w.simNote = "", ""
+	w.setReportLocked(reportState{BackendErrs: newBackendErrors()})
 	// Written here, before any board is read and before runnerFor asks a
 	// backend. noteExplain and noteShadow read it from that goroutine.
 	w.recordGaps = advance
@@ -619,6 +613,10 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	// one ledger.
 	w.day = budgetClock().UTC().Format("2006-01-02")
 	w.mu.Unlock()
+	d, err := egress.New(runEgressConfig(w.cfg.AllowedHosts))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("egress: %w", err)
+	}
 	stop := func() {}
 	if l := w.cfg.Decide.Local; advance && l != nil && l.Server != nil {
 		srv, err := localserver.Start(ctx, localserver.Config{
@@ -714,6 +712,9 @@ func (w *wired) pollInbox(ctx context.Context) (err error) {
 		}
 		return err
 	}
+	// startRun clears the run-scoped report. The poll is not a daily run: what
+	// the last daily run reported stays readable (App.RunReport) after it.
+	defer w.restoreReport(w.saveReport())
 	_, runner, stop, err := w.startRun(ctx, true)
 	if err != nil {
 		// No backend, no egress: the postings stay Live for the next run.
@@ -728,6 +729,57 @@ func (w *wired) pollInbox(ctx context.Context) (err error) {
 		st.Error = err.Error()
 	}
 	return err
+}
+
+// reportState is the run-scoped report: the ONE list of the wired fields a
+// run owns and runReport reads. startRun resets it (setReportLocked with a
+// fresh reportState), saveReport and restoreReport copy it, so a field added
+// here is reset, saved and restored together, and one added to wired but not
+// here is outside the report. Fields are exported so the owner test can fill
+// every one by reflection.
+type reportState struct {
+	BackendErrs *backendErrors
+	Boards      *boardsReport
+	Advance     *pipeline.AdvanceReport
+	SemPre      *semanticReport
+	Backfill    *escalateBackfillReport
+	NearDup     *nearDupSummary
+	Exclusions  *exclusionSummary
+	Logos       *logoSummary
+	Shadow      *shadowNote
+	Explain     *explainNote
+	Fetches     map[boardKey]boardFetch
+	SimOff      string
+	SimNote     string
+}
+
+// reportLocked reads the report fields; w.mu must be held.
+func (w *wired) reportLocked() reportState {
+	return reportState{w.backendErrs, w.boards, w.advance, w.semPre, w.backfill, w.nearDup, w.exclusions,
+		w.logos, w.shadow, w.explain, w.fetches, w.simOff, w.simNote}
+}
+
+// setReportLocked replaces the report fields; w.mu must be held. It is the
+// only writer of them as a set.
+func (w *wired) setReportLocked(s reportState) {
+	w.backendErrs, w.boards, w.advance, w.semPre, w.backfill = s.BackendErrs, s.Boards, s.Advance, s.SemPre, s.Backfill
+	w.nearDup, w.exclusions, w.logos, w.shadow, w.explain = s.NearDup, s.Exclusions, s.Logos, s.Shadow, s.Explain
+	w.fetches, w.simOff, w.simNote = s.Fetches, s.SimOff, s.SimNote
+}
+
+// saveReport returns the report as it stands, for a pass that must not leave
+// its own in its place (pollInbox).
+func (w *wired) saveReport() reportState {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.reportLocked()
+}
+
+// restoreReport puts back what saveReport returned.
+func (w *wired) restoreReport(s reportState) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.setReportLocked(s)
 }
 
 // testHookAdvanceNew, set only by tests, replaces pollInbox's advance phase

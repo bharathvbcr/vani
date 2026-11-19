@@ -182,7 +182,9 @@ func (e *env) finishDailyRun(ctx context.Context, app *App, rec *runRecord, stag
 		e.announceFailure(ctx, app, *rec)
 	}()
 	rec.FinishedAt = now()
-	if app.RunReport != nil {
+	// Only a run that reached the pipeline owns a report; a refused one keeps
+	// the empty runDetail it was created with.
+	if app.RunReport != nil && rec.pipelineRan {
 		rec.runDetail = app.RunReport()
 	}
 	e.fillBoardsFromSnapshot(rec)
@@ -522,6 +524,7 @@ func (e *env) runAndPublish(ctx context.Context, app *App, cfg config.Config, op
 	if app.RunOnce == nil {
 		return stagePipeline, errors.New("app has no pipeline runner")
 	}
+	rec.pipelineRan = true
 	if err := app.RunOnce(ctx); err != nil {
 		return stagePipeline, fmt.Errorf("pipeline: %w", err)
 	}
