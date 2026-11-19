@@ -311,6 +311,7 @@ public struct RetriageBatchClient: Sendable {
             if reply.code == "cancelled" { return .cancelled }
             return .failure(RetriageFailure(code: reply.code ?? "provider", message: reply.error ?? "vani could not be started"))
         case let .output(out):
+            // A dry run asks no model, so a cancelled reply here has no cost to carry.
             if out.truncated { return .failure(RetriageFailure(code: "too_large", message: "vani's estimate was larger than 4 MB")) }
             if let f = Self.failure(in: out.stdout) {
                 return f.code == "cancelled" ? .cancelled : .failure(f)
@@ -338,7 +339,7 @@ public struct RetriageBatchClient: Sendable {
         let invocation = runner.invoke(arguments: Self.arguments(keys, dryRun: false, skipRead: skipRead),
                                        timeout: runTimeout(postings: keys.count), usesModel: true, maxOutputBytes: Self.maxReplyBytes,
                                        extraEnvironment: ["VANI_NO_KEYCHAIN": "1"], cancellation: cancellation,
-                                       onStdout: { stream.feed($0) })
+                                       keepCancelledOutput: Self.endsWithSummary, onStdout: { stream.feed($0) })
         switch invocation {
         case let .failure(reply):
             if reply.code == "cancelled" { return .cancelled }
@@ -348,7 +349,7 @@ public struct RetriageBatchClient: Sendable {
             // reports what it kept and why it stopped.
             if let summary = stream.summary { return .success(summary) }
             if let f = Self.failure(in: out.stdout) {
-                return f.code == "cancelled" ? .cancelled : .failure(f)
+                return f.code == "cancelled" ? .stopped(message: f.message, cost: f.cost) : .failure(f)
             }
             if let refusal = AnthropicAccount.refusal(in: out.stderr) {
                 return .failure(RetriageFailure(code: "account", message: refusal))
@@ -356,6 +357,17 @@ public struct RetriageBatchClient: Sendable {
             let tooOld = out.status == 2 ? " (this vani cannot re-triage several roles at once; rebuild the app)" : ""
             return .failure(RetriageFailure(code: "no_reply", message: "vani jobs retriage --batch exited \(out.status ?? -1) before it finished\(tooOld)"))
         }
+    }
+
+    /// Whether a stopped batch's stdout is a complete NDJSON stream (every line newline-ended, none
+    /// dropped as too long, output not truncated) whose last event is a `done` summary.
+    @Sendable static func endsWithSummary(_ out: VaniProcess.Outcome) -> Bool {
+        guard !out.truncated else { return false }
+        var splitter = LineSplitter(maxLine: maxLineBytes)
+        let lines = splitter.feed(out.stdout)
+        guard splitter.tail.isEmpty, splitter.dropped == 0, let last = lines.last,
+              case .done = RetriageBatchEvent.decode(line: last) else { return false }
+        return true
     }
 
     private struct Failure: Decodable {

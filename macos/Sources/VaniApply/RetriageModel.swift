@@ -105,6 +105,8 @@ final class RetriageModel {
                 await onManualChange(key)
             case let .failure(f):
                 phase = .failed(key: key, failure: f)
+                // A stop that came after Sonnet answered may have stored its reading: look.
+                if f.code == "cancelled" { await onManualChange(key) }
             case .cancelled:
                 // The child may have stored its reading before it was stopped: look, say nothing.
                 phase = .idle
