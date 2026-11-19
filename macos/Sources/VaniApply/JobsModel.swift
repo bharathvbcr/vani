@@ -132,6 +132,9 @@ final class JobsModel {
     /// shows it again when the job is reopened.
     private(set) var noteDrafts: [String: String] = [:]
     private var notesSaving: Set<String> = []
+    /// Jobs whose draft was committed while a save of the same job was in flight; the save that is
+    /// running saves the newest draft once it ends (latest wins).
+    private var notesQueued: Set<String> = []
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
     /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
@@ -641,17 +644,24 @@ final class JobsModel {
         }
     }
 
-    /// Save the draft for `key`, if it differs from the saved note and fits. One save per job at a time.
-    /// An oversized draft is kept, unsaved, for the pane to show.
+    /// Save the draft for `key`, if it differs from the saved note and fits. One save per job at a time:
+    /// a draft committed while a save of the same job is in flight is queued and saved, as it stands
+    /// then, when that save ends (false is returned for the queued call). An oversized draft is kept,
+    /// unsaved, for the pane to show.
     @discardableResult
     func commitNote(_ key: String) async -> Bool {
-        guard let text = noteDrafts[key], !notesSaving.contains(key) else { return false }
+        guard let text = noteDrafts[key] else { return false }
+        if notesSaving.contains(key) { notesQueued.insert(key); return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed == savedNote(key) { noteDrafts[key] = nil; return false }
         guard trimmed.utf8.count <= JobsClient.maxNoteBytes else { return false }
         notesSaving.insert(key)
-        defer { notesSaving.remove(key) }
-        return await saveNote(key, text)
+        let saved = await saveNote(key, text)
+        notesSaving.remove(key)
+        if notesQueued.remove(key) != nil, noteDrafts[key] != nil {
+            return await commitNote(key) || saved
+        }
+        return saved
     }
 
     @discardableResult
