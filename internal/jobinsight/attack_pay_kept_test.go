@@ -17,8 +17,11 @@ func TestAttackPayKept(t *testing.T) {
 		{"stop between equity and heading", "Perks include equity.\nCompensation: $150,000 - $180,000", usd(150000, 180000)},
 		{"bonus sentence then salary", "Bonus & equity eligible. Salary: $150,000 - $180,000", usd(150000, 180000)},
 		{"stock options then base pay", "Stock options, base pay: $150,000 - $180,000", usd(150000, 180000)},
-		{"is$ prefix is no salary", "is$150k - is$180k", nil},
-		{"up to$ alone", "up to$200k", nil},
+		// Reviewer decision (fix round 2): an all-lowercase unknown prefix is
+		// ordinary text, so "is$" reads as a plain "$". "up to$200k" read plain
+		// is "up to $200k": one amount with no pay word, still no pay.
+		{"is$ prefix reads as plain dollar", "is$150k - is$180k", usd(150000, 180000)},
+		{"up to$ alone is a bare amount with no pay word", "up to$200k", nil},
 		{"USD$ is USD", "USD$100,000 - USD$120,000", usd(100000, 120000)},
 		{"us$ is USD", "us$100,000 - us$120,000", usd(100000, 120000)},
 		{"Us$ mixed case", "Us$100,000 - $120,000", usd(100000, 120000)},
