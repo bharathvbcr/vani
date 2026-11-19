@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/bharathvbcr/Vani/internal/config"
@@ -117,6 +118,9 @@ func (e *env) trackList(args []string) error {
 	return nil
 }
 
+// notRunWords names the personal-name words check in a track's not-run list.
+const notRunWords = "personal-name words"
+
 // checked loads and checks one track. It returns the problems found and the
 // checks that could not run, which it also prints on stderr: an empty problem
 // list is a pass only when notRun is empty too.
@@ -131,7 +135,7 @@ func (e *env) checked(cfg config.Config, id string) (d track.Decider, probs, not
 		return track.Decider{}, nil, nil, err
 	}
 	if !words.Personal {
-		notRun = append(notRun, "personal-name words")
+		notRun = append(notRun, notRunWords)
 		fmt.Fprintf(e.stderr, "vani: identifying-word check: built-in list only; personal names were NOT checked (no terms in %s under %s)\n", track.WordsFile, dir)
 	}
 	var bank track.Bank
@@ -263,7 +267,7 @@ type trackUseReply struct {
 func (e *env) trackUse(args []string) error {
 	flags := e.newFlags("track use")
 	dryRun := flags.Bool("dry-run", false, "show the change without saving the config")
-	allowUnchecked := flags.Bool("allow-unchecked", false, "apply the track although a check could not run (its target_summary enters every triage prompt unchecked)")
+	allowUnchecked := flags.Bool("allow-unchecked", false, "apply the track although the evidence check could not run (kb.bank not set); it cannot stand in for the personal-name words check: the run refuses a target_summary that cannot be checked against "+track.WordsFile+", so a track whose summary the run would refuse is not applied")
 	asJSON := e.jsonFlag(flags, "one JSON object on stdout")
 	id, err := trackArg(flags, "use", args)
 	if err != nil {
@@ -288,7 +292,11 @@ func (e *env) trackUse(args []string) error {
 		return err
 	}
 	if len(notRun) > 0 && !*allowUnchecked {
-		err := fmt.Errorf("track %s not applied: check did not run: %s; the config is unchanged (make the check runnable, or pass --allow-unchecked)", id, strings.Join(notRun, ", "))
+		hint := "make the check runnable, or pass --allow-unchecked"
+		if slices.Contains(notRun, notRunWords) {
+			hint = "add at least one term to " + track.WordsFile + "; --allow-unchecked does not cover it, because the run refuses a summary that cannot be checked against it"
+		}
+		err := fmt.Errorf("track %s not applied: check did not run: %s; the config is unchanged (%s)", id, strings.Join(notRun, ", "), hint)
 		return e.reply(*asJSON, rep, err, nil)
 	}
 	// The track applied before, so its rules on slots this track does not
@@ -304,6 +312,13 @@ func (e *env) trackUse(args []string) error {
 	out, ch, err := track.Apply(cfg, d, prev)
 	if err != nil {
 		return fmt.Errorf("track %s not applied: %w", id, err)
+	}
+	// The run gate (checkPromptSummary) refuses a summary it cannot check, and
+	// --allow-unchecked must not save what the gate then refuses: refuse here,
+	// with the gate's own reason, before anything is printed or saved.
+	if gate := checkPromptSummary(out, e.stateDir, false); gate != nil {
+		err := fmt.Errorf("track %s not applied: the run would refuse its target_summary (%w); the config is unchanged", id, gate)
+		return e.reply(*asJSON, rep, err, nil)
 	}
 	rep.Removed, rep.Kept, rep.Added = nonNil(ch.Removed), nonNil(ch.Kept), nonNil(ch.Added)
 	if old := strings.Join(strings.Fields(cfg.TargetSummary), " "); old != strings.Join(strings.Fields(out.TargetSummary), " ") {

@@ -56,7 +56,7 @@ func trackSetup(t *testing.T) (cfgPath, tracksDir string) {
 }
 
 func TestTrackListShowUse(t *testing.T) {
-	cfgPath, _ := trackSetup(t)
+	cfgPath, dir := trackSetup(t)
 	o, _ := mustCode(t, 0, "track", "list")
 	if !strings.Contains(o, "ml-systems") || !strings.Contains(o, "ML systems") || strings.Contains(o, "*") {
 		t.Fatalf("list: %q", o)
@@ -66,6 +66,7 @@ func TestTrackListShowUse(t *testing.T) {
 		t.Fatalf("show: %q / %q", o, e)
 	}
 
+	trackWords(t, dir)
 	before, _ := os.ReadFile(cfgPath)
 	o, _ = mustCode(t, 0, "track", "use", "--allow-unchecked", "--dry-run", "ml-systems")
 	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) || !strings.Contains(o, "dry run") {
@@ -150,6 +151,15 @@ func TestTrackUseRefusesBadTracksAndLeavesConfig(t *testing.T) {
 
 func trackWordsFile() string { return "identifying-words.txt" }
 
+// trackWords gives the tracks directory one owner term, so the personal-name
+// check can run and only the evidence check is left unchecked.
+func trackWords(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, trackWordsFile()), []byte("zorblax corp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTrackSwitchRemovesPreviousTrackRulesAndShowsOldSummary(t *testing.T) {
 	cfgPath, dir := trackSetup(t)
 	cfg, _ := config.Load(cfgPath)
@@ -164,6 +174,7 @@ func TestTrackSwitchRemovesPreviousTrackRulesAndShowsOldSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	trackWords(t, dir)
 	o, _ := mustCode(t, 0, "track", "use", "--allow-unchecked", "remote")
 	if !strings.Contains(o, "written by hand") || !strings.Contains(o, "Hand-written summary of target roles.") {
 		t.Fatalf("hand-written summary not shown when replaced: %q", o)
@@ -264,16 +275,25 @@ func TestTrackUncheckedIsNotOK(t *testing.T) {
 	}
 
 	o, e = mustCode(t, 1, "track", "use", "ml-systems")
-	if !strings.Contains(e, "not applied") || !strings.Contains(e, "--allow-unchecked") || strings.Contains(o, "saved") {
+	if !strings.Contains(e, "not applied") || !strings.Contains(e, trackWordsFile()) || strings.Contains(e, "or pass --allow-unchecked") || strings.Contains(o, "saved") {
 		t.Fatalf("use stdout %q stderr %q", o, e)
 	}
 	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
 		t.Fatal("a refused use changed the config")
 	}
 
-	// With the flag the config is written, and stderr still names what did not run.
+	// The flag does not cover the missing words file: the run would refuse the
+	// summary, so use refuses too (see TestTrackAllowUncheckedAgreesWithRunGate).
+	mustCode(t, 1, "track", "use", "--allow-unchecked", "ml-systems")
+	if after, _ := os.ReadFile(cfgPath); string(after) != string(before) {
+		t.Fatal("a refused --allow-unchecked use changed the config")
+	}
+
+	// With the words file but no bank the flag writes the config, and stderr
+	// still names the check that did not run.
+	trackWords(t, dir)
 	o, e = mustCode(t, 0, "track", "use", "--allow-unchecked", "ml-systems")
-	if !strings.Contains(o, "saved") || !strings.Contains(e, "personal names were NOT checked") || !strings.Contains(e, "evidence check skipped") {
+	if !strings.Contains(o, "saved") || strings.Contains(e, "personal names were NOT checked") || !strings.Contains(e, "evidence check skipped") {
 		t.Fatalf("use --allow-unchecked stdout %q stderr %q", o, e)
 	}
 	if after, _ := os.ReadFile(cfgPath); string(after) == string(before) {
@@ -281,9 +301,6 @@ func TestTrackUncheckedIsNotOK(t *testing.T) {
 	}
 
 	// With both checks able to run, show prints ok and use needs no flag.
-	if err := os.WriteFile(filepath.Join(dir, trackWordsFile()), []byte("zorblax corp\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	bank := filepath.Join(t.TempDir(), "bank.json")
 	if err := os.WriteFile(bank, []byte(`{"entries": {}}`), 0o600); err != nil {
 		t.Fatal(err)

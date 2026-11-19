@@ -239,7 +239,7 @@ func TestWatchlistWritesJSON(t *testing.T) {
 }
 
 func TestTrackUseJSON(t *testing.T) {
-	cfgPath, _ := trackSetup(t)
+	cfgPath, dir := trackSetup(t)
 	before, _ := os.ReadFile(cfgPath)
 	// The check cannot run here (no personal words, no bank): refused, with the
 	// check in the reply and the config unchanged.
@@ -249,6 +249,15 @@ func TestTrackUseJSON(t *testing.T) {
 	if r.Saved || r.Check.OK || len(r.Check.NotRun) == 0 || !strings.Contains(r.Error, "not applied") {
 		t.Fatalf("refused use %+v", r)
 	}
+	// The flag covers the evidence check only: with no words file the run gate
+	// would refuse the summary, so use refuses too.
+	o, _ = mustCode(t, 1, "--json", "track", "use", "--allow-unchecked", "ml-systems")
+	r = trackUseReply{}
+	decodeOne(t, o, &r)
+	if r.Saved || !strings.Contains(r.Error, "not applied") {
+		t.Fatalf("refused flag use %+v", r)
+	}
+	trackWords(t, dir)
 	o, _ = mustCode(t, 0, "--json", "track", "use", "--allow-unchecked", "--dry-run", "ml-systems")
 	r = trackUseReply{}
 	decodeOne(t, o, &r)

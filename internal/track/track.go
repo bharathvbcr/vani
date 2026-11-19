@@ -9,7 +9,6 @@
 package track
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -21,6 +20,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
@@ -232,11 +234,19 @@ func LoadWords(dir string) (Words, error) {
 	if len(data) > maxWordsBytes {
 		return Words{}, fmt.Errorf("track: %s exceeds %d bytes", WordsFile, maxWordsBytes)
 	}
-	sc := bufio.NewScanner(bytes.NewReader(data))
+	data, err = wordsText(data)
+	if err != nil {
+		return Words{}, err
+	}
+	// A UTF-8 byte-order mark in front of the file is an editor's habit, not a line.
+	data = bytes.TrimPrefix(data, []byte("\ufeff"))
 	line, n := 0, 0
-	for sc.Scan() {
+	for _, raw := range wordsLines(string(data)) {
 		line++
-		t := strings.ToLower(strings.Join(strings.Fields(sc.Text()), " "))
+		t := wordsLine(raw)
+		if strings.TrimSpace(raw) != "" && t == "" {
+			return Words{}, fmt.Errorf("track: %s line %d has no visible characters", WordsFile, line)
+		}
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
@@ -251,12 +261,76 @@ func LoadWords(dir string) (Words, error) {
 		}
 		w.owner = append(w.owner, t)
 	}
-	if err := sc.Err(); err != nil {
-		return Words{}, fmt.Errorf("track: %s: %w", WordsFile, err)
-	}
 	w.Personal = n > 0
 	w.c = compile(w.builtin, w.owner)
 	return w, nil
+}
+
+// lineEnds turns CRLF and CR into LF, so a file from any platform splits the same.
+var lineEnds = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
+// wordsLines splits the file on CRLF, CR and LF. bufio.ScanLines splits on LF
+// only, which loses every term behind a comment in a CR-only file and joins two
+// terms into one.
+func wordsLines(s string) []string { return strings.Split(lineEnds.Replace(s), "\n") }
+
+// errWordsEncoding is every encoding refusal: the same words, no content.
+var errWordsEncoding = fmt.Errorf("track: %s is not valid UTF-8 or UTF-16", WordsFile)
+
+// wordsText returns the file as UTF-8. An editor may save the list as UTF-16
+// with a byte-order mark; read as bytes that is a file of garbage lines, one
+// of which would count as an owner term, so it is decoded instead, and only when
+// the whole decode is clean (even length, no unpaired surrogate, no U+FFFD, no
+// NUL, no unassigned code point). A UTF-32 mark, a UTF-16 text that is not clean and a file that is not
+// valid UTF-8 are refused: a words check that cannot read its list must fail,
+// not screen against mangled terms. The error names no content.
+func wordsText(data []byte) ([]byte, error) {
+	if bytes.HasPrefix(data, []byte{0, 0, 0xfe, 0xff}) || bytes.HasPrefix(data, []byte{0xff, 0xfe, 0, 0}) {
+		return nil, errWordsEncoding
+	}
+	le := bytes.HasPrefix(data, []byte{0xff, 0xfe})
+	if !le && !bytes.HasPrefix(data, []byte{0xfe, 0xff}) {
+		if !utf8.Valid(data) {
+			return nil, errWordsEncoding
+		}
+		return data, nil
+	}
+	body := data[2:]
+	if len(body)%2 != 0 {
+		return nil, errWordsEncoding
+	}
+	units := make([]uint16, len(body)/2)
+	for i := range units {
+		if le {
+			units[i] = uint16(body[2*i]) | uint16(body[2*i+1])<<8
+		} else {
+			units[i] = uint16(body[2*i])<<8 | uint16(body[2*i+1])
+		}
+	}
+	text := string(utf16.Decode(units))
+	if strings.ContainsRune(text, utf8.RuneError) || strings.ContainsRune(text, 0) {
+		return nil, errWordsEncoding
+	}
+	// Bytes of another encoding read as UTF-16 (Latin-1 text after FF FE) come out
+	// as CJK and unassigned code points; a list never holds an unassigned one.
+	for _, r := range text {
+		if !unicode.IsGraphic(r) && !unicode.IsSpace(r) && !unicode.In(r, unicode.Cf, unicode.Cc) {
+			return nil, errWordsEncoding
+		}
+	}
+	return []byte(text), nil
+}
+
+// wordsLine is one line of the words file as the matcher sees it: the matcher's
+// own fold (foldTerm), so "invisible" has one owner. Whatever the fold drops
+// (format and control characters, combining marks) cannot hide a leading '#'
+// (a comment would load as a term and mark the check as personal), cannot make
+// a blank line a term, and is not stored: the term holds only what the owner can
+// see and matches the same text it would have matched anyway. A line that is
+// empty after the fold is blank (LoadWords refuses it by line number if the raw
+// line was not blank); one that starts with '#' is a comment.
+func wordsLine(s string) string {
+	return strings.TrimSpace(string(foldTerm(s).r))
 }
 
 // BuiltinWords returns the built-in list alone (Personal false).

@@ -343,7 +343,17 @@ func newBuiltinTerm(raw string) *term {
 	if len(f.r) == 0 {
 		return nil
 	}
-	return &term{raw: raw, items: f.r}
+	// A run of separators in the term is one separator, as in the text, so a term
+	// listed as "zorb - flux" matches its own text (matchAt lets one separator
+	// take a whole run).
+	items := make([]rune, 0, len(f.r))
+	for _, c := range f.r {
+		if (c == ' ' || c == '-') && len(items) > 0 && (items[len(items)-1] == ' ' || items[len(items)-1] == '-') {
+			continue
+		}
+		items = append(items, c)
+	}
+	return &term{raw: raw, items: items}
 }
 
 // matchAt returns the index in f.r just past a match of t starting at i, or -1.
@@ -355,6 +365,15 @@ func (t *term) matchAt(f *folded, i int) int {
 		}
 		j := i
 		for _, c := range t.items {
+			if (c == ' ' || c == '-') && j < len(r) && (r[j] == ' ' || r[j] == '-') {
+				// A separator inside a built-in term is a space or a hyphen
+				// (the fold already makes a no-break space and every dash one of
+				// those), and a run of them: "green card", "green-card", "green - card".
+				for j < len(r) && (r[j] == ' ' || r[j] == '-') {
+					j++
+				}
+				continue
+			}
 			if j >= len(r) || r[j] != c {
 				return -1
 			}
