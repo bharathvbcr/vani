@@ -196,45 +196,91 @@ func SyncNew(path string) error {
 	return err
 }
 
+// ErrChanging means OpenRead lost its race with a writer on every attempt: the
+// path was replaced by another regular file between the open and the check that
+// the open file is still the one at the path. It is returned only after
+// openReadAttempts tries; a single lost race is retried, not reported.
+var ErrChanging = errors.New("atomicfile: the file kept changing underneath the open")
+
+// openReadAttempts bounds OpenRead's retries of a lost race. Each loss needs a
+// whole atomic replace to land inside a few-microsecond window, so a handful of
+// tries is far past any real writer; a path that still moves is reported.
+const openReadAttempts = 8
+
+// afterOpenHook runs in openReadOnce between the open and the identity check.
+// Tests set it (export_test.go) to land a rename or a planted link exactly in
+// the window the check guards.
+var afterOpenHook func()
+
 // OpenRead opens path read-only without creating it. Directory components are
-// resolved; a symlink leaf is ErrLinkedLeaf and is not followed. A missing leaf
-// is os.ErrNotExist. A leaf that is not a regular file is ErrNotRegular and is
-// not opened, so a FIFO cannot block the read.
+// resolved; a symlink leaf is ErrLinkedLeaf and is not followed. A missing
+// leaf is os.ErrNotExist. A leaf that is not a regular file is ErrNotRegular
+// and is not opened, so a FIFO cannot block the read.
+//
+// The open follows links, so after it OpenRead proves the handle is the leaf it
+// inspected (os.SameFile against a second Lstat); that is what stops a link
+// planted between the first Lstat and the open from redirecting the read. If
+// the path now names a different regular file, a writer replaced it by atomic
+// rename: the handle read the old contents, which are whole, but the caller
+// asked for the file at the path, so OpenRead retries up to openReadAttempts
+// times and returns the old or the new file. A link or a non-regular file seen
+// at any attempt is refused at once, never retried. Still losing after the
+// retries is ErrChanging.
 func OpenRead(path string) (*os.File, error) {
 	path, err := ResolveLeaf(path)
 	if err != nil {
 		return nil, err
 	}
+	for range openReadAttempts {
+		f, retry, err := openReadOnce(path)
+		if !retry {
+			return f, err
+		}
+	}
+	return nil, fmt.Errorf("open %s: %w", filepath.Base(path), ErrChanging)
+}
+
+// openReadOnce is one OpenRead attempt. retry reports that the path was replaced
+// by another regular file during the attempt; every other outcome is final.
+func openReadOnce(path string) (f *os.File, retry bool, err error) {
 	st, err := os.Lstat(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if st.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s is a symbolic link; Vani will not read through it: %w", path, ErrLinkedLeaf)
+	if err := refuseNonRegular(path, st); err != nil {
+		return nil, false, err
 	}
-	if !st.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s (%s): %w", path, st.Mode().Type(), ErrNotRegular)
-	}
-	f, err := os.Open(path)
+	f, err = os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if afterOpenHook != nil {
+		afterOpenHook()
 	}
 	fst, ferr := f.Stat()
 	lst, lerr := os.Lstat(path)
 	if ferr == nil && lerr == nil && lst.Mode().IsRegular() && os.SameFile(fst, lst) {
-		return f, nil
+		return f, false, nil
 	}
 	_ = f.Close()
-	if lerr == nil && lst.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%s is a symbolic link; Vani will not read through it: %w", path, ErrLinkedLeaf)
-	}
-	if lerr == nil && !lst.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s (%s): %w", path, lst.Mode().Type(), ErrNotRegular)
-	}
 	if lerr != nil {
-		return nil, lerr
+		return nil, false, lerr
 	}
-	return nil, fmt.Errorf("open %s: the file kept changing underneath the open", filepath.Base(path))
+	if err := refuseNonRegular(path, lst); err != nil {
+		return nil, false, err
+	}
+	return nil, true, nil
+}
+
+// refuseNonRegular maps a link or a non-regular leaf to its sentinel error.
+func refuseNonRegular(path string, st os.FileInfo) error {
+	if st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symbolic link; Vani will not read through it: %w", path, ErrLinkedLeaf)
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("%s (%s): %w", path, st.Mode().Type(), ErrNotRegular)
+	}
+	return nil
 }
 
 // TornTail reports whether f is non-empty and its last byte is not a newline:
