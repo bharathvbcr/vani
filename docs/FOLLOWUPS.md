@@ -45,6 +45,38 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Agent CLI: `vani mcp` (2026-11-18): what is left
+
+The owner asked for CLI access to the app and tools for agents, "as sometimes MCP is unreliable".
+They delegated the scope to Fable ("ask fable and proceed"). Fable chose a read-only `vani mcp`
+bridge to the local gitpulse-mcp and devmap servers, plus the docs (skill: "App actions from the
+CLI", "When MCP is down"). It deferred the items below.
+
+- **One stdio MCP transport.** `internal/mcpstdio` is the third stdio JSON-RPC client in the
+  repository, beside `internal/resume/client.go` (DevPrism) and `internal/sources/page/mcp.go`
+  (lightpanda).
+  - Fable approved moving resume's transport into it, but only if `internal/resume/client_test.go`
+    passed unmodified. It cannot: those tests are white-box. They swap `c.p.stdin`, build a
+    `ringBuffer`, and call `p.cancel()` and `p.cmd.Process.Kill()` on the private `proc`. So the
+    bridge got its own client, built so convergence is a deletion.
+  - Folding resume onto `mcpstdio` needs the owner's leave to move those tests to the package
+    they test. Its exported surface and error strings stay.
+  - resume and `mcpstdio` differ on purpose in two places. resume accepts -32601 at `initialize`
+    (DevPrism has none), so it would keep that as an option. `mcpstdio` keeps `tools/list` empty
+    lists, which resume's `hashTools` refuses.
+  - page/mcp.go has different kill semantics (`maxUnread`, a private working directory). Fold it
+    in after resume.
+- **Schedule on/off from the CLI.** Every other app action has a CLI form (the skill lists them).
+  The schedule toggle is an `SMAppService` login-item registration (`ScheduleToggle.swift`), so
+  only the app can make it. A control channel into the app would be a new local surface that can
+  lead to paid runs. It needs a security-impact statement and the owner's yes before it is built.
+- **A GitPulse CLI belongs to GitPulse.** `vani mcp call gitpulse …` stands in for a native
+  `gitpulse` read CLI, which GitPulse does not ship (the `gitpulse` binary reveals the app). File it
+  there; when it exists, point the skill at it and drop the gitpulse entry here.
+- **readOnlyHint is the server's word.** The bridge trusts two owner-installed binaries to label
+  their own tools. A server update that marks a writer read-only would let it through. Re-check
+  `vani --json mcp tools gitpulse` after a GitPulse upgrade.
+
 ## Job-site search launcher: LinkedIn, Glassdoor, Naukri (2026-11-17): what is left
 
 The owner asked for browser-only scraping "with search terms" for LinkedIn, Naukri and Glassdoor,
