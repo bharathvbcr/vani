@@ -28,9 +28,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
@@ -83,7 +85,10 @@ func Derive(v *jobinsight.Vocab, p posting.Posting) Facts {
 }
 
 // format changes whenever the stored layout, or what a field means, does.
-const format = 2
+// 3: the pay parser no longer reads bonus or equity ranges, nor NT$, HK$, R$,
+// MX$ or any other letter-prefixed dollar, as a salary, and a period word past
+// a sentence end no longer attaches to the range before it.
+const format = 3
 
 // Version identifies the derivers: the vocabulary, and each deriver's answers
 // over a probe that exercises them (titles, locations, pay forms, odd text).
@@ -117,6 +122,12 @@ type Store struct {
 	m       map[posting.Key]entry
 	dirty   bool
 	loaded  string // how Open found the file, for Info
+	// newer is set when the file on disk is of a format newer than this
+	// build's: Save leaves it alone (see ErrNewerFormat).
+	newer bool
+	// seen is the file as Open found it, then as this Store last wrote it: Save
+	// reads the header again only when the file on disk is not that one.
+	seen fileIdentity
 	// changes counts the edits to m (Put, and each key Prune forgets).
 	changes uint64
 }
@@ -146,16 +157,75 @@ type storeEntry struct {
 const maxStoreBytes = 1 << 30
 
 // Open reads the store at path for version. A store that is missing, of
-// another version or unreadable starts empty; Info says which.
+// another version or unreadable starts empty; Info says which. A store of a
+// format newer than this build's also starts empty, but is read-only: Save
+// never overwrites it (Info says "read-only"), so an older binary does not
+// undo a newer one's work on every run.
 func Open(path, version string) *Store {
 	s := &Store{path: path, version: version, m: map[posting.Key]entry{}}
 	s.loaded = s.load()
 	return s
 }
 
+func (s *Store) markNewer(found int) string {
+	s.newer = true
+	return fmt.Sprintf("empty: read-only: the store is format %d, newer than this build's format %d; left untouched (update this vani)", found, format)
+}
+
+// fileIdentity names a file by what a Stat shows: absent, or present with an
+// inode, size and modification time. known is false when it could not be read.
+type fileIdentity struct {
+	known, exists bool
+	info          os.FileInfo
+}
+
+func statIdentity(path string) fileIdentity {
+	fi, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fileIdentity{known: true}
+	}
+	if err != nil {
+		return fileIdentity{}
+	}
+	return fileIdentity{known: true, exists: true, info: fi}
+}
+
+// same reports whether both name the same, unchanged file (or both no file).
+// An identity that could not be read is never the same as anything.
+func (a fileIdentity) same(b fileIdentity) bool {
+	if !a.known || !b.known || a.exists != b.exists {
+		return false
+	}
+	if !a.exists {
+		return true
+	}
+	return os.SameFile(a.info, b.info) && a.info.Size() == b.info.Size() && a.info.ModTime().Equal(b.info.ModTime())
+}
+
+// headerReads counts headerFormat calls, so a test can prove Save skips the
+// header read when the file is the one this Store last saw.
+var headerReads atomic.Int64
+
+// headerFormat reads only the Format field of the file at s.path.
+func (s *Store) headerFormat() (int, bool) {
+	headerReads.Add(1)
+	f, err := os.Open(s.path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	var h struct{ Format int }
+	// Bounded: a header is read from at most maxStoreBytes, whatever the file size.
+	if err := gob.NewDecoder(bufio.NewReaderSize(io.LimitReader(f, maxStoreBytes), 1<<20)).Decode(&h); err != nil {
+		return 0, false
+	}
+	return h.Format, true
+}
+
 func (s *Store) load() string {
 	f, err := os.Open(s.path)
 	if errors.Is(err, os.ErrNotExist) {
+		s.seen = fileIdentity{known: true}
 		return "empty: no store yet"
 	}
 	if err != nil {
@@ -166,12 +236,29 @@ func (s *Store) load() string {
 	if err != nil {
 		return "empty: " + err.Error()
 	}
-	if !fi.Mode().IsRegular() || fi.Size() > maxStoreBytes {
+	s.seen = fileIdentity{known: true, exists: true, info: fi}
+	if !fi.Mode().IsRegular() {
+		return "empty: the store is not a regular file of a plausible size"
+	}
+	if fi.Size() > maxStoreBytes {
+		// Classify by the header before calling the size implausible: a newer
+		// build's store is read-only whatever its size, and the body is never read.
+		if found, ok := s.headerFormat(); ok && found > format {
+			return s.markNewer(found)
+		}
 		return "empty: the store is not a regular file of a plausible size"
 	}
 	var sf storeFile
 	if err := gob.NewDecoder(bufio.NewReaderSize(f, 1<<20)).Decode(&sf); err != nil {
+		// A newer layout may not decode into storeFile; gob matches fields by
+		// name, so its Format still reads into a header of that field alone.
+		if found, ok := s.headerFormat(); ok && found > format {
+			return s.markNewer(found)
+		}
 		return "empty: unreadable: " + err.Error()
+	}
+	if sf.Format > format {
+		return s.markNewer(sf.Format)
 	}
 	if sf.Format != format || sf.Version != s.version {
 		return "empty: written by another version of the derivers"
@@ -265,10 +352,21 @@ func (s *Store) Info() string {
 // ErrBusy means another process is writing the store; the save was skipped.
 var ErrBusy = errors.New("jobfacts: another process is writing the store")
 
-// Save writes the store if anything changed since it was opened or saved.
+// ErrNewerFormat means the store on disk is of a newer format than this build
+// writes, so Save left it untouched. Two builds of different formats would
+// otherwise each rewrite the other's file on every run.
+var ErrNewerFormat = errors.New("jobfacts: the store is of a newer format; not overwritten")
+
+// Save writes the store if anything changed since it was opened or saved. It
+// returns ErrNewerFormat, writing nothing, when the file on disk is of a newer
+// format. (Two builds of the same format but another Version still replace each
+// other's file: neither is newer, and no order between Versions exists.)
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.newer {
+		return ErrNewerFormat
+	}
 	if !s.dirty {
 		return nil
 	}
@@ -280,6 +378,16 @@ func (s *Store) Save() error {
 		return fmt.Errorf("jobfacts: lock: %w", err)
 	}
 	defer lock.Release()
+	// Open's verdict can be stale: a resident daemon holds a store for long, and
+	// a newer build may have written the file since. Re-read the header under the lock.
+	// Only when the file is not the one this Store last saw: a header read
+	// decodes the whole file, too dear for every save of a store of tens of MB.
+	if now := statIdentity(s.path); (now.exists && !s.seen.same(now)) || !now.known {
+		if found, ok := s.headerFormat(); ok && found > format {
+			s.loaded = s.markNewer(found)
+			return ErrNewerFormat
+		}
+	}
 	sf := storeFile{Format: format, Version: s.version, Entries: make([]storeEntry, 0, len(s.m))}
 	for k, e := range s.m {
 		sf.Entries = append(sf.Entries, storeEntry{Key: k, In: e.In, F: e.F, HitsSet: e.F.Hits != nil, PaySet: e.F.Pay != nil})
@@ -294,6 +402,7 @@ func (s *Store) Save() error {
 	if err := atomicfile.Write(s.path, buf.Bytes()); err != nil {
 		return fmt.Errorf("jobfacts: %w", err)
 	}
+	s.seen = statIdentity(s.path)
 	s.dirty = false
 	return nil
 }

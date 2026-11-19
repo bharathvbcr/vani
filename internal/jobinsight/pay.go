@@ -113,11 +113,13 @@ const (
 const codes = `USD|CAD|AUD|NZD|SGD|GBP|EUR|CHF|INR|JPY|SEK|NOK|DKK|PLN|TWD|MYR|CNY|KRW|RON|RSD|SAR`
 
 // moneyRE matches one amount: an optional currency before it (a symbol, a
-// code, or a code then a symbol, "CAD $"), the number (thousands separated by
+// code, or a code then a symbol, "CAD $"; a letter-prefixed dollar the symbols
+// table does not name, "NT$", "HK$", "R$", "MX$", reads as a conflict, never as
+// USD), the number (thousands separated by
 // , . or a non-breaking space; at most two decimals), an optional k, and an
 // optional currency after it. It matches bare numbers too; an amount counts
 // only with a currency on it or on its range partner.
-var moneyRE = regexp.MustCompile(`(?i)((?:\b(?:` + codes + `)[ \x{00a0}\x{202f}]?)?(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|SG\$|S\$|\$|£|€|₹|¥)|\b(?:` + codes + `)\b)?[ \x{00a0}\x{202f}]?` +
+var moneyRE = regexp.MustCompile(`(?i)((?:\b(?:` + codes + `)[ \x{00a0}\x{202f}]?)?(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|SG\$|S\$|\b[a-z]{1,3}\$|\$|£|€|₹|¥)|\b(?:` + codes + `)\b)?[ \x{00a0}\x{202f}]?` +
 	`(\d{1,3}(?:(?:,|\.|\x{00a0}|\x{202f})\d{3})+|\d+)(?:[.,](\d{1,2}))?` +
 	`(?:[ \x{00a0}]?(k)\b)?` +
 	`(?:[ \x{00a0}\x{202f}]?(\b(?:` + codes + `)\b|€|£))?`)
@@ -134,7 +136,10 @@ var symbols = map[string]string{
 var ambiguous = map[string]bool{"$": true, "¥": true}
 
 // periodWords, matched in the text just after an amount (lowercased, with -
-// and _ read as spaces). The earliest match wins.
+// and _ read as spaces). The earliest match wins. A match in the amount's own
+// sentence on its own line is the amount's period; one past a sentence end or
+// a line break ("$50,000 - $60,000. Hourly staff ...") is only a fallback for
+// a range that is not plausible without it (see parsePay).
 var periodWords = []struct {
 	w string
 	p Period
@@ -150,8 +155,8 @@ var periodWords = []struct {
 // beforePeriod: a period word just before the amount ("Hourly rate: $50").
 var beforePeriod = map[string]Period{"hourly": Hour, "annual": Year, "annually": Year, "yearly": Year, "monthly": Month, "weekly": Week, "daily": Day}
 
-// payWords say the amount after them is pay; notPay words say it is not. The
-// nearest one before an amount decides.
+// payWords say the amount after them is pay; notPay words say it is not. A
+// salary word in the amount's sentence wins over a not-pay one (nearestWord).
 var payWords = map[string]bool{
 	"salary": true, "salaries": true, "base": true, "pay": true, "compensation": true, "comp": true,
 	"wage": true, "wages": true, "rate": true, "rates": true, "earn": true, "earnings": true, "ote": true,
@@ -169,6 +174,21 @@ var notPay = map[string]bool{
 	"coverage": true, "reimbursement": true, "reimbursed": true, "reimburse": true, "fee": true, "fees": true,
 	"customers": true, "users": true, "deductible": true, "commission": true,
 }
+
+// genericPay are the payWords that are range nouns or connectives, not salary
+// words: a not-pay word right before one in the same phrase modifies it ("bonus
+// range", "equity compensation", "bonus between"). The rest of payWords
+// (salary, base, pay, wage, earn, ote, hourly, annual and their forms) name
+// pay itself, so "Equity Salary: $150,000" is still a salary.
+var genericPay = map[string]bool{
+	"compensation": true, "comp": true, "rate": true, "rates": true, "earnings": true,
+	"range": true, "ranges": true, "band": true, "bands": true, "starting": true, "between": true,
+	"hourly": true, "annual": true, "annually": true,
+}
+
+// wholePay are the genericPay words that name pay as a whole: a salary word
+// unless a not-pay word directly modifies them ("equity compensation").
+var wholePay = map[string]bool{"compensation": true, "comp": true, "earnings": true}
 
 // notPayAfter words, right after an amount, say it is not pay ("$10,000
 // signing bonus"). Narrower than notPay: "$150k, plus equity" is pay.
@@ -348,24 +368,45 @@ func parsePay(text, dollar string) []Pay {
 		if !known {
 			continue
 		}
-		period, pend := readPeriod(text, last.end)
+		period, pend, far := readPeriod(text, last.end)
 		if period == "" {
-			period = beforeWord(text[max(0, a.start-before):a.start])
+			var farBefore Period
+			period, farBefore = beforeWord(text[max(0, a.start-before):a.start])
+			if farBefore != "" {
+				far = append(far, periodAt{farBefore, pend})
+			}
+		}
+		if period == "" && !plausible(info, lo, hi, Year) {
+			// A period word past a sentence end or line break names this
+			// range only when the range is not plausible without it
+			// ("Pay: $50 - $60 (USD). Per hour"; "$150,000 - $180,000.
+			// Hourly staff ..." stays per year).
+			for _, f := range far {
+				if plausible(info, lo, hi, f.p) {
+					period, pend = f.p, f.end
+					break
+				}
+			}
 		}
 		next := text[pend:min(len(text), pend+after)]
 		// The words after: in the same sentence, before the next amount.
-		if k := strings.IndexAny(next, ".;\n•|$£€₹¥0123456789"); k >= 0 {
+		if k := strings.IndexAny(next, ".;"+lineBreaks+"•|$£€₹¥0123456789"); k >= 0 {
 			next = next[:k]
 		}
 		nextWords := firstWords(next, 2)
+		// A not-pay word after "and" / "or" starts the next item ("$150,000 -
+		// $180,000 and bonus up to $20,000"), it does not label this amount.
+		if len(nextWords) > 0 && (nextWords[0] == "and" || nextWords[0] == "or") {
+			nextWords = nextWords[:1]
+		}
 		if anyIn(nextWords, notPayAfter) {
 			continue
 		}
 		// The nearest pay or not-pay word before decides, unless a pay word
 		// right after names it ("equity plus $150,000 - $180,000 base").
 		win := text[max(0, a.start-before):a.start]
-		decided := nearestWord(lineTail(win))
-		if decided == "" && nearestWord(win) == "pay" {
+		decided := nearestWord(win)
+		if decided == "" && earlierPay(win) {
 			// A finished sentence before can still name the amounts after
 			// it as pay ("The base salary is below.\n$150,000"), but a
 			// not-pay word there no longer vetoes them.
@@ -378,15 +419,12 @@ func parsePay(text, dollar string) []Pay {
 			continue
 		}
 		if period == "" {
-			if hi < info.lo {
-				continue
-			}
 			period = Year
 		}
-		amin, amax := lo*perYear[period], hi*perYear[period]
-		if lo <= 0 || lo > hi || hi > lo*maxRatio || amin < info.lo/2 || amax > info.hi || amax < info.lo {
+		if !plausible(info, lo, hi, period) {
 			continue
 		}
+		amin, amax := lo*perYear[period], hi*perYear[period]
 		p := byCur[cur]
 		if p == nil {
 			if len(byCur) >= MaxPays {
@@ -422,6 +460,13 @@ func parsePay(text, dollar string) []Pay {
 		return nil
 	}
 	return out
+}
+
+// plausible reports whether lo..hi per period is a believable range of pay in
+// the currency info describes.
+func plausible(info currencyInfo, lo, hi float64, period Period) bool {
+	amin, amax := lo*perYear[period], hi*perYear[period]
+	return lo > 0 && lo <= hi && hi <= lo*maxRatio && amin >= info.lo/2 && amax <= info.hi && amax >= info.lo
 }
 
 // payWindow is how far around a currency marker amounts are looked for: far
@@ -464,6 +509,15 @@ func payWindows(text string) [][2]int {
 		}
 	}
 	return out
+}
+
+// letterRun is the length of the ASCII letters s starts with.
+func letterRun(s string) int {
+	n := 0
+	for n < len(s) && isLetterByte(s[n]) {
+		n++
+	}
+	return n
 }
 
 func isLetterByte(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
@@ -548,6 +602,11 @@ func readToken(text string, m []int) (moneyTok, bool) {
 	if m[10] >= 0 {
 		suf = strings.ToLower(text[m[10]:m[11]])
 	}
+	if m[2] >= 0 && plainDollarPrefix(text[m[2]:m[3]]) {
+		// "to$180,000": an all-lowercase unknown prefix is ordinary text and
+		// the amount is a plain "$" one.
+		pre = "$"
+	}
 	t.cur, t.symbolOnly = resolve(pre, suf)
 	// A word right after the amount ("$50M", "$2 billion") or a % makes it
 	// a sum or a share, not pay.
@@ -560,6 +619,28 @@ func readToken(text string, m []int) (moneyTok, bool) {
 	return t, true
 }
 
+// glued are the short English words that land before a "$" with the space
+// lost ("up to$180,000", "is$150k"): such a prefix is no currency and the
+// amount is a plain "$" one.
+var glued = map[string]bool{
+	"to": true, "is": true, "up": true, "at": true, "of": true, "or": true, "in": true, "on": true, "by": true,
+	"as": true, "an": true, "be": true, "per": true, "and": true, "was": true, "for": true, "are": true,
+	"any": true, "the": true, "pay": true, "has": true, "can": true, "get": true, "via": true,
+}
+
+// plainDollarPrefix reports whether raw, the text moneyRE read before an
+// amount, is a glued English word (see glued) written in lowercase on a dollar
+// sign. Any other letter prefix is a foreign dollar or peso ("NT$", "mxn$",
+// "ars$", "rs$", "aus$"), which resolve drops; known codes and symbols
+// ("us$", "cad$") keep their meaning in any case.
+func plainDollarPrefix(raw string) bool {
+	n := letterRun(raw)
+	if n == 0 || n >= len(raw) || raw[n:] != "$" {
+		return false
+	}
+	return glued[raw[:n]]
+}
+
 // resolve picks a moneyTok's currency from what stands before and after it.
 func resolve(pre, suf string) (cur string, symbolOnly bool) {
 	code := func(s string) (string, bool) {
@@ -569,12 +650,19 @@ func resolve(pre, suf string) (cur string, symbolOnly bool) {
 		if c, ok := symbols[s]; ok {
 			return c, ambiguous[s]
 		}
-		if len(s) > 3 {
-			// Not a symbol and longer than a code: moneyRE matched a code
-			// then a symbol ("cad $", "cad$"). The code names the currency
-			// unless the symbol names another one ("usd c$").
-			c, sym := strings.ToUpper(s[:3]), strings.TrimLeftFunc(s[3:], unicode.IsSpace)
-			if sc, ok := symbols[sym]; ok && !ambiguous[sym] && sc != c {
+		if n := letterRun(s); n > 0 && n < len(s) {
+			// Not a symbol, and letters then more: moneyRE matched a code
+			// then a symbol ("cad $", "cad$"), or a letter-prefixed dollar the
+			// symbols table does not know ("nt$", "hk$", "r$"; a dollar that
+			// is not the US one). The code names the currency unless the
+			// symbol names another one ("usd c$"); an unknown prefix names
+			// no currency we read, so the amount conflicts and is dropped.
+			c := strings.ToUpper(s[:n])
+			if _, known := currencies[c]; !known {
+				return "!", false
+			}
+			sym := strings.TrimLeftFunc(s[n:], unicode.IsSpace)
+			if sc, ok := symbols[sym]; !ok || (!ambiguous[sym] && sc != c) {
 				return "!", false
 			}
 			return c, false
@@ -616,30 +704,78 @@ func combine(a, b moneyTok) (string, bool) {
 	return "", false
 }
 
+// periodAt is a period word read, and the offset past it.
+type periodAt struct {
+	p   Period
+	end int
+}
+
 // readPeriod finds the period stated just after end, and returns the offset
-// past it (end when none).
-func readPeriod(text string, end int) (Period, int) {
+// past it (end when none). A period word in the amount's own sentence and line
+// is the period (earliest wins). One past a sentence end (".", "!", "?", ";")
+// or a line break comes back in far, earliest first, for the caller to use
+// only when the range is implausible without it: a line break alone does not
+// end a sentence, but a period word on the next line is as often the next
+// line's own subject ("Hourly roles are listed apart").
+func readPeriod(text string, end int) (near Period, nearEnd int, far []periodAt) {
 	win := text[end:min(len(text), end+after)]
-	// ASCII-only lowering keeps byte offsets; the period words are ASCII.
-	b := []byte(win)
-	for i, c := range b {
-		switch {
-		case c >= 'A' && c <= 'Z':
-			b[i] = c + 'a' - 'A'
-		case c == '-' || c == '_':
-			b[i] = ' '
-		}
-	}
-	low := string(b) + " "
-	best, bestAt, bestEnd := Period(""), len(low), end
+	low, at := foldPeriodWindow(win)
+	nearAt, farAt := len(low), len(low)
+	nearEnd = end
+	var farBest periodAt
 	for _, pw := range periodWords {
 		i := strings.Index(low, pw.w)
-		if i < 0 || i >= bestAt || !fillerOnly(low[:i]) {
+		if i < 0 || !fillerOnly(low[:i]) {
 			continue
 		}
-		best, bestAt, bestEnd = pw.p, i, end+min(i+len(strings.TrimRight(pw.w, " ")), len(win))
+		stop := strings.ContainsAny(low[:i], ".!?;"+lineBreaks)
+		pend := end + min(at[i+len(strings.TrimRight(pw.w, " "))], len(win))
+		switch {
+		case !stop && i < nearAt:
+			near, nearAt, nearEnd = pw.p, i, pend
+		case stop && i < farAt:
+			farAt, farBest = i, periodAt{pw.p, pend}
+		}
 	}
-	return best, bestEnd
+	if farBest.p != "" {
+		far = []periodAt{farBest}
+	}
+	return near, nearEnd, far
+}
+
+// lineBreaks are the characters that end a line: a line break of any kind, not
+// only "\n" (CR, VT, FF, NEL, and the Unicode line and paragraph separators).
+// Every split of text into lines or sentences here uses this one set.
+const lineBreaks = "\n\r\v\f\u0085\u2028\u2029"
+
+// foldPeriodWindow lowers win's ASCII letters, reads "-" and "_" as spaces and
+// folds every Unicode space that is not a line break (a non-breaking space,
+// U+202F, an ideographic space) to one ASCII space, so "per\u00a0hour" matches
+// "per hour". The period words are ASCII. It appends a space, and returns the
+// folded text with, for each byte of it (and one past the end), the byte
+// offset in win it came from.
+func foldPeriodWindow(win string) (string, []int) {
+	var b strings.Builder
+	at := make([]int, 0, len(win)+2)
+	for i := 0; i < len(win); {
+		r, w := utf8.DecodeRuneInString(win[i:])
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteByte(byte(r) + 'a' - 'A')
+			at = append(at, i)
+		case r == '-' || r == '_' || (unicode.IsSpace(r) && !strings.ContainsRune(lineBreaks, r)):
+			b.WriteByte(' ')
+			at = append(at, i)
+		default:
+			b.WriteString(win[i : i+w])
+			for k := 0; k < w; k++ {
+				at = append(at, i+k)
+			}
+		}
+		i += w
+	}
+	b.WriteByte(' ')
+	return b.String(), append(at, len(win), len(win))
 }
 
 // fillerOnly: the period word may follow a currency code or a word like
@@ -648,6 +784,9 @@ func fillerOnly(s string) bool {
 	for _, w := range strings.Fields(strings.Map(func(r rune) rune {
 		if unicode.IsLetter(r) {
 			return r
+		}
+		if unicode.IsSymbol(r) {
+			return '#' // an emoji or sign between: not a filler
 		}
 		return ' '
 	}, s)) {
@@ -658,9 +797,41 @@ func fillerOnly(s string) bool {
 	return true
 }
 
+type wordSpan struct {
+	w          string // lowercased
+	start, end int    // byte offsets of the word in the (valid UTF-8) text
+}
+
+// wordSpans returns s's letter words, lowercased, with their offsets in s.
+func wordSpans(s string) []wordSpan {
+	var out []wordSpan
+	start := -1
+	for i, r := range s {
+		if unicode.IsLetter(r) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			out = append(out, wordSpan{strings.ToLower(s[start:i]), start, i})
+			start = -1
+		}
+	}
+	if start >= 0 {
+		out = append(out, wordSpan{strings.ToLower(s[start:]), start, len(s)})
+	}
+	return out
+}
+
 // words returns s's letter words, lowercased.
 func words(s string) []string {
-	return strings.FieldsFunc(strings.ToLower(strings.ToValidUTF8(s, " ")), func(r rune) bool { return !unicode.IsLetter(r) })
+	spans := wordSpans(strings.ToValidUTF8(s, " "))
+	out := make([]string, len(spans))
+	for i, sp := range spans {
+		out[i] = sp.w
+	}
+	return out
 }
 
 func firstWords(s string, n int) []string {
@@ -680,46 +851,158 @@ func anyIn(ws []string, set map[string]bool) bool {
 	return false
 }
 
-// nearestWord is "pay" or "not" for the pay or not-pay word nearest the end
-// of s, or "" for neither.
-func nearestWord(s string) string {
-	w := words(s)
+// earlierPay reports whether the nearest salary or not-pay word anywhere in s
+// is a salary word.
+func earlierPay(s string) bool {
+	w := wordSpans(strings.ToValidUTF8(s, " "))
 	for i := len(w) - 1; i >= 0; i-- {
 		switch {
-		case notPay[w[i]]:
-			return "not"
-		case payWords[w[i]]:
-			return "pay"
+		case notPay[w[i].w]:
+			return false
+		case payWords[w[i].w] && !genericPay[w[i].w]:
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
-// lineTail is s after the last sentence that ended its line (".", "!" or "?"
-// then a line break): a finished statement does not say whether the amounts
-// after it are not pay. Google's "…relevant education or training.\nUS:
-// $188000 - $274000 (USD)" was read as not pay by the word "education". A
-// heading line without a full stop ("Salary range:\n$100,000 - $150,000")
-// still counts, and ParsePay still lets a pay word before the stop decide
-// when the tail has none.
-func lineTail(s string) string {
-	for i := strings.LastIndexByte(s, '\n'); i >= 0; i = strings.LastIndexByte(s[:i], '\n') {
-		line := strings.TrimRight(s[:i], " \t\r ")
-		if line != "" && strings.ContainsRune(".!?", rune(line[len(line)-1])) {
-			return s[i+1:]
-		}
+// sentenceTail is s after the last sentence end in it: a ".", "!", "?" or ";".
+// A comma, a colon and a line break do not end one here (a heading line with
+// no stop, "Signing bonus\n$20,000 - $30,000", still says what its amount is).
+func sentenceTail(s string) string {
+	if i := strings.LastIndexAny(s, ".!?;"); i >= 0 {
+		return s[i+1:]
 	}
 	return s
 }
 
-func beforeWord(s string) Period {
-	w := words(s)
-	for i := len(w) - 1; i >= 0 && i >= len(w)-4; i-- {
-		if p, ok := beforePeriod[w[i]]; ok {
-			return p
+// nearestWord is "pay" or "not" for what the words of the last sentence of s
+// say about the amount after them. Any salary word makes it "pay", wherever it
+// stands and whatever not-pay word shares the sentence ("Salary and Bonus
+// Range", "Salary Range (bonus eligible)"). Salary words are payWords other
+// than genericPay, plus wholePay words ("compensation", "comp", "earnings")
+// unless a not-pay word directly modifies them ("equity compensation", "bonus
+// - earnings"). A sentence with none reads by its other words: a not-pay word
+// makes it "not" ("Bonus opportunity range"), generic pay words alone ("range",
+// "between") "pay", and no such word "".
+//
+// A phrase break between a not-pay word and the generic words that end the
+// sentence makes those a label of their own, so the amount is "pay": a line
+// break, an unclosed "(", and a comma, dash (but not one right after a not-pay
+// word), "and" or "or" with only generic words after it ("Bonus, Range:
+// $150,000", "Equity and range: $150,000"). A comma with other words after it
+// ("Equity grants, if any, are a range of $50,000") does not break it.
+func nearestWord(s string) string {
+	t := strings.ToValidUTF8(sentenceTail(s), " ")
+	if i := strings.LastIndexAny(t, "0123456789"); i >= 0 {
+		t = t[i+1:] // an amount before ends the words that describe this one
+	}
+	w := wordSpans(t)
+	if hasSalaryWord(t, w) {
+		return "pay"
+	}
+	generic, allGeneric := false, true // allGeneric: every word after i is generic
+	for i := len(w) - 1; i >= 0; i-- {
+		if generic && phraseBreak(t, w, i, allGeneric) {
+			return "pay"
 		}
+		switch {
+		case notPay[w[i].w]:
+			return "not"
+		case genericPay[w[i].w]:
+			generic = true
+		}
+		allGeneric = allGeneric && genericPay[w[i].w]
+	}
+	if generic {
+		return "pay"
 	}
 	return ""
+}
+
+// headingOfOther reports whether a not-pay word follows w[i] on a later line
+// of t with no salary word between ("Compensation\nBonus: ...").
+func headingOfOther(t string, w []wordSpan, i int) bool {
+	for j := i + 1; j < len(w); j++ {
+		if notPay[w[j].w] {
+			return strings.ContainsAny(t[w[i].end:w[j].start], lineBreaks)
+		}
+		if payWords[w[j].w] && !genericPay[w[j].w] || wholePay[w[j].w] {
+			return false
+		}
+	}
+	return false
+}
+
+// hasSalaryWord reports whether w, the words of t, holds a salary word (see
+// nearestWord).
+func hasSalaryWord(t string, w []wordSpan) bool {
+	for i, sp := range w {
+		switch {
+		case wholePay[sp.w]:
+			if i > 0 && notPay[w[i-1].w] && strings.Trim(t[w[i-1].end:sp.start], " \t-–—\u00a0") == "" {
+				continue
+			}
+			// A heading ("Compensation") with a not-pay word on a later
+			// line labels that line's amounts, not this word's.
+			if !headingOfOther(t, w, i) {
+				return true
+			}
+		case payWords[sp.w] && !genericPay[sp.w]:
+			return true
+		}
+	}
+	return false
+}
+
+// phraseBreak reports whether a phrase break stands between w[i] and the words
+// after it in t, or w[i] is "and" / "or" (see nearestWord).
+func phraseBreak(t string, w []wordSpan, i int, allGeneric bool) bool {
+	if allGeneric && (w[i].w == "and" || w[i].w == "or") {
+		return true
+	}
+	end := len(t)
+	if i+1 < len(w) {
+		end = w[i+1].start
+	}
+	gap := t[w[i].end:end]
+	if strings.ContainsAny(gap, lineBreaks) {
+		return true
+	}
+	if k := strings.LastIndex(gap, "("); k >= 0 && !strings.Contains(t[w[i].end+k:], ")") {
+		return true
+	}
+	if !allGeneric {
+		return false
+	}
+	// A dash right after a not-pay word joins them ("bonus-range", "Bonus -
+	// Compensation"); after any other word it starts a new phrase.
+	return strings.Contains(gap, ",") || (strings.ContainsAny(gap, "-–—") && !notPay[w[i].w])
+}
+
+// beforeWord finds a period word just before an amount: near when it is in the
+// amount's own sentence and line, far when only past a sentence end or line
+// break ("Hourly staff are welcome. $150,000"), which the caller uses only as
+// a fallback, as with readPeriod.
+func beforeWord(s string) (near, far Period) {
+	last := func(s string) Period {
+		w := words(s)
+		for i := len(w) - 1; i >= 0 && i >= len(w)-4; i-- {
+			if p, ok := beforePeriod[w[i]]; ok {
+				return p
+			}
+		}
+		return ""
+	}
+	start, found := 0, false
+	if i := strings.LastIndexAny(s, ".!?;"+lineBreaks); i >= 0 {
+		_, w := utf8.DecodeRuneInString(s[i:])
+		start, found = i+w, true
+	}
+	if near = last(s[start:]); near != "" || !found {
+		return near, ""
+	}
+	return "", last(s)
 }
 
 func endsWithWord(s, word string) bool {
