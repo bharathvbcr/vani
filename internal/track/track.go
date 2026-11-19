@@ -9,7 +9,6 @@
 package track
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -239,12 +238,11 @@ func LoadWords(dir string) (Words, error) {
 	}
 	// A UTF-8 byte-order mark in front of the file is an editor's habit, not a line.
 	data = bytes.TrimPrefix(data, []byte("\ufeff"))
-	sc := bufio.NewScanner(bytes.NewReader(data))
 	line, n := 0, 0
-	for sc.Scan() {
+	for _, raw := range wordsLines(string(data)) {
 		line++
-		t := wordsLine(sc.Text())
-		if strings.TrimSpace(sc.Text()) != "" && t == "" {
+		t := wordsLine(raw)
+		if strings.TrimSpace(raw) != "" && t == "" {
 			return Words{}, fmt.Errorf("track: %s line %d has no visible characters", WordsFile, line)
 		}
 		if t == "" || strings.HasPrefix(t, "#") {
@@ -261,13 +259,18 @@ func LoadWords(dir string) (Words, error) {
 		}
 		w.owner = append(w.owner, t)
 	}
-	if err := sc.Err(); err != nil {
-		return Words{}, fmt.Errorf("track: %s: %w", WordsFile, err)
-	}
 	w.Personal = n > 0
 	w.c = compile(w.builtin, w.owner)
 	return w, nil
 }
+
+// lineEnds turns CRLF and CR into LF, so a file from any platform splits the same.
+var lineEnds = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
+// wordsLines splits the file on CRLF, CR and LF. bufio.ScanLines splits on LF
+// only, which loses every term behind a comment in a CR-only file and joins two
+// terms into one.
+func wordsLines(s string) []string { return strings.Split(lineEnds.Replace(s), "\n") }
 
 // wordsText returns the file as UTF-8. An editor may save the list as UTF-16
 // with a byte-order mark; read as bytes that is a file of garbage lines, one
