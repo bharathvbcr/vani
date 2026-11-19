@@ -80,6 +80,14 @@ func main() {
 		}
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		out(map[string]any{"v": 1, "reading": "answered", "value": req.Options[0]})
+	case "model":
+		// MODE:model:<ms>: answers at once. The <ms> is the model time a test
+		// charges through Config.Elapsed; the helper itself does not wait.
+		if ms, err := strconv.Atoi(arg); err != nil || ms < 0 || ms > 60000 {
+			fmt.Println(`{"v":1,"reading":"failed","detail":"bad_mode"}`)
+			return
+		}
+		out(map[string]any{"v": 1, "reading": "answered", "value": req.Options[0]})
 	case "hang":
 		if arg != "" {
 			// The newline marks a complete write: a reader never takes a
