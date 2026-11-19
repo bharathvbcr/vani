@@ -813,11 +813,11 @@ func TestVectorsCompactDropsSupersededAndKeepsData(t *testing.T) {
 	}
 	var a, b [16]byte
 	a[0], b[0] = 1, 2
-	if n, _, err := s.append([]vecRec{{a, vec(6, 0)}, {b, vec(3, 1)}}); err != nil || n != 2 {
+	if n, _, err := s.append(context.Background(), []vecRec{{a, vec(6, 0)}, {b, vec(3, 1)}}); err != nil || n != 2 {
 		t.Fatalf("%d %v", n, err)
 	}
 	// a is re-embedded under a different chunking: the old record is superseded.
-	if n, _, err := s.append([]vecRec{{a, vec(2, 5)}}); err != nil || n != 1 {
+	if n, _, err := s.append(context.Background(), []vecRec{{a, vec(2, 5)}}); err != nil || n != 1 {
 		t.Fatalf("%d %v", n, err)
 	}
 	before := s.end
@@ -825,7 +825,7 @@ func TestVectorsCompactDropsSupersededAndKeepsData(t *testing.T) {
 		t.Fatal("dead bytes outweigh live ones and the log does not want compacting")
 	}
 	gen := s.gen
-	ev, err := s.compact(vecPrio{}, evictTo(MaxVectorBytes))
+	ev, err := s.compact(context.Background(), vecPrio{}, evictTo(MaxVectorBytes))
 	if err != nil || !ev.Compacted || ev.Evicted != 0 || s.end >= before || s.gen == gen {
 		t.Fatalf("%+v %v end %d->%d", ev, err, before, s.end)
 	}
@@ -861,7 +861,7 @@ func TestVectorsRoundTripBitExactAndNotRenormalised(t *testing.T) {
 	odd := []float32{3, 4, 0, 0, 0, 0, 0, 0}
 	var h [16]byte
 	h[3] = 9
-	if n, _, err := s.append([]vecRec{{h, [][]float32{unit, odd}}}); err != nil || n != 1 {
+	if n, _, err := s.append(context.Background(), []vecRec{{h, [][]float32{unit, odd}}}); err != nil || n != 1 {
 		t.Fatalf("%d %v", n, err)
 	}
 	// Reopen from the file, as the next Warm would.

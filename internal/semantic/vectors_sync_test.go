@@ -1,6 +1,7 @@
 package semantic
 
 import (
+	"context"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/atomicfile/synctest"
@@ -20,7 +21,7 @@ func TestVectorAppendSyncsTheLogOnce(t *testing.T) {
 		t.Fatalf("creating the log: %d file syncs and %d directory syncs, want 1 and 1", n, d)
 	}
 	log.Reset()
-	if n, _, err := s.append([]vecRec{primRec(1), primRec(2), primRec(3)}); n != 3 || err != nil {
+	if n, _, err := s.append(context.Background(), []vecRec{primRec(1), primRec(2), primRec(3)}); n != 3 || err != nil {
 		t.Fatalf("append: %d, %v", n, err)
 	}
 	if n := len(log.Files()); n != 1 {

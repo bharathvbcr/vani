@@ -237,7 +237,7 @@ func (m *Matcher) WarmWith(ctx context.Context, docs []Doc, max int, opt WarmOpt
 	openVecs := func() *chunkStore {
 		if !vsOpened {
 			vsOpened = true
-			vs = m.openVectors(&rep, docs)
+			vs = m.openVectors(ctx, &rep, docs)
 		}
 		return vs
 	}
@@ -448,7 +448,7 @@ func (m *Matcher) WarmWith(ctx context.Context, docs []Doc, max int, opt WarmOpt
 				recs = append(recs, vecRec{h: p.h, vecs: vecs})
 			}
 		}
-		m.appendVectors(vs, recs, &rep)
+		m.appendVectors(ctx, vs, recs, &rep)
 		i = j
 		pending := rep.Scored - savedAt
 		if opt.DeferSave {
