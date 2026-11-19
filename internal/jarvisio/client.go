@@ -34,7 +34,6 @@ const (
 	defaultTimeout = 8 * time.Second
 	maxTimeout     = 20 * time.Second
 	maxReplyBytes  = 1 << 20
-	maxStderrBytes = 4 << 10
 )
 
 // Error is a failed jarvis call. Message never includes a contact value this
@@ -204,7 +203,10 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(stderr, maxStderrBytes))
+		// Drain stderr to the end, keeping none of it: a child that writes more
+		// than the pipe holds would otherwise block on it and never reply. The
+		// call's own timeout bounds how long this runs.
+		_, _ = io.Copy(io.Discard, stderr)
 		// Wait closes the stdout pipe when the process has exited, and replies
 		// the process wrote just before exiting (it exits on stdin EOF) are
 		// still in that pipe: closing it under the reader below loses them, and
