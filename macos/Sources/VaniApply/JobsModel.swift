@@ -78,7 +78,10 @@ final class JobsModel {
     var selectedJobs: [Job] { jobs.filter { selectedKeys.contains($0.key) } }
 
     private(set) var page: JobsPage? {
-        didSet { page?.jobs.forEach(learnNote) }
+        didSet {
+            page?.jobs.forEach(learnNote)
+            pruneNoteBookkeeping()
+        }
     }
     /// When `page` was last read from vani without error. While `error` is set the rows on screen are
     /// from this time, not current (`lastGoodLoad`).
@@ -99,7 +102,10 @@ final class JobsModel {
     private(set) var error: String?
     /// The selected job as `vani jobs show` returned it (with its description).
     private(set) var detail: Job? {
-        didSet { if let detail, !learnSuppressed { learnNote(detail) } }
+        didSet {
+            if let detail { learnNote(detail) }
+            pruneNoteBookkeeping()
+        }
     }
     private(set) var detailError: String?
     /// The last failed mark or note, shown as an alert.
@@ -155,8 +161,27 @@ final class JobsModel {
     /// `applyWrite`, which stops a list that started before a write).
     private var notesConfirmedBySave: Set<String> = []
     private var noteSaveGeneration: [String: Int] = [:]
-    /// Set while a detail read that predates a save is being shown: its note is not vani's newest.
-    private var learnSuppressed = false
+    /// Ticks at every save start and end; `noteSaveGeneration` holds the tick of a job's latest one, so a
+    /// read that began at tick T predates a save of a job when that job's generation is above T.
+    private var noteSaveClock = 0
+    /// Ticks below this were forgotten by `pruneNoteBookkeeping`: a read that began before it cannot tell
+    /// whether it predates a save, so it learns no note.
+    private var notePruneFloor = 0
+    /// Set while a read that began at this tick is being shown: it learns no note of a job saved since.
+    private var learnReadStart: Int?
+    /// Set while a save's own reply is being placed in the detail and the page: the reply is no read of
+    /// vani's state after the save, so it learns nothing (the save already settled the record).
+    private var ownReplyKey: String?
+    /// Jobs whose save succeeded and is still placing its reply and re-listing: a read landing meanwhile
+    /// began before the save finished, so it learns nothing of that job.
+    private var notesFinalizing: Set<String> = []
+    /// Set while a write's reply is patched into the page: the other rows are what the page already held,
+    /// not a read, so only the written job (and not for a note save's own reply) is learned.
+    private var patching: (key: String, learns: Bool)?
+    /// Jobs whose note a read after the save reported blank while the save's confirmation still stood:
+    /// the note is neither erased nor trusted, so no draft for it is dropped as "no change" (a commit
+    /// sends it, and the write's reply settles it).
+    private var notesUnsettled: Set<String> = []
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
     /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
@@ -321,6 +346,7 @@ final class JobsModel {
         await loadLabels()
         listGeneration += 1
         let gen = listGeneration
+        let readStart = noteSaveClock
         // A list starting now reads every write made so far: a reconcile still waiting is not needed.
         reconcileGeneration += 1
         // The list this one supersedes is stopped rather than left to run to its timeout; its
@@ -349,7 +375,9 @@ final class JobsModel {
         reconciling = false
         switch result {
         case let .success(p):
+            learnReadStart = readStart
             page = p
+            learnReadStart = nil
             pageLoadedAt = Date()
             error = nil
             // Only ranked roles were put in front of the owner to pass over; an
@@ -437,15 +465,15 @@ final class JobsModel {
         guard let key = selection else { detail = nil; return }
         if detail?.key != key { detail = nil }
         let c = client()
-        let savesAtStart = noteSaveGeneration[key, default: 0]
+        let readStart = noteSaveClock
         Task {
             let result = await BlockingWork.run { try c.show(key) }
             guard gen == detailGeneration else { return }
             switch result {
             case let .success(j):
-                learnSuppressed = noteSaveGeneration[key, default: 0] != savesAtStart
+                learnReadStart = readStart
                 detail = j
-                learnSuppressed = false
+                learnReadStart = nil
             case let .failure(err): detailError = String(describing: err)
             }
         }
@@ -549,9 +577,13 @@ final class JobsModel {
     /// write, when a visible list is in flight (it may have read the marks before the write and would
     /// land over the patch), and while Insights is open (its charts are over the selection, and only
     /// vani can recount them).
-    private func applyWrite(_ reply: Job) async {
+    private func applyWrite(_ reply: Job, ownNote: Bool = false) async {
         let next = page?.patched(with: reply, minRelevance: filter.minRelevance)
-        if let next { page = next }
+        if let next {
+            patching = (reply.key, !ownNote)
+            page = next
+            patching = nil
+        }
         if next == nil || loading || (showInsights && view.isRanked) {
             await refresh()
             return
@@ -657,14 +689,40 @@ final class JobsModel {
     /// The note vani has for `key` as far as this page knows; nil when the job is on neither the
     /// page nor the detail.
     private func learnNote(_ job: Job) {
-        guard inflightNotes[job.key] == nil else { return }
+        guard inflightNotes[job.key] == nil, ownReplyKey != job.key, !notesFinalizing.contains(job.key) else { return }
+        if let patching, !(patching.learns && patching.key == job.key) { return }
+        if let start = learnReadStart, start < notePruneFloor || (noteSaveGeneration[job.key] ?? 0) > start { return }
         let note = (job.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         // A read with no note for a job whose non-blank note this app just confirmed by a save is no
         // evidence the note is gone: the resident reader's list can lag a write. A read that carries a
         // note ends that protection and is believed.
-        if note.isEmpty, notesConfirmedBySave.contains(job.key) { return }
+        if note.isEmpty, notesConfirmedBySave.contains(job.key) {
+            notesUnsettled.insert(job.key)
+            return
+        }
         notesConfirmedBySave.remove(job.key)
+        notesUnsettled.remove(job.key)
         confirmedNotes[job.key] = note
+    }
+
+    /// Forgets the save bookkeeping of a job that is on neither the page nor the detail and has no draft
+    /// or save in flight, so it does not grow with every job ever noted.
+    private func pruneNoteBookkeeping() {
+        let held = Set(noteSaveGeneration.keys).union(notesConfirmedBySave).union(notesUnsettled)
+        guard !held.isEmpty else { return }
+        var live = Set(page?.jobs.map(\.key) ?? [])
+        if let detail { live.insert(detail.key) }
+        live.formUnion(noteDrafts.keys)
+        live.formUnion(notesSaving)
+        live.formUnion(inflightNotes.keys)
+        let gone = held.subtracting(live)
+        guard !gone.isEmpty else { return }
+        for key in gone {
+            noteSaveGeneration[key] = nil
+            notesConfirmedBySave.remove(key)
+            notesUnsettled.remove(key)
+        }
+        notePruneFloor = noteSaveClock
     }
 
     /// The newest note state this app knows for `key`: the save in flight, else the confirmed note;
@@ -674,6 +732,7 @@ final class JobsModel {
     /// Whether a draft is no change from the newest known note. A blank draft is no change either
     /// when the stored note was never read: saving it would clear a note nobody saw.
     private func isNoChange(_ key: String, _ trimmed: String) -> Bool {
+        if notesUnsettled.contains(key) { return false }
         let known = knownNote(key)
         return trimmed == known || (trimmed.isEmpty && known == nil)
     }
@@ -747,19 +806,29 @@ final class JobsModel {
         let c = client()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         inflightNotes[key] = trimmed
-        noteSaveGeneration[key, default: 0] += 1
+        noteSaveClock += 1
+        noteSaveGeneration[key] = noteSaveClock
+        notesUnsettled.remove(key)
         let result = await BlockingWork.run { try c.note(key, trimmed) }
         inflightNotes[key] = nil
-        noteSaveGeneration[key, default: 0] += 1
+        noteSaveClock += 1
+        noteSaveGeneration[key] = noteSaveClock
         switch result {
         case let .success(j):
             confirmedNotes[key] = trimmed
+            notesUnsettled.remove(key)
+            notesFinalizing.insert(key)
+            defer { notesFinalizing.remove(key) }
             if trimmed.isEmpty { notesConfirmedBySave.remove(key) } else { notesConfirmedBySave.insert(key) }
             if let draft = noteDrafts[key], draft.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
                 noteDrafts[key] = nil
             }
-            if detail?.key == key { detail = merged(j) }
-            await applyWrite(j)
+            if detail?.key == key {
+                ownReplyKey = key
+                detail = merged(j)
+                ownReplyKey = nil
+            }
+            await applyWrite(j, ownNote: true)
             return true
         case let .failure(err):
             // The text that failed to save is not lost: it is the draft again unless a newer one was typed.
