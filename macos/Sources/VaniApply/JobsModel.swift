@@ -308,6 +308,7 @@ final class JobsModel {
             ? BlockingWork.run { try c.gaps(v, query: q, filter: f, cancellation: flag) }
             : nil
         let (result, statsResult, gapsResult) = await (listed, counted, gapped)
+        var impressionKeys: [String]?
         guard gen == listGeneration else { return } // a newer list superseded this one
         loading = false
         listFlag = nil
@@ -320,9 +321,7 @@ final class JobsModel {
             error = nil
             // Only ranked roles were put in front of the owner to pass over; an
             // unranked posting awaiting triage is not "seen and passed".
-            if v.isRanked {
-                await reportImpressions(p.jobs.prefix(JobsClient.impressionRows).map(\.key), view: v)
-            }
+            if v.isRanked { impressionKeys = p.jobs.prefix(JobsClient.impressionRows).map(\.key) }
         case let .failure(err):
             error = String(describing: err)
         }
@@ -331,6 +330,8 @@ final class JobsModel {
             stats = st
             statsError = nil
         case let .failure(err)?:
+            // Charts over an older selection never sit under the error that says this one failed.
+            stats = nil
             statsError = String(describing: err)
         case nil:
             break
@@ -345,6 +346,9 @@ final class JobsModel {
         case nil:
             break
         }
+        // Last, so no await sits between the generation check above and the state it guards: a newer
+        // list that landed during the report could otherwise be overwritten by this older one.
+        if let impressionKeys { await reportImpressions(impressionKeys, view: v) }
     }
 
     /// Why the rows on screen could not be reported to `vani impressions log`;
