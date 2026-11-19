@@ -67,7 +67,7 @@ type Server struct {
 	// it is safe to read once exited is closed.
 	waitErr error
 	stderr  *capped
-	once   sync.Once
+	once    sync.Once
 }
 
 // args is the llama-server command line for a validated cfg.
