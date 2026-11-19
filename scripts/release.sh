@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build, sign and (unless --dry-run) publish a private GitHub release of Vani.
-#   scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests]
+#   scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests] [--allow-no-tessl]
 # Policy (docs/RELEASE.md): signed with the Apple Development identity exactly as
 # macos/scripts/bundle.sh signs, not notarized, published as a GitHub release in
 # the private repo, rolled back by reinstalling the previous release's zip.
@@ -8,6 +8,13 @@
 # --dry-run builds, signs and verifies into dist/ and reports every precondition
 #   that would refuse a real release; it never tags, pushes or creates a release.
 # --skip-tests skips `go test` and `swift test`; the release notes say so loudly.
+# --allow-no-tessl lets a release embed a vani built without -tags tessl (no semantic matching); without the flag
+#   such a build is refused, and with it the release notes say so.
+#
+# The tag must name the tree that was built. The build reads the live working tree, so after it (immediately before
+# tagging) the script re-verifies that HEAD is still HEAD_SHA and that no tracked file changed, and refuses otherwise.
+# (Chosen over building in a detached worktree of HEAD_SHA: the build needs ignored local state - go.work, the
+# extension's dist folders, the Tessl archive - that a fresh worktree does not carry.)
 #
 # Test seams (tests only; never set them for a real release):
 #   VANI_RELEASE_GIT  git executable (default: git)
@@ -27,16 +34,18 @@ die() { echo "release.sh: refusing: $*" >&2; exit 1; }
 
 DRY=0
 SKIP_TESTS=0
+ALLOW_NO_TESSL=0
 VERSION=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
-    -*) die "unknown flag $arg (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests])" ;;
+    --allow-no-tessl) ALLOW_NO_TESSL=1 ;;
+    -*) die "unknown flag $arg (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests] [--allow-no-tessl])" ;;
     *) [ -z "$VERSION" ] || die "more than one VERSION given"; VERSION="$arg" ;;
   esac
 done
-[ -n "$VERSION" ] || die "VERSION missing (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests])"
+[ -n "$VERSION" ] || die "VERSION missing (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests] [--allow-no-tessl])"
 
 # Preconditions that always refuse, dry run or not.
 [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
@@ -110,7 +119,19 @@ fi
 # Build: bundle.sh signs inside-out and stamps the embedded vani with VANI_VERSION.
 rm -rf "$DIST"
 mkdir -p "$DIST"
-VANI_VERSION="$VERSION" "$ROOT/macos/scripts/bundle.sh"
+BUILD_INFO="$DIST/.build-info"
+VANI_BUILD_INFO_OUT="$BUILD_INFO" VANI_VERSION="$VERSION" "$ROOT/macos/scripts/bundle.sh"
+# The embedding engine must be in the vani that ships: bundle.sh records whether it was (a build without it only warns).
+NO_TESSL=0
+TESSL_STATE="$(sed -n 's/^tessl=//p' "$BUILD_INFO" 2>/dev/null | head -n1 || true)"
+if [ "$TESSL_STATE" != "1" ]; then
+  NO_TESSL=1
+  if [ "$ALLOW_NO_TESSL" = 1 ]; then
+    echo "release.sh: WARNING vani built without -tags tessl (--allow-no-tessl); the release notes say so" >&2
+  else
+    problem "no-tessl: the embedded vani was not built with -tags tessl (build info: '${TESSL_STATE:-missing}'); build the engine archive or pass --allow-no-tessl"
+  fi
+fi
 APP="$ROOT/macos/build/$APP_NAME"
 codesign --verify --deep --strict "$APP" || die "codesign-verify-failed: $APP"
 
@@ -143,6 +164,7 @@ NOTES_FILE="$DIST/.release-notes.md"
   case " ${NOTES[*]:-} " in
     *tests-skipped*) echo "- **TESTS WERE SKIPPED for this release (--skip-tests).**" ;;
   esac
+  [ "$NO_TESSL" = 0 ] || echo "- **Built WITHOUT the Tessl embedding engine** (--allow-no-tessl): semantic knowledge-base matching reports \"not run\"."
   [ -z "$SWIFT_SKIPPED" ] || echo "- **$SWIFT_SKIPPED Swift tests skipped, not run** (no Go vani built, or the runner not trusted for accessibility)."
   echo
   echo "## First open"
@@ -161,6 +183,12 @@ NOTES_FILE="$DIST/.release-notes.md"
 echo
 echo "built $VERSION at ${HEAD_SHA:0:7}: $SUMMARY"
 ls -l "$DIST/$APP_ZIP" "$DIST/$CLI_ZIP" "$DIST/SHA256SUMS"
+
+# The tag below names HEAD_SHA, so the artifacts above must have been built from exactly that tree: HEAD must not have
+# moved and no tracked file may differ from it (untracked files were checked clean before the build, and the build's own
+# outputs are gitignored).
+[ "$("$GIT" -C "$ROOT" rev-parse HEAD)" = "$HEAD_SHA" ] || problem "head-moved: HEAD changed from ${HEAD_SHA:0:7} during the build; the artifacts do not match it"
+[ -z "$("$GIT" -C "$ROOT" status --porcelain --untracked-files=no)" ] || problem "tree-changed: a tracked file changed during the build; the artifacts do not match ${HEAD_SHA:0:7}"
 
 if [ "$DRY" = 1 ]; then
   echo "dry run: nothing tagged, pushed or published. Notes: $NOTES_FILE"

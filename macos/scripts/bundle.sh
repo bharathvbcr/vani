@@ -7,6 +7,8 @@
 # verification run that must not replace the app the installer picks up.
 # VANI_REUSE_EXTENSION=1 packs the extension/dist-* folders as they are instead of
 # rebuilding them (when extension/src is being edited elsewhere); they must exist.
+# VANI_BUILD_INFO_OUT (a file path; scripts/release.sh sets it) receives "tessl=1" when the embedded vani was built
+# with -tags tessl, "tessl=0" when it was built without, and "tessl=unknown" when VANI_CLI_BINARY supplied it.
 set -euo pipefail
 
 MACOS="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,6 +59,7 @@ cp "$MACOS/Support/LaunchAgents/dev.vbcr.vani.schedule.agent.plist" "$APP/Conten
 if [ -n "${VANI_CLI_BINARY:-}" ]; then
   [ -x "$VANI_CLI_BINARY" ] || { echo "VANI_CLI_BINARY is not an executable: $VANI_CLI_BINARY" >&2; exit 1; }
   cp "$VANI_CLI_BINARY" "$APP/Contents/Helpers/vani"
+  [ -z "${VANI_BUILD_INFO_OUT:-}" ] || echo "tessl=unknown" > "$VANI_BUILD_INFO_OUT"
 else
   # Embedding-based knowledge-base matching (internal/semantic) links the Tessl
   # engine, so it is built in only on Apple silicon when the engine archive
@@ -70,14 +73,17 @@ else
   fi
   TESSL_ARCHIVE="${TESSL_ARCHIVE:-$TESSL_GO_DIR/engine/target/release/libgusset.a}"
   GO_TAGS=""
+  TESSL_BUILT=0
   TESSL_CFLAGS=""
   if [ "$(uname -s)/$(uname -m)" = "Darwin/arm64" ] && [ -f "$TESSL_ARCHIVE" ]; then
     GO_TAGS="tessl"
+    TESSL_BUILT=1
     TESSL_SHA="$(shasum -a 256 "$TESSL_ARCHIVE" | cut -c1-16)"
     TESSL_CFLAGS="-DTESSL_ENGINE_SHA=${TESSL_SHA}"
   else
     echo "bundle.sh: building vani without -tags tessl (no Apple silicon or no $TESSL_ARCHIVE): semantic matching will report \"not run\"" >&2
   fi
+  [ -z "${VANI_BUILD_INFO_OUT:-}" ] || echo "tessl=$TESSL_BUILT" > "$VANI_BUILD_INFO_OUT"
   # VANI_VERSION (scripts/release.sh) stamps `vani version`; unset, it says "dev".
   CGO_CFLAGS="${TESSL_CFLAGS:+$TESSL_CFLAGS }${CGO_CFLAGS:-}" go -C "$VANI" build ${GO_TAGS:+-tags "$GO_TAGS"} ${VANI_VERSION:+-ldflags "-X main.version=$VANI_VERSION"} -trimpath -o "$APP/Contents/Helpers/vani" ./cmd/vani
 fi
