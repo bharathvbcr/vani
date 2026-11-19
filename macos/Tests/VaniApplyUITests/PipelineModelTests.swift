@@ -69,6 +69,10 @@ private struct PipelineFixture {
         *) exit 2 ;;
         esac
         case "$(cat "$D/mode")" in
+        norecord-status-down)
+          touch "$D/statusdown"
+          echo 'vani: ledger: directory is locked by another process: another vani holds it (the daemon)' >&2
+          exit 1 ;;
         recorded-then-status-down)
           # vani records the run, then fails it; every status read from then on fails (a loaded host).
           status "$running"
@@ -441,5 +445,81 @@ final class PipelineModelTests: XCTestCase {
         XCTAssertNotNil(m.runError)
         XCTAssertNil(m.manualRun)
         XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-once") })
+    }
+}
+
+/// Attack tests for runUnverified (the model, never the AX classes).
+@MainActor
+final class PipelineModelUnverifiedAttackTests: XCTestCase {
+    private func model(_ f: PipelineFixture) throws -> PipelineModel {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "vani-pipeline-attack-\(UUID().uuidString)"))
+        let vani = f.vani
+        return PipelineModel(client: { PipelineClient(vaniBinary: vani, timeout: 10) },
+                             launcher: { ManualRunLauncher(runner: DraftRunner(vaniBinary: vani, keys: .noKey, decisionKey: { nil })) },
+                             defaults: defaults)
+    }
+
+    private func eventually(_ what: String, within seconds: TimeInterval = 10, _ done: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !done() {
+            if Date() > deadline { return XCTFail("timed out waiting for \(what)") }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    /// A run that never started, with a status read that keeps failing, cannot be told from one
+    /// that did: unverified, not "could not start". The next run clears the note.
+    func testANeverRecordedRunWithAFailingStatusIsUnverifiedAndTheNextRunClearsIt() async throws {
+        let f = try PipelineFixture(self, mode: "norecord-status-down", lastRun: oldRun)
+        let m = try model(f)
+        await m.refresh()
+        await m.startRun(ManualRunOptions(noDigest: true))
+        try await eventually("the run's exit") { m.manualRun == nil && !m.startingRun }
+        XCTAssertNil(m.runError)
+        XCTAssertNotNil(m.runUnverified)
+        // Next run: the host recovers and vani refuses plainly; the old note must be gone and the
+        // refusal is now a verified "could not start".
+        try FileManager.default.removeItem(at: f.dir.appendingPathComponent("statusdown"))
+        try Data("refused".utf8).write(to: f.dir.appendingPathComponent("mode"))
+        await m.refresh()
+        await m.startRun(ManualRunOptions(noDigest: true))
+        try await eventually("the second exit") { m.manualRun == nil && !m.startingRun && m.runError != nil }
+        XCTAssertNil(m.runUnverified, "the next run clears the unverified note")
+        XCTAssertTrue(m.runError?.contains("another vani holds it") == true, m.runError ?? "nil")
+    }
+
+    /// A run vani refused, with a healthy status, is "could not start" even while other reads
+    /// (the poll timer, Refresh clicks) keep superseding the exit's re-read.
+    func testARefusedRunStaysCouldNotStartWhileOtherReadsSupersedeTheExitRead() async throws {
+        let f = try PipelineFixture(self, mode: "refused", lastRun: oldRun)
+        let m = try model(f)
+        await m.refresh()
+        let hammer = Task { @MainActor in while !Task.isCancelled { await m.refresh(interactive: false) } }
+        defer { hammer.cancel() }
+        await m.startRun(ManualRunOptions(noDigest: true))
+        try await eventually("the exit") { m.manualRun == nil && !m.startingRun }
+        hammer.cancel()
+        await hammer.value
+        XCTAssertNotNil(m.runError ?? m.runUnverified, "a failed run is never silent")
+        XCTAssertNil(m.runUnverified, "the status was readable the whole time: this run never started, it is not 'unverified'")
+        XCTAssertNotNil(m.runError)
+    }
+
+    /// Stop during the exit re-read loop: a cancelled run with reads being superseded settles.
+    func testStopWhileReadsAreSupersededSettles() async throws {
+        let f = try PipelineFixture(self, mode: "stoppable", lastRun: oldRun)
+        let m = try model(f)
+        await m.refresh()
+        await m.startRun(ManualRunOptions())
+        try await eventually("the run's record") { m.status?.lastRun.state == .running }
+        let hammer = Task { @MainActor in while !Task.isCancelled { await m.refresh(interactive: false) } }
+        defer { hammer.cancel() }
+        m.stopRun()
+        m.stopRun()
+        try await eventually("the run to settle") { m.manualRun == nil }
+        hammer.cancel()
+        await hammer.value
+        XCTAssertNil(m.runError)
+        XCTAssertFalse(m.runInProgress)
     }
 }
