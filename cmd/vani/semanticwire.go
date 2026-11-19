@@ -99,12 +99,7 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 		w.noteSimilarity(false, msg)
 	}
 	titles := semantic.NewTitleIndex()
-	for _, r := range w.led.All() {
-		// A closed record has no resident text (BodyEvicted) and Add skips a blank
-		// one. The index is only asked about texts of postings the near-duplicate
-		// pass still considers, which leaves out Dead, Dropped and Duplicate ones.
-		titles.Add(r.Posting.Title, srcutil.SourceText(r.Posting.Description)) // the text the stage hands sim
-	}
+	fillTitleIndex(titles, w.led.All(), w.warnf)
 	return semantic.NewTitledSimilarity(emb, cache, titles), func() {
 		if cache != nil {
 			if err := cache.Save(); err != nil {
@@ -116,6 +111,21 @@ func (w *wired) nearDupSimilarity(ctx context.Context) (sim func(context.Context
 		if closeEmb != nil {
 			_ = closeEmb()
 		}
+	}
+}
+
+// fillTitleIndex records each record's title under the description text the
+// stage hands the similarity. A closed record has no resident text
+// (BodyEvicted) and Add skips a blank one. The index is only asked about texts
+// of postings the near-duplicate pass still considers, which leaves out Dead,
+// Dropped and Duplicate ones. A full index is said once, through warnf: the
+// postings past its bound are embedded without a title, a weaker reading.
+func fillTitleIndex(titles *semantic.TitleIndex, recs []ledger.Record, warnf func(string, ...any)) {
+	for _, r := range recs {
+		titles.Add(r.Posting.Title, srcutil.SourceText(r.Posting.Description))
+	}
+	if titles.Full() {
+		warnf("near-duplicate title index is full: postings past its bound are embedded without a title")
 	}
 }
 

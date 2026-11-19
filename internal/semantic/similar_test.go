@@ -414,11 +414,15 @@ func TestTitleIndex(t *testing.T) {
 	if y.Title("d1") != "A" {
 		t.Error("repeat made it ambiguous")
 	}
-	// The key is the embedded part: a long description matches by its first kilobyte.
+	// The key is the whole description, not the embedded first kilobyte: a
+	// different tail is a different posting and finds no title.
 	long := strings.Repeat("x", MaxDupTextBytes)
 	y.Add("Long", long+" tail one")
-	if y.Title(long+" a different tail") != "Long" {
-		t.Error("lookup by the embedded prefix failed")
+	if y.Title(long+" tail one") != "Long" {
+		t.Error("lookup by the whole description failed")
+	}
+	if y.Title(long+" a different tail") != "" {
+		t.Error("a different tail found the title of another posting")
 	}
 	var nilIdx *TitleIndex
 	if nilIdx.Title("d1") != "" {
