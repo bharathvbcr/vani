@@ -30,6 +30,15 @@ const (
 	maxProxyIdle     = 10 * time.Minute
 	maxProxyBytes    = 1 << 30
 	maxProxyLifetime = time.Hour
+
+	// proxyHeaderTimeout bounds a request's header read, from connect to the
+	// last header byte: a CONNECT is one short line plus headers, so a client
+	// that has not finished it in this long is stalled or probing.
+	proxyHeaderTimeout = 10 * time.Second
+	// proxyIdleConnTimeout bounds a kept-alive connection that carries no
+	// request (e.g. after a 4xx refusal); hijacked CONNECT tunnels are exempt
+	// and keep their own IdleTimeout and MaxLifetime.
+	proxyIdleConnTimeout = 30 * time.Second
 )
 
 // ProxyConfig bounds a Proxy. Zero fields take the defaults.
@@ -63,6 +72,9 @@ type Proxy struct {
 	conns   map[net.Conn]struct{}
 	slots   chan struct{}
 	done    chan struct{} // closed by Close
+	// headerTimeout and idleConnTimeout are the http.Server's; fields so a
+	// test can shorten them before Start.
+	headerTimeout, idleConnTimeout time.Duration
 	wg      sync.WaitGroup
 }
 
@@ -96,6 +108,9 @@ func NewProxy(c *Client, cfg ProxyConfig) (*Proxy, error) {
 		conns: map[net.Conn]struct{}{},
 		slots: make(chan struct{}, cfg.MaxTunnels),
 		done:  make(chan struct{}),
+
+		headerTimeout:   proxyHeaderTimeout,
+		idleConnTimeout: proxyIdleConnTimeout,
 	}, nil
 }
 
@@ -128,7 +143,8 @@ func (p *Proxy) Start(ctx context.Context) (addr, token string, err error) {
 	p.token = token
 	p.srv = &http.Server{
 		Handler:           http.HandlerFunc(p.serve),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: p.headerTimeout,
+		IdleTimeout:       p.idleConnTimeout,
 		MaxHeaderBytes:    16 << 10,
 		ErrorLog:          log.New(io.Discard, "", 0),
 	}
