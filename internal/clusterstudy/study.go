@@ -9,6 +9,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 )
 
 // Study is the postings of one export with the binary target (is Sonnet's
@@ -200,6 +202,12 @@ func ReadFitSummary(path string) (FitSummary, error) {
 	if _, err := s.KeysDigest(); err != nil {
 		return FitSummary{}, err
 	}
+	type fitKey struct {
+		algo string
+		k    int
+		seed uint64
+	}
+	seen := make(map[fitKey]int, len(s.Runs))
 	for i, r := range s.Runs {
 		switch r.Algo {
 		case AlgoEmeansCPU, AlgoEmeansMetal, AlgoLloyd:
@@ -209,6 +217,11 @@ func ReadFitSummary(path string) (FitSummary, error) {
 		if r.K < 1 || r.K > s.N {
 			return FitSummary{}, formatErr("%s: run %d has k %d for %d rows", path, i, r.K, s.N)
 		}
+		fk := fitKey{r.Algo, r.K, r.Seed}
+		if first, dup := seen[fk]; dup {
+			return FitSummary{}, formatErr("%s: run %d repeats run %d (algorithm %s, k %d, seed %d): one fit is one seed", path, i, first, r.Algo, r.K, r.Seed)
+		}
+		seen[fk] = i
 		if !filepath.IsLocal(r.Assign) || !filepath.IsLocal(r.Centroids) {
 			return FitSummary{}, formatErr("%s: run %d names a file outside the summary's directory", path, i)
 		}
@@ -253,9 +266,83 @@ type SeedSpread struct {
 	Algo       string `json:"algo"`
 	K          int    `json:"k"`
 	Reductions []Num  `json:"reductions"` // per seed, in seed order
-	Median     Num    `json:"median"`
-	Min        Num    `json:"min"`
-	Max        Num    `json:"max"`
+	// NullHi is each seed's permutation-null upper bound (Compared.Null.Hi), in
+	// the same order as Reductions; empty when the caller did not supply it.
+	NullHi []Num `json:"null_hi,omitempty"`
+	// SeedIDs is each reduction's fit seed, in the same order; empty when the
+	// caller did not supply it.
+	SeedIDs []uint64 `json:"seed_ids,omitempty"`
+	Median  Num      `json:"median"`
+	Min     Num      `json:"min"`
+	Max     Num      `json:"max"`
+}
+
+// WithNullBand returns s with each seed's permutation-null upper bound
+// attached. A length that differs from the reductions' is kept as given: Decide
+// reads it as an unavailable band, never as a pass.
+func (s SeedSpread) WithNullBand(hi []float64) SeedSpread {
+	s.NullHi = make([]Num, len(hi))
+	for i, h := range hi {
+		s.NullHi[i] = Num(h)
+	}
+	return s
+}
+
+// WithSeedIDs returns s with each reduction's fit seed attached. A length that
+// differs from the reductions' is kept as given: Decide reads it as seeds it
+// cannot vouch for, never as a pass.
+func (s SeedSpread) WithSeedIDs(ids []uint64) SeedSpread {
+	s.SeedIDs = slices.Clone(ids)
+	return s
+}
+
+// seeds counts the seeds with a defined reduction.
+//
+// When the spread carries its seed ids each seed counts once, so one fit listed
+// twice is one seed; ids that do not line up with the reductions vouch for
+// none. A spread built without ids counts its defined reductions.
+func (s SeedSpread) seeds() int {
+	if len(s.SeedIDs) != 0 && len(s.SeedIDs) != len(s.Reductions) {
+		return 0
+	}
+	distinct := map[uint64]struct{}{}
+	n := 0
+	for i, r := range s.Reductions {
+		if math.IsNaN(float64(r)) || math.IsInf(float64(r), 0) {
+			continue
+		}
+		if len(s.SeedIDs) == 0 {
+			n++
+			continue
+		}
+		distinct[s.SeedIDs[i]] = struct{}{}
+	}
+	return n + len(distinct)
+}
+
+// clearsNull reports whether every seed's reduction is above its permutation
+// null band, and says why not otherwise. A seed with an undefined reduction is
+// not a seed here (seeds counts it out); a missing or undefined band is a
+// failure, never a pass.
+func (s SeedSpread) clearsNull() (bool, string) {
+	if len(s.NullHi) != len(s.Reductions) {
+		return false, "the permutation-null band was not supplied"
+	}
+	inside, judged := 0, 0
+	for i, r := range s.Reductions {
+		if math.IsNaN(float64(r)) || math.IsInf(float64(r), 0) {
+			continue
+		}
+		judged++
+		hi := float64(s.NullHi[i])
+		if math.IsNaN(hi) || !(float64(r) > hi) {
+			inside++
+		}
+	}
+	if inside > 0 {
+		return false, fmt.Sprintf("the reduction does not clear the permutation-null band on %d of %d seeds", inside, judged)
+	}
+	return true, ""
 }
 
 // Spread summarises reductions (NaN entries are kept out of the statistics;
@@ -279,14 +366,23 @@ func Spread(algo string, k int, reductions []float64) SeedSpread {
 // variance falls by at least this share.
 const AdoptReduction = 0.25
 
+// AdoptMinSeeds is how many seeds with a defined reduction the adopt verdict
+// needs: one seed cannot tell a real reduction from a lucky fit.
+const AdoptMinSeeds = 2
+
 // Verdict is the plan's decision rule applied to the measured spreads.
 type Verdict struct {
 	// Emeans and Lloyd are the reductions against the baseline at the baseline's
 	// own cell count.
 	Emeans SeedSpread `json:"emeans"`
 	Lloyd  SeedSpread `json:"lloyd"`
-	// AdoptClusters: the e-means median reduction reaches AdoptReduction.
-	AdoptClusters bool `json:"adopt_clusters"`
+	// Seeds is how many e-means seeds had a defined reduction.
+	Seeds int `json:"seeds"`
+	// AdoptClusters: the e-means median reduction reaches AdoptReduction, on at
+	// least AdoptMinSeeds seeds, and every seed's reduction is above its
+	// permutation-null band. Failed names each condition that did not hold.
+	AdoptClusters bool     `json:"adopt_clusters"`
+	Failed        []string `json:"failed_conditions,omitempty"`
 	// LloydMatches: the Lloyd median is no lower than the e-means median less
 	// the e-means spread across seeds (and at least 0.01). When clusters are
 	// adopted and Lloyd matches, a pure-Go Lloyd is what to build.
@@ -295,28 +391,50 @@ type Verdict struct {
 }
 
 // Decide applies the rule. A missing arm (no e-means runs, or no Lloyd runs,
-// at that k) cannot be judged: the verdict says so and adopts nothing.
+// at that k) cannot be judged: the verdict says so and adopts nothing for a
+// missing e-means arm.
 func Decide(emeans, lloyd SeedSpread) Verdict {
-	v := Verdict{Emeans: emeans, Lloyd: lloyd}
-	switch {
-	case math.IsNaN(float64(emeans.Median)):
+	v := Verdict{Emeans: emeans, Lloyd: lloyd, Seeds: emeans.seeds()}
+	if math.IsNaN(float64(emeans.Median)) {
 		v.Reason = "no e-means run at this cell count: not judged"
 		return v
-	case math.IsNaN(float64(lloyd.Median)):
-		v.AdoptClusters = float64(emeans.Median) >= AdoptReduction
-		v.Reason = "no Lloyd run at this cell count: Lloyd match not judged"
+	}
+	if float64(emeans.Median) < AdoptReduction {
+		v.Failed = append(v.Failed, fmt.Sprintf("e-means median reduction %.1f%% is under the %.0f%% bar", 100*float64(emeans.Median), 100*AdoptReduction))
+	}
+	if v.Seeds < AdoptMinSeeds {
+		v.Failed = append(v.Failed, fmt.Sprintf("%d seed(s) with a defined reduction, at least %d needed", v.Seeds, AdoptMinSeeds))
+	}
+	if ok, why := emeans.clearsNull(); !ok {
+		v.Failed = append(v.Failed, why)
+	}
+	v.AdoptClusters = len(v.Failed) == 0
+	if math.IsNaN(float64(lloyd.Median)) {
+		v.Reason = adoptReason(v, "no Lloyd run at this cell count: Lloyd match not judged")
 		return v
 	}
-	v.AdoptClusters = float64(emeans.Median) >= AdoptReduction
 	tol := math.Max(0.01, float64(emeans.Max-emeans.Min))
 	v.LloydMatches = float64(lloyd.Median) >= float64(emeans.Median)-tol
 	switch {
 	case !v.AdoptClusters:
-		v.Reason = fmt.Sprintf("e-means median reduction %.1f%% is under the %.0f%% bar", 100*float64(emeans.Median), 100*AdoptReduction)
+		v.Reason = adoptReason(v, "")
 	case v.LloydMatches:
 		v.Reason = "adopt clusters; Lloyd matches e-means, so build a pure-Go Lloyd"
 	default:
 		v.Reason = "adopt clusters; Lloyd is behind e-means, so e-means earns its port"
 	}
 	return v
+}
+
+// adoptReason words the adopt verdict: which conditions failed, or adopt,
+// then an optional note.
+func adoptReason(v Verdict, note string) string {
+	r := "adopt clusters"
+	if !v.AdoptClusters {
+		r = "not adopted: " + strings.Join(v.Failed, "; ")
+	}
+	if note != "" {
+		r += "; " + note
+	}
+	return r
 }

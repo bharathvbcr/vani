@@ -88,6 +88,10 @@ type rescoreReport struct {
 	// Repaired is how many 0-of-0 coverages were marked unknown this run.
 	Repaired int
 	Advance  pipeline.AdvanceReport
+	// Refused is set when the rescore stopped before it planned or scored
+	// anything (nothing to score with, or its scoring stage would not start):
+	// the zero counts are then "not attempted", never "attempted, found none".
+	Refused bool
 }
 
 // errScoringOff refuses a rescore with nothing to score with.
@@ -101,17 +105,38 @@ func (w *wired) rescore(ctx context.Context, limit int) (rescoreReport, error) {
 	r := &pipeline.Runner{Ledger: w.led}
 	repaired, err := repairUnknownCoverage(ctx, w.led, r.RepairUnknownCoverage)
 	if err != nil {
-		return rescoreReport{Repaired: repaired}, err
+		return rescoreReport{Repaired: repaired, Refused: !stopped(err)}, err
 	}
 	if w.cfg.DevPrism.Binary == "" {
-		return rescoreReport{Repaired: repaired}, errScoringOff
+		return rescoreReport{Repaired: repaired, Refused: true}, errScoringOff
 	}
 	if err := w.scoring(r); err != nil {
-		return rescoreReport{Repaired: repaired}, err
+		return rescoreReport{Repaired: repaired, Refused: !stopped(err)}, err
 	}
 	rep, err := rescoreWith(ctx, w.led, limit, w.cfg.AdvanceWorkers(), r.Rescore, w.warnf)
 	rep.Repaired = repaired
 	return rep, err
+}
+
+// stopped reports whether err is the caller stopping the command (Ctrl-C or a
+// deadline), which is a stop and never a refusal.
+func stopped(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// rescoreFailure words the error a rescore ends with. A refusal says nothing
+// was scored; a stop says it was stopped and keeps what was already written
+// (the 0-of-0 repairs), so it never claims "nothing was scored" after a write.
+func rescoreFailure(rep rescoreReport, err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case rep.Refused:
+		return fmt.Errorf("rescore refused, nothing was scored: %w", err)
+	case stopped(err):
+		return fmt.Errorf("rescore stopped; %d 0-of-0 coverage(s) marked unknown and %d posting(s) rescored before it were kept: %w", rep.Repaired, rep.Rescored, err)
+	}
+	return err
 }
 
 // rescoreWith is rescore over any ledger and rescore function, for tests.
@@ -307,12 +332,16 @@ func (e *env) cmdRescore(args []string) error {
 		return err
 	}
 	rep, err := app.Rescore(ctx, n)
+	err = rescoreFailure(rep, err)
 	if *asJSON {
-		return e.reply(true, &rescoreReply{Limit: n, Plan: rep.Plan, Rescored: rep.Rescored, StillUnscored: rep.Plan.Eligible - rep.Rescored,
+		return e.reply(true, &rescoreReply{Limit: n, Refused: rep.Refused, Plan: rep.Plan, Rescored: rep.Rescored, StillUnscored: rep.Plan.Eligible - rep.Rescored,
 			Repaired: rep.Repaired, ScoringOff: cfg.DevPrism.Binary == ""}, err, nil)
 	}
 	if rep.Repaired > 0 {
 		fmt.Fprintf(e.stdout, "%d posting(s) with a 0-of-0 coverage marked unknown (no DevPrism call)\n", rep.Repaired)
+	}
+	if rep.Refused {
+		return err // no count: nothing was attempted
 	}
 	fmt.Fprintf(e.stdout, "%d posting(s) rescored, %d still unscored\n", rep.Rescored, rep.Plan.Eligible-rep.Rescored)
 	e.printRescoreLeftAlone(rep.Plan)
@@ -329,6 +358,9 @@ type rescoreReply struct {
 	Rescored      int         `json:"rescored"`
 	StillUnscored int         `json:"still_unscored"`
 	Repaired      int         `json:"repaired"`
+	// Refused: the rescore stopped before it scored anything; the counts above
+	// are then zero because nothing was attempted, and the failure says why.
+	Refused bool `json:"refused,omitempty"`
 	// Coverage is what --coverage-unknown planned or did; absent otherwise.
 	Coverage *coverageRescoreReport `json:"coverage,omitempty"`
 	failure

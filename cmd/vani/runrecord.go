@@ -602,6 +602,13 @@ func readRunRecord(stateDir string) (*runRecord, error) {
 	return readRunRecordFile(runRecordPath(stateDir))
 }
 
+// readHistoryRecord is how the listing commands read a history entry they have
+// just listed. A listed entry can vanish before it is read (the history is
+// pruned by the running daemon), which readRunRecordFile reports as (nil, nil):
+// every caller must treat that as "skip this entry". A seam so tests can make
+// the race deterministic.
+var readHistoryRecord = readRunRecordFile
+
 // readRunRecordFile is readRunRecord for any record file: last.json or a
 // history entry. Bytes come from readBoundedFile, which refuses a symlink or
 // any other non-regular file without opening it. A missing file is no record.

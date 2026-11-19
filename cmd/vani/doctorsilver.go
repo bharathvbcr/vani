@@ -12,8 +12,8 @@ import (
 // authorization, work mode, owner exclusions) is withheld, as the auditor and
 // the audit's overlays leave those out. No row is a label: only the
 // comparison in `vani relevance` reads the log.
-func (e *env) appendDoctorSilver(rep doctor.Report, cases []doctor.DropCase, runID, promptSHA string) (added, withheld int, err error) {
-	rows, withheld := doctor.SilverRows(rep, cases, runID, promptSHA, func(stratum string) bool {
+func (e *env) appendDoctorSilver(rep doctor.Report, cases []doctor.DropCase, runID string, run doctor.SilverRun) (added, withheld int, err error) {
+	rows, withheld := doctor.SilverRows(rep, cases, runID, run, func(stratum string) bool {
 		_, left := stratumLeftOut(stratum)
 		return !left
 	})

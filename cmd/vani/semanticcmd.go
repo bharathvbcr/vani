@@ -66,12 +66,9 @@ func (e *env) cmdSemanticWarm(args []string) error {
 		e.embedLabelledNow(ctx, cfg, recs, mk, pv.text)
 		pv.Close()
 	}
+	werr := warmShortfall(rep)
 	if *asJSON {
-		var err error
-		if rep.Note != "" {
-			err = errors.New(rep.Note)
-		}
-		return e.reply(true, &semanticWarmReply{Limit: limit, Report: rep}, err, nil)
+		return e.reply(true, &semanticWarmReply{Limit: limit, Report: rep}, werr, nil)
 	}
 	fmt.Fprintln(e.stdout, rep.countsLine())
 	if rep.Rebuilt {
@@ -80,8 +77,20 @@ func (e *env) cmdSemanticWarm(args []string) error {
 	if l := rep.vectorsLine(); l != "" {
 		fmt.Fprintln(e.stdout, l)
 	}
+	return werr
+}
+
+// warmShortfall is why a warm did not warm everything it was asked to, or nil.
+// A Note is a warm that did not run or stopped early. Failed postings are the
+// other way a warm that ran to its end is still partial: they are neither
+// scored nor cached, and no Note says so. Skipped alone is not a shortfall:
+// without a Note it is only the postings past the limit the owner asked for.
+func warmShortfall(rep semanticReport) error {
 	if rep.Note != "" {
 		return errors.New(rep.Note)
+	}
+	if rep.Failed > 0 {
+		return fmt.Errorf("semantic warm incomplete: %d posting(s) failed to embed (scored %d, cached %d, skipped %d); run it again", rep.Failed, rep.Scored, rep.Cached, rep.Skipped)
 	}
 	return nil
 }

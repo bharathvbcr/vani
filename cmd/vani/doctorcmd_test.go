@@ -67,6 +67,14 @@ const doctorSponsorTitle = "Engineer Needing Sponsorship Review"
 // ledger of dropped postings, one of them dropped on sponsorship.
 func doctorSetup(t *testing.T) (state string, home string) {
 	t.Helper()
+	return doctorSetupDrops(t, true)
+}
+
+// doctorSetupDrops is doctorSetup; leftOut says whether the ledger also holds
+// the two drops the sample leaves out (the sponsorship one and the owner's
+// exclusion).
+func doctorSetupDrops(t *testing.T, leftOut bool) (state string, home string) {
+	t.Helper()
 	cfgPath, state := setup(t)
 	fixedNow(t)
 	home = t.TempDir()
@@ -126,8 +134,10 @@ func doctorSetup(t *testing.T) (state string, home string) {
 	}
 	add("gh:acme:1", "Account Executive", map[string]string{"triage.backend": "title", "triage.role_fit": "mismatch_domain"})
 	add("gh:acme:2", "Welder", map[string]string{"triage.backend": "d1-ultra", "triage.role_fit": "mismatch_domain", "triage.role_fit.p": "0.97"})
-	add("gh:acme:3", doctorSponsorTitle, map[string]string{"triage.backend": "d1-ultra", "triage.sponsorship": "no_sponsorship", "triage.sponsorship.p": "0.95"})
-	add("gh:acme:4", doctorExcludedTitle, map[string]string{"triage.backend": eval.ExcludeBackend, eval.AnnExcludeMatched: "description: no clearance"})
+	if leftOut {
+		add("gh:acme:3", doctorSponsorTitle, map[string]string{"triage.backend": "d1-ultra", "triage.sponsorship": "no_sponsorship", "triage.sponsorship.p": "0.95"})
+		add("gh:acme:4", doctorExcludedTitle, map[string]string{"triage.backend": eval.ExcludeBackend, eval.AnnExcludeMatched: "description: no clearance"})
+	}
 	return state, home
 }
 
@@ -203,6 +213,38 @@ func doctorNoPersonal(t *testing.T, sent, home string) {
 	}
 	if !strings.Contains(sent, "~") {
 		t.Error("the home path was not folded to ~")
+	}
+}
+
+// The text report says how many dropped postings the sample left out, in the
+// words of the sampled line beside it, and says nothing when none were left
+// out. The count alone: the classes are the owner's own rules and stay in the
+// JSON plan (drops_left_out), so no personal word reaches the text.
+func TestDoctorTextReportNamesTheDropsLeftOut(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		leftOut  bool
+		wantLine string
+	}{
+		{"with left-out drops", true, "doctor: 2 dropped posting(s) left out of the sample (their class is decided by the owner's own rules and is never sent)"},
+		{"without", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, home := doctorSetupDrops(t, tc.leftOut)
+			doctorSeams(t, &doctorFake{}, 0)
+			out, _ := mustCode(t, 0, "doctor", "--dry-run", "--show")
+			if !strings.Contains(out, "dropped postings sampled") {
+				t.Fatalf("no sampled line:\n%s", out)
+			}
+			if tc.wantLine == "" {
+				if strings.Contains(out, "left out of the sample") {
+					t.Errorf("a plan with no left-out drops reported some:\n%s", out)
+				}
+			} else if !strings.Contains(out, tc.wantLine) {
+				t.Errorf("text report lacks %q:\n%s", tc.wantLine, out)
+			}
+			doctorNoPersonal(t, out, home)
+		})
 	}
 }
 

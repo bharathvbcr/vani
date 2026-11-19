@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -414,5 +415,71 @@ func TestInsideDir(t *testing.T) {
 		if got := insideDir(tc.path, tc.dir); got != tc.want {
 			t.Errorf("insideDir(%q, %q) = %v, want %v", tc.path, tc.dir, got, tc.want)
 		}
+	}
+}
+
+// A per-run row whose reduction is undefined prints n/a with the reason in the
+// null column, never 0.000; a defined reduction still prints its share.
+func TestStrataMarkdownPrintsNAForAnUndefinedNullShare(t *testing.T) {
+	nan := clusterstudy.Num(math.NaN())
+	mk := func(red, share clusterstudy.Num) runAgainst {
+		return runAgainst{RunResult: clusterstudy.RunResult{ClusterCells: 3, Compared: clusterstudy.Compared{Reduction: red, NullAtOrAbove: share}}}
+	}
+	r := &strataReply{Fit: &fitReport{Runs: []fitRunReport{
+		{Algo: "emeans", K: 3, Seed: 1, Against: map[string]runAgainst{baselineCategory: mk(nan, nan), baselineAudit: mk(0.4, 0.125)}},
+	}}}
+	md := r.markdown()
+	if strings.Contains(md, "| 0.000 |") {
+		t.Errorf("an undefined null share printed as 0.000:\n%s", md)
+	}
+	if !strings.Contains(md, "n/a (reduction undefined)") || !strings.Contains(md, "0.125") {
+		t.Errorf("want n/a with the reason for the undefined row and 0.125 for the defined one:\n%s", md)
+	}
+	raw, err := json.Marshal(r.Fit.Runs[0].Against[baselineCategory])
+	if err != nil || !strings.Contains(string(raw), `"null_at_or_above":null`) {
+		t.Errorf("JSON should carry null: %s (%v)", raw, err)
+	}
+}
+
+// Perfect clusters from a single seed are not adopted: the verdict is "not
+// adopted" and names the seed condition, in the JSON and in the text report.
+func TestStrataCompareSingleSeedIsNotAdopted(t *testing.T) {
+	state, keys := studyState(t, 24, 4)
+	seedSonnet(t, state, keys, func(i int) string {
+		if i < 12 {
+			return "partial_fit"
+		}
+		return "mismatch_domain"
+	})
+	study := t.TempDir()
+	mustCode(t, 0, "export", "pooled-vectors", "--out", study)
+	keysPath := filepath.Join(study, pooledKeysFile)
+	exported, err := clusterstudy.ReadKeys(keysPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perfect := make([]uint32, len(exported))
+	for i, k := range exported {
+		var n int
+		if _, err := fmt.Sscanf(k, "gh:k:%d", &n); err == nil && n < 12 {
+			perfect[i] = 1
+		}
+	}
+	runs := []clusterstudy.FitRun{
+		{Algo: clusterstudy.AlgoEmeansCPU, K: 2, Seed: 1, Assign: "e1.assign", Centroids: "e1.cent", MSE: 0.1, NonEmpty: 2, LabelsMatchEngine: true, FitMS: []float64{3}},
+		{Algo: clusterstudy.AlgoLloyd, K: 2, Seed: 1, Assign: "l1.assign", Centroids: "l1.cent", MSE: 0.12, NonEmpty: 2, LabelsMatchEngine: true, FitMS: []float64{9}},
+	}
+	sp := writeStudySummary(t, study, exported, runs, map[string][]uint32{"e1.assign": perfect, "l1.assign": perfect})
+	r := compareJSON(t, "--keys", keysPath, "--summary", sp, "--resamples", "50")
+	if r.Fit == nil || r.Fit.Verdict == nil {
+		t.Fatalf("no verdict: %+v", r.Fit)
+	}
+	v := r.Fit.Verdict
+	if v.Emeans.Median < 0.9 || v.AdoptClusters || v.Seeds != 1 || !strings.Contains(v.Reason, "at least 2 needed") {
+		t.Errorf("one seed adopted or the reason is missing: %+v", v)
+	}
+	out, _ := mustCode(t, 0, "strata", "compare", "--keys", keysPath, "--summary", sp, "--resamples", "50")
+	if !strings.Contains(out, "adopt clusters: false (1 seeds)") || !strings.Contains(out, "not adopted: ") {
+		t.Errorf("text report:\n%s", out)
 	}
 }

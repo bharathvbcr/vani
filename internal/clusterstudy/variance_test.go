@@ -169,3 +169,34 @@ func TestCompareOfAConstantTargetIsUndefinedNotZero(t *testing.T) {
 		t.Errorf("no variance to reduce, got %+v", c)
 	}
 }
+
+// An undefined reduction (the baseline has no within-stratum variance) has no
+// null share: NaN, which JSON carries as null, never 0.
+func TestCompareNullShareIsUndefinedWhenTheReductionIs(t *testing.T) {
+	n := 60
+	base, cand, target := make([]int, n), make([]int, n), make([]bool, n)
+	for i := range base {
+		base[i], cand[i] = i%3, i%2 // no positives: the baseline variance is 0
+	}
+	c, err := Compare(base, cand, target, 40, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !math.IsNaN(float64(c.Reduction)) {
+		t.Fatalf("reduction %v, want NaN with no positives", c.Reduction)
+	}
+	if !math.IsNaN(float64(c.NullAtOrAbove)) {
+		t.Errorf("null_at_or_above %v, want NaN", c.NullAtOrAbove)
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"null_at_or_above":null`) {
+		t.Errorf("JSON should carry null: %s", raw)
+	}
+	var back Compared
+	if err := json.Unmarshal(raw, &back); err != nil || !math.IsNaN(float64(back.NullAtOrAbove)) {
+		t.Errorf("round trip: %v %v", back.NullAtOrAbove, err)
+	}
+}

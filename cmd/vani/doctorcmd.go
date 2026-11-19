@@ -230,6 +230,15 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 		in.Rules = doctorRules(cfg)
 		plan.Drops, plan.Seed, plan.Strata, plan.LeftOut = len(drops), seed, strata, leftOut
 		fmt.Fprintf(out, "doctor: %d dropped postings sampled (seed %q) from %d strata\n", len(drops), seed, len(strata))
+		// The classes stay in the JSON plan (drops_left_out): they are the
+		// owner's own rules, so the text carries the count alone.
+		left := 0
+		for _, n := range leftOut {
+			left += n
+		}
+		if left > 0 {
+			fmt.Fprintf(out, "doctor: %d dropped posting(s) left out of the sample (their class is decided by the owner's own rules and is never sent)\n", left)
+		}
 	}
 
 	dcfg := doctor.Config{Model: model, TargetSummary: summary}
@@ -312,7 +321,7 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 		// report is written and paid for already, so a failed append is said
 		// and fails the command without hiding the report.
 		runID := filepath.Base(strings.TrimSuffix(path, ".md"))
-		added, withheld, err := e.appendDoctorSilver(rep, in.Drops, runID, doctor.PromptSHA256(rq.Drops.System))
+		added, withheld, err := e.appendDoctorSilver(rep, in.Drops, runID, doctor.NewSilverRun(rq.Drops.System, dcfg.TargetSummary, in.Rules))
 		switch {
 		case err != nil:
 			failed = append(failed, "the drop verdicts were not added to "+doctor.SilverFile+": "+err.Error())
@@ -385,9 +394,12 @@ func (e *env) doctorHistory(cfg config.Config, n int, redact func(string) string
 			problems = append(problems, f.ID+": not a regular file")
 			continue
 		}
-		r, err := readRunRecordFile(runHistoryPath(e.stateDir, f.ID))
+		r, err := readHistoryRecord(runHistoryPath(e.stateDir, f.ID))
 		if err != nil {
 			problems = append(problems, f.ID+": "+oneLine(err.Error(), doctorMaxRunRecordErr))
+			continue
+		}
+		if r == nil { // vanished since it was listed
 			continue
 		}
 		read = append(read, f)

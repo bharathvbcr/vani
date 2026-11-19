@@ -89,7 +89,7 @@ func TestDoctorSilverWithholdsLeftOutStrata(t *testing.T) {
 		{Key: "b", Stratum: "dropped:model:work_mode", PSelect: 0.5},
 		{Key: "c", Stratum: "dropped:exclude:title", PSelect: 0.5},
 	}
-	added, withheld, err := e.appendDoctorSilver(rep, cases, "r1", doctor.PromptSHA256("s"))
+	added, withheld, err := e.appendDoctorSilver(rep, cases, "r1", doctor.NewSilverRun("s", "t", nil))
 	if err != nil || added != 1 || withheld != 2 {
 		t.Fatalf("added %d withheld %d err %v, want 1, 2, nil", added, withheld, err)
 	}
