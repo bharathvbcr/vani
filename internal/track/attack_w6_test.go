@@ -31,8 +31,8 @@ func w6load(t *testing.T, body string) (Words, error) {
 func TestAttackW6UTF16Forms(t *testing.T) {
 	const content = "# list\nzorblax\nz\U0001D41Aq corp\n"
 	for name, body := range map[string]string{
-		"le": w6utf16("\xff\xfe", true, content),
-		"be": w6utf16("\xfe\xff", false, content),
+		"le":      w6utf16("\xff\xfe", true, content),
+		"be":      w6utf16("\xfe\xff", false, content),
 		"le crlf": w6utf16("\xff\xfe", true, strings.ReplaceAll(content, "\n", "\r\n")),
 	} {
 		w, err := w6load(t, body)
@@ -174,8 +174,6 @@ func TestAttackW6UTF32(t *testing.T) {
 	t.Logf("utf32be err=%v personal=%v owner=%q", err, w.Personal, w.owner)
 }
 
-
-
 // UTF-16 without a BOM: NULs between characters; a comment-only file must not
 // report as configured, and a real term must be screened.
 func TestAttackW6UTF16NoBOM(t *testing.T) {
@@ -188,7 +186,6 @@ func TestAttackW6UTF16NoBOM(t *testing.T) {
 		t.Errorf("BOM-less UTF-16 term not screened, owner=%q", w.owner)
 	}
 }
-
 
 // Built-in term collapse: terms of only separators or with leading separators.
 func TestAttackW6BuiltinSeparatorOnlyTerm(t *testing.T) {

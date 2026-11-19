@@ -8,17 +8,17 @@ func TestBuiltinTermWithAdjacentSeparators(t *testing.T) {
 	for _, raw := range []string{"zorb - flux", "zorb  flux", "zorb -- flux", "zorb\u2014 flux", "zorb flux"} {
 		c := compile([]string{raw}, nil)
 		for in, want := range map[string]bool{
-			"zorb - flux":       true,
-			"zorb flux":         true,
-			"zorb-flux":         true,
+			"zorb - flux":      true,
+			"zorb flux":        true,
+			"zorb-flux":        true,
 			"zorb \u2014 flux": true,
-			"zorb -- - flux":    true,
-			"a zorb - flux b":   true,
-			"zorb - fluxes":     false,
-			"xzorb - flux":      false,
-			"zorbflux":          false,
-			"zorb flu":          false,
-			"zorb -":            false,
+			"zorb -- - flux":   true,
+			"a zorb - flux b":  true,
+			"zorb - fluxes":    false,
+			"xzorb - flux":     false,
+			"zorbflux":         false,
+			"zorb flu":         false,
+			"zorb -":           false,
 		} {
 			f := foldString(in)
 			if terms, _ := c.found(&f); (len(terms) > 0) != want {
