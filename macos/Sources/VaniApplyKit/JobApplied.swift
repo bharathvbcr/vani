@@ -83,6 +83,13 @@ public struct JobMatch: Codable, Equatable, Sendable {
         }
         var applyFormNoteWire: Lenient<String>?
 
+        /// Equal by what the accessors read: an unknown, an empty and an absent mark are all no mark.
+        public static func == (l: Ref, r: Ref) -> Bool {
+            l.key == r.key && l.company == r.company && l.title == r.title && l.status == r.status
+                && l.closed == r.closed && l.mark == r.mark && l.matchedOn == r.matchedOn && l.row == r.row
+                && l.repeatApply == r.repeatApply && l.applyFormNote == r.applyFormNote
+        }
+
         enum CodingKeys: String, CodingKey {
             case key, company, title, status, closed, row
             case markWire = "mark"
