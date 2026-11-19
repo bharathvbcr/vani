@@ -413,14 +413,14 @@ func TestNewProxyValidation(t *testing.T) {
 // as long as the child likes: before any request (header timeout) and between
 // requests on a kept-alive connection (idle timeout).
 func TestProxyClosesConnectionsThatSendNothing(t *testing.T) {
-	startShort := func(t *testing.T) (string, string) {
+	startShort := func(t *testing.T, header, idle time.Duration) (string, string) {
 		t.Helper()
 		c, _ := newTestClient(t, Config{AllowedHosts: []string{"jobs.example.com"}}, &fakeDNS{answers: defaultAnswers()}, nil)
 		p, err := NewProxy(c, ProxyConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
-		p.headerTimeout, p.idleConnTimeout = 150*time.Millisecond, 150*time.Millisecond
+		p.headerTimeout, p.idleConnTimeout = header, idle
 		addr, token, err := p.Start(context.Background())
 		if err != nil {
 			t.Fatal(err)
@@ -428,6 +428,7 @@ func TestProxyClosesConnectionsThatSendNothing(t *testing.T) {
 		t.Cleanup(func() { p.Close() })
 		return addr, token
 	}
+	short := 150 * time.Millisecond
 	closedWithin := func(t *testing.T, conn net.Conn, br *bufio.Reader) {
 		t.Helper()
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
@@ -441,7 +442,7 @@ func TestProxyClosesConnectionsThatSendNothing(t *testing.T) {
 		}
 	}
 	t.Run("no request at all", func(t *testing.T) {
-		addr, _ := startShort(t)
+		addr, _ := startShort(t, short, short)
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err != nil {
 			t.Fatal(err)
@@ -449,16 +450,28 @@ func TestProxyClosesConnectionsThatSendNothing(t *testing.T) {
 		defer conn.Close()
 		closedWithin(t, conn, bufio.NewReader(conn))
 	})
-	t.Run("kept alive after a refusal", func(t *testing.T) {
-		addr, _ := startShort(t)
-		code, conn, br := rawRequest(t, addr, "CONNECT", "jobs.example.com:443", nil) // 407, connection kept
-		if code != http.StatusProxyAuthRequired {
-			t.Fatalf("status %d, want 407", code)
+	// net/http closes after any refused CONNECT, so a refusal cannot exercise
+	// the idle bound; a refused GET keeps the connection. The header timeout is
+	// far above the test's bound, so only IdleTimeout can close it in time.
+	t.Run("kept alive after a refused GET", func(t *testing.T) {
+		addr, _ := startShort(t, time.Minute, short)
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err != nil {
+			t.Fatal(err)
 		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		br := bufio.NewReader(conn)
+		_, _ = io.WriteString(conn, "GET http://jobs.example.com/ HTTP/1.1\r\nHost: jobs.example.com\r\n\r\n")
+		resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+		if err != nil || resp.StatusCode != http.StatusProxyAuthRequired || resp.Close {
+			t.Fatalf("setup: want a kept-alive 407, got %v, %v", resp, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
 		closedWithin(t, conn, br)
 	})
 	t.Run("partial request line", func(t *testing.T) {
-		addr, _ := startShort(t)
+		addr, _ := startShort(t, short, short)
 		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 		if err != nil {
 			t.Fatal(err)

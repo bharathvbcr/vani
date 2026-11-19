@@ -36,9 +36,11 @@ const (
 	// that has not finished it in this long is stalled or probing.
 	proxyHeaderTimeout = 10 * time.Second
 	// proxyIdleConnTimeout bounds a kept-alive connection that carries no
-	// request (e.g. after a 4xx refusal); hijacked CONNECT tunnels are exempt
-	// and keep their own IdleTimeout and MaxLifetime.
-	proxyIdleConnTimeout = 30 * time.Second
+	// request (e.g. after a refused GET); hijacked CONNECT tunnels are exempt
+	// and keep their own IdleTimeout and MaxLifetime. It is the header bound,
+	// no looser than before it was set: with http.Server.IdleTimeout unset Go
+	// used ReadHeaderTimeout for the idle wait.
+	proxyIdleConnTimeout = proxyHeaderTimeout
 )
 
 // ProxyConfig bounds a Proxy. Zero fields take the defaults.
@@ -75,7 +77,7 @@ type Proxy struct {
 	// headerTimeout and idleConnTimeout are the http.Server's; fields so a
 	// test can shorten them before Start.
 	headerTimeout, idleConnTimeout time.Duration
-	wg      sync.WaitGroup
+	wg                             sync.WaitGroup
 }
 
 // NewProxy validates cfg and binds the proxy to c's rules.
