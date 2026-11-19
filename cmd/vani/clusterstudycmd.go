@@ -435,6 +435,7 @@ func (e *env) compareFit(s clusterstudy.Study, baselines []clusterstudy.Baseline
 	}
 	type groupVals struct {
 		reductions, pooled []float64
+		nullHi             []float64 // each seed's permutation-null upper bound
 		cells              []int
 		equal              bool
 	}
@@ -465,6 +466,7 @@ func (e *env) compareFit(s clusterstudy.Study, baselines []clusterstudy.Baseline
 			}
 			g.reductions = append(g.reductions, float64(res.Compared.Reduction))
 			g.pooled = append(g.pooled, float64(res.Compared.PooledReduction))
+			g.nullHi = append(g.nullHi, float64(res.Compared.Null.Hi))
 			g.cells = append(g.cells, res.ClusterCells)
 			g.equal = g.equal && eq
 		}
@@ -487,7 +489,7 @@ func (e *env) compareFit(s clusterstudy.Study, baselines []clusterstudy.Baseline
 	spreads := map[groupKey]clusterstudy.SeedSpread{}
 	for _, gk := range order {
 		g := groups[gk]
-		sp := clusterstudy.Spread(gk.algo, gk.k, g.reductions)
+		sp := clusterstudy.Spread(gk.algo, gk.k, g.reductions).WithNullBand(g.nullHi)
 		spreads[gk] = sp
 		fit.Groups = append(fit.Groups, groupReport{Baseline: gk.baseline, BaselineCells: cells[gk.baseline], Algo: gk.algo, K: gk.k,
 			ClusterCells: g.cells, EqualCells: g.equal, Reductions: sp, Pooled: clusterstudy.Spread(gk.algo, gk.k, g.pooled)})
@@ -592,7 +594,7 @@ func (r *strataReply) markdown() string {
 		}
 		fmt.Fprintf(&b, "\n## Decision rule, %s against %s at its %d cells (bar %.0f%%)\n\n", v.name, baselineCategory, v.v.Emeans.K, 100*ft.AdoptBar)
 		fmt.Fprintf(&b, "- e-means median %s [%s, %s]; Lloyd median %s [%s, %s]\n", percent(v.v.Emeans.Median), percent(v.v.Emeans.Min), percent(v.v.Emeans.Max), percent(v.v.Lloyd.Median), percent(v.v.Lloyd.Min), percent(v.v.Lloyd.Max))
-		fmt.Fprintf(&b, "- adopt clusters: %v; Lloyd matches: %v; %s\n", v.v.AdoptClusters, v.v.LloydMatches, v.v.Reason)
+		fmt.Fprintf(&b, "- adopt clusters: %v (%d seeds); Lloyd matches: %v; %s\n", v.v.AdoptClusters, v.v.Seeds, v.v.LloydMatches, v.v.Reason)
 	}
 	return b.String()
 }

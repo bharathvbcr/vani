@@ -440,3 +440,46 @@ func TestStrataMarkdownPrintsNAForAnUndefinedNullShare(t *testing.T) {
 		t.Errorf("JSON should carry null: %s (%v)", raw, err)
 	}
 }
+
+// Perfect clusters from a single seed are not adopted: the verdict is "not
+// adopted" and names the seed condition, in the JSON and in the text report.
+func TestStrataCompareSingleSeedIsNotAdopted(t *testing.T) {
+	state, keys := studyState(t, 24, 4)
+	seedSonnet(t, state, keys, func(i int) string {
+		if i < 12 {
+			return "partial_fit"
+		}
+		return "mismatch_domain"
+	})
+	study := t.TempDir()
+	mustCode(t, 0, "export", "pooled-vectors", "--out", study)
+	keysPath := filepath.Join(study, pooledKeysFile)
+	exported, err := clusterstudy.ReadKeys(keysPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perfect := make([]uint32, len(exported))
+	for i, k := range exported {
+		var n int
+		if _, err := fmt.Sscanf(k, "gh:k:%d", &n); err == nil && n < 12 {
+			perfect[i] = 1
+		}
+	}
+	runs := []clusterstudy.FitRun{
+		{Algo: clusterstudy.AlgoEmeansCPU, K: 2, Seed: 1, Assign: "e1.assign", Centroids: "e1.cent", MSE: 0.1, NonEmpty: 2, LabelsMatchEngine: true, FitMS: []float64{3}},
+		{Algo: clusterstudy.AlgoLloyd, K: 2, Seed: 1, Assign: "l1.assign", Centroids: "l1.cent", MSE: 0.12, NonEmpty: 2, LabelsMatchEngine: true, FitMS: []float64{9}},
+	}
+	sp := writeStudySummary(t, study, exported, runs, map[string][]uint32{"e1.assign": perfect, "l1.assign": perfect})
+	r := compareJSON(t, "--keys", keysPath, "--summary", sp, "--resamples", "50")
+	if r.Fit == nil || r.Fit.Verdict == nil {
+		t.Fatalf("no verdict: %+v", r.Fit)
+	}
+	v := r.Fit.Verdict
+	if v.Emeans.Median < 0.9 || v.AdoptClusters || v.Seeds != 1 || !strings.Contains(v.Reason, "at least 2 needed") {
+		t.Errorf("one seed adopted or the reason is missing: %+v", v)
+	}
+	out, _ := mustCode(t, 0, "strata", "compare", "--keys", keysPath, "--summary", sp, "--resamples", "50")
+	if !strings.Contains(out, "adopt clusters: false (1 seeds)") || !strings.Contains(out, "not adopted: ") {
+		t.Errorf("text report:\n%s", out)
+	}
+}

@@ -153,7 +153,7 @@ func TestSpreadAndDecide(t *testing.T) {
 	if float64(s.Median) != 0.30 || float64(s.Min) != 0.26 || float64(s.Max) != 0.34 || len(s.Reductions) != 4 {
 		t.Errorf("spread %+v", s)
 	}
-	em := Spread(AlgoEmeansCPU, 8, []float64{0.30, 0.28, 0.32})
+	em := Spread(AlgoEmeansCPU, 8, []float64{0.30, 0.28, 0.32}).WithNullBand([]float64{0.05, 0.04, 0.06})
 	cases := []struct {
 		name         string
 		em, ll       SeedSpread
@@ -173,10 +173,57 @@ func TestSpreadAndDecide(t *testing.T) {
 		}
 	}
 	// Exactly at the bar adopts; just under does not.
-	if !Decide(Spread("e", 1, []float64{AdoptReduction}), Spread("l", 1, nil)).AdoptClusters {
+	atBar := func(r float64) SeedSpread {
+		return Spread("e", 1, []float64{r, r}).WithNullBand([]float64{0, 0})
+	}
+	if !Decide(atBar(AdoptReduction), Spread("l", 1, nil)).AdoptClusters {
 		t.Error("a median at the bar should adopt")
 	}
-	if Decide(Spread("e", 1, []float64{AdoptReduction - 1e-9}), Spread("l", 1, nil)).AdoptClusters {
+	if Decide(atBar(AdoptReduction-1e-9), Spread("l", 1, nil)).AdoptClusters {
 		t.Error("a median under the bar should not adopt")
+	}
+}
+
+// A single seed cannot adopt, however large its reduction; a reduction inside
+// the permutation-null band cannot either; each says which condition failed.
+func TestDecideAdoptNeedsSeedsAndClearsTheNullBand(t *testing.T) {
+	ll := Spread(AlgoLloyd, 8, []float64{0.1, 0.1})
+	clear := func(n int, red, hi float64) SeedSpread {
+		r, h := make([]float64, n), make([]float64, n)
+		for i := range r {
+			r[i], h[i] = red, hi
+		}
+		return Spread(AlgoEmeansCPU, 8, r).WithNullBand(h)
+	}
+	nanSeed := Spread(AlgoEmeansCPU, 8, []float64{0.8, math.NaN()}).WithNullBand([]float64{0.1, 0.1})
+	cases := []struct {
+		name   string
+		em     SeedSpread
+		adopt  bool
+		reason string // must appear in the verdict's reason
+	}{
+		{"one seed", clear(1, 0.9, 0.05), false, "1 seed(s) with a defined reduction, at least 2 needed"},
+		{"no seeds with a defined reduction beside a NaN", nanSeed, false, "1 seed(s)"},
+		{"inside the null band", clear(3, 0.5, 0.6), false, "does not clear the permutation-null band on 3 of 3 seeds"},
+		{"equal to the null upper bound", clear(2, 0.5, 0.5), false, "on 2 of 2 seeds"},
+		{"null band not supplied", Spread(AlgoEmeansCPU, 8, []float64{0.9, 0.9}), false, "permutation-null band was not supplied"},
+		{"null band of the wrong length", Spread(AlgoEmeansCPU, 8, []float64{0.9, 0.9}).WithNullBand([]float64{0.1}), false, "was not supplied"},
+		{"undefined null band", Spread(AlgoEmeansCPU, 8, []float64{0.9, 0.9}).WithNullBand([]float64{math.NaN(), 0.1}), false, "on 1 of 2 seeds"},
+		{"under the bar and one seed", clear(1, 0.1, 0.05), false, "under the 25% bar"},
+		{"all conditions hold", clear(3, 0.9, 0.05), true, "adopt clusters"},
+	}
+	for _, tc := range cases {
+		for _, ld := range []SeedSpread{ll, Spread(AlgoLloyd, 8, nil)} { // with and without a Lloyd arm
+			v := Decide(tc.em, ld)
+			if v.AdoptClusters != tc.adopt || !strings.Contains(v.Reason, tc.reason) || (v.AdoptClusters == (len(v.Failed) > 0)) {
+				t.Errorf("%s: %+v", tc.name, v)
+			}
+		}
+	}
+	if v := Decide(clear(1, 0.9, 0.05), ll); v.Seeds != 1 || len(v.Failed) != 1 {
+		t.Errorf("one seed that clears everything else fails only the seed condition: %+v", v)
+	}
+	if v := Decide(clear(1, 0.1, 0.05), ll); len(v.Failed) != 2 {
+		t.Errorf("both failed conditions should be named: %+v", v.Failed)
 	}
 }
