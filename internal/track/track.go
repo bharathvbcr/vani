@@ -20,7 +20,9 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
@@ -272,18 +274,30 @@ var lineEnds = strings.NewReplacer("\r\n", "\n", "\r", "\n")
 // terms into one.
 func wordsLines(s string) []string { return strings.Split(lineEnds.Replace(s), "\n") }
 
+// errWordsEncoding is every encoding refusal: the same words, no content.
+var errWordsEncoding = fmt.Errorf("track: %s is not valid UTF-8 or UTF-16", WordsFile)
+
 // wordsText returns the file as UTF-8. An editor may save the list as UTF-16
 // with a byte-order mark; read as bytes that is a file of garbage lines, one
-// of which would count as an owner term, so it is decoded instead. Text that is
-// not valid UTF-16 after such a mark is an error that names no content.
+// of which would count as an owner term, so it is decoded instead, and only when
+// the whole decode is clean (even length, no unpaired surrogate, no U+FFFD, no
+// NUL, no unassigned code point). A UTF-32 mark, a UTF-16 text that is not clean and a file that is not
+// valid UTF-8 are refused: a words check that cannot read its list must fail,
+// not screen against mangled terms. The error names no content.
 func wordsText(data []byte) ([]byte, error) {
+	if bytes.HasPrefix(data, []byte{0, 0, 0xfe, 0xff}) || bytes.HasPrefix(data, []byte{0xff, 0xfe, 0, 0}) {
+		return nil, errWordsEncoding
+	}
 	le := bytes.HasPrefix(data, []byte{0xff, 0xfe})
 	if !le && !bytes.HasPrefix(data, []byte{0xfe, 0xff}) {
+		if !utf8.Valid(data) {
+			return nil, errWordsEncoding
+		}
 		return data, nil
 	}
 	body := data[2:]
 	if len(body)%2 != 0 {
-		return nil, fmt.Errorf("track: %s is UTF-16 with an odd number of bytes", WordsFile)
+		return nil, errWordsEncoding
 	}
 	units := make([]uint16, len(body)/2)
 	for i := range units {
@@ -293,7 +307,18 @@ func wordsText(data []byte) ([]byte, error) {
 			units[i] = uint16(body[2*i])<<8 | uint16(body[2*i+1])
 		}
 	}
-	return []byte(string(utf16.Decode(units))), nil
+	text := string(utf16.Decode(units))
+	if strings.ContainsRune(text, utf8.RuneError) || strings.ContainsRune(text, 0) {
+		return nil, errWordsEncoding
+	}
+	// Bytes of another encoding read as UTF-16 (Latin-1 text after FF FE) come out
+	// as CJK and unassigned code points; a list never holds an unassigned one.
+	for _, r := range text {
+		if !unicode.IsGraphic(r) && !unicode.IsSpace(r) && !unicode.In(r, unicode.Cf, unicode.Cc) {
+			return nil, errWordsEncoding
+		}
+	}
+	return []byte(text), nil
 }
 
 // wordsLine is one line of the words file as the matcher sees it: the matcher's
