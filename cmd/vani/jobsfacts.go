@@ -282,6 +282,8 @@ func (e *env) listFacts(rd *ledger.Reader, snap ledger.Snapshot, gen uint64, m m
 		tf.Saved = "saved or unchanged"
 	case errors.Is(saveErr, jobfacts.ErrBusy):
 		tf.Saved = "skipped: another read is saving"
+	case errors.Is(saveErr, jobfacts.ErrNewerFormat):
+		tf.Saved = "skipped: the store is a newer format (" + store.Info() + ")"
 	default:
 		// A cache that cannot be written costs the next read time, never an
 		// answer: say so, and list.

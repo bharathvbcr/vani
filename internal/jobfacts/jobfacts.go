@@ -117,6 +117,9 @@ type Store struct {
 	m       map[posting.Key]entry
 	dirty   bool
 	loaded  string // how Open found the file, for Info
+	// newer is set when the file on disk is of a format newer than this
+	// build's: Save leaves it alone (see ErrNewerFormat).
+	newer bool
 	// changes counts the edits to m (Put, and each key Prune forgets).
 	changes uint64
 }
@@ -146,11 +149,33 @@ type storeEntry struct {
 const maxStoreBytes = 1 << 30
 
 // Open reads the store at path for version. A store that is missing, of
-// another version or unreadable starts empty; Info says which.
+// another version or unreadable starts empty; Info says which. A store of a
+// format newer than this build's also starts empty, but is read-only: Save
+// never overwrites it (Info says "read-only"), so an older binary does not
+// undo a newer one's work on every run.
 func Open(path, version string) *Store {
 	s := &Store{path: path, version: version, m: map[posting.Key]entry{}}
 	s.loaded = s.load()
 	return s
+}
+
+func (s *Store) markNewer(found int) string {
+	s.newer = true
+	return fmt.Sprintf("empty: read-only: the store is format %d, newer than this build's format %d; left untouched (update this vani)", found, format)
+}
+
+// headerFormat reads only the Format field of the file at s.path.
+func (s *Store) headerFormat() (int, bool) {
+	f, err := os.Open(s.path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	var h struct{ Format int }
+	if err := gob.NewDecoder(bufio.NewReaderSize(f, 1<<20)).Decode(&h); err != nil {
+		return 0, false
+	}
+	return h.Format, true
 }
 
 func (s *Store) load() string {
@@ -171,7 +196,15 @@ func (s *Store) load() string {
 	}
 	var sf storeFile
 	if err := gob.NewDecoder(bufio.NewReaderSize(f, 1<<20)).Decode(&sf); err != nil {
+		// A newer layout may not decode into storeFile; gob matches fields by
+		// name, so its Format still reads into a header of that field alone.
+		if found, ok := s.headerFormat(); ok && found > format {
+			return s.markNewer(found)
+		}
 		return "empty: unreadable: " + err.Error()
+	}
+	if sf.Format > format {
+		return s.markNewer(sf.Format)
 	}
 	if sf.Format != format || sf.Version != s.version {
 		return "empty: written by another version of the derivers"
@@ -265,10 +298,21 @@ func (s *Store) Info() string {
 // ErrBusy means another process is writing the store; the save was skipped.
 var ErrBusy = errors.New("jobfacts: another process is writing the store")
 
-// Save writes the store if anything changed since it was opened or saved.
+// ErrNewerFormat means the store on disk is of a newer format than this build
+// writes, so Save left it untouched. Two builds of different formats would
+// otherwise each rewrite the other's file on every run.
+var ErrNewerFormat = errors.New("jobfacts: the store is of a newer format; not overwritten")
+
+// Save writes the store if anything changed since it was opened or saved. It
+// returns ErrNewerFormat, writing nothing, when the file on disk is of a newer
+// format. (Two builds of the same format but another Version still replace each
+// other's file: neither is newer, and no order between Versions exists.)
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.newer {
+		return ErrNewerFormat
+	}
 	if !s.dirty {
 		return nil
 	}

@@ -1,12 +1,17 @@
 package jobfacts
 
 import (
+	"bytes"
+	"encoding/gob"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 	"testing"
 
 	"github.com/bharathvbcr/Vani/internal/decide/kbmatch"
@@ -223,5 +228,116 @@ func TestStoreConcurrentUse(t *testing.T) {
 	wg.Wait()
 	if err := s.Save(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeRawStore(t *testing.T, path string, v any) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(v); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// An older reader leaves a newer format's file untouched, whether or not it
+// can decode its layout, and says why.
+func TestNewerFormatStoreIsLeftUntouched(t *testing.T) {
+	v := vocab(t)
+	ver := Version(v)
+	p := samplePostings()[0]
+	// A newer layout whose Entries no longer decode into this build's type.
+	type futureFile struct {
+		Format  int
+		Version string
+		Entries string
+	}
+	for name, content := range map[string]any{
+		"same layout":    storeFile{Format: format + 1, Version: ver},
+		"changed layout": futureFile{Format: format + 1, Version: ver, Entries: "x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "facts")
+			want := writeRawStore(t, path, content)
+			s := Open(path, ver)
+			if !strings.Contains(s.Info(), "read-only") || !strings.Contains(s.Info(), "newer") {
+				t.Fatalf("Info: %q", s.Info())
+			}
+			s.Put("gh:a:1", InputOf(p, [16]byte{1}), Derive(v, p))
+			if err := s.Save(); !errors.Is(err, ErrNewerFormat) {
+				t.Fatalf("Save: %v, want ErrNewerFormat", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("the newer store was rewritten (err %v)", err)
+			}
+			if _, err := os.Stat(path + ".lock"); err == nil {
+				t.Errorf("a lock file was left beside the untouched store")
+			}
+		})
+	}
+}
+
+// A newer reader upgrades an older format's store once; the next open serves it.
+func TestOlderFormatStoreIsUpgradedOnce(t *testing.T) {
+	v := vocab(t)
+	ver := Version(v)
+	path := filepath.Join(t.TempDir(), "facts")
+	writeRawStore(t, path, storeFile{Format: format - 1, Version: ver})
+	p := samplePostings()[0]
+	in := InputOf(p, [16]byte{1})
+	s := Open(path, ver)
+	if s.Len() != 0 || !strings.Contains(s.Info(), "another version") {
+		t.Fatalf("old format: %d entries, %s", s.Len(), s.Info())
+	}
+	if _, ok := s.Get("gh:a:1", in); ok {
+		t.Fatal("served from an older format")
+	}
+	s.Put("gh:a:1", InputOf(p, [16]byte{1}), Derive(v, p))
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	s2 := Open(path, ver)
+	if s2.Info() != "loaded" {
+		t.Fatalf("second open: %s", s2.Info())
+	}
+	if _, ok := s2.Get("gh:a:1", in); !ok || s2.Changes() != 0 || s2.Dirty() {
+		t.Fatalf("second open re-derives: changes %d dirty %v", s2.Changes(), s2.Dirty())
+	}
+}
+
+// BenchmarkRederive is what a store of another format or Version costs the
+// next read: Derive for every posting. Corpus: 20000 synthetic postings of
+// ~2 KB each (the samples' text, varied per posting), then one Save.
+// Measured 2026-11-19 on a saturated host (load ~100, 18 cores, GOMAXPROCS=4):
+// see the commit message for the figures.
+func BenchmarkRederive(b *testing.B) {
+	v, err := jobinsight.Default()
+	if err != nil {
+		b.Fatal(err)
+	}
+	const n = 20000
+	base := samplePostings()
+	ps := make([]posting.Posting, n)
+	for i := range ps {
+		p := base[i%len(base)]
+		p.Key = posting.Key(fmt.Sprintf("gh:b:%d", i))
+		p.Description = fmt.Sprintf("%s requisition %d. ", p.Description, i) + strings.Repeat("Go, Rust and Kubernetes experience. ", 40)
+		ps[i] = p
+	}
+	b.ResetTimer()
+	for b.Loop() {
+		s := Open(filepath.Join(b.TempDir(), "facts"), "bench")
+		start := time.Now()
+		for _, p := range ps {
+			s.Put(p.Key, InputOf(p, [16]byte{1}), Derive(v, p))
+		}
+		if err := s.Save(); err != nil {
+			b.Fatal(err)
+		}
+		b.ReportMetric(float64(time.Since(start).Milliseconds()), "ms/rederive")
 	}
 }
