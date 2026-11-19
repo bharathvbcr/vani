@@ -12,7 +12,11 @@
 #   such a build is refused, and with it the release notes say so.
 #
 # The tag must name the tree that was built. The build reads the live working tree, so after it (immediately before
-# tagging) the script re-verifies that HEAD is still HEAD_SHA and that no tracked file changed, and refuses otherwise.
+# tagging) the script re-verifies that HEAD is still HEAD_SHA, that no tracked or untracked file appeared or changed
+# (gitignored build outputs stay ignored), and that go.work and go.work.sum, the ignored files the Go build reads, hash
+# as they did before the build; it refuses otherwise. The other ignored inputs are not compared: the extension's dist
+# folders and macos/.build are outputs the build itself regenerates, and the Tessl archive lives outside the repo
+# (bundle.sh records its hash in the engine stamp).
 # (Chosen over building in a detached worktree of HEAD_SHA: the build needs ignored local state - go.work, the
 # extension's dist folders, the Tessl archive - that a fresh worktree does not carry.)
 #
@@ -73,7 +77,16 @@ problem() {
   fi
 }
 
+# Ignored files the Go build reads (go.work points the build at sibling checkouts); git cannot see them change.
+build_inputs() {
+  local f
+  for f in go.work go.work.sum; do
+    if [ -f "$ROOT/$f" ]; then shasum -a 256 "$ROOT/$f"; else echo "absent $f"; fi
+  done
+}
+
 HEAD_SHA="$("$GIT" -C "$ROOT" rev-parse HEAD)"
+INPUTS_BEFORE="$(build_inputs)"
 [ -z "$("$GIT" -C "$ROOT" status --porcelain)" ] || problem "dirty-tree: working tree has uncommitted changes"
 BRANCH="$("$GIT" -C "$ROOT" branch --show-current)"
 [ "$BRANCH" = "main" ] || problem "not-on-main: HEAD is on '${BRANCH:-detached}'"
@@ -185,10 +198,11 @@ echo "built $VERSION at ${HEAD_SHA:0:7}: $SUMMARY"
 ls -l "$DIST/$APP_ZIP" "$DIST/$CLI_ZIP" "$DIST/SHA256SUMS"
 
 # The tag below names HEAD_SHA, so the artifacts above must have been built from exactly that tree: HEAD must not have
-# moved and no tracked file may differ from it (untracked files were checked clean before the build, and the build's own
-# outputs are gitignored).
+# moved, no tracked file may differ from it, no untracked file may have appeared (the build's own outputs are
+# gitignored), and the ignored files the build reads must be unchanged.
 [ "$("$GIT" -C "$ROOT" rev-parse HEAD)" = "$HEAD_SHA" ] || problem "head-moved: HEAD changed from ${HEAD_SHA:0:7} during the build; the artifacts do not match it"
-[ -z "$("$GIT" -C "$ROOT" status --porcelain --untracked-files=no)" ] || problem "tree-changed: a tracked file changed during the build; the artifacts do not match ${HEAD_SHA:0:7}"
+[ -z "$("$GIT" -C "$ROOT" status --porcelain)" ] || problem "tree-changed: a file changed or appeared during the build; the artifacts do not match ${HEAD_SHA:0:7}"
+[ "$(build_inputs)" = "$INPUTS_BEFORE" ] || problem "build-inputs-changed: go.work or go.work.sum changed during the build; the artifacts do not match ${HEAD_SHA:0:7}"
 
 if [ "$DRY" = 1 ]; then
   echo "dry run: nothing tagged, pushed or published. Notes: $NOTES_FILE"

@@ -19,6 +19,7 @@ chmod +x "$APP/Contents/Helpers/vani"
 if [ -n "${FAKE_INFO_RAW+x}" ]; then printf "$FAKE_INFO_RAW" > "$VANI_BUILD_INFO_OUT"; fi
 case "${FAKE_MUTATE:-}" in
   untracked) echo 'package x' > "$ROOT/injected.go" ;;
+  gowork) echo '// edited' >> "$ROOT/go.work" ;;
   dirty) echo changed >> "$ROOT/README.md" ;;
   origintag) git -C "$ROOT" push -q origin "HEAD:refs/tags/$VANI_VERSION" ;;
   localtag) git -C "$ROOT" tag "$VANI_VERSION" ;;
