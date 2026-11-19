@@ -62,7 +62,12 @@ public struct JobMatch: Codable, Equatable, Sendable {
         public var title: String
         public var status: String
         public var closed: Bool?
-        public var mark: JobMark?
+        /// Lenient (`Lenient`): a mark this app does not know reads as nil and never fails the find.
+        public var mark: JobMark? {
+            get { markWire?.value }
+            set { markWire = newValue.map { Lenient($0) } }
+        }
+        var markWire: Lenient<JobMark>?
         /// `url` or `apply_url`: which stored link the page matched.
         public var matchedOn: String
         /// Vani's versioned row (JobRow); nil from a vani older than the contract.
@@ -78,8 +83,16 @@ public struct JobMatch: Codable, Equatable, Sendable {
         }
         var applyFormNoteWire: Lenient<String>?
 
+        /// Equal by what the accessors read: an unknown, an empty and an absent mark are all no mark.
+        public static func == (l: Ref, r: Ref) -> Bool {
+            l.key == r.key && l.company == r.company && l.title == r.title && l.status == r.status
+                && l.closed == r.closed && l.mark == r.mark && l.matchedOn == r.matchedOn && l.row == r.row
+                && l.repeatApply == r.repeatApply && l.applyFormNote == r.applyFormNote
+        }
+
         enum CodingKeys: String, CodingKey {
-            case key, company, title, status, closed, mark, row
+            case key, company, title, status, closed, row
+            case markWire = "mark"
             case matchedOn = "matched_on"
             case repeatApply = "repeat_apply"
             case applyFormNoteWire = "apply_form_note"

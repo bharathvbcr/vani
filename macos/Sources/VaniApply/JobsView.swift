@@ -1126,6 +1126,30 @@ struct ListTopScroller: NSViewRepresentable {
 
 // MARK: - List
 
+/// Shown over rows that a failed refresh left in place: they are from `readAt`, not current.
+private struct StaleRowsBanner: View {
+    @Environment(JobsModel.self) private var jobs
+    let readAt: Date
+    let error: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Couldn't refresh. These roles are from \(readAt.formatted(date: .omitted, time: .shortened)) and may be out of date.")
+                    .font(.callout.weight(.semibold))
+                Text(verbatim: String(error.prefix(240)))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            }
+            Spacer()
+            Button("Try Again") { jobs.reload() }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.orange.opacity(0.12))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct JobList: View {
     @Environment(JobsModel.self) private var jobs
     static let hideDuplicatesKey = "jobs.hidePossibleDuplicates"
@@ -1142,6 +1166,9 @@ private struct JobList: View {
         @Bindable var jobs = jobs
         VStack(spacing: 0) {
             RetriageBatchBanner()
+            if let at = jobs.lastGoodLoad, let err = jobs.error {
+                StaleRowsBanner(readAt: at, error: err)
+            }
             if let page = jobs.page, !jobs.jobs.isEmpty {
                 listHeader(page)
             }
@@ -1700,16 +1727,11 @@ private struct JobDetailContent: View {
             }
             .backToTop(headerScrolledOff) { proxy.scrollTo(Self.topID, anchor: .top) }
         }
-        .onAppear { noteDraft = job.note ?? "" }
-        .onChange(of: job.key) { oldKey, newKey in
-            if noteChanged && noteBytes <= JobsClient.maxNoteBytes && !savingNote {
-                let key = oldKey
-                let text = noteDraft
-                Task { await jobs.saveNote(key, text) }
-            }
-            noteDraft = job.note ?? ""
-            saveStatusMessage = nil
-        }
+        // This view is rebuilt for each job (.id), so the typed note lives in the model, keyed by job,
+        // and the model saves it when the selection moves away (JobsModel.selection).
+        .onAppear { noteDraft = jobs.noteDrafts[job.key] ?? job.note ?? "" }
+        .onChange(of: noteDraft) { _, text in jobs.editNote(job.key, text) }
+        .onDisappear { Task { await jobs.commitNote(job.key) } }
         .onChange(of: noteFocused) { _, isFocused in
             if !isFocused && noteChanged && noteBytes <= JobsClient.maxNoteBytes && !savingNote {
                 saveNoteAction()

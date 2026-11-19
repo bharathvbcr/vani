@@ -88,7 +88,11 @@ struct JobsFixture {
         "audit answer") printf '{"key":"k","verdict":"no","stratum":"manual","p_select":1}\\n'; exit 0 ;;
         "jobs mark"|"jobs note")
             # Answers only a key setWriteReply gave a reply; any other falls through to the error.
-            case "$4" in fx:*) [ -f "$d/write-$4.json" ] && exec cat "$d/write-$4.json" ;; esac ;;
+            # With an echo-note file, a note write answers with the text it was given in place of @NOTE@
+            # (see echoNoteWrites), as vani does; otherwise the reply is fixed.
+            case "$4" in fx:*)
+                if [ "$2" = note ] && [ -f "$d/echo-note" ] && [ -f "$d/write-$4.json" ]; then exec sed "s/@NOTE@/$5/" "$d/write-$4.json"; fi
+                [ -f "$d/write-$4.json" ] && exec cat "$d/write-$4.json" ;; esac ;;
         esac
         printf '{"error":"fake vani: no reply for %s"}\\n' "$1 $2"
         exit 1
@@ -150,6 +154,13 @@ struct JobsFixture {
         if let note { j["note"] = note }
         if let relevance { j["relevance"] = relevance }
         try write("write-\(key).json", j)
+    }
+
+    /// Makes the fake `jobs note` answer for `key` with the note it was given, as vani does, instead of a fixed
+    /// reply. The notes a test sends must be plain words (they are substituted into a sed script).
+    func echoNoteWrites(_ key: String) throws {
+        try setWriteReply(key, note: "@NOTE@")
+        try Data().write(to: dir.appendingPathComponent("echo-note"))
     }
 
     /// The next `jobs list` runs until it is stopped (SIGTERM), which it records in term.log, or with

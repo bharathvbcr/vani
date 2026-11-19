@@ -47,7 +47,13 @@ final class JobsModel {
     /// it selects that role alone.
     var selection: String? {
         didSet {
-            if oldValue != selection { loadDetail() }
+            if oldValue != selection {
+                // The detail pane is rebuilt per job, so a note typed in it is saved here, where every
+                // way the selection moves (arrow keys, a click, a mark or exclusion moving it, a view
+                // change, a refresh) passes, not in the view that is about to be torn down.
+                if let oldValue, noteDrafts[oldValue] != nil { Task { await commitNote(oldValue) } }
+                loadDetail()
+            }
             if let selection {
                 if selectedKeys != [selection] { selectedKeys = [selection] }
             } else if selectedKeys.count == 1 {
@@ -71,7 +77,19 @@ final class JobsModel {
     /// The selected roles in list order (selected rows a reload removed are left out).
     var selectedJobs: [Job] { jobs.filter { selectedKeys.contains($0.key) } }
 
-    private(set) var page: JobsPage?
+    private(set) var page: JobsPage? {
+        didSet {
+            page?.jobs.forEach(learnNote)
+            pruneNoteBookkeeping()
+        }
+    }
+    /// When `page` was last read from vani without error. While `error` is set the rows on screen are
+    /// from this time, not current (`lastGoodLoad`).
+    private(set) var pageLoadedAt: Date?
+    /// The time the rows on screen were last read, once a refresh has failed since; nil while they
+    /// are current (or there are none). A failed refresh keeps the rows, so they are never shown as
+    /// current without this.
+    var lastGoodLoad: Date? { page != nil && error != nil ? pageLoadedAt : nil }
     /// Distributions over the selection, loaded with the list while Insights is open.
     private(set) var stats: JobsStats?
     private(set) var statsError: String?
@@ -83,7 +101,12 @@ final class JobsModel {
     private(set) var loading = false
     private(set) var error: String?
     /// The selected job as `vani jobs show` returned it (with its description).
-    private(set) var detail: Job?
+    private(set) var detail: Job? {
+        didSet {
+            if let detail { learnNote(detail) }
+            pruneNoteBookkeeping()
+        }
+    }
     private(set) var detailError: String?
     /// The last failed mark or note, shown as an alert.
     var actionError: String?
@@ -114,6 +137,51 @@ final class JobsModel {
     /// A quiet re-list (one that shows no progress) is waiting or running.
     private(set) var reconciling = false
     private var detailGeneration = 0
+    /// Notes typed in the detail pane and not yet saved, by job key. A draft is dropped once it is
+    /// saved or typed back to the saved note; one that could not be saved stays, and the pane
+    /// shows it again when the job is reopened.
+    private(set) var noteDrafts: [String: String] = [:]
+    /// Whether any note draft is open (unsaved).
+    var hasNoteDrafts: Bool { !noteDrafts.isEmpty }
+    private var notesSaving: Set<String> = []
+    /// Jobs whose draft was committed while a save of the same job was in flight; the save that is
+    /// running saves the newest draft once it ends (latest wins).
+    private var notesQueued: Set<String> = []
+    /// The note vani holds for a job, as far as this app knows: read from the list or the detail, or
+    /// confirmed by a save. Kept apart from the list, which loses a job that leaves the filter and
+    /// lags behind a save in flight. A job with no entry has never been read (a blank draft for it
+    /// is not a clear).
+    private var confirmedNotes: [String: String] = [:]
+    /// The text of the note save running for a job. A read that lands meanwhile may predate it, so
+    /// it is ignored; the save's own reply settles the record.
+    private var inflightNotes: [String: String] = [:]
+    /// Moves whenever a note save for a job starts or ends. A read of that job (the detail) records it
+    /// when it starts and, if it moved by the time the read lands, the read may predate the save, so
+    /// what it holds of the note is not learned (the same rule a list read follows through
+    /// `applyWrite`, which stops a list that started before a write).
+    private var notesConfirmedBySave: Set<String> = []
+    private var noteSaveGeneration: [String: Int] = [:]
+    /// Ticks at every save start and end; `noteSaveGeneration` holds the tick of a job's latest one, so a
+    /// read that began at tick T predates a save of a job when that job's generation is above T.
+    private var noteSaveClock = 0
+    /// Ticks below this were forgotten by `pruneNoteBookkeeping`: a read that began before it cannot tell
+    /// whether it predates a save, so it learns no note.
+    private var notePruneFloor = 0
+    /// Set while a read that began at this tick is being shown: it learns no note of a job saved since.
+    private var learnReadStart: Int?
+    /// Set while a save's own reply is being placed in the detail and the page: the reply is no read of
+    /// vani's state after the save, so it learns nothing (the save already settled the record).
+    private var ownReplyKey: String?
+    /// Jobs whose save succeeded and is still placing its reply and re-listing: a read landing meanwhile
+    /// began before the save finished, so it learns nothing of that job.
+    private var notesFinalizing: Set<String> = []
+    /// Set while a write's reply is patched into the page: the other rows are what the page already held,
+    /// not a read, so only the written job (and not for a note save's own reply) is learned.
+    private var patching: (key: String, learns: Bool)?
+    /// Jobs whose note a read after the save reported blank while the save's confirmation still stood:
+    /// the note is neither erased nor trusted, so no draft for it is dropped as "no change" (a commit
+    /// sends it, and the write's reply settles it).
+    private var notesUnsettled: Set<String> = []
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
     /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
@@ -278,6 +346,7 @@ final class JobsModel {
         await loadLabels()
         listGeneration += 1
         let gen = listGeneration
+        let readStart = noteSaveClock
         // A list starting now reads every write made so far: a reconcile still waiting is not needed.
         reconcileGeneration += 1
         // The list this one supersedes is stopped rather than left to run to its timeout; its
@@ -297,6 +366,7 @@ final class JobsModel {
             ? BlockingWork.run { try c.gaps(v, query: q, filter: f, cancellation: flag) }
             : nil
         let (result, statsResult, gapsResult) = await (listed, counted, gapped)
+        var impressionKeys: [String]?
         guard gen == listGeneration else { return } // a newer list superseded this one
         loading = false
         listFlag = nil
@@ -305,13 +375,14 @@ final class JobsModel {
         reconciling = false
         switch result {
         case let .success(p):
+            learnReadStart = readStart
             page = p
+            learnReadStart = nil
+            pageLoadedAt = Date()
             error = nil
             // Only ranked roles were put in front of the owner to pass over; an
             // unranked posting awaiting triage is not "seen and passed".
-            if v.isRanked {
-                await reportImpressions(p.jobs.prefix(JobsClient.impressionRows).map(\.key), view: v)
-            }
+            if v.isRanked { impressionKeys = p.jobs.prefix(JobsClient.impressionRows).map(\.key) }
         case let .failure(err):
             error = String(describing: err)
         }
@@ -320,6 +391,8 @@ final class JobsModel {
             stats = st
             statsError = nil
         case let .failure(err)?:
+            // Charts over an older selection never sit under the error that says this one failed.
+            stats = nil
             statsError = String(describing: err)
         case nil:
             break
@@ -334,6 +407,9 @@ final class JobsModel {
         case nil:
             break
         }
+        // Last, so no await sits between the generation check above and the state it guards: a newer
+        // list that landed during the report could otherwise be overwritten by this older one.
+        if let impressionKeys { await reportImpressions(impressionKeys, view: v) }
     }
 
     /// Why the rows on screen could not be reported to `vani impressions log`;
@@ -389,11 +465,15 @@ final class JobsModel {
         guard let key = selection else { detail = nil; return }
         if detail?.key != key { detail = nil }
         let c = client()
+        let readStart = noteSaveClock
         Task {
             let result = await BlockingWork.run { try c.show(key) }
             guard gen == detailGeneration else { return }
             switch result {
-            case let .success(j): detail = j
+            case let .success(j):
+                learnReadStart = readStart
+                detail = j
+                learnReadStart = nil
             case let .failure(err): detailError = String(describing: err)
             }
         }
@@ -497,9 +577,13 @@ final class JobsModel {
     /// write, when a visible list is in flight (it may have read the marks before the write and would
     /// land over the patch), and while Insights is open (its charts are over the selection, and only
     /// vani can recount them).
-    private func applyWrite(_ reply: Job) async {
+    private func applyWrite(_ reply: Job, ownNote: Bool = false) async {
         let next = page?.patched(with: reply, minRelevance: filter.minRelevance)
-        if let next { page = next }
+        if let next {
+            patching = (reply.key, !ownNote)
+            page = next
+            patching = nil
+        }
         if next == nil || loading || (showInsights && view.isRanked) {
             await refresh()
             return
@@ -602,17 +686,153 @@ final class JobsModel {
         await setMark(job.key, job.mark == mark ? nil : mark)
     }
 
+    /// The note vani has for `key` as far as this page knows; nil when the job is on neither the
+    /// page nor the detail.
+    private func learnNote(_ job: Job) {
+        guard inflightNotes[job.key] == nil, ownReplyKey != job.key, !notesFinalizing.contains(job.key) else { return }
+        if let patching, !(patching.learns && patching.key == job.key) { return }
+        if let start = learnReadStart, start < notePruneFloor || (noteSaveGeneration[job.key] ?? 0) > start { return }
+        let note = (job.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // A read with no note for a job whose non-blank note this app just confirmed by a save is no
+        // evidence the note is gone: the resident reader's list can lag a write. A read that carries a
+        // note ends that protection and is believed.
+        if note.isEmpty, notesConfirmedBySave.contains(job.key) {
+            notesUnsettled.insert(job.key)
+            return
+        }
+        notesConfirmedBySave.remove(job.key)
+        notesUnsettled.remove(job.key)
+        confirmedNotes[job.key] = note
+    }
+
+    /// Forgets the save bookkeeping of a job that is on neither the page nor the detail and has no draft
+    /// or save in flight, so it does not grow with every job ever noted.
+    private func pruneNoteBookkeeping() {
+        let held = Set(noteSaveGeneration.keys).union(notesConfirmedBySave).union(notesUnsettled)
+        guard !held.isEmpty else { return }
+        var live = Set(page?.jobs.map(\.key) ?? [])
+        if let detail { live.insert(detail.key) }
+        live.formUnion(noteDrafts.keys)
+        live.formUnion(notesSaving)
+        live.formUnion(inflightNotes.keys)
+        let gone = held.subtracting(live)
+        guard !gone.isEmpty else { return }
+        for key in gone {
+            noteSaveGeneration[key] = nil
+            notesConfirmedBySave.remove(key)
+            notesUnsettled.remove(key)
+        }
+        notePruneFloor = noteSaveClock
+    }
+
+    /// The newest note state this app knows for `key`: the save in flight, else the confirmed note;
+    /// nil when the note was never read.
+    private func knownNote(_ key: String) -> String? { inflightNotes[key] ?? confirmedNotes[key] }
+
+    /// Whether a draft is no change from the newest known note. A blank draft is no change either
+    /// when the stored note was never read: saving it would clear a note nobody saw.
+    private func isNoChange(_ key: String, _ trimmed: String) -> Bool {
+        if notesUnsettled.contains(key) { return false }
+        let known = knownNote(key)
+        return trimmed == known || (trimmed.isEmpty && known == nil)
+    }
+
+    /// Keep what is typed in the note box for `key` as its draft (nothing when it equals the saved note).
+    /// A blank box for a job whose stored note this app never read keeps no draft: saving it would
+    /// clear a note nobody saw. Only an edit of a known note can clear it.
+    func editNote(_ key: String, _ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // While a save of this job runs, no draft is dropped as "no change": a draft equal to the text in
+        // flight is the only copy of it if that save fails (saveNote restores or keeps it, and clears it
+        // once the save confirms).
+        if inflightNotes[key] == nil, isNoChange(key, trimmed) {
+            noteDrafts[key] = nil
+        } else {
+            noteDrafts[key] = text
+            // Typed back to the confirmed note while a save of this job runs: an undo of that save, which
+            // nothing else would send (the pane commits on blur, and this draft is no longer "unsaved"
+            // to anyone who compares with the list). Saved, latest wins, when that save ends. Any other
+            // text stays an open draft until it is committed, as flushNoteDrafts reports.
+            if notesSaving.contains(key), trimmed == confirmedNotes[key] { notesQueued.insert(key) }
+        }
+    }
+
+    /// Save the draft for `key`, if it differs from the saved note and fits. One save per job at a time:
+    /// a draft committed while a save of the same job is in flight is queued and saved, as it stands
+    /// then, when that save ends (false is returned for the queued call). An oversized draft is kept,
+    /// unsaved, for the pane to show.
+    @discardableResult
+    func commitNote(_ key: String) async -> Bool {
+        guard let text = noteDrafts[key] else { return false }
+        if notesSaving.contains(key) { notesQueued.insert(key); return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isNoChange(key, trimmed) { noteDrafts[key] = nil; return false }
+        guard trimmed.utf8.count <= JobsClient.maxNoteBytes else { return false }
+        notesSaving.insert(key)
+        let saved = await saveNote(key, text)
+        notesSaving.remove(key)
+        if notesQueued.remove(key) != nil, noteDrafts[key] != nil {
+            return await commitNote(key) || saved
+        }
+        return saved
+    }
+
+    /// How long a quit waits for open note drafts to be saved.
+    static let quitFlushTimeout: TimeInterval = 5
+
+    private var flushOutstanding = 0
+
+    /// Save every open note draft, waiting at most `timeout` seconds (a save already in flight counts).
+    /// Returns the keys whose drafts are still unsaved: a save that failed, an oversized draft, or one
+    /// still running at the deadline. The caller must not discard those silently (the app asks at quit).
+    func flushNoteDrafts(timeout: TimeInterval = JobsModel.quitFlushTimeout) async -> [String] {
+        let deadline = Date().addingTimeInterval(timeout)
+        let keys = noteDrafts.keys.sorted()
+        flushOutstanding += keys.count
+        for key in keys {
+            Task {
+                _ = await commitNote(key)
+                flushOutstanding -= 1
+            }
+        }
+        while (flushOutstanding > 0 || !notesSaving.isEmpty) && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return noteDrafts.keys.sorted()
+    }
+
     @discardableResult
     func saveNote(_ key: String, _ text: String) async -> Bool {
         let c = client()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        inflightNotes[key] = trimmed
+        noteSaveClock += 1
+        noteSaveGeneration[key] = noteSaveClock
+        notesUnsettled.remove(key)
         let result = await BlockingWork.run { try c.note(key, trimmed) }
+        inflightNotes[key] = nil
+        noteSaveClock += 1
+        noteSaveGeneration[key] = noteSaveClock
         switch result {
         case let .success(j):
-            if detail?.key == key { detail = merged(j) }
-            await applyWrite(j)
+            confirmedNotes[key] = trimmed
+            notesUnsettled.remove(key)
+            notesFinalizing.insert(key)
+            defer { notesFinalizing.remove(key) }
+            if trimmed.isEmpty { notesConfirmedBySave.remove(key) } else { notesConfirmedBySave.insert(key) }
+            if let draft = noteDrafts[key], draft.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+                noteDrafts[key] = nil
+            }
+            if detail?.key == key {
+                ownReplyKey = key
+                detail = merged(j)
+                ownReplyKey = nil
+            }
+            await applyWrite(j, ownNote: true)
             return true
         case let .failure(err):
+            // The text that failed to save is not lost: it is the draft again unless a newer one was typed.
+            if noteDrafts[key] == nil { noteDrafts[key] = trimmed }
             actionError = String(describing: err)
             return false
         }

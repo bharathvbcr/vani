@@ -232,4 +232,41 @@ final class DoctorModelTests: XCTestCase {
         XCTAssertNil(n.report)
         XCTAssertEqual(n.lastError, "doctor: the newest report x.json is unreadable")
     }
+
+    /// A later read that fails leaves the report from the earlier read on screen: the error is kept and
+    /// the report is marked stale, until a read succeeds again. A report from a review just run is
+    /// current whatever the last read did.
+    func testAFailedReReadKeepsTheErrorAndMarksTheOldReportStale() async throws {
+        let f = try fake(last: #"{"report":"/state/doctor/old.md","result":\#(Self.report)}"#)
+        let m = model(f)
+        await m.loadLast()
+        XCTAssertNotNil(m.report)
+        XCTAssertFalse(m.reportIsStale)
+
+        let text = try String(contentsOf: f.vani, encoding: .utf8)
+        let hook = #"cat "$d/last.json"; exit 0 ;;"#
+        XCTAssertTrue(text.contains(hook))
+        try Data(text.replacingOccurrences(of: hook, with: #"cat "$d/last.json"; exit 1 ;;"#).utf8).write(to: f.vani)
+        try f.put("last.json", #"{"error":"doctor: the newest report x.json is unreadable","code":"runtime"}"#)
+        await m.loadLast()
+        XCTAssertEqual(m.lastError, "doctor: the newest report x.json is unreadable", "the failure is not dropped")
+        XCTAssertNotNil(m.report, "the old report is kept, not blanked")
+        XCTAssertTrue(m.reportIsStale, "and not presented as the newest")
+
+        try f.put("last.json", #"{"report":"/state/doctor/new.md","result":\#(Self.report)}"#)
+        try Data(text.utf8).write(to: f.vani)
+        await m.loadLast()
+        XCTAssertNil(m.lastError)
+        XCTAssertFalse(m.reportIsStale)
+        XCTAssertEqual(m.report?.path, "/state/doctor/new.md")
+    }
+
+    func testAFailedReadWithNoEarlierReportIsNotStale() async throws {
+        let f = try fake(last: #"{"error":"doctor: unreadable","code":"runtime"}"#, lastStatus: 1)
+        let m = model(f)
+        await m.loadLast()
+        XCTAssertNotNil(m.lastError)
+        XCTAssertNil(m.report)
+        XCTAssertFalse(m.reportIsStale, "there is no report to be stale")
+    }
 }

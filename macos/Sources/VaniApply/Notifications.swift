@@ -59,7 +59,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// ⌘Q asks once when any Resume Studio window holds edits that were not fitted: they are a draft, never a
     /// version, so quitting would drop them. A window's own close button asks for itself (WindowCloseGuard).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        StudioWindows.shared.terminateReply(ask: StudioWindows.askWithAlert)
+        let studio = StudioWindows.shared.terminateReply(ask: StudioWindows.askWithAlert)
+        guard studio == .terminateNow, jobs.hasNoteDrafts else { return studio }
+        // Open note drafts are saved first, for at most JobsModel.quitFlushTimeout. A draft that could
+        // not be saved is never dropped silently: the owner chooses to stay or to quit without it.
+        Task { @MainActor in
+            let unsaved = await jobs.flushNoteDrafts()
+            NSApp.reply(toApplicationShouldTerminate: unsaved.isEmpty || Self.askQuitWithUnsavedNotes(unsaved.count))
+        }
+        return .terminateLater
+    }
+
+    private static func askQuitWithUnsavedNotes(_ count: Int) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = count == 1 ? "A note was not saved" : "\(count) notes were not saved"
+        alert.informativeText = "Vani could not save what you typed in the Jobs notes. Quitting now loses it."
+        alert.addButton(withTitle: "Stay")
+        alert.addButton(withTitle: "Quit and Discard")
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     func applicationWillTerminate(_ notification: Notification) {

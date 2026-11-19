@@ -72,7 +72,12 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     public var category: String?
     public var firstSeen: Date?
     public var postedAt: Date?
-    public var mark: JobMark?
+    /// Lenient: a mark this app does not know reads as nil (no badge) and never fails the list.
+    public var mark: JobMark? {
+        get { markWire?.value }
+        set { markWire = newValue.map { Lenient($0) } }
+    }
+    var markWire: Lenient<JobMark>?
     public var markedAt: Date?
     /// The stage of an applied job, its latest change and the furthest stage it reached (rejected and
     /// withdrawn leave that as it was). Nil for a job with no stage, and from a vani that predates stages.
@@ -158,7 +163,12 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
     /// The date the age is measured from: the board's posted date, or when
     /// Vani first saw the posting (`freshSource == .seen`, an upper bound).
     public var freshAt: Date?
-    public var freshSource: FreshSource?
+    /// Lenient, like `mark`: a source this app does not know reads as nil, an unknown age basis.
+    public var freshSource: FreshSource? {
+        get { freshSourceWire?.value }
+        set { freshSourceWire = newValue.map { Lenient($0) } }
+    }
+    var freshSourceWire: Lenient<FreshSource>?
     public var ageDays: Int?
     /// 0-100: rank (or triage fit) plus overlap with the target summary.
     public var relevance: Double?
@@ -246,7 +256,7 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case key, company, title, location, remote, department, url, status, closed, rank, coverage,
-             explanation, missing, unsure, lca, employer, triage, category, mark, note, description,
+             explanation, missing, unsure, lca, employer, triage, category, note, description,
              relevance, priority, keywords, semantic, row
         case untriagedWire = "untriaged"
         case manualTriageWire = "manual_triage"
@@ -270,7 +280,8 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         case stageAt = "stage_at"
         case noteAt = "note_at"
         case freshAt = "fresh_at"
-        case freshSource = "fresh_src"
+        case freshSourceWire = "fresh_src"
+        case markWire = "mark"
         case ageDays = "age_days"
         case relevanceBasis = "relevance_basis"
         case reasonList = "reasons"
