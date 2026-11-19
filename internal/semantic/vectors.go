@@ -190,6 +190,8 @@ type vecEvent struct {
 	// Damaged is set when a structurally bad record was found and the log was cut
 	// back to the records before it.
 	Damaged *vecDamage
+	// TornAt locates the incomplete tail TornBytes counts (offset, bytes, records kept).
+	TornAt *vecDamage
 	// SpaceUnchecked is why a compaction ran without knowing the free disk space
 	// (the check could not run). Empty when it ran and passed, or no compaction ran.
 	SpaceUnchecked string
@@ -445,7 +447,9 @@ func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, er
 		if ln < minRecLen || ln > maxRecLen {
 			return off, 0, vecCorrupt("record at %d has length %d", off, ln)
 		}
-		if off+4+ln > size {
+		past := off+4+ln > size
+		if past && size-off < 4+recFixed {
+			// Too short to say what the record was: only a crash cuts it here.
 			return off, size - off, nil
 		}
 		if _, err := r.ReadAt(hdr[4:], off+4); err != nil {
@@ -458,6 +462,12 @@ func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, er
 		}
 		if ln != recFixed+4*n*dim+4 {
 			return off, 0, vecCorrupt("record at %d: length %d does not fit %d chunks of width %d", off, ln, n, dim)
+		}
+		if past {
+			// Its own fields agree with its length, so the file simply ends
+			// inside it: a crash mid-append. A length that runs past the end but
+			// disagrees with the fields (above) is damage, not a torn tail.
+			return off, size - off, nil
 		}
 		if s.dim != 0 && int(dim) != s.dim {
 			return off, 0, vecCorrupt("record at %d has width %d, the log holds %d", off, dim, s.dim)
@@ -568,6 +578,7 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 			ev.Damaged = dmg
 		} else {
 			ev.TornBytes = torn
+			ev.TornAt = &vecDamage{Off: end, Bytes: torn, Kept: len(s.idx), Why: "incomplete tail"}
 		}
 	}
 	s.end, s.valid = end, true
@@ -1162,7 +1173,10 @@ func (m *Matcher) openVectors(ctx context.Context, rep *Report, docs []Doc) *chu
 	}
 	rep.VectorsTornBytes += ev.TornBytes
 	if ev.TornBytes > 0 {
-		rep.noteVectors(fmt.Errorf("%w: cut %d bytes of an incomplete tail", ErrCache, ev.TornBytes))
+		rep.noteVectors(fmt.Errorf("%w: cut %d bytes of an incomplete tail at offset %d, kept the %d records before it", ErrCache, ev.TornBytes, ev.TornAt.Off, ev.TornAt.Kept))
+		if rep.VectorsDamage == nil {
+			rep.VectorsDamage = &VectorDamage{Off: ev.TornAt.Off, Bytes: ev.TornAt.Bytes, Kept: ev.TornAt.Kept, Torn: true, Why: ev.TornAt.Why}
+		}
 	}
 	if s.needsCompaction() {
 		m.compactInto(ctx, rep, s)
