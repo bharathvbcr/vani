@@ -28,6 +28,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -172,7 +173,8 @@ func (s *Store) headerFormat() (int, bool) {
 	}
 	defer f.Close()
 	var h struct{ Format int }
-	if err := gob.NewDecoder(bufio.NewReaderSize(f, 1<<20)).Decode(&h); err != nil {
+	// Bounded: a header is read from at most maxStoreBytes, whatever the file size.
+	if err := gob.NewDecoder(bufio.NewReaderSize(io.LimitReader(f, maxStoreBytes), 1<<20)).Decode(&h); err != nil {
 		return 0, false
 	}
 	return h.Format, true
@@ -191,7 +193,15 @@ func (s *Store) load() string {
 	if err != nil {
 		return "empty: " + err.Error()
 	}
-	if !fi.Mode().IsRegular() || fi.Size() > maxStoreBytes {
+	if !fi.Mode().IsRegular() {
+		return "empty: the store is not a regular file of a plausible size"
+	}
+	if fi.Size() > maxStoreBytes {
+		// Classify by the header before calling the size implausible: a newer
+		// build's store is read-only whatever its size, and the body is never read.
+		if found, ok := s.headerFormat(); ok && found > format {
+			return s.markNewer(found)
+		}
 		return "empty: the store is not a regular file of a plausible size"
 	}
 	var sf storeFile
@@ -324,6 +334,12 @@ func (s *Store) Save() error {
 		return fmt.Errorf("jobfacts: lock: %w", err)
 	}
 	defer lock.Release()
+	// Open's verdict can be stale: a resident daemon holds a store for long, and
+	// a newer build may have written the file since. Re-read the header under the lock.
+	if found, ok := s.headerFormat(); ok && found > format {
+		s.loaded = s.markNewer(found)
+		return ErrNewerFormat
+	}
 	sf := storeFile{Format: format, Version: s.version, Entries: make([]storeEntry, 0, len(s.m))}
 	for k, e := range s.m {
 		sf.Entries = append(sf.Entries, storeEntry{Key: k, In: e.In, F: e.F, HitsSet: e.F.Hits != nil, PaySet: e.F.Pay != nil})
