@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,16 +36,24 @@ import (
 // `vani status --json` reports the request as claimed, so a reader never sees
 // a request vanish before its run has been recorded. A claimed request left by
 // a daemon that died is removed at the next daemon's start and never re-run.
+// The exception is a claim the daemon kept because link and rename could not
+// put it back (errClaimKept): it leaves a marker (runKeptFile) naming that
+// file and its digest, and the next daemon puts the claim back as the pending
+// request, so it runs once, instead of deleting the only copy.
 
 const (
 	runRequestVersion = 1
 	runRequestFile    = "request.json"
 	runClaimedFile    = "request.claimed.json"
-	daemonRecordFile  = "daemon.json"
+	// runKeptFile marks a claim the serving process could not put back and
+	// kept on purpose (errClaimKept). It names the claim file and its digest.
+	runKeptFile      = "request.claimed.kept.json"
+	daemonRecordFile = "daemon.json"
 	// maxRunRequest bounds a request file: the options are at most
 	// maxRunBoards board refs.
 	maxRunRequest = 128 << 10
 	maxDaemonFile = 4 << 10
+	maxKeptMarker = 4 << 10
 	// runRequestMaxAge is how long a request waits for a daemon to pick it up.
 	runRequestMaxAge = time.Hour
 	// runRequestFutureSlack is how far ahead of the clock a request's time may
@@ -247,18 +257,116 @@ func liveDaemon(stateDir string) (daemonRecord, error) {
 	return daemonRecord{}, fmt.Errorf("%w: the daemon recorded as pid %d is gone (it did not exit cleanly)", errNoDaemon, d.PID)
 }
 
+// keptMarker is the content of runKeptFile.
+type keptMarker struct {
+	V      int    `json:"v"`
+	File   string `json:"file"`
+	SHA256 string `json:"sha256"`
+}
+
+func claimDigest(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// writeKeptMarker records that claimed was kept on purpose. It reads the claim
+// (bounded) for its digest, so a later, different claim of the same name is
+// not mistaken for it.
+func writeKeptMarker(stateDir string) error {
+	claimed := runsPath(stateDir, runClaimedFile)
+	raw, err := readBoundedFile(claimed, maxRunRequest)
+	if err != nil {
+		return fmt.Errorf("reading the kept claim: %w", err)
+	}
+	m, err := json.Marshal(keptMarker{V: runRequestVersion, File: runClaimedFile, SHA256: claimDigest(raw)})
+	if err != nil {
+		return err
+	}
+	return atomicfile.Write(runsPath(stateDir, runKeptFile), m)
+}
+
+// keptClaimMarked reports whether runKeptFile is a valid marker naming the
+// claim file as it is now. A missing, symlinked, oversized, corrupt or
+// mismatched marker is false, so the claim is cleared as a crash leftover.
+func keptClaimMarked(stateDir string) bool {
+	raw, err := readBoundedFile(runsPath(stateDir, runKeptFile), maxKeptMarker)
+	if err != nil {
+		return false
+	}
+	var m keptMarker
+	if decodeObject(raw, &m, true) != nil || m.V != runRequestVersion || m.File != runClaimedFile || m.SHA256 == "" {
+		return false
+	}
+	claim, err := readBoundedFile(runsPath(stateDir, runClaimedFile), maxRunRequest)
+	return err == nil && claimDigest(claim) == m.SHA256
+}
+
+// removeKeptMarker drops the marker (a symlink is removed, never followed).
+func (e *env) removeKeptMarker() {
+	if err := os.Remove(runsPath(e.stateDir, runKeptFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(e.stderr, "vani: run request: removing the kept-claim marker: %v\n", err)
+	}
+}
+
 // clearClaimedRequest removes a claimed request an earlier daemon left: its
 // run never finished, and a run is never repeated without being asked again.
+// A claim the earlier daemon kept on purpose (errClaimKept, marked by
+// runKeptFile) is the only copy of a request its caller believes is queued, so
+// it is put back as the pending request instead; it runs once unless it has
+// expired by then (reportRestoredClaim says which).
 func (e *env) clearClaimedRequest() {
 	path := runsPath(e.stateDir, runClaimedFile)
 	if _, err := os.Lstat(path); err != nil {
+		e.removeKeptMarker() // the marker's file is gone: it is stale
 		return
 	}
+	if keptClaimMarked(e.stateDir) {
+		e.restoreKeptClaim(path)
+		return
+	}
+	e.removeKeptMarker() // names a different file, or is unusable
 	if err := os.Remove(path); err != nil {
 		fmt.Fprintf(e.stderr, "vani: run request: removing the one an earlier daemon claimed: %v\n", err)
 		return
 	}
 	fmt.Fprintln(e.stderr, "vani: run request: an earlier daemon claimed a manual run and did not finish it; it is not run again")
+}
+
+// restoreKeptClaim puts a kept claim back as the pending request. A newer
+// pending request wins and the claim is dropped, as in requeueRequest. When it
+// cannot be put back again the claim and its marker stay for the next daemon.
+func (e *env) restoreKeptClaim(claimed string) {
+	pending := runsPath(e.stateDir, runRequestFile)
+	kind, err := putBackRequest(claimed, pending)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "vani: run request: the claim an earlier daemon kept could not be put back, and stays kept: %v\n", err)
+		return
+	}
+	if err := os.Remove(claimed); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(e.stderr, "vani: run request: removing the claim after putting it back: %v\n", err)
+		return
+	}
+	e.removeKeptMarker()
+	e.reportRestoredClaim(kind, pending)
+}
+
+// reportRestoredClaim says what becomes of a restored claim. Putting it back
+// does not promise a run: the serve drops a request older than
+// runRequestMaxAge (or one that is invalid) without running it.
+func (e *env) reportRestoredClaim(kind putBackKind, pending string) {
+	if kind == putBackNewerWins {
+		fmt.Fprintln(e.stderr, "vani: run request: the claim an earlier daemon kept was dropped: a newer request is pending and runs instead")
+		return
+	}
+	_, err := readRunRequest(pending, time.Now())
+	switch {
+	case err == nil:
+		fmt.Fprintln(e.stderr, "vani: run request: the claim an earlier daemon kept was put back as the pending request; it runs once at the next poll")
+	case errors.Is(err, errRequestStale):
+		fmt.Fprintf(e.stderr, "vani: run request: the claim an earlier daemon kept was put back as the pending request, but it is older than %s, so the next poll drops it without running it\n", runRequestMaxAge)
+	default:
+		fmt.Fprintf(e.stderr, "vani: run request: the claim an earlier daemon kept was put back as the pending request, but it is not valid (%v), so the next poll drops it without running it\n", err)
+	}
 }
 
 // pollRequestLoop serves run requests every requestPollInterval until ctx
@@ -404,27 +512,57 @@ var errClaimKept = errors.New("claimed request kept: putting it back failed")
 // was claimed is the owner's latest ask and is kept, and the claimed one is
 // dropped rather than run as well. The link fails rather than replace it.
 func (e *env) requeueRequest(claimed, path string) error {
-	if err := linkRequest(claimed, path); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			fmt.Fprintln(e.stderr, "vani: run request: not run, the daemon is restarting; a newer request waits for the next daemon")
-			return nil
+	how, err := putBackRequest(claimed, path)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "vani: run request: not run, the daemon is restarting; the claimed request was kept because putting it back failed: %v\n", err)
+		// The next daemon finds this marker and puts the claim back.
+		if merr := writeKeptMarker(e.stateDir); merr != nil {
+			fmt.Fprintf(e.stderr, "vani: run request: could not mark the kept claim, so the next daemon will clear it: %v\n", merr)
+			return fmt.Errorf("%w: %w; marker: %v", errClaimKept, err, merr)
 		}
-		// A newer pending file wins even when Link failed for another reason.
-		if _, statErr := os.Lstat(path); statErr == nil {
-			fmt.Fprintln(e.stderr, "vani: run request: not run, the daemon is restarting; a newer request waits for the next daemon")
-			return nil
-		}
-		// Link failed and there is no newer file. Rename moves the only copy
-		// back. If that fails too, leave the claimed file for the caller.
-		if rerr := renameRequest(claimed, path); rerr != nil {
-			fmt.Fprintf(e.stderr, "vani: run request: not run, the daemon is restarting; the claimed request was kept because putting it back failed: link: %v; rename: %v\n", err, rerr)
-			return fmt.Errorf("%w: link: %v; rename: %w", errClaimKept, err, rerr)
-		}
-		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting; the request was moved back because linking it failed")
-		return nil
+		return fmt.Errorf("%w: %w", errClaimKept, err)
 	}
-	fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting; the request waits for the next daemon")
+	switch how {
+	case putBackNewerWins:
+		fmt.Fprintln(e.stderr, "vani: run request: not run, the daemon is restarting; a newer request waits for the next daemon")
+	case putBackRenamed:
+		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting; the request was moved back because linking it failed")
+	default:
+		fmt.Fprintln(e.stderr, "vani: run request: not run yet, the daemon is restarting; the request waits for the next daemon")
+	}
 	return nil
+}
+
+type putBackKind int
+
+const (
+	putBackLinked putBackKind = iota
+	putBackRenamed
+	putBackNewerWins
+)
+
+// putBackRequest puts claimed back as the pending request at path. Link keeps
+// a newer pending file (it fails rather than replace it) and Rename is the
+// fallback for a volume that cannot link; the claimed name is left for the
+// caller to remove. The error is set only when the claim could not be put
+// back at all.
+func putBackRequest(claimed, path string) (putBackKind, error) {
+	err := linkRequest(claimed, path)
+	if err == nil {
+		return putBackLinked, nil
+	}
+	if errors.Is(err, os.ErrExist) {
+		return putBackNewerWins, nil
+	}
+	// A newer pending file wins even when Link failed for another reason.
+	if _, statErr := os.Lstat(path); statErr == nil {
+		return putBackNewerWins, nil
+	}
+	// Link failed and there is no newer file. Rename moves the only copy back.
+	if rerr := renameRequest(claimed, path); rerr != nil {
+		return 0, fmt.Errorf("link: %v; rename: %w", err, rerr)
+	}
+	return putBackRenamed, nil
 }
 
 // binaryMissing reports that the daemon's own binary is gone. A nil watch or
