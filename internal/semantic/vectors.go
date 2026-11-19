@@ -623,11 +623,15 @@ func (s *chunkStore) read(h [16]byte, n, dim int) ([][]float32, error) {
 func (s *chunkStore) rewrite(ctx context.Context, keep []vecKeep) (dropped int, err error) {
 	gen := nextGeneration(s.gen)
 	hdr := encodeVecHeader(s.model, gen)
+	tmpPath := s.path + ".tmp"
+	// A temp left by a crashed (disk-full) compaction holds the space this one
+	// needs: it is this store's own file, and the caller holds the cache lock.
+	if rerr := os.Remove(tmpPath); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+		return 0, fmt.Errorf("%w: remove stale compaction file: %v", ErrCache, rerr)
+	}
 	if err = s.checkSpace(ctx, keep, int64(len(hdr))); err != nil {
 		return 0, err
 	}
-	tmpPath := s.path + ".tmp"
-	_ = os.Remove(tmpPath)
 	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("%w: compaction file: %v", ErrCache, err)
