@@ -68,6 +68,12 @@ const (
 	vecCompactMin = 4 << 20
 	// rescoreSaveEvery is how many rescored postings pass between score saves.
 	rescoreSaveEvery = 500
+	// warmSaveEvery is how many scored (embedded) postings pass between the
+	// score saves of Warm's embed loop. Each save writes the whole score file
+	// (22 MB live), so the interval trades writes for what a crash costs: at
+	// most this many plus one embed group (MaxBatch) scores, which the next
+	// Warm rebuilds from the chunk-vector log without embedding.
+	warmSaveEvery = 500
 )
 
 var (

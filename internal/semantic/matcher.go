@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -66,6 +67,8 @@ type Matcher struct {
 	vs          *chunkStore // chunk-vector log index; guarded by warmMu and the cache lock
 	vecMax      int64       // chunk-vector log bound; 0 is MaxVectorBytes
 	rescoreTick func(n int) // test seam: called after each rescored posting with the running count
+	saveTick    func(bytes int64) // test seam: called after each score save with the file's size
+	warmEvery   int               // scored postings between Warm's score saves; 0 is warmSaveEvery
 
 	mu         sync.RWMutex // guards sf, maxEntries and vecPrio
 	sf         *scoreFile
@@ -361,7 +364,11 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 		return rep, runErr
 	}
 
-	groups, consecBad, i := 0, 0, 0
+	every := m.warmEvery
+	if every <= 0 {
+		every = warmSaveEvery
+	}
+	consecBad, i, savedAt := 0, 0, 0
 	for i < len(todo) && runErr == nil {
 		if err := ctx.Err(); err != nil {
 			runErr = err
@@ -420,12 +427,13 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 		}
 		m.appendVectors(vs, recs, &rep)
 		i = j
-		if groups++; groups%8 == 0 {
+		if rep.Scored-savedAt >= every {
 			if err := m.save(&rep, mine); err != nil {
 				rep.note(err)
 				rep.Skipped += len(todo) - i
 				return rep, err
 			}
+			savedAt = rep.Scored
 		}
 	}
 
@@ -437,7 +445,7 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 			rep.Failed += len(todo) - i
 		}
 	}
-	if rep.Scored > 0 {
+	if rep.Scored > savedAt {
 		if err := m.save(&rep, mine); err != nil {
 			rep.note(err)
 			if runErr == nil {
@@ -478,6 +486,11 @@ func (m *Matcher) save(rep *Report, mine map[string]bool) error {
 	n, live, err := saveScores(filepath.Join(m.dir, scoresFileName), m.sf, m.maxEntries, MaxCacheBytes, keepRule{live: m.vecPrio, mine: mine})
 	rep.ScoresEvicted += n
 	rep.ScoresEvictedLive += live
+	if err == nil && m.saveTick != nil {
+		if fi, serr := os.Stat(filepath.Join(m.dir, scoresFileName)); serr == nil {
+			m.saveTick(fi.Size())
+		}
+	}
 	return err
 }
 
