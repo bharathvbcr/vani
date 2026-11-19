@@ -18,7 +18,7 @@
 //                    only when asked
 //   createAppliedFlow the content script's side: ask, show, accept or dismiss
 import { createLock } from "./guards";
-import type { ToBackground } from "./messages";
+import type { PageToBackground } from "./messages";
 
 /** internal/joburl.MaxBytes: a longer page URL is not sent, never cut. */
 export const MAX_URL_BYTES = 2048;
@@ -338,7 +338,7 @@ export interface AppliedUi {
 }
 
 export interface FlowDeps {
-  send(msg: ToBackground): Promise<unknown>;
+  send(msg: PageToBackground): Promise<unknown>;
   ui: AppliedUi;
   href(): string;
   now?(): number;

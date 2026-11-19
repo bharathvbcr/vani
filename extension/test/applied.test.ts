@@ -253,7 +253,7 @@ describe("flow", () => {
   test("a submit asks about the job and sends the page without its query", async () => {
     const { flow, sent, ui } = setup();
     await flow.submitted();
-    expect(sent).toEqual([{ type: "appliedSignal", url: "https://x.example/a" }]);
+    expect(sent).toEqual([{ type: "appliedSignal", url: "https://x.example/a" }]); // the page as it is now, without query or fragment; the background accepts it only on the sender's origin
     expect(ui).toEqual(["offer:gh:acme:1"]);
   });
 

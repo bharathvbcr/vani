@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_BANK_BYTES } from "../src/bank";
-import { SENDER_POLICY, type ToBackground, TO_BACKGROUND, checkSender, checkToBackground } from "../src/messages";
+import { type PolicyKey, SENDER_POLICY, type SenderLike, TO_BACKGROUND, checkSender, checkToBackground, isPageKind, senderContext } from "../src/messages";
 import { MAX_RESUME_BYTES, toBase64 } from "../src/resume";
 
 type Listener = (msg: unknown, sender: object, sendResponse: (r?: unknown) => void) => boolean;
@@ -77,7 +77,15 @@ function pdfBytes(n: number, signature = "%PDF-"): Uint8Array {
 const pdfOf = (n: number, signature = "%PDF-") => toBase64(pdfBytes(n, signature));
 
 describe("adversarial: sender shapes", () => {
-  const types = () => Object.keys(SENDER_POLICY) as ToBackground["type"][];
+  const typeOf = (k: string) => k.split(".")[0]!;
+  const keys = () => Object.keys(SENDER_POLICY) as PolicyKey[];
+  const pageOnly = (k: PolicyKey) => SENDER_POLICY[k].every(isPageKind);
+  const popupOnly = (k: PolicyKey) => SENDER_POLICY[k].every(s => !isPageKind(s));
+  const contactsBody: Record<string, Record<string, unknown>> = {
+    "contacts.get": { op: "get", key: "email" }, "contacts.choose": { op: "choose", label: "Email", kind: "email" },
+    "contacts.put": { op: "put", key: "email", text: "synthetic@example.test" }, "contacts.list": { op: "list" },
+    "contacts.import": { op: "import", items: [{ key: "email", text: "synthetic@example.test" }] },
+  };
   const own = "https://boards.greenhouse.io/acme/jobs/1";
   const bankJson = JSON.stringify({ version: 1, answers: {}, settings: { captureSelfId: true, disabledHosts: [] } });
   const valid: Record<string, Record<string, unknown>> = {
@@ -105,14 +113,19 @@ describe("adversarial: sender shapes", () => {
   });
 
   test("a sender with no tab and any other shape (id, url, frameId, origin) is popup-shaped: page types are refused and nothing is sent", async () => {
-    for (const sender of [{ id: "clhaobdmkmapebgnmpcfmakbfakmgfip" }, { url: "chrome-extension://clhaobdmkmapebgnmpcfmakbfakmgfip/popup.html" }, { frameId: 0 }, { frameId: 3, documentId: "d" }, { origin: "null" }]) {
-      for (const t of types().filter(t => SENDER_POLICY[t] === "content")) {
+    for (const sender of [{ id: "clhaobdmkmapebgnmpcfmakbfakmgfip" }, { frameId: 0 }, { frameId: 3, documentId: "d" }, { origin: "null" }]) {
+      for (const k of keys().filter(pageOnly)) {
         const natives = nativeSent.length;
-        const r = await ask({ type: t, ...valid[t] }, sender);
-        expect([t, r.replies]).toEqual([t, [{ error: `${t} is not accepted from the popup`, code: "bad_request" }]]);
+        const r = await ask({ type: typeOf(k), ...(contactsBody[k] ?? valid[k]) }, sender);
+        expect([k, r.replies]).toEqual([k, [{ error: `${k} is not accepted from the popup`, code: "bad_request" }]]);
         expect(nativeSent.length).toBe(natives);
       }
     }
+  });
+
+  test("a tabless sender that names a URL is unrecognised where this runtime cannot say its own URL (fails closed)", async () => {
+    const r = await ask({ type: "attachResume", name: "R.pdf", pdf: pdfOf(32), pickedAt: "" }, { url: "chrome-extension://clhaobdmkmapebgnmpcfmakbfakmgfip/popup.html" });
+    expect(r.replies).toEqual([{ error: "attachResume is not accepted from an unrecognised sender", code: "bad_request" }]);
   });
 
   test("tab null/undefined is no tab; any other tab value (0, '', false, []) is a page: popup-only types refused, router never throws", async () => {
@@ -130,23 +143,26 @@ describe("adversarial: sender shapes", () => {
     // runs the handler (a bad job id is its own reply) without touching the store, whose mode other test files leave behind
     expect((await ask({ type: "jobPoll", job: "" }, sub)).replies).toEqual([{ error: "bad job id", code: "bad_request" }]);
     expect((await ask({ type: "frameReady" }, sub)).replies).toEqual([{ ok: true }]);
-    for (const t of types().filter(t => SENDER_POLICY[t] === "popup")) {
-      expect((await ask({ type: t, ...valid[t] }, sub)).replies).toEqual([{ error: `${t} is not accepted from a page`, code: "bad_request" }]);
+    for (const k of keys().filter(popupOnly)) {
+      expect((await ask({ type: typeOf(k), ...(contactsBody[k] ?? valid[k]) }, sub)).replies).toEqual([{ error: `${k} is not accepted from a page`, code: "bad_request" }]);
     }
   });
 
   test("a type missing from one of the two tables is not routable: the router answers unknown message type", () => {
-    expect(Object.keys(SENDER_POLICY).sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
+    expect([...new Set(keys().map(typeOf))].sort()).toEqual(Object.keys(TO_BACKGROUND).sort());
     expect(checkToBackground({ type: "newType" })).toEqual({ error: "unknown message type" });
   });
 
-  test("an 'either' type from a page acts for the page's own tab even when the message names another tab or -1", async () => {
+  test("an 'either' type from a page acts for the page's own tab; one that names another tab or -1 is refused, not obeyed", async () => {
     for (const cb of removed) { cb(21); cb(22); }
     await new Promise(r => setTimeout(r, 10));
     await ask({ type: "frameReady" }, { tab: { id: 21 }, frameId: 0, url: "https://a.example/" });
     await ask({ type: "frameReady" }, { tab: { id: 22 }, frameId: 4, url: "https://a.example/" });
-    expect((await ask({ type: "frames", tabId: 22 }, { tab: { id: 21 }, frameId: 0, url: "https://a.example/" })).replies).toEqual([{ frames: [0] }]);
-    expect((await ask({ type: "frames", tabId: 22 }, { tab: { id: -1 }, frameId: 0, url: "https://a.example/" })).replies).toEqual([{ frames: [] }]);
+    expect((await ask({ type: "frames" }, { tab: { id: 21 }, frameId: 0, url: "https://a.example/" })).replies).toEqual([{ frames: [0] }]);
+    expect((await ask({ type: "frames" }, { tab: { id: -1 }, frameId: 0, url: "https://a.example/" })).replies).toEqual([{ frames: [] }]);
+    for (const tab of [21, 22, -1]) {
+      expect((await ask({ type: "frames", tabId: 22 }, { tab: { id: tab }, frameId: 0, url: "https://a.example/" })).replies).toEqual([{ error: "frames from a page carries no tabId", code: "bad_request" }]);
+    }
   });
 
   test("the deleted message types from every sender shape: one error reply, nothing written, nothing sent, no throw", async () => {
@@ -201,9 +217,13 @@ describe("adversarial: attachResume", () => {
     expect(sent().every(s => s.tabId === 61)).toBe(true);
   });
 
-  test("a message that names its own tabId, frameId or url cannot redirect the attach", async () => {
+  test("a message that names its own tabId or url is refused and asks no frame; a claimed frameId is ignored", async () => {
     fresh();
-    await send({ tabId: 99, frameId: 4, url: "https://evil.example/" });
+    for (const over of [{ tabId: 99 }, { url: "https://evil.example/" }, { tabId: 99, frameId: 4, url: "https://evil.example/" }]) {
+      expect((await send(over)).replies).toEqual([{ error: expect.stringContaining("carries no"), code: "bad_request" }]);
+    }
+    expect(sent()).toEqual([]);
+    await send({ frameId: 4 });
     expect(sent().length).toBeGreaterThan(0);
     expect(sent().every(s => s.tabId === 61)).toBe(true);
   });
@@ -306,21 +326,47 @@ describe("adversarial: replaceBank bound", () => {
   });
 });
 
-describe("the popup in a tab of its own is still the popup; a page never is", () => {
+describe("sender kinds: the popup, an extension page in a tab, a top frame, a subframe", () => {
   const own = "chrome-extension://clhaobdmkmapebgnmpcfmakbfakmgfip/";
-  test("an extension page in a tab may send popup messages and not content ones", () => {
-    const popupTab = { tab: { id: 4 }, url: own + "popup.html" };
-    expect(checkSender("replaceBank", popupTab, own)).toBeNull();
-    expect(checkSender("sameQuestion", popupTab, own)).toEqual({ error: "sameQuestion is not accepted from the popup", code: "bad_request" });
-  });
-  test("a page, or another extension's page, in a tab is content", () => {
-    for (const url of ["https://job-boards.greenhouse.io/acme/jobs/1", "chrome-extension://otherextensionidxxxxxxxxxxxxxxxxx/popup.html", own.slice(0, -1) + "x/popup.html", ""]) {
-      expect(checkSender("replaceBank", { tab: { id: 4 }, url }, own)).toEqual({ error: "replaceBank is not accepted from a page", code: "bad_request" });
+  const ctx = (s: SenderLike, named?: unknown) => senderContext(s, own, named);
+  const replaceBank = { type: "replaceBank", json: "{}" } as const;
+  const sameQuestion = { type: "sameQuestion", a: "A", b: "B" } as const;
+
+  test("the browser's sender, and only it, decides the kind", () => {
+    expect(ctx({}).kind).toBe("popup");
+    expect(ctx({ tab: null }).kind).toBe("popup");
+    expect(ctx({ tab: { id: 4 }, url: own + "popup.html" }).kind).toBe("extensionTab");
+    expect(ctx({ tab: { id: 4 }, frameId: 0, url: "https://a.example/" }).kind).toBe("topFrame");
+    expect(ctx({ tab: { id: 4 }, frameId: 3, url: "https://a.example/" }).kind).toBe("subframe");
+    // A page cannot be an extension page: the prefix must be this extension's own URL, and another extension's is not.
+    for (const url of ["chrome-extension://otherextensionidxxxxxxxxxxxxxxxxx/popup.html", own.slice(0, -1) + "x/popup.html", "", "https://a.example/" + own]) {
+      expect([url, ctx({ tab: { id: 4 }, frameId: 0, url }).kind]).toEqual([url, "topFrame"]);
     }
-    expect(checkSender("replaceBank", { tab: { id: 4 } }, own)).not.toBeNull();
+    // Without the extension's own URL a tab is a page.
+    expect(senderContext({ tab: { id: 4 }, frameId: 0, url: own + "popup.html" }, "").kind).toBe("topFrame");
   });
-  test("without the extension's own URL a tab is content, as before", () => {
-    expect(checkSender("replaceBank", { tab: { id: 4 }, url: own + "popup.html" })).not.toBeNull();
-    expect(checkSender("replaceBank", {}, own)).toBeNull();
+
+  test("url, origin, tab and frame come from the sender; only an extension sender's named tab is taken from the message", () => {
+    const page = ctx({ tab: { id: 4, url: "https://top.example/p" }, frameId: 3, url: "https://a.example/x" }, 99);
+    expect(page).toMatchObject({ kind: "subframe", tabId: 4, frameId: 3, url: "https://a.example/x", origin: "https://a.example", tabURL: "https://top.example/p", hosts: ["a.example", "top.example"] });
+    expect(ctx({}, 7).tabId).toBe(7);
+    expect(ctx({ tab: { id: 4 }, url: own + "popup.html" }, 7)).toMatchObject({ kind: "extensionTab", tabId: 7 });
+    for (const named of [undefined, "7", 1.5, null, {}]) expect(ctx({}, named).tabId).toBeUndefined();
+    expect(ctx({ tab: { id: 4 }, frameId: 0, url: "about:blank" }).origin).toBeNull();
+    expect(ctx({ tab: { id: 4 }, frameId: 0, origin: "null" }).hosts).toBeNull();
+  });
+
+  test("an extension page in a tab holds the popup's rights, never a page's", () => {
+    const popupTab = ctx({ tab: { id: 4 }, url: own + "popup.html" });
+    expect(checkSender({ ...replaceBank }, popupTab)).toBeNull();
+    expect(checkSender({ ...sameQuestion }, popupTab)).toEqual({ error: "sameQuestion is not accepted from an extension page in a tab", code: "bad_request" });
+    expect(checkSender({ ...replaceBank }, ctx({}))).toBeNull();
+    expect(checkSender({ ...sameQuestion }, ctx({}))).toEqual({ error: "sameQuestion is not accepted from the popup", code: "bad_request" });
+  });
+
+  test("a page, or another extension's page, in a tab is refused popup messages", () => {
+    for (const url of ["https://job-boards.greenhouse.io/acme/jobs/1", "chrome-extension://otherextensionidxxxxxxxxxxxxxxxxx/popup.html", own.slice(0, -1) + "x/popup.html", ""]) {
+      expect(checkSender({ ...replaceBank }, ctx({ tab: { id: 4 }, frameId: 0, url }))).toEqual({ error: "replaceBank is not accepted from a page", code: "bad_request" });
+    }
   });
 });

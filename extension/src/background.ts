@@ -14,7 +14,7 @@ import {
   storageMode,
   updateBank,
 } from "./store";
-import { type FillReply, MAX_SAME_LABEL, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground } from "./messages";
+import { type FillReply, MAX_JOB_URL, MAX_SAME_LABEL, type SenderContext, type ToBackground, type ToContent, UNKNOWN_MESSAGE, checkSender, checkToBackground, isPageKind, pageSentURL, senderContext } from "./messages";
 import { FILL_BUSY, type FanOut, type FrameStore, createFrameRegistry, mergeFill, toFrames } from "./frames";
 import { createDrafter, draftHelp } from "./draft";
 import { type OfferStore, type StoredOffer, createBroker, parseFindKey } from "./applied";
@@ -362,50 +362,6 @@ function ownURL(): string {
   try { return typeof chrome.runtime.getURL === "function" ? chrome.runtime.getURL("") : ""; } catch { return ""; }
 }
 
-/** The origin a content script's message comes from: the browser's own `sender.origin`, else the sender URL's; null when neither is an origin. */
-function senderOrigin(sender: chrome.runtime.MessageSender): string | null {
-  const ok = (o: string): boolean => o !== "" && o !== "null";
-  if (typeof sender.origin === "string") return ok(sender.origin) ? sender.origin : null;
-  try {
-    const o = new URL(sender.url ?? "").origin;
-    return ok(o) ? o : null;
-  } catch {
-    return null;
-  }
-}
-
-/** A message from a page's content script, not the popup or another extension page (the same test messages.ts applies to SENDER_POLICY). */
-function isPageSender(sender: chrome.runtime.MessageSender): boolean {
-  const own = ownURL();
-  return sender.tab !== undefined && sender.tab !== null && !(own !== "" && typeof sender.url === "string" && sender.url.startsWith(own));
-}
-
-/**
- * The hosts whose disabled setting governs a page's capture, from the browser's own sender (never the message body):
- * the sending frame's host, plus the tab's top-level host when the sender is a sub-frame and the browser reports the
- * tab's url. The manifest has no "tabs" permission, so Chrome fills `tab.url` only for a tab whose host the extension
- * has host access to (the content-script match patterns); for any other top page the top host is unknown, and only
- * the frame's own host is checked. Disabling an outer site therefore reliably covers its embedded frames only on
- * hosts the extension matches.
- * Disabling a site turns capture off for everything embedded in it, so either one disabled refuses. null when the
- * frame's host cannot be read: unknown is refused, not allowed.
- */
-function senderHosts(sender: chrome.runtime.MessageSender): string[] | null {
-  const hostOf = (u: string | undefined): string | null => {
-    try { return new URL(u ?? "").hostname || null; } catch { return null; }
-  };
-  const frame = hostOf(sender.url);
-  if (frame === null) return null;
-  const top = sender.frameId === 0 ? null : hostOf(sender.tab?.url);
-  return top === null ? [frame] : [frame, top];
-}
-
-/** The tab a message acts for. A content script is always its own tab, whatever it claims; the popup is no tab and names one. */
-function actingTab(sender: chrome.runtime.MessageSender, named: unknown): number | undefined {
-  if (sender.tab) return sender.tab.id;
-  return typeof named === "number" && Number.isInteger(named) ? named : undefined;
-}
-
 /** A "✓?" on the toolbar button marks a tab that has a question waiting, for pages the content script does not run on. */
 async function badge(tabId: number | undefined, show: boolean): Promise<void> {
   if (tabId === undefined || !chrome.action) return;
@@ -475,7 +431,39 @@ function refusedByApp(counts: Omit<CaptureResult, "bank">, dropped: number): Omi
   return { ...counts, added: counts.added - fromAdded, updated: counts.updated - (n - fromAdded), skippedSecret: counts.skippedSecret + n };
 }
 
-async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): Promise<unknown> {
+/** A field an extension sender's message may carry. A page's `url` is read only through pageSentURL (appliedSignal, jobRow, jobKey); a page's `key` is refused by checkSender. */
+const claimed = (m: object, field: "url" | "key"): string | undefined => {
+  const v = (m as Record<string, unknown>)[field];
+  return typeof v === "string" ? v : undefined;
+};
+
+/**
+ * The page a message is about. A page sender: the URL it sent on appliedSignal, jobRow or jobKey when it is on the
+ * sender's own origin (pageSentURL; a single-page board changes the page URL without a new document, and the browser's
+ * sender.url keeps the one it loaded at), else the browser's URL for the frame (its tab's when the frame's is unknown).
+ * A url that was sent and fails pageSentURL gives undefined, never a guess (checkSender has refused it already). An
+ * extension sender names the page it means.
+ */
+function pageURL(ctx: SenderContext, msg: object): string | undefined {
+  if (!isPageKind(ctx.kind)) return claimed(msg, "url");
+  const sent = pageSentURL(msg, ctx);
+  if ("error" in sent) return undefined;
+  return sent.url ?? ctx.url ?? ctx.tabURL ?? "";
+}
+
+/** The page URL for a jobFind, or the refusal to reply with when there is none or one past the bound. */
+function jobPageURL(ctx: SenderContext, msg: object): string | { error: string; code: "bad_request" } {
+  const url = pageURL(ctx, msg);
+  if (url === undefined || url === "") return { error: "no page URL", code: "bad_request" };
+  if (url.length > MAX_JOB_URL) return { error: "page URL too long", code: "bad_request" };
+  return url;
+}
+
+/**
+ * Handle one message from a sender the browser described in `ctx` (messages.ts senderContext), already checked
+ * by checkSender. Handlers read the sender only from `ctx`: its tab, frame, URL and origin never come from the message.
+ */
+async function handle(msg: ToBackground, ctx: SenderContext): Promise<unknown> {
   switch (msg.type) {
     case "getBank": {
       const { bank, rev } = await loadSnapshot(msg.fresh === true ? { fresh: true } : {});
@@ -485,8 +473,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       if (!Array.isArray(msg.fields) || msg.fields.length > 500 || typeof msg.host !== "string") return { error: "bad capture" };
       // A page's capture is checked here as well as on the page: a page script or a stale content script
       // cannot talk the background out of the owner's disabled list. The popup (no tab) saves what the owner typed.
-      if (isPageSender(sender)) {
-        const hosts = senderHosts(sender);
+      if (isPageKind(ctx.kind)) {
+        const hosts = ctx.hosts;
         if (hosts === null) return { error: "capture refused: the page's host could not be determined", code: "bad_request" };
         let held: Bank;
         try {
@@ -605,35 +593,40 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return native({ op: "sameQuestion", a: msg.a, b: msg.b }, SAME_QUESTION_MS);
     }
     case "appliedSignal": {
-      const tabId = actingTab(sender, msg.tabId);
-      const frame = sender.tab ? sender.frameId ?? 0 : 0;
-      let r = await applied.signal(tabId, msg.url);
+      const tabId = ctx.tabId;
+      const subframe = ctx.kind === "subframe";
+      let r = await applied.signal(tabId, pageURL(ctx, msg));
       // A form in a frame has a URL of its own (a Greenhouse embed maps to its posting); the page around it may
       // be the one Vani tracks. The tab's URL is known only where the extension has access to the page.
-      if ("offer" in r && r.offer === null && frame !== 0 && sender.tab?.url) r = await applied.signal(tabId, sender.tab.url);
+      if ("offer" in r && r.offer === null && subframe && ctx.tabURL) r = await applied.signal(tabId, ctx.tabURL);
       if ("offer" in r && r.offer && tabId !== undefined) {
-        if (sender.tab) void badge(tabId, true); // the popup is open: no need to flag the button
-        if (frame !== 0) r = { ...r, shownInTop: await askTopToShow(tabId) };
+        if (isPageKind(ctx.kind)) void badge(tabId, true); // the popup is open: no need to flag the button
+        if (subframe) r = { ...r, shownInTop: await askTopToShow(tabId) };
       }
       return r;
     }
     case "appliedPending":
-      return { offer: await applied.pending(actingTab(sender, msg.tabId)) };
-    case "jobRow":
-      return parseFindRow(await native({ op: "jobFind", url: msg.url }));
+      return { offer: await applied.pending(ctx.tabId) };
+    case "jobRow": {
+      const url = jobPageURL(ctx, msg);
+      if (typeof url !== "string") return url;
+      return parseFindRow(await native({ op: "jobFind", url }));
+    }
     case "jobKey": {
       // The same jobFind as jobRow, read for the posting's key (which every tracked job has, scored or not).
-      const f = parseFindKey(await native({ op: "jobFind", url: msg.url }));
+      const url = jobPageURL(ctx, msg);
+      if (typeof url !== "string") return url;
+      const f = parseFindKey(await native({ op: "jobFind", url }));
       return f.ok ? (f.ambiguous ? { key: null, ambiguous: true } : { key: f.key }) : { error: f.error, code: f.code };
     }
     case "appliedMark": {
-      const tabId = actingTab(sender, msg.tabId);
+      const tabId = ctx.tabId;
       const r = await applied.mark(tabId);
       if ("ok" in r) void badge(tabId, false);
       return r;
     }
     case "appliedDismiss": {
-      const tabId = actingTab(sender, msg.tabId);
+      const tabId = ctx.tabId;
       await applied.dismiss(tabId);
       void badge(tabId, false);
       return { ok: true };
@@ -647,14 +640,13 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     }
     case "frameReady": {
       // Only a content script is in a frame; the popup has no tab and no frameId.
-      // The page URL is the browser's sender.url. A URL on the message is ignored.
-      if (sender.tab?.id === undefined || sender.frameId === undefined) return { error: "not from a frame", code: "bad_request" };
-      const pageURL = typeof sender.url === "string" ? sender.url : undefined;
-      await frameRegistry.add(sender.tab.id, sender.frameId, senderOrigin(sender) ?? undefined, pageURL);
+      // The page URL is the browser's sender.url; a message carries none (checkSender refuses one that does).
+      if (ctx.tabId === undefined || ctx.frameId === undefined) return { error: "not from a frame", code: "bad_request" };
+      await frameRegistry.add(ctx.tabId, ctx.frameId, ctx.origin ?? undefined, ctx.url);
       return { ok: true };
     }
     case "frames": {
-      const tabId = actingTab(sender, msg.tabId);
+      const tabId = ctx.tabId;
       return { frames: tabId === undefined ? [] : await frameRegistry.list(tabId) };
     }
     case "ingestJobs":
@@ -671,7 +663,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "coverGet":
     case "coverInfo":
     case "coverOpen": {
-      const url = sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url;
+      const url = pageURL(ctx, msg);
+      if (url === undefined) return { error: "no page URL", code: "bad_request" };
       return runCover({ type: msg.type, url }, native);
     }
     case "resumeGet":
@@ -679,13 +672,14 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "resumeDelete": {
       // The bytes go only to the content script that asked, for its own tab (resumeGet is content-only in
       // the sender policy); the popup binds and unbinds the active tab's page and never receives the file.
-      // A content script acts for its own frame: the key is that frame's URL, never the one its message claims.
+      // A content script acts for its own frame: the key is that frame's URL from the browser, and its message names none.
       // The popup is in no tab and names the page in the message (Choose and Remove).
-      const r = await runResume({ ...msg, url: sender.tab ? sender.url ?? sender.tab.url ?? "" : msg.url }, native);
+      const url = pageURL(ctx, msg);
+      if (url === undefined) return { error: "no page URL", code: "bad_request" };
+      const r = await runResume({ ...msg, url }, native);
       // A form in a frame has a URL of its own; the resume may be bound to the page around it (as for appliedSignal).
-      const frame = sender.tab ? sender.frameId ?? 0 : 0;
-      if (msg.type === "resumeGet" && frame !== 0 && sender.tab?.url && (r as { found?: unknown } | null)?.found === false && resumeKey(sender.tab.url)) {
-        return runResume({ type: "resumeGet", url: sender.tab.url }, native);
+      if (msg.type === "resumeGet" && ctx.kind === "subframe" && ctx.tabURL && (r as { found?: unknown } | null)?.found === false && resumeKey(ctx.tabURL)) {
+        return runResume({ type: "resumeGet", url: ctx.tabURL }, native);
       }
       return r;
     }
@@ -693,16 +687,16 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       // A tab id means the popup asked about that tab. The background reads the tab. The message's URL
       // is not the page that is looked up, so a stale URL cannot show another job's file. With no tab
       // id the popup still names the page, which is how the row worked before frames were recorded.
-      if (typeof msg.tabId === "number") return popupResumeInfo(msg.tabId);
+      if (ctx.tabId !== undefined) return popupResumeInfo(ctx.tabId);
       return runResume({ type: "resumeInfo", url: msg.url }, native);
     }
     case "resumePreview": {
       // A content script is its own frame. A key or tab id it sends is ignored, so it cannot name
       // another page's file. The popup is not in a tab: the background reads the tab.
-      if (sender.tab) {
-        const frameURL = sender.url ?? sender.tab.url ?? "";
-        const frame = sender.frameId ?? 0;
-        const top = sender.tab.url ?? "";
+      if (isPageKind(ctx.kind)) {
+        const frameURL = ctx.url ?? ctx.tabURL ?? "";
+        const frame = ctx.kind === "subframe" ? 1 : 0;
+        const top = ctx.tabURL ?? "";
         const open = async (url: string) => withoutResumeBytes(await runResume({ type: "resumeOpen", url }, native));
         if (!resumeKey(frameURL)) {
           if (frame !== 0 && top !== frameURL && resumeKey(top)) return open(top);
@@ -712,7 +706,7 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
         if (frame !== 0 && top && isMissingResume(r) && resumeKey(top)) return open(top);
         return withoutResumeBytes(r);
       }
-      return popupResumePreview(msg.key, msg.tabId);
+      return popupResumePreview(claimed(msg, "key"), ctx.tabId);
     }
     case "resumeShow": {
       // The page already holds this PDF (it just built or chose it). Check it before the host sees it.
@@ -722,8 +716,8 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return withoutResumeBytes(await native({ op: "resumeOpenData", name: file.name, pdf: msg.pdf }));
     }
     case "fillClaim": {
-      const tabId = sender.tab?.id;
-      const frameId = sender.frameId;
+      const tabId = ctx.tabId;
+      const frameId = ctx.frameId;
       if (tabId === undefined || !Number.isInteger(tabId) || tabId < 0) return { error: "no tab" };
       if (frameId === undefined || !Number.isInteger(frameId) || frameId < 0) return { error: "not from a frame", code: "bad_request" };
       if (!claimFillGate(tabId)) return { error: FILL_BUSY };
@@ -732,14 +726,14 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
       return { ok: true };
     }
     case "fillSettled": {
-      const tabId = sender.tab?.id;
-      const frameId = sender.frameId;
+      const tabId = ctx.tabId;
+      const frameId = ctx.frameId;
       if (tabId === undefined || frameId === undefined) return { error: "not from a frame", code: "bad_request" };
       settleFillFrame(tabId, frameId);
       return { ok: true };
     }
     case "fillRun": {
-      let tabId = actingTab(sender, msg.tabId);
+      let tabId = ctx.tabId;
       if (tabId === undefined) {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
         tabId = tab?.id;
@@ -750,14 +744,14 @@ async function handle(msg: ToBackground, sender: chrome.runtime.MessageSender): 
     case "attachResume": {
       // Only a content script sends this (sender policy), and it acts for its own tab: never the active one,
       // which may be a different page by the time this runs.
-      const tabId = sender.tab?.id;
+      const tabId = ctx.tabId;
       if (tabId === undefined) return { error: "no tab" };
       // The same checks the page runs, before any frame is asked.
       const file = checkResumeFile(msg.name, msg.pdf);
       if ("error" in file) return file;
       // The file's name is the owner's: it goes only to frames of the page that offered it, never to whatever
       // else the tab now shows (it may have navigated) or to a frame of another origin.
-      const origin = senderOrigin(sender);
+      const origin = ctx.origin;
       if (origin === null) return { error: "no origin" };
       const r = await toFrames<FillReply>({
         type: "attachResume",
@@ -780,12 +774,14 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
     return false;
   }
   // Who may send this type (messages.ts SENDER_POLICY): a refused sender gets an error and nothing runs.
-  const refused = checkSender(c.msg.type, sender, ownURL());
+  // The browser's description of the sender, built once; handlers read only this (an extension sender's named tab is validated into it).
+  const ctx = senderContext(sender, ownURL(), (raw as { tabId?: unknown }).tabId);
+  const refused = checkSender(c.msg, ctx);
   if (refused) {
     sendResponse(refused);
     return false;
   }
-  handle(c.msg, sender).then(
+  handle(c.msg, ctx).then(
     r => sendResponse(r === undefined ? { error: "no result" } : r),
     (e: unknown) => sendResponse({ error: e instanceof Error ? e.message : String(e) }),
   );
