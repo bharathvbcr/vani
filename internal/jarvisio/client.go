@@ -233,18 +233,24 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 		writeErr = enc.Encode(request{ID: "c", Op: op, Params: callParams})
 	}
 	_ = stdin.Close()
-	if writeErr != nil {
+	// A failed write (EPIPE: the child exited without reading stdin) does not
+	// discard replies the child already wrote: they are read below, bounded by
+	// maxReplyBytes and the call's deadline like any other, and used when both
+	// are complete and valid. Only when they are not does the write error name
+	// the failure: serve did not start.
+	noReply := func() error {
 		cancel()
 		<-errCh
-		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not start"}
+		if writeErr != nil {
+			return &Error{Code: CodeUnavailable, Message: "jarvis serve did not start"}
+		}
+		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not answer"}
 	}
 
 	dec := json.NewDecoder(io.LimitReader(stdout, maxReplyBytes))
 	var hello, call response
 	if err := dec.Decode(&hello); err != nil || hello.ID != "h" {
-		cancel()
-		<-errCh
-		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not answer"}
+		return noReply()
 	}
 	if !hello.OK {
 		cancel()
@@ -252,9 +258,7 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 		return jarvisError(hello, secret)
 	}
 	if err := dec.Decode(&call); err != nil || call.ID != "c" {
-		cancel()
-		<-errCh
-		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not answer"}
+		return noReply()
 	}
 	// The reply is in hand. Stop the process rather than waiting out its shutdown.
 	cancel()
