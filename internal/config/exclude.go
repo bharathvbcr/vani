@@ -214,7 +214,7 @@ func (x Exclude) outsideOnly(p posting.Posting) bool {
 	for _, opt := range o.opts {
 		// An option as likely a US place as a foreign one ("Cambridge", "San
 		// Jose") is not judged: the posting is kept.
-		if optionMatch(x.OnlyLocations, opt) != "" || opt.Verdict == location.VerdictAmbiguous {
+		if optionMatch(x.OnlyLocations, opt) != "" || opt.Verdict == location.VerdictAmbiguous || stateUnread(x.OnlyLocations, opt) {
 			return false
 		}
 	}
@@ -242,9 +242,27 @@ func (x Exclude) unrecognisedOutside(p posting.Posting) bool {
 	return false
 }
 
+// stateUnread reports whether an option is a US place whose state was not
+// read ("Austin", "Seattle") while entries name a US state: the entry cannot
+// be compared with it, so the option is neither inside nor outside the list.
+// An entry naming the country matches such an option in optionMatch before
+// this is asked.
+func stateUnread(entries []string, o location.Option) bool {
+	if o.Verdict != location.VerdictUS || o.State != "" {
+		return false
+	}
+	for _, e := range entries {
+		if _, ok := location.StateCode(e); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // onlyUnjudged reports whether only_locations keeps a location only because
-// an option it names is ambiguous (location.VerdictAmbiguous) and no option
-// matched an entry: kept, but not checked.
+// an option it names is ambiguous (location.VerdictAmbiguous) or a US place
+// with no state read (stateUnread) and no option matched an entry: kept, but
+// not checked.
 func (x Exclude) onlyUnjudged(o locationOptions) bool {
 	if len(x.OnlyLocations) == 0 {
 		return false
@@ -254,7 +272,7 @@ func (x Exclude) onlyUnjudged(o locationOptions) bool {
 		if optionMatch(x.OnlyLocations, opt) != "" {
 			return false
 		}
-		ambiguous = ambiguous || opt.Verdict == location.VerdictAmbiguous
+		ambiguous = ambiguous || opt.Verdict == location.VerdictAmbiguous || stateUnread(x.OnlyLocations, opt)
 	}
 	if !ambiguous {
 		return false
