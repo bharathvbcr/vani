@@ -312,8 +312,8 @@ func TestOlderFormatStoreIsUpgradedOnce(t *testing.T) {
 // BenchmarkRederive is what a store of another format or Version costs the
 // next read: Derive for every posting. Corpus: 20000 synthetic postings of
 // ~2 KB each (the samples' text, varied per posting), then one Save.
-// Measured 2026-11-19 on a saturated host (load ~100, 18 cores, GOMAXPROCS=4):
-// see the commit message for the figures.
+// Measured 2026-11-19 on a saturated host (load ~100, 18 cores, GOMAXPROCS=4),
+// one run: 9.8 s for the 20000 postings (Derive, Put and the Save).
 func BenchmarkRederive(b *testing.B) {
 	v, err := jobinsight.Default()
 	if err != nil {
