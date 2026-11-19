@@ -91,12 +91,37 @@ type labelledPins struct {
 // (the pin list, a removal record): far over any real one, far under memory.
 const maxStateFileBytes = 32 << 20
 
+// stateOpenAttempts bounds openStateFile's retries of a lost race.
+const stateOpenAttempts = 8
+
+// openStateFile is atomicfile.OpenRead that survives the writer: these files are
+// replaced by atomic rename (atomicfile.Write), and OpenRead, which proves the
+// file it opened is still the one at the path, fails when a rename lands between
+// its open and that check ("kept changing underneath the open"). That failure
+// has no sentinel, so any error that is not a deliberate refusal (missing file,
+// symbolic link, non-regular file) is retried a bounded number of times: the
+// retry reads the old file or the new one, never none. A persistent error is
+// returned as it is.
+func openStateFile(path string) (*os.File, error) {
+	var err error
+	for i := 0; i < stateOpenAttempts; i++ {
+		var f *os.File
+		if f, err = atomicfile.OpenRead(path); err == nil {
+			return f, nil
+		}
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, atomicfile.ErrLinkedLeaf) || errors.Is(err, atomicfile.ErrNotRegular) {
+			return nil, err
+		}
+	}
+	return nil, err
+}
+
 // readStateFile reads the regular file at path, at most limit bytes. A missing
 // file is os.ErrNotExist; a symbolic link, FIFO or the like is refused by
 // atomicfile.OpenRead; a file over limit is an error naming its size and the
 // limit, never a truncated read.
 func readStateFile(path string, limit int64) ([]byte, error) {
-	f, err := atomicfile.OpenRead(path)
+	f, err := openStateFile(path)
 	if err != nil {
 		return nil, err
 	}
