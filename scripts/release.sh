@@ -87,7 +87,10 @@ build_inputs() {
 
 HEAD_SHA="$("$GIT" -C "$ROOT" rev-parse HEAD)"
 INPUTS_BEFORE="$(build_inputs)"
-[ -z "$("$GIT" -C "$ROOT" status --porcelain)" ] || problem "dirty-tree: working tree has uncommitted changes"
+# Every emptiness test on a command's output below captures that output on its own line first: a failed command prints
+# nothing, and testing "$(cmd)" inline would read its failure as a clean result.
+TREE_STATUS="$("$GIT" -C "$ROOT" status --porcelain)" || problem "git-status-failed: could not read the working tree state"
+[ -z "$TREE_STATUS" ] || problem "dirty-tree: working tree has uncommitted changes"
 BRANCH="$("$GIT" -C "$ROOT" branch --show-current)"
 [ "$BRANCH" = "main" ] || problem "not-on-main: HEAD is on '${BRANCH:-detached}'"
 REMOTE_MAIN="$("$GIT" -C "$ROOT" ls-remote origin refs/heads/main | cut -f1)" \
@@ -100,7 +103,8 @@ fi
 if "$GIT" -C "$ROOT" rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
   problem "tag-exists-locally: $VERSION"
 fi
-[ -z "$("$GIT" -C "$ROOT" ls-remote --tags origin "refs/tags/$VERSION")" ] || problem "tag-exists-on-origin: $VERSION"
+REMOTE_TAG="$("$GIT" -C "$ROOT" ls-remote --tags origin "refs/tags/$VERSION")" || problem "tag-lookup-failed: could not ask origin whether $VERSION exists"
+[ -z "$REMOTE_TAG" ] || problem "tag-exists-on-origin: $VERSION"
 
 if [ "$SKIP_TESTS" = 1 ]; then
   echo "release.sh: WARNING tests skipped (--skip-tests); the release notes will say so" >&2
@@ -142,7 +146,7 @@ if [ "$TESSL_STATE" != "1" ]; then
   if [ "$ALLOW_NO_TESSL" = 1 ]; then
     echo "release.sh: WARNING vani built without -tags tessl (--allow-no-tessl); the release notes say so" >&2
   else
-    problem "no-tessl: the embedded vani was not built with -tags tessl (build info: '${TESSL_STATE:-missing}'); build the engine archive or pass --allow-no-tessl"
+    problem "no-tessl: the embedded vani was not built with -tags tessl (build info: '${TESSL_STATE:-missing}'); this build is refused unless --allow-no-tessl is passed (or build the engine archive)"
   fi
 fi
 APP="$ROOT/macos/build/$APP_NAME"
@@ -201,8 +205,10 @@ ls -l "$DIST/$APP_ZIP" "$DIST/$CLI_ZIP" "$DIST/SHA256SUMS"
 # moved, no tracked file may differ from it, no untracked file may have appeared (the build's own outputs are
 # gitignored), and the ignored files the build reads must be unchanged.
 [ "$("$GIT" -C "$ROOT" rev-parse HEAD)" = "$HEAD_SHA" ] || problem "head-moved: HEAD changed from ${HEAD_SHA:0:7} during the build; the artifacts do not match it"
-[ -z "$("$GIT" -C "$ROOT" status --porcelain)" ] || problem "tree-changed: a file changed or appeared during the build; the artifacts do not match ${HEAD_SHA:0:7}"
-[ "$(build_inputs)" = "$INPUTS_BEFORE" ] || problem "build-inputs-changed: go.work or go.work.sum changed during the build; the artifacts do not match ${HEAD_SHA:0:7}"
+TREE_STATUS="$("$GIT" -C "$ROOT" status --porcelain)" || problem "git-status-failed: could not re-read the working tree state after the build"
+[ -z "$TREE_STATUS" ] || problem "tree-changed: a file changed or appeared during the build; the artifacts do not match ${HEAD_SHA:0:7}"
+INPUTS_AFTER="$(build_inputs)"
+[ "$INPUTS_AFTER" = "$INPUTS_BEFORE" ] || problem "build-inputs-changed: go.work or go.work.sum changed during the build; the artifacts do not match ${HEAD_SHA:0:7}"
 
 if [ "$DRY" = 1 ]; then
   echo "dry run: nothing tagged, pushed or published. Notes: $NOTES_FILE"
