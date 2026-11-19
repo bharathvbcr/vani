@@ -17,14 +17,19 @@ struct DoctorSection: View {
                 .font(.callout).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             phaseView
-            if let shown = doctor.report {
-                DoctorHeadline(report: shown.report, path: shown.path) { showingReport = true }
-            } else if let err = doctor.lastError {
-                Label { Text(verbatim: "The newest report could not be read: \(err)") } icon: {
+            if let err = doctor.lastError {
+                Label {
+                    Text(verbatim: doctor.reportIsStale
+                         ? "The newest report could not be read, so the one below may be out of date: \(err)"
+                         : "The newest report could not be read: \(err)")
+                } icon: {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 }
                 .font(.callout).textSelection(.enabled)
-            } else if doctor.lastLoaded, doctor.phase == .idle {
+            }
+            if let shown = doctor.report {
+                DoctorHeadline(report: shown.report, path: shown.path) { showingReport = true }
+            } else if doctor.lastError == nil, doctor.lastLoaded, doctor.phase == .idle {
                 Text("No review has been run yet.").font(.callout).foregroundStyle(.secondary)
             }
         }

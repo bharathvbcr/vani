@@ -107,6 +107,17 @@ final class DoctorModel {
         return nil
     }
 
+    /// The report shown is an older read of the newest one, and the last read of it failed: it may
+    /// not be the newest. False for a report from the review just run, whatever the last read did.
+    var reportIsStale: Bool {
+        guard lastError != nil, last?.result != nil else { return false }
+        switch phase {
+        case let .finished(r): return r.result == nil
+        case let .failed(f): return f.reply?.result == nil
+        default: return true
+        }
+    }
+
     // MARK: Steps
 
     /// Read the newest report written. Spends nothing.
@@ -168,11 +179,15 @@ final class DoctorModel {
             switch outcome {
             case let .finished(reply):
                 phase = .finished(reply)
-                if let result = reply.result { last = DoctorLast(report: reply.report, result: result) }
+                if let result = reply.result {
+                    last = DoctorLast(report: reply.report, result: result)
+                    lastError = nil
+                }
             case let .failed(f, reply):
                 phase = .failed(Failure(stage: .run, failure: f, reply: reply))
                 if let result = reply?.result {
                     last = DoctorLast(report: reply?.report, result: result)
+                    lastError = nil
                 } else if reply?.sent != false {
                     // A review that failed without saying so may still have written a report.
                     await loadLast()
