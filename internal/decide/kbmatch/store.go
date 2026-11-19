@@ -24,7 +24,9 @@ const (
 	// in it: an answer orders and explains, it is not a fact about the posting.
 	FileName     = "kbmatch.json"
 	StoreVersion = 1
-	// MaxEntries bounds the store; the oldest answers go first.
+	// MaxEntries bounds the store; the oldest answers go first. maxFileBytes
+	// bounds the saved file the same way: a store that would pass it loses its
+	// oldest answers on Save, so the entry limit can never leave Save refusing.
 	MaxEntries   = 20000
 	maxFileBytes = 8 << 20
 	maxKeyBytes  = 512
@@ -167,29 +169,47 @@ func (s *Store) Put(key string, e Entry) error {
 	}
 	s.f.Entries[key] = e
 	if len(s.f.Entries) > MaxEntries {
-		keys := make([]string, 0, len(s.f.Entries))
-		for k := range s.f.Entries {
-			keys = append(keys, k)
-		}
-		sort.Slice(keys, func(i, j int) bool {
-			a, b := s.f.Entries[keys[i]].At, s.f.Entries[keys[j]].At
-			if !a.Equal(b) {
-				return a.Before(b)
-			}
-			return keys[i] < keys[j]
-		})
-		for _, k := range keys[:len(keys)-MaxEntries] {
-			delete(s.f.Entries, k)
-		}
+		s.evictOldest(len(s.f.Entries) - MaxEntries)
 	}
 	return nil
 }
 
-// Save writes the store atomically (0600).
+// evictOldest drops the n oldest answers (all of them if n is larger).
+func (s *Store) evictOldest(n int) {
+	keys := make([]string, 0, len(s.f.Entries))
+	for k := range s.f.Entries {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := s.f.Entries[keys[i]].At, s.f.Entries[keys[j]].At
+		if !a.Equal(b) {
+			return a.Before(b)
+		}
+		return keys[i] < keys[j]
+	})
+	for _, k := range keys[:min(n, len(keys))] {
+		delete(s.f.Entries, k)
+	}
+}
+
+// Save writes the store atomically (0600). A store that would be larger than
+// maxFileBytes first drops its oldest answers (the same order as MaxEntries) until
+// it fits, so a full store still saves the newest answer instead of refusing and
+// losing every paid answer of the run. It never writes a file over the limit.
 func (s *Store) Save() error {
 	raw, err := json.MarshalIndent(s.f, "", " ")
 	if err != nil {
 		return fmt.Errorf("kbmatch: %w", err)
+	}
+	for len(raw) > maxFileBytes && len(s.f.Entries) > 0 {
+		// Drop in proportion to the overshoot (by the average entry size), at
+		// least one; each pass re-measures, so the estimate only sets the pace.
+		n := len(s.f.Entries)
+		drop := max(1, (len(raw)-maxFileBytes)*n/len(raw)+1)
+		s.evictOldest(drop)
+		if raw, err = json.MarshalIndent(s.f, "", " "); err != nil {
+			return fmt.Errorf("kbmatch: %w", err)
+		}
 	}
 	if len(raw) > maxFileBytes {
 		return fmt.Errorf("kbmatch: the store would be larger than %d bytes", maxFileBytes)

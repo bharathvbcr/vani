@@ -192,3 +192,76 @@ func TestLockExcludesASecondRun(t *testing.T) {
 	}
 	again()
 }
+
+// fatEntries fills s with n answers whose keys and model names are as long as
+// the store allows, so the byte limit is reached long before MaxEntries.
+func fatEntries(t *testing.T, s *Store, n int, at time.Time) {
+	t.Helper()
+	pad := strings.Repeat("k", maxKeyBytes-12)
+	for i := 0; i < n; i++ {
+		e := entry("partial", at.Add(time.Duration(i)*time.Second))
+		e.Model = strings.Repeat("m", maxModelLen)
+		if err := s.Put(fmt.Sprintf("%s:%08d", pad, i), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSaveAtTheByteLimitStillKeepsANewAnswer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	s := NewStore(path)
+	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	// Fewer entries than MaxEntries, but more bytes than maxFileBytes.
+	fatEntries(t, s, MaxEntries/2, at)
+	if s.Len() >= MaxEntries {
+		t.Fatalf("setup: %d entries reached the count limit", s.Len())
+	}
+	fresh := entry("core", at.Add(24*time.Hour))
+	if err := s.Put("gh:new:1", fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save at the byte limit refused the store: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > maxFileBytes {
+		t.Fatalf("saved %d bytes, over the limit %d", info.Size(), maxFileBytes)
+	}
+	back, err := OpenStore(path)
+	if err != nil {
+		t.Fatalf("the saved store does not reopen: %v", err)
+	}
+	if _, ok := back.Lookup("gh:new:1", h64a, h64b); !ok {
+		t.Errorf("the new answer was not kept")
+	}
+	if _, ok := back.Lookup(strings.Repeat("k", maxKeyBytes-12)+":00000000", h64a, h64b); ok {
+		t.Errorf("the oldest answer should have gone first")
+	}
+	if back.Len() >= s.Len()+1 || back.Len() == 0 {
+		t.Errorf("reopened %d entries; eviction should have trimmed the store", back.Len())
+	}
+	// A second save with the store already trimmed changes nothing.
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSaveUnderTheLimitsDropsNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	s := NewStore(path)
+	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 50; i++ {
+		if err := s.Put(fmt.Sprintf("gh:a:%d", i), entry("core", at.Add(time.Duration(i)))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if back, err := OpenStore(path); err != nil || back.Len() != 50 {
+		t.Fatalf("reopened %v entries, err %v; want 50", back, err)
+	}
+}
