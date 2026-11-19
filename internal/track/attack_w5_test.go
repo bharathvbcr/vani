@@ -73,6 +73,13 @@ func TestAttackBuiltinNeverNarrowerThanBefore(t *testing.T) {
 		}
 		gen("", 3)
 	}
+	// A hypothetical built-in term with an adjacent space and hyphen is a
+	// regression risk for the run-consuming loop.
+	c := compile([]string{"zorb - flux"}, nil)
+	f := foldString("zorb - flux")
+	if terms, _ := c.found(&f); len(terms) == 0 {
+		t.Errorf("builtin term with ' - ' separator no longer matches its own text")
+	}
 }
 
 // Redact over multi-byte dashes and long separator runs: the whole span goes,

@@ -343,7 +343,17 @@ func newBuiltinTerm(raw string) *term {
 	if len(f.r) == 0 {
 		return nil
 	}
-	return &term{raw: raw, items: f.r}
+	// A run of separators in the term is one separator, as in the text, so a term
+	// listed as "zorb - flux" matches its own text (matchAt lets one separator
+	// take a whole run).
+	items := make([]rune, 0, len(f.r))
+	for _, c := range f.r {
+		if (c == ' ' || c == '-') && len(items) > 0 && (items[len(items)-1] == ' ' || items[len(items)-1] == '-') {
+			continue
+		}
+		items = append(items, c)
+	}
+	return &term{raw: raw, items: items}
 }
 
 // matchAt returns the index in f.r just past a match of t starting at i, or -1.
