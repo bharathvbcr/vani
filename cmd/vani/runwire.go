@@ -589,10 +589,8 @@ func (w *wired) applyExclusions(ctx context.Context, p pipeline.DropPolicy, prot
 // here, before any board is read, when none can be built (runnerFor); a
 // --list-only run does not need one.
 func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pipeline.Runner, func(), error) {
-	d, err := egress.New(runEgressConfig(w.cfg.AllowedHosts))
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("egress: %w", err)
-	}
+	// The run's report is cleared before anything here can refuse the run, so
+	// a run that fails to start reports nothing rather than the last run's.
 	// A local decision model configured with a server is started for this run
 	// only, and only when the run will ask a backend something: a list-only
 	// run (advance false) never does, and loading a model for it costs seconds
@@ -619,6 +617,10 @@ func (w *wired) startRun(ctx context.Context, advance bool) (*egress.Client, *pi
 	// one ledger.
 	w.day = budgetClock().UTC().Format("2006-01-02")
 	w.mu.Unlock()
+	d, err := egress.New(runEgressConfig(w.cfg.AllowedHosts))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("egress: %w", err)
+	}
 	stop := func() {}
 	if l := w.cfg.Decide.Local; advance && l != nil && l.Server != nil {
 		srv, err := localserver.Start(ctx, localserver.Config{
@@ -714,6 +716,9 @@ func (w *wired) pollInbox(ctx context.Context) (err error) {
 		}
 		return err
 	}
+	// startRun clears the run-scoped report. The poll is not a daily run: what
+	// the last daily run reported stays readable (App.RunReport) after it.
+	defer w.restoreReport(w.saveReport())
 	_, runner, stop, err := w.startRun(ctx, true)
 	if err != nil {
 		// No backend, no egress: the postings stay Live for the next run.
@@ -728,6 +733,41 @@ func (w *wired) pollInbox(ctx context.Context) (err error) {
 		st.Error = err.Error()
 	}
 	return err
+}
+
+// reportState is the run-scoped report startRun clears and runReport reads.
+type reportState struct {
+	backendErrs *backendErrors
+	boards      *boardsReport
+	advance     *pipeline.AdvanceReport
+	semPre      *semanticReport
+	backfill    *escalateBackfillReport
+	nearDup     *nearDupSummary
+	exclusions  *exclusionSummary
+	logos       *logoSummary
+	shadow      *shadowNote
+	explain     *explainNote
+	fetches     map[boardKey]boardFetch
+	simOff      string
+	simNote     string
+}
+
+// saveReport returns the report as it stands, for a pass that must not leave
+// its own in its place (pollInbox).
+func (w *wired) saveReport() reportState {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return reportState{w.backendErrs, w.boards, w.advance, w.semPre, w.backfill, w.nearDup, w.exclusions,
+		w.logos, w.shadow, w.explain, w.fetches, w.simOff, w.simNote}
+}
+
+// restoreReport puts back what saveReport returned.
+func (w *wired) restoreReport(s reportState) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.backendErrs, w.boards, w.advance, w.semPre, w.backfill = s.backendErrs, s.boards, s.advance, s.semPre, s.backfill
+	w.nearDup, w.exclusions, w.logos, w.shadow, w.explain = s.nearDup, s.exclusions, s.logos, s.shadow, s.explain
+	w.fetches, w.simOff, w.simNote = s.fetches, s.simOff, s.simNote
 }
 
 // testHookAdvanceNew, set only by tests, replaces pollInbox's advance phase

@@ -142,6 +142,11 @@ type runRecord struct {
 	// Semantic is the knowledge-base warm between the advance phase and the
 	// digest (semanticwire.go); nil when semantic matching is off.
 	Semantic *semanticReport `json:"semantic,omitempty"`
+	// pipelineRan is set when the run reached App.RunOnce. A run refused before
+	// it (a broken ledger, a bad board selection, a stale prompt summary) has
+	// no report of its own: App.RunReport still holds the last run's, and
+	// copying it would record that run's counts under this run's outcome.
+	pipelineRan bool
 	runDetail
 }
 

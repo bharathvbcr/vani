@@ -497,7 +497,8 @@ func TestFinishDailyRunFillsMissingBoardsAndKeepsAStoredReport(t *testing.T) {
 	var stderr bytes.Buffer
 	e := &env{stateDir: dir, stderr: &stderr}
 	started := now().Add(-time.Second)
-	rec := runRecord{PID: os.Getpid(), StartedAt: started, Outcome: outcomeRunning}
+	// The run reached the pipeline, so the stored report is its own.
+	rec := runRecord{PID: os.Getpid(), StartedAt: started, Outcome: outcomeRunning, pipelineRan: true}
 	e.beginLive(runID(rec))
 	added := 4
 	e.noteProgress(runProgress{
@@ -527,7 +528,7 @@ func TestFinishDailyRunFillsMissingBoardsAndKeepsAStoredReport(t *testing.T) {
 	dir = t.TempDir()
 	stderr.Reset()
 	e = &env{stateDir: dir, stderr: &stderr}
-	rec = runRecord{PID: os.Getpid(), StartedAt: started, Outcome: outcomeRunning}
+	rec = runRecord{PID: os.Getpid(), StartedAt: started, Outcome: outcomeRunning, pipelineRan: true}
 	e.beginLive(runID(rec))
 	e.noteProgress(runProgress{
 		Stage: progressListing, Phase: progressPhaseDone, Index: 2, Total: 5,
