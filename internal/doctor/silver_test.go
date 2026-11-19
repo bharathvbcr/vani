@@ -175,3 +175,43 @@ func TestSilverAgreementFloorsAndPrompts(t *testing.T) {
 		t.Errorf("empty markdown:\n%s", md)
 	}
 }
+
+// Labels chosen because a model reading disagreed (eval.SelectedOnReading) are
+// not independent of the verdicts they would score: they are left out of every
+// count, and the comparison says how many it left out.
+func TestSilverAgreementLeavesOutReadingSelectedLabels(t *testing.T) {
+	labels := map[posting.Key]eval.Entry{}
+	var rows []SilverRow
+	for i := range 4 {
+		k := fmt.Sprintf("s%d", i)
+		labels[posting.Key(k)] = eval.Entry{Source: eval.CellTeacherWants, Labels: map[string]string{eval.WouldApply: "yes"}}
+		rows = append(rows, silverRow(k, DropWrong, "p1", silverT0))
+	}
+	for i := range 2 {
+		k := fmt.Sprintf("r%d", i)
+		labels[posting.Key(k)] = eval.Entry{Source: "decile:3", Labels: map[string]string{eval.WouldApply: "yes"}}
+		rows = append(rows, silverRow(k, DropWrong, "p1", silverT0))
+	}
+	if !eval.SelectedOnReading(eval.CellTeacherWants) || eval.SelectedOnReading("decile:3") {
+		t.Fatal("fixture sources do not match eval.SelectedOnReading")
+	}
+	as := BuildSilverAgreement(rows, labels)
+	if len(as) != 1 || as[0].OwnerYes != 2 || as[0].OwnerNo != 0 {
+		t.Fatalf("reading-selected labels were scored: %+v", as)
+	}
+	if as[0].LabelsLeftOut != 4 {
+		t.Errorf("left out %d, want 4", as[0].LabelsLeftOut)
+	}
+	md := SilverMarkdown(as, 0)
+	if !strings.Contains(md, "on 2 owner labels") || !strings.Contains(md, "4 owner labels left out") {
+		t.Errorf("markdown lacks n and the left-out count:\n%s", md)
+	}
+	// Only reading-selected labels: nothing is scored, and it says why.
+	for _, k := range []string{"r0", "r1"} {
+		delete(labels, posting.Key(k))
+	}
+	as = BuildSilverAgreement(rows, labels)
+	if as[0].OwnerYes != 0 || as[0].Status != "insufficient" || as[0].LabelsLeftOut != 4 {
+		t.Errorf("all-selected labels: %+v", as[0])
+	}
+}

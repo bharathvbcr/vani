@@ -235,14 +235,19 @@ const (
 // under that prompt. Wrong-drop agreement is the share of owner-yes postings
 // the doctor called a wrong drop; correct-drop agreement the share of
 // owner-no postings it called a correct one. Unclear verdicts and maybe
-// answers count in neither.
+// answers count in neither. Labels drawn because a model reading disagreed or
+// sat near a yes (eval.SelectedOnReading) are not independent of the verdicts
+// being scored, so they are left out and counted in LabelsLeftOut.
 type SilverAgreement struct {
 	PromptSHA256 string `json:"prompt_sha256"`
 	Verdicts     int    `json:"verdicts"`
 	OwnerYes     int    `json:"owner_yes"`
 	OwnerNo      int    `json:"owner_no"`
 	Unclear      int    `json:"unclear_on_owner_labels"`
-	Status       string `json:"status"` // "ok" or "insufficient"
+	// LabelsLeftOut counts the judged postings whose would_apply answer was
+	// selected on a reading and so was not used.
+	LabelsLeftOut int    `json:"labels_left_out_selected_on_reading"`
+	Status        string `json:"status"` // "ok" or "insufficient"
 	// Set only when Status is "ok".
 	WrongOnYes  int     `json:"wrong_drop_on_owner_yes,omitempty"`
 	CorrectOnNo int     `json:"correct_drop_on_owner_no,omitempty"`
@@ -255,6 +260,7 @@ type SilverAgreement struct {
 }
 
 // BuildSilverAgreement compares the log with the owner's labels, per prompt.
+// A label whose source is a reading-selected cell is not used.
 func BuildSilverAgreement(rows []SilverRow, labels map[posting.Key]eval.Entry) []SilverAgreement {
 	newest := map[string]map[posting.Key]SilverRow{}
 	for _, r := range rows {
@@ -272,8 +278,13 @@ func BuildSilverAgreement(rows []SilverRow, labels map[posting.Key]eval.Entry) [
 		a := SilverAgreement{PromptSHA256: p, Verdicts: len(newest[p])}
 		var wrongYes, correctNo int
 		for k, r := range newest[p] {
-			v := labels[k].Labels[eval.WouldApply]
+			l := labels[k]
+			v := l.Labels[eval.WouldApply]
 			if v != "yes" && v != "no" {
+				continue
+			}
+			if eval.SelectedOnReading(l.Source) {
+				a.LabelsLeftOut++
 				continue
 			}
 			if r.Verdict == DropUnclear {
@@ -314,7 +325,10 @@ func SilverMarkdown(as []SilverAgreement, skipped int) string {
 		b.WriteString("no data: the doctor's silver log is empty\n")
 	}
 	for _, a := range as {
-		fmt.Fprintf(&b, "- prompt %s: %d postings judged; on owner labels %d yes and %d no (%d unclear verdicts left out)\n", a.PromptSHA256[:12], a.Verdicts, a.OwnerYes, a.OwnerNo, a.Unclear)
+		fmt.Fprintf(&b, "- prompt %s: %d postings judged; on %d owner labels (%d yes, %d no; %d unclear verdicts left out)\n", a.PromptSHA256[:12], a.Verdicts, a.OwnerYes+a.OwnerNo, a.OwnerYes, a.OwnerNo, a.Unclear)
+		if a.LabelsLeftOut > 0 {
+			fmt.Fprintf(&b, "  - %d owner labels left out: they were chosen because a model reading disagreed or sat near a yes, so they are not independent of the verdicts scored\n", a.LabelsLeftOut)
+		}
 		if a.Status != "ok" {
 			fmt.Fprintf(&b, "  - insufficient: the comparison needs %d yes and %d no owner labels on postings the doctor judged\n", SilverMinYes, SilverMinNo)
 			continue
