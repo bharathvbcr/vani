@@ -5,6 +5,7 @@ import (
 	"encoding/json" // v1, as the rest of cmd/vani: go.mod is at go 1.26 (v2 needs 1.27)
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"math"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/bharathvbcr/Vani/internal/atomicfile"
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/eval"
 	"github.com/bharathvbcr/Vani/internal/ledger"
@@ -77,13 +79,45 @@ func labelledDocs(recs []ledger.Record, labels map[posting.Key]eval.Entry, has f
 // judged postings' TextHashes for pinLabelled.
 const labelledPinsName = "labelled-texts.json"
 
+// labelPinWarn is where pinLabelled reports a pin list it could not read.
+var labelPinWarn io.Writer = os.Stderr
+
 type labelledPins struct {
 	V      int      `json:"v"`
 	Hashes []string `json:"text_hashes"`
 }
 
-// writeLabelledPins replaces the pin list with hashes (written to a temporary
-// file and renamed, so a reader never sees half of it).
+// maxStateFileBytes bounds a read of one of Vani's own small state files
+// (the pin list, a removal record): far over any real one, far under memory.
+const maxStateFileBytes = 32 << 20
+
+// readStateFile reads the regular file at path, at most limit bytes. A missing
+// file is os.ErrNotExist; a symbolic link, FIFO or the like is refused by
+// atomicfile.OpenRead; a file over limit is an error naming its size and the
+// limit, never a truncated read.
+func readStateFile(path string, limit int64) ([]byte, error) {
+	f, err := atomicfile.OpenRead(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() > limit {
+		return nil, fmt.Errorf("%s is %d bytes, over the %d-byte limit", path, st.Size(), limit)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("%s grew past the %d-byte limit while it was read", path, limit)
+	}
+	return b, nil
+}
+
+// writeLabelledPins replaces the pin list with hashes through atomicfile (a
+// synced temporary file, renamed, the directory synced), so a crash leaves the
+// old list or the new one, never none and never half, and a failure leaves no
+// temporary file behind.
 func writeLabelledPins(stateDir string, hashes []string) error {
 	dir := semanticDir(stateDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -93,20 +127,7 @@ func writeLabelledPins(stateDir string, hashes []string) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, labelledPinsName+".*")
-	if err != nil {
-		return err
-	}
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return os.Rename(tmp.Name(), filepath.Join(dir, labelledPinsName))
+	return atomicfile.Write(filepath.Join(dir, labelledPinsName), b)
 }
 
 // pinLabelled returns ranks with every judged posting's text (the pin list
@@ -115,14 +136,19 @@ func writeLabelledPins(stateDir string, hashes []string) error {
 // phase, the idle warm), keeps the owner's judged postings: the live sets those
 // warms name hold browsable postings only, and a judged posting that was
 // dropped would otherwise be the first evicted. nil ranks (no live set) stay
-// nil. A missing or unreadable pin list pins nothing; embedLabelled rewrites it
-// on its next run.
+// nil. A missing or malformed pin list pins nothing; embedLabelled rewrites it
+// on its next run. One that cannot be read (over maxStateFileBytes, a link, an
+// I/O error) pins nothing too, and says so on labelPinWarn with its size and the
+// limit, because the judged postings are then evicted at the next compaction.
 func pinLabelled(ranks map[string]float64, stateDir string) map[string]float64 {
 	if ranks == nil {
 		return nil
 	}
-	b, err := os.ReadFile(filepath.Join(semanticDir(stateDir), labelledPinsName))
+	b, err := readStateFile(filepath.Join(semanticDir(stateDir), labelledPinsName), maxStateFileBytes)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(labelPinWarn, "vani: the label pin list was not read, so judged postings are not pinned: %s\n", oneLine(err.Error(), 300))
+		}
 		return ranks
 	}
 	var p labelledPins

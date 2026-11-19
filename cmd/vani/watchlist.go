@@ -240,7 +240,10 @@ func (e *env) watchlistRemove(args []string) error {
 	// --keep-postings deletes an earlier removal's tombstone the runs have not
 	// acted on yet, so its postings stay open as it says.
 	tombPath := pipeline.RemovedBoardPath(e.stateDir, target.KeyPrefix())
-	prior, priorErr := os.ReadFile(tombPath)
+	prior, priorErr := readStateFile(tombPath, maxTombstoneReadBytes)
+	if priorErr != nil && !errors.Is(priorErr, os.ErrNotExist) {
+		return fmt.Errorf("watchlist remove: the earlier removal record cannot be read, so nothing was changed: %w", priorErr)
+	}
 	hadTomb := priorErr == nil
 	wrote := false
 	removed := false
@@ -311,6 +314,11 @@ func (e *env) watchlistRemove(args []string) error {
 
 // errWatchlistUnchanged ends a config update that changed nothing, so the
 // file is not rewritten.
+// maxTombstoneReadBytes bounds the read of an earlier removal's record before
+// a new removal replaces it: the record is written under pipeline's own 4 KiB
+// cap, so a larger file is not Vani's.
+const maxTombstoneReadBytes = 64 << 10
+
 var errWatchlistUnchanged = errors.New("watchlist unchanged")
 
 // boardReply is what `watchlist add|domain|icon --json` say: the board as saved.

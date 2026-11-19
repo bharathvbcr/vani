@@ -2,6 +2,7 @@ package semantic
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -22,36 +23,56 @@ const (
 	// MaxDupTitleBytes is how much of a title is embedded.
 	MaxDupTitleBytes = 256
 	// MaxTitleIndex bounds a TitleIndex: past it Add keeps what it has and
-	// reports false, and the later postings are embedded without a title.
+	// reports false (Full says so), and the later postings are embedded
+	// without a title.
 	MaxTitleIndex = 100000
 )
 
 // TitleIndex maps a description to the title of the posting that carries it, so
-// an adapter handed only descriptions can still embed titles. The key is the
-// description cut to MaxDupTextBytes, the part that is embedded. A key that
-// two postings reach with different titles is ambiguous and yields no title,
-// for either of them: an absent title is a weaker reading, never a wrong one.
-// It is safe for concurrent use.
+// an adapter handed only descriptions can still embed titles. The key is a hash
+// of the whole description: two roles behind the same company introduction
+// share their first MaxDupTextBytes, the part that is embedded, and must not
+// share a title. A description that two postings reach with different titles
+// is ambiguous and yields no title, for either of them: an absent title is a
+// weaker reading, never a wrong one. It is safe for concurrent use.
 type TitleIndex struct {
-	mu sync.Mutex
-	t  map[string]string
+	mu  sync.Mutex
+	max int
+	t   map[[sha256.Size]byte]string
 	// amb holds keys seen with two titles.
-	amb map[string]bool
+	amb map[[sha256.Size]byte]bool
+	// full is set once an Add was refused because the index was at max.
+	full bool
 }
 
-// NewTitleIndex returns an empty index.
-func NewTitleIndex() *TitleIndex {
-	return &TitleIndex{t: map[string]string{}, amb: map[string]bool{}}
+// NewTitleIndex returns an empty index bounded by MaxTitleIndex.
+func NewTitleIndex() *TitleIndex { return NewBoundedTitleIndex(MaxTitleIndex) }
+
+// NewBoundedTitleIndex returns an empty index that holds at most max
+// descriptions (max < 1 is MaxTitleIndex).
+func NewBoundedTitleIndex(max int) *TitleIndex {
+	if max < 1 {
+		max = MaxTitleIndex
+	}
+	return &TitleIndex{max: max, t: map[[sha256.Size]byte]string{}, amb: map[[sha256.Size]byte]bool{}}
+}
+
+// Full reports whether an Add was refused because the index was at its bound,
+// so a posting went without a title. A refusal of a blank input does not count.
+func (x *TitleIndex) Full() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.full
 }
 
 // Add records title for description. It reports false when the index is full
 // or the title or description is blank (nothing recorded).
 func (x *TitleIndex) Add(title, description string) bool {
-	key, _ := clipBytes(description, MaxDupTextBytes)
 	title, _ = clipBytes(title, MaxDupTitleBytes)
-	if isBlank(key) || isBlank(title) {
+	if isBlank(description) || isBlank(title) {
 		return false
 	}
+	key := sha256.Sum256([]byte(description))
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if old, ok := x.t[key]; ok {
@@ -60,7 +81,8 @@ func (x *TitleIndex) Add(title, description string) bool {
 		}
 		return true
 	}
-	if len(x.t) >= MaxTitleIndex {
+	if len(x.t) >= x.max {
+		x.full = true
 		return false
 	}
 	x.t[key] = title
@@ -73,7 +95,7 @@ func (x *TitleIndex) Title(description string) string {
 	if x == nil {
 		return ""
 	}
-	key, _ := clipBytes(description, MaxDupTextBytes)
+	key := sha256.Sum256([]byte(description))
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.amb[key] {
@@ -106,8 +128,10 @@ func NewSimilarity(e Embedder, c *VectorCache) func(ctx context.Context, a, b st
 // saves c once after the stage, because a save per pair would rewrite the whole
 // file per pair.
 //
-// ok is false, with no error, when either description is blank: there is no
-// reading. A failure is returned as the error and the stage counts it
+// ok is false, with no error, when either description is blank, or when the
+// two descriptions differ but reduce to the same embedded text (the same title
+// and the same first MaxDupTextBytes): the cosine of a text with itself says
+// nothing about two postings, so there is no reading rather than 1.000. A failure is returned as the error and the stage counts it
 // (NearDupReport.SimilarityErrors); this never turns one into a cosine of 0.
 // The stage gives its similarity a budget of its own (a share of the stage's
 // deadline) and bounds every call by it through ctx; a pair the budget does not
@@ -124,6 +148,9 @@ func NewTitledSimilarity(e Embedder, c *VectorCache, titles *TitleIndex) func(ct
 		ta, tb := DupText(titles.Title(a), a), DupText(titles.Title(b), b)
 		texts := []string{ta, tb}
 		if ta == tb {
+			if a != b {
+				return 0, false, nil
+			}
 			texts = texts[:1]
 		}
 		var rep Report
