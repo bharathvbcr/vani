@@ -355,6 +355,15 @@ func (t *term) matchAt(f *folded, i int) int {
 		}
 		j := i
 		for _, c := range t.items {
+			if (c == ' ' || c == '-') && j < len(r) && (r[j] == ' ' || r[j] == '-') {
+				// A separator inside a built-in term is a space or a hyphen
+				// (the fold already makes a no-break space and every dash one of
+				// those), and a run of them: "green card", "green-card", "green - card".
+				for j < len(r) && (r[j] == ' ' || r[j] == '-') {
+					j++
+				}
+				continue
+			}
 			if j >= len(r) || r[j] != c {
 				return -1
 			}
