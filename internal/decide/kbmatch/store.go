@@ -24,9 +24,13 @@ const (
 	// in it: an answer orders and explains, it is not a fact about the posting.
 	FileName     = "kbmatch.json"
 	StoreVersion = 1
-	// MaxEntries bounds the store; the oldest answers go first.
+	// MaxEntries bounds the store; the oldest answers go first. maxFileBytes
+	// bounds the saved file the same way: a store that would pass it loses its
+	// oldest answers on Save, so the entry limit can never leave Save refusing.
 	MaxEntries   = 20000
 	maxFileBytes = 8 << 20
+	// MaxFileBytes is maxFileBytes for callers that tell the owner the limit.
+	MaxFileBytes = maxFileBytes
 	maxKeyBytes  = 512
 	maxModelLen  = 128
 )
@@ -74,11 +78,18 @@ type storeFile struct {
 type Store struct {
 	path string
 	f    storeFile
+	// fresh is the keys Put since the store was opened: this run's answers,
+	// the paid ones eviction exists to keep. They go only after every older
+	// answer is gone.
+	fresh map[string]struct{}
+	// dropped is the answers Save has evicted to fit maxFileBytes since the
+	// store was opened; Dropped reports it.
+	dropped int
 }
 
 // NewStore is an empty store that will be saved at path.
 func NewStore(path string) *Store {
-	return &Store{path: path, f: storeFile{Version: StoreVersion, Entries: map[string]Entry{}}}
+	return &Store{path: path, f: storeFile{Version: StoreVersion, Entries: map[string]Entry{}}, fresh: map[string]struct{}{}}
 }
 
 // OpenStore reads the store at path; a missing file is an empty store.
@@ -146,6 +157,12 @@ func checkEntry(key string, e Entry) error {
 	return nil
 }
 
+// Dropped is how many answers Save has evicted since the store was opened to
+// keep the file under the byte limit. A caller reads it after Save to tell the
+// owner that paid answers were let go; answers past MaxEntries are Put's
+// bound, not counted here.
+func (s *Store) Dropped() int { return s.dropped }
+
 // Len is the number of answers held.
 func (s *Store) Len() int { return len(s.f.Entries) }
 
@@ -159,42 +176,93 @@ func (s *Store) Lookup(key string, kb, text string) (Entry, bool) {
 	return e, true
 }
 
-// Put records an answer, replacing any earlier one for key. The oldest are
-// dropped past MaxEntries.
+// Put records an answer, replacing any earlier one for key. Past MaxEntries the
+// oldest others are dropped, never the answer being put: it was just paid for,
+// whatever its At. Those evictions are Put's count bound and are not counted in
+// Dropped, which is only what Save drops to fit the byte limit. A new answer needs a time (a zero At would rank it
+// oldest); a file already holding zero-At entries still opens.
 func (s *Store) Put(key string, e Entry) error {
 	if err := checkEntry(key, e); err != nil {
 		return fmt.Errorf("kbmatch: %w", err)
 	}
+	if e.At.IsZero() {
+		return errors.New("kbmatch: an answer has no time")
+	}
 	s.f.Entries[key] = e
+	s.fresh[key] = struct{}{}
 	if len(s.f.Entries) > MaxEntries {
-		keys := make([]string, 0, len(s.f.Entries))
-		for k := range s.f.Entries {
-			keys = append(keys, k)
-		}
-		sort.Slice(keys, func(i, j int) bool {
-			a, b := s.f.Entries[keys[i]].At, s.f.Entries[keys[j]].At
-			if !a.Equal(b) {
-				return a.Before(b)
-			}
-			return keys[i] < keys[j]
-		})
-		for _, k := range keys[:len(keys)-MaxEntries] {
-			delete(s.f.Entries, k)
-		}
+		s.evictOldestExcept(len(s.f.Entries)-MaxEntries, key)
 	}
 	return nil
 }
 
-// Save writes the store atomically (0600).
-func (s *Store) Save() error {
+// evictOldest drops n answers (all of them if n is larger).
+func (s *Store) evictOldest(n int) { s.evictOldestExcept(n, "") }
+
+// evictOldestExcept drops n answers other than the one under keep (all of them
+// if n is larger): answers from before this open first, oldest At first, ties by
+// key, then this run's answers in the same order. Keys are never empty, so an
+// empty keep protects nothing.
+func (s *Store) evictOldestExcept(n int, keep string) {
+	keys := make([]string, 0, len(s.f.Entries))
+	for k := range s.f.Entries {
+		if k != keep {
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		_, fi := s.fresh[keys[i]]
+		_, fj := s.fresh[keys[j]]
+		if fi != fj {
+			return fj
+		}
+		a, b := s.f.Entries[keys[i]].At, s.f.Entries[keys[j]].At
+		if !a.Equal(b) {
+			return a.Before(b)
+		}
+		return keys[i] < keys[j]
+	})
+	for _, k := range keys[:min(n, len(keys))] {
+		delete(s.f.Entries, k)
+	}
+}
+
+// encode is the exact bytes of the saved file, trailing newline included: the
+// size Save checks and the size OpenStore reads back are this one length.
+func (s *Store) encode() ([]byte, error) {
 	raw, err := json.MarshalIndent(s.f, "", " ")
 	if err != nil {
-		return fmt.Errorf("kbmatch: %w", err)
+		return nil, fmt.Errorf("kbmatch: %w", err)
+	}
+	return append(raw, '\n'), nil
+}
+
+// Save writes the store atomically (0600). A store whose file would be larger than
+// maxFileBytes first drops answers (the same order as MaxEntries) until
+// it fits, so a full store still saves the newest answer instead of refusing and
+// losing every paid answer of the run. It never writes a file over the limit.
+// What it dropped is counted in Dropped; it is never silent to a caller that asks.
+func (s *Store) Save() error {
+	raw, err := s.encode()
+	if err != nil {
+		return err
+	}
+	for len(raw) > maxFileBytes && len(s.f.Entries) > 0 {
+		// Drop in proportion to the overshoot (by the average entry size), at
+		// least one; each pass re-measures, so the estimate only sets the pace.
+		n := len(s.f.Entries)
+		drop := max(1, (len(raw)-maxFileBytes)*n/len(raw)+1)
+		before := len(s.f.Entries)
+		s.evictOldest(drop)
+		s.dropped += before - len(s.f.Entries)
+		if raw, err = s.encode(); err != nil {
+			return err
+		}
 	}
 	if len(raw) > maxFileBytes {
 		return fmt.Errorf("kbmatch: the store would be larger than %d bytes", maxFileBytes)
 	}
-	return atomicfile.Write(s.path, append(raw, '\n'))
+	return atomicfile.Write(s.path, raw)
 }
 
 // Lock takes the store's run lock without waiting: two runs would spend twice

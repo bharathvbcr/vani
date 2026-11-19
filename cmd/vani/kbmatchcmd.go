@@ -385,6 +385,9 @@ type kbmatchAskResult struct {
 	NotRead  int            `json:"not_read"`
 	Focused  int            `json:"focused"`
 	Stopped  string         `json:"stopped,omitempty"`
+	// Dropped is how many of the oldest stored answers were let go to keep the
+	// store under its byte limit; absent when none were.
+	Dropped int `json:"dropped,omitempty"`
 }
 
 func (e *env) kbmatchRunBody(jr *kbmatchRunReply, top int, dry bool, backendFlag, modelFlag string, noRetrieve, allowMissing bool) error {
@@ -544,6 +547,15 @@ func (e *env) kbmatchAsk(ctx context.Context, j kbmatch.Judge, st *kbmatch.Store
 	counts := map[string]int{}
 	var asked, unread, streak, sinceSave, focused int
 	var stopped string
+	// Whatever the run's end, say when Save let paid answers go: the store
+	// reports it, and the owner is told here, to the stream the other progress
+	// lines use (stderr under --json) and in the JSON result.
+	defer func() {
+		if n := st.Dropped(); n > 0 {
+			res.Dropped = n
+			fmt.Fprintf(e.stdout, "kbmatch: dropped %d oldest answer(s) to keep the store under %d MiB\n", n, kbmatch.MaxFileBytes>>20)
+		}
+	}()
 	save := func() error {
 		if sinceSave == 0 {
 			return nil

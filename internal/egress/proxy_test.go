@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -405,5 +406,122 @@ func TestNewProxyValidation(t *testing.T) {
 	}
 	if p.cfg.MaxTunnels != 16 || p.cfg.IdleTimeout != time.Minute || p.cfg.MaxBytes != 64<<20 || p.cfg.MaxLifetime != 5*time.Minute {
 		t.Errorf("defaults wrong: %+v", p.cfg)
+	}
+}
+
+// A connection that sends nothing is closed by the server, not held open for
+// as long as the child likes: before any request (header timeout) and between
+// requests on a kept-alive connection (idle timeout).
+func TestProxyClosesConnectionsThatSendNothing(t *testing.T) {
+	startShort := func(t *testing.T, header, idle time.Duration) (string, string) {
+		t.Helper()
+		c, _ := newTestClient(t, Config{AllowedHosts: []string{"jobs.example.com"}}, &fakeDNS{answers: defaultAnswers()}, nil)
+		p, err := NewProxy(c, ProxyConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.headerTimeout, p.idleConnTimeout = header, idle
+		addr, token, err := p.Start(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { p.Close() })
+		return addr, token
+	}
+	short := 150 * time.Millisecond
+	closedWithin := func(t *testing.T, conn net.Conn, br *bufio.Reader) {
+		t.Helper()
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		start := time.Now()
+		// Drain what the proxy already wrote (a refusal's body), then the next
+		// read must end by close, not by our own deadline.
+		_, err := io.Copy(io.Discard, br)
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			t.Fatalf("connection still open after %s; the proxy never closed it", time.Since(start))
+		}
+	}
+	t.Run("no request at all", func(t *testing.T) {
+		addr, _ := startShort(t, short, short)
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		closedWithin(t, conn, bufio.NewReader(conn))
+	})
+	// net/http closes after any refused CONNECT, so a refusal cannot exercise
+	// the idle bound; a refused GET keeps the connection. The header timeout is
+	// far above the test's bound, so only IdleTimeout can close it in time.
+	t.Run("kept alive after a refused GET", func(t *testing.T) {
+		addr, _ := startShort(t, time.Minute, short)
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		br := bufio.NewReader(conn)
+		_, _ = io.WriteString(conn, "GET http://jobs.example.com/ HTTP/1.1\r\nHost: jobs.example.com\r\n\r\n")
+		resp, err := http.ReadResponse(br, &http.Request{Method: "GET"})
+		if err != nil || resp.StatusCode != http.StatusProxyAuthRequired || resp.Close {
+			t.Fatalf("setup: want a kept-alive 407, got %v, %v", resp, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		closedWithin(t, conn, br)
+	})
+	t.Run("partial request line", func(t *testing.T) {
+		addr, _ := startShort(t, short, short)
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_, _ = io.WriteString(conn, "CONNECT jobs.exam")
+		closedWithin(t, conn, bufio.NewReader(conn))
+	})
+}
+
+// The server's timeouts end with the CONNECT: a hijacked tunnel is bounded by
+// its own IdleTimeout and MaxLifetime only.
+func TestProxyHijackedTunnelOutlivesServerTimeouts(t *testing.T) {
+	c, _ := newTestClient(t, Config{AllowedHosts: []string{"jobs.example.com"}}, &fakeDNS{answers: defaultAnswers()}, nil)
+	ln := echoServer(t)
+	c.dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", ln.Addr().String())
+	}
+	p, err := NewProxy(c, ProxyConfig{IdleTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.headerTimeout, p.idleConnTimeout = 100*time.Millisecond, 100*time.Millisecond
+	addr, token, err := p.Start(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { p.Close() })
+	code, conn, br := rawRequest(t, addr, "CONNECT", "jobs.example.com:443", auth(token))
+	if code != 200 {
+		t.Fatal(code)
+	}
+	time.Sleep(500 * time.Millisecond) // five times both server timeouts, far under the tunnel's own
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.WriteString(conn, "ping"); err != nil {
+		t.Fatalf("tunnel was cut after idling: %v", err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(br, buf); err != nil || string(buf) != "ping" {
+		t.Fatalf("echo after idle: %q, %v", buf, err)
+	}
+}
+
+func TestNewProxyServerTimeoutDefaults(t *testing.T) {
+	c, _ := newTestClient(t, Config{AllowedHosts: []string{"jobs.example.com"}}, &fakeDNS{}, nil)
+	p, err := NewProxy(c, ProxyConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.headerTimeout != proxyHeaderTimeout || p.idleConnTimeout != proxyIdleConnTimeout {
+		t.Errorf("server timeouts %s/%s, want %s/%s", p.headerTimeout, p.idleConnTimeout, proxyHeaderTimeout, proxyIdleConnTimeout)
 	}
 }

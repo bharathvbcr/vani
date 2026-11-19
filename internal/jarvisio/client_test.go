@@ -3,6 +3,7 @@ package jarvisio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -144,4 +145,45 @@ func TestTimeoutDoesNotLookLikeAnEmptyList(t *testing.T) {
 
 func errorsAs(err error, target **Error) bool {
 	return errors.As(err, target)
+}
+
+// shellJarvis is a jarvis stand-in that floods stderr with n bytes (before or
+// after its replies) and then answers hello and the call.
+func shellJarvis(t *testing.T, n int, floodFirst bool) Client {
+	t.Helper()
+	dir := t.TempDir()
+	flood := fmt.Sprintf("head -c %d /dev/zero | tr '\\0' x >&2\n", n)
+	replies := "printf '%s\\n%s\\n' '{\"id\":\"h\",\"ok\":true}' '{\"id\":\"c\",\"ok\":true}'\n"
+	body := replies + flood
+	if floodFirst {
+		body = flood + replies
+	}
+	bin := filepath.Join(dir, "jarvis")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"+body+"cat >/dev/null\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return Client{Binary: bin, Root: t.TempDir(), Timeout: 10 * time.Second}
+}
+
+// A child that writes far more than the pipe holds to stderr must not block on
+// it: the client drains stderr to the end and keeps none of it.
+func TestChildThatWritesMegabytesToStderrFinishes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		n     int
+		first bool
+	}{
+		"1 MiB before the replies": {1 << 20, true},
+		"1 MiB after the replies":  {1 << 20, false},
+		"8 MiB before the replies": {8 << 20, true},
+		"nothing":                  {0, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := shellJarvis(t, tc.n, tc.first)
+			start := time.Now()
+			err := c.call(context.Background(), "list", nil, nil, "")
+			if err != nil {
+				t.Fatalf("call = %v after %s", err, time.Since(start))
+			}
+		})
+	}
 }

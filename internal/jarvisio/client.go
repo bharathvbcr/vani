@@ -34,7 +34,6 @@ const (
 	defaultTimeout = 8 * time.Second
 	maxTimeout     = 20 * time.Second
 	maxReplyBytes  = 1 << 20
-	maxStderrBytes = 4 << 10
 )
 
 // Error is a failed jarvis call. Message never includes a contact value this
@@ -185,6 +184,12 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, c.Binary, "serve", "--root", c.Root, "--bank", c.BankPath())
+	// Wait must never depend on a descendant: it closes the pipes once the
+	// child has exited, and WaitDelay bounds anything it would still wait on to
+	// one second after the call's own deadline. The client starts the child in
+	// the caller's process group and does not signal descendants: one that
+	// outlives the child is left running, but its writes to the closed stderr
+	// pipe fail, so a stderr-only flood ends with the call.
 	cmd.WaitDelay = time.Second
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + os.TempDir()}
 	stdin, err := cmd.StdinPipe()
@@ -202,9 +207,14 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 	if err := cmd.Start(); err != nil {
 		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not start"}
 	}
+	// Drain stderr, keeping none of it: a child that writes more than the pipe
+	// holds would otherwise block on it and never reply. This ends when the
+	// pipe does, which is when Wait closes it (below), not when every holder of
+	// the write end has gone: a descendant that inherited stderr cannot hold the
+	// call.
+	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 	errCh := make(chan error, 1)
 	go func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(stderr, maxStderrBytes))
 		// Wait closes the stdout pipe when the process has exited, and replies
 		// the process wrote just before exiting (it exits on stdin EOF) are
 		// still in that pipe: closing it under the reader below loses them, and
@@ -223,18 +233,24 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 		writeErr = enc.Encode(request{ID: "c", Op: op, Params: callParams})
 	}
 	_ = stdin.Close()
-	if writeErr != nil {
+	// A failed write (EPIPE: the child exited without reading stdin) does not
+	// discard replies the child already wrote: they are read below, bounded by
+	// maxReplyBytes and the call's deadline like any other, and used when both
+	// are complete and valid. Only when they are not does the write error name
+	// the failure: serve did not start.
+	noReply := func() error {
 		cancel()
 		<-errCh
-		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not start"}
+		if writeErr != nil {
+			return &Error{Code: CodeUnavailable, Message: "jarvis serve did not start"}
+		}
+		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not answer"}
 	}
 
 	dec := json.NewDecoder(io.LimitReader(stdout, maxReplyBytes))
 	var hello, call response
 	if err := dec.Decode(&hello); err != nil || hello.ID != "h" {
-		cancel()
-		<-errCh
-		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not answer"}
+		return noReply()
 	}
 	if !hello.OK {
 		cancel()
@@ -242,9 +258,7 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 		return jarvisError(hello, secret)
 	}
 	if err := dec.Decode(&call); err != nil || call.ID != "c" {
-		cancel()
-		<-errCh
-		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not answer"}
+		return noReply()
 	}
 	// The reply is in hand. Stop the process rather than waiting out its shutdown.
 	cancel()
