@@ -64,11 +64,12 @@ type Matcher struct {
 	pd       *profileData  // nil until embedded or loaded
 	lockWait time.Duration // how long Warm waits for the cache lock; 0 is DefaultLockWait
 
-	vs          *chunkStore // chunk-vector log index; guarded by warmMu and the cache lock
-	vecMax      int64       // chunk-vector log bound; 0 is MaxVectorBytes
-	rescoreTick func(n int) // test seam: called after each rescored posting with the running count
+	vs          *chunkStore       // chunk-vector log index; guarded by warmMu and the cache lock
+	vecMax      int64             // chunk-vector log bound; 0 is MaxVectorBytes
+	rescoreTick func(n int)       // test seam: called after each rescored posting with the running count
 	saveTick    func(bytes int64) // test seam: called after each score save with the file's size
 	warmEvery   int               // scored postings between Warm's score saves; 0 is warmSaveEvery
+	dirty       map[string]*entry // scores of deferred Warms not yet saved; guarded by mu, reapplied by reload
 
 	mu         sync.RWMutex // guards sf, maxEntries and vecPrio
 	sf         *scoreFile
@@ -180,7 +181,25 @@ func (r *Report) note(err error) {
 // unavailable, ctx ended, setup or save failed), and what was scored before
 // that is saved first. A chunk-vector log that cannot be used never stops a
 // warm: it is reported (VectorsErr) and the postings are embedded.
-func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, runErr error) {
+func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (Report, error) {
+	return m.WarmWith(ctx, docs, max, WarmOptions{})
+}
+
+// WarmOptions changes how WarmWith saves. The zero value is Warm.
+type WarmOptions struct {
+	// DeferSave keeps the scores of a Warm that ended cleanly in memory instead
+	// of saving them at its end, for a caller that warms many small chunks in a
+	// row (the idle warm). They are saved when warmSaveEvery of them have
+	// gathered, by the next Warm that ends with an error or a cancel, by a
+	// Warm without DeferSave, and by FlushWarm, which the caller must call when
+	// it is done. A later Warm reloads the file under the cache lock, so what
+	// another process saved meanwhile is kept, and the deferred scores are laid
+	// over it (the file's entry wins when it already scores the same text).
+	DeferSave bool
+}
+
+// WarmWith is Warm with options; see WarmOptions.
+func (m *Matcher) WarmWith(ctx context.Context, docs []Doc, max int, opt WarmOptions) (rep Report, runErr error) {
 	m.warmMu.Lock()
 	defer m.warmMu.Unlock()
 	max = min(max, MaxWarmDocs)
@@ -419,7 +438,11 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 				continue
 			}
 			raw, ev, taken := m.rawScoreN(p.chunks, vecs, pd, topChunks)
-			m.store(p.doc.Key, &entry{TextHash: p.hash, Raw: raw, Score: pd.score(raw, taken), Evidence: ev, Thin: taken < minDistinctChunks})
+			e := &entry{TextHash: p.hash, Raw: raw, Score: pd.score(raw, taken), Evidence: ev, Thin: taken < minDistinctChunks}
+			m.store(p.doc.Key, e)
+			if opt.DeferSave {
+				m.markDirty(p.doc.Key, e)
+			}
 			rep.Scored++
 			if p.hok {
 				recs = append(recs, vecRec{h: p.h, vecs: vecs})
@@ -427,7 +450,11 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 		}
 		m.appendVectors(vs, recs, &rep)
 		i = j
-		if rep.Scored-savedAt >= every {
+		pending := rep.Scored - savedAt
+		if opt.DeferSave {
+			pending = m.dirtyLen()
+		}
+		if pending >= every {
 			if err := m.save(&rep, mine); err != nil {
 				rep.note(err)
 				rep.Skipped += len(todo) - i
@@ -445,7 +472,10 @@ func (m *Matcher) Warm(ctx context.Context, docs []Doc, max int) (rep Report, ru
 			rep.Failed += len(todo) - i
 		}
 	}
-	if rep.Scored > savedAt {
+	// A deferred Warm that ended cleanly leaves its scores for the save that
+	// spans chunks; any other end saves them, and what earlier deferred Warms
+	// still hold with them.
+	if (rep.Scored > savedAt || m.dirtyLen() > 0) && !(opt.DeferSave && runErr == nil) {
 		if err := m.save(&rep, mine); err != nil {
 			rep.note(err)
 			if runErr == nil {
@@ -464,9 +494,58 @@ func (m *Matcher) reload() error {
 		return err
 	}
 	m.mu.Lock()
+	for k, e := range m.dirty {
+		if cur, ok := sf.Entries[k]; ok && cur.TextHash == e.TextHash {
+			delete(m.dirty, k)
+			continue
+		}
+		e.Seq = sf.NextSeq
+		sf.NextSeq++
+		sf.Entries[k] = e
+	}
 	m.sf = sf
 	m.mu.Unlock()
 	return nil
+}
+
+func (m *Matcher) markDirty(key string, e *entry) {
+	m.mu.Lock()
+	if m.dirty == nil {
+		m.dirty = map[string]*entry{}
+	}
+	m.dirty[key] = e
+	m.mu.Unlock()
+}
+
+func (m *Matcher) dirtyLen() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.dirty)
+}
+
+// FlushWarm saves the scores that deferred Warms (WarmOptions.DeferSave) still
+// hold. It takes the cache lock, reads back what other processes saved, lays
+// the deferred scores over it and writes once. It is a no-op when nothing is
+// held. A caller whose context has ended passes a fresh bounded one.
+func (m *Matcher) FlushWarm(ctx context.Context) error {
+	m.warmMu.Lock()
+	defer m.warmMu.Unlock()
+	if m.dirtyLen() == 0 {
+		return nil
+	}
+	wait := m.lockWait
+	if wait <= 0 {
+		wait = DefaultLockWait
+	}
+	unlock, err := lockCache(ctx, m.dir, wait)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := m.reload(); err != nil {
+		return err
+	}
+	return m.save(&Report{}, nil)
 }
 
 func (m *Matcher) store(key string, e *entry) {
@@ -483,9 +562,22 @@ func (m *Matcher) store(key string, e *entry) {
 func (m *Matcher) save(rep *Report, mine map[string]bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.dirty) > 0 {
+		own := make(map[string]bool, len(mine)+len(m.dirty))
+		for h := range mine {
+			own[h] = true
+		}
+		for _, e := range m.dirty {
+			own[e.TextHash] = true
+		}
+		mine = own
+	}
 	n, live, err := saveScores(filepath.Join(m.dir, scoresFileName), m.sf, m.maxEntries, MaxCacheBytes, keepRule{live: m.vecPrio, mine: mine})
 	rep.ScoresEvicted += n
 	rep.ScoresEvictedLive += live
+	if err == nil {
+		clear(m.dirty)
+	}
 	if err == nil && m.saveTick != nil {
 		if fi, serr := os.Stat(filepath.Join(m.dir, scoresFileName)); serr == nil {
 			m.saveTick(fi.Size())

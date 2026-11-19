@@ -43,6 +43,10 @@ var (
 	// idleChunkDocs and idleChunkTime bound one Warm call. The cache lock is
 	// released between chunks, so a `vani semantic warm` gets in within one.
 	idleChunkDocs = 16
+	// idleFlushWait bounds the final score save of a window, made on a fresh
+	// context because the window's own has usually ended. It runs before the
+	// embedder join, and together they fit inside idleYieldWait.
+	idleFlushWait = 10 * time.Second
 	idleChunkTime = 2 * time.Minute
 	// idleWindowMax bounds one window (one model load); the loop looks again
 	// after it.
@@ -574,6 +578,17 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 		return w.stopped(ctx, wctx, st, "the score cache could not be opened: "+oneLine(err.Error(), 200))
 	}
 	m.SetVectorPriority(pinLabelled(ranks, w.stateDir))
+	// The chunks below defer their score saves (the file is about 22 MB and a
+	// full rewrite per 16 postings ran all day); whichever way the window ends,
+	// a run's pause, a power stop, a failure or the daemon stopping, what they
+	// still hold is saved here, before the gate is released.
+	defer func() {
+		fctx, fcancel := context.WithTimeout(context.Background(), idleFlushWait)
+		defer fcancel()
+		if ferr := m.FlushWarm(fctx); ferr != nil {
+			fmt.Fprintf(w.stderr, "vani: idle warm: saving the deferred scores failed (the next warm rebuilds them from the vector log): %s\n", oneLine(ferr.Error(), 160))
+		}
+	}()
 	fmt.Fprintf(w.stderr, "vani: idle warm: %d posting(s) without a current score; warming in chunks of %d\n", len(docs), idleChunkDocs)
 
 	var win idleCounts
@@ -605,7 +620,7 @@ func (w *idleWarmer) window(ctx context.Context, cfg config.Config, prof semanti
 		}
 		chunk := docs[i:min(i+idleChunkDocs, len(docs))]
 		cctx, ccancel := context.WithTimeout(wctx, idleChunkTime)
-		r, werr := m.Warm(cctx, chunk, len(chunk))
+		r, werr := m.WarmWith(cctx, chunk, len(chunk), semantic.WarmOptions{DeferSave: true})
 		// Read the chunk error before cancel: cancel would hide a clean return.
 		chunkDeadline := errors.Is(cctx.Err(), context.DeadlineExceeded) && errors.Is(werr, context.DeadlineExceeded)
 		ccancel()
