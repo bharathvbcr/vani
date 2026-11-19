@@ -108,24 +108,24 @@ func TestAttackRedactMultiByteSeparatorRuns(t *testing.T) {
 func TestAttackBuiltinBoundaries(t *testing.T) {
 	w := BuiltinWords()
 	for in, want := range map[string]bool{
-		"green card":        true,
-		"green cards":       false,
-		"green-cards":       false,
-		"green-card-":       true,
-		"-green-card":       true,
-		"xgreen card":       false,
-		"green card\u0301":  true,
-		"green card\u200bs": false,
-		"green\u200b-card":  true,
-		"cap-exempt":        true,
-		"cap-exempts":       false,
-		"cap - exempt":      true,
-		"cap -- exempt":     true,
+		"green card":          true,
+		"green cards":         false,
+		"green-cards":         false,
+		"green-card-":         true,
+		"-green-card":         true,
+		"xgreen card":         false,
+		"green card\u0301":    true,
+		"green card\u200bs":   false,
+		"green\u200b-card":    true,
+		"cap-exempt":          true,
+		"cap-exempts":         false,
+		"cap - exempt":        true,
+		"cap -- exempt":       true,
 		"cap -\u2014- exempt": true,
-		"cap_exempt":        false,
-		"green-":            false,
-		"-card":             false,
-		"[redacted]card":    false,
+		"cap_exempt":          false,
+		"green-":              false,
+		"-card":               false,
+		"[redacted]card":      false,
 	} {
 		if got := len(w.Found(in)) > 0; got != want {
 			t.Errorf("Found(%q)=%v want %v", in, got, want)
@@ -162,10 +162,15 @@ func TestAttackLoadWordsBOMVariants(t *testing.T) {
 		body     string
 		personal bool
 	}{
-		"bom line2 then term":      {"# a\n" + bom + "zorblax\n", true},
-		"two boms term":            {bom + bom + "zorblax\n", true},
-		"bom then spaces comment":  {bom + "  # c\n", false},
-		"crlf bom comment":         {bom + "# c\r\n# d\r\n", false},
+		"bom mid-file comment":    {"# a\n" + bom + "# b\n", false},
+		"bom line2 then term":     {"# a\n" + bom + "zorblax\n", true},
+		"two boms comment":        {bom + bom + "# c\n", false},
+		"two boms term":           {bom + bom + "zorblax\n", true},
+		"zwsp comment":            {"\u200b# c\n", false},
+		"bom then spaces comment": {bom + "  # c\n", false},
+		"utf16le comment":         {"\xff\xfe#\x00 \x00c\x00\n\x00", false},
+		"crlf bom comment":        {bom + "# c\r\n# d\r\n", false},
+		"bom after blank line":    {"\n" + bom + "# c\n", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()

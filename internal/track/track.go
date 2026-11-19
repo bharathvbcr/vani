@@ -21,6 +21,8 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf16"
 
 	"github.com/bharathvbcr/Vani/internal/config"
 	"github.com/bharathvbcr/Vani/internal/decide/jdtriage"
@@ -232,14 +234,20 @@ func LoadWords(dir string) (Words, error) {
 	if len(data) > maxWordsBytes {
 		return Words{}, fmt.Errorf("track: %s exceeds %d bytes", WordsFile, maxWordsBytes)
 	}
-	// A byte-order mark in front of the first line (an editor's "UTF-8 with
-	// BOM") would hide a leading '#', so a comment-only file read as one term.
+	data, err = wordsText(data)
+	if err != nil {
+		return Words{}, err
+	}
+	// A UTF-8 byte-order mark in front of the file is an editor's habit, not a line.
 	data = bytes.TrimPrefix(data, []byte("\ufeff"))
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	line, n := 0, 0
 	for sc.Scan() {
 		line++
-		t := strings.ToLower(strings.Join(strings.Fields(sc.Text()), " "))
+		t := wordsLine(sc.Text())
+		if strings.TrimSpace(sc.Text()) != "" && t == "" {
+			return Words{}, fmt.Errorf("track: %s line %d has no visible characters", WordsFile, line)
+		}
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
 		}
@@ -260,6 +268,48 @@ func LoadWords(dir string) (Words, error) {
 	w.Personal = n > 0
 	w.c = compile(w.builtin, w.owner)
 	return w, nil
+}
+
+// wordsText returns the file as UTF-8. An editor may save the list as UTF-16
+// with a byte-order mark; read as bytes that is a file of garbage lines, one
+// of which would count as an owner term, so it is decoded instead. Text that is
+// not valid UTF-16 after such a mark is an error that names no content.
+func wordsText(data []byte) ([]byte, error) {
+	le := bytes.HasPrefix(data, []byte{0xff, 0xfe})
+	if !le && !bytes.HasPrefix(data, []byte{0xfe, 0xff}) {
+		return data, nil
+	}
+	body := data[2:]
+	if len(body)%2 != 0 {
+		return nil, fmt.Errorf("track: %s is UTF-16 with an odd number of bytes", WordsFile)
+	}
+	units := make([]uint16, len(body)/2)
+	for i := range units {
+		if le {
+			units[i] = uint16(body[2*i]) | uint16(body[2*i+1])<<8
+		} else {
+			units[i] = uint16(body[2*i])<<8 | uint16(body[2*i+1])
+		}
+	}
+	return []byte(string(utf16.Decode(units))), nil
+}
+
+// wordsLine normalises one line of the words file: invisible format characters
+// (Unicode Cf: zero-width space and joiners, word joiner, byte-order mark, soft
+// hyphen, bidi marks) are dropped wherever they stand, spaces collapse, and the
+// text is lower-cased. Dropped first, they cannot hide a leading '#' (a comment
+// would load as a term and mark the check as personal), and a line of nothing
+// else is empty, which LoadWords refuses by line number. Inside a term they are dropped too: the matcher's fold ignores
+// them, so the term matches the same text either way, and the stored term then
+// holds only what the owner can see.
+func wordsLine(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) || r == 0xfeff {
+			return -1
+		}
+		return r
+	}, s)
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
 }
 
 // BuiltinWords returns the built-in list alone (Personal false).
