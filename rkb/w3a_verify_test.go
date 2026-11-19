@@ -43,11 +43,11 @@ func TestW3AManualPass1ChecksSourceSHA(t *testing.T) {
 			SourcePath: "proj/bench.txt", SourceSHA: sha}}}
 	}
 	good := entry(sha256File(src))
-	if r := evaluate(cl, good, nil, nil); !r.P1 || r.P1Verdict != "MANUAL" {
+	if r := Assess(cl, good, nil, nil); !r.P1 || r.P1Verdict != "MANUAL" {
 		t.Fatalf("an unchanged source must keep the manual pass: %+v", r)
 	}
 	w3aWrite(t, src, "latency 50 ms\n") // the source moved on after the reading
-	r := evaluate(cl, good, nil, nil)
+	r := Assess(cl, good, nil, nil)
 	if r.P1 {
 		t.Fatalf("a source edited after the manual read must not satisfy pass 1: %+v", r)
 	}
@@ -67,7 +67,7 @@ func TestW3AManualPass1RefusesUnboundedSources(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "proj", "adir"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if r := evaluate(cl, mk("proj/adir"), nil, nil); r.P1 {
+	if r := Assess(cl, mk("proj/adir"), nil, nil); r.P1 {
 		t.Errorf("a directory satisfied manual pass 1: %+v", r)
 	}
 	// a file one byte over the read cap is refused without being read
@@ -82,11 +82,11 @@ func TestW3AManualPass1RefusesUnboundedSources(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if r := evaluate(cl, mk("proj/big.bin"), nil, nil); r.P1 {
+	if r := Assess(cl, mk("proj/big.bin"), nil, nil); r.P1 {
 		t.Errorf("an over-cap source satisfied manual pass 1: %+v", r)
 	}
 	// a missing file and an empty recorded hash on a changed file
-	if r := evaluate(cl, mk("proj/none.txt"), nil, nil); r.P1 {
+	if r := Assess(cl, mk("proj/none.txt"), nil, nil); r.P1 {
 		t.Errorf("a missing source satisfied manual pass 1: %+v", r)
 	}
 }

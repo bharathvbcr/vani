@@ -113,7 +113,7 @@ func TestW2AIngestRefusesQuoteWithoutTheFigure(t *testing.T) {
 		if len(add["clmHit"]) != 1 {
 			t.Fatalf("no verdict recorded for %q", quote)
 		}
-		return add["clmHit"][0].Verdict
+		return string(add["clmHit"][0].Verdict)
 	}
 	if v := ask("run 7: the cache answered 40 ms at median across all of the runs"); v != "QUOTE_MISMATCH" {
 		t.Errorf("quote showing 40 ms for a 40%% claim: verdict %s, want QUOTE_MISMATCH", v)

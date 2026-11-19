@@ -1,0 +1,51 @@
+$ rkb claims status career/CurriculumVitae/resume/resumes/fixture.json --vm-report report.vm.txt
+exit: 1
+--- stdout ---
+[OK  ] clmAlpha                   p1=PRIMARY  p2=1/1  10 ms
+[OK  ] clmBravo                   p1=LEDGER   p2=1/1  20 ms
+[OK  ] clmCharlie                 p1=MANUAL   p2=1/1  30 ms
+[TODO] clmDelta                   p1=MANUAL   p2=1/1  40 ms  <- validator FAIL: value differs: 41 ms; pass 1 missing (validator FAIL)
+[TODO] clmEcho                    p1=-        p2=1/1  50 ms  <- validator UNBACKED: no artifact; pass 1 missing (validator UNBACKED)
+[TODO] clmFoxtrot                 p1=PRIMARY  p2=0/1  60 ms  <- latest blind pass MISMATCH: evidence for MISMATCH
+[TODO] clmGolf                    p1=PRIMARY  p2=0/1  70 ms  <- latest blind pass SCOPE: evidence for SCOPE
+[TODO] clmHotel                   p1=PRIMARY  p2=0/1  80 ms  <- latest blind pass NO_ANSWER: evidence for NO_ANSWER
+[TODO] clmIndia                   p1=-        p2=1/1  90 ms  <- pass 1 missing
+[TODO] clmJuliet                  p1=PRIMARY  p2=1/2  11 ms  <- pass 2 missing for: Measured the juliet stage at [MASKED] in variant 1: the harness replay…
+[OK  ] clmLima                    p1=PRIMARY  p2=1/1  13 ms
+[TODO] clmMike                    p1=PRIMARY  p2=0/1  14 ms  <- pass 2 source changed or deleted since it was read: projects/lab/src.txt
+[TODO] clmNovember                p1=PRIMARY  p2=0/1  15 ms  <- pass 2 cited a claims/resume/KB file, not an artifact: career/CurriculumVitae/core/Claims.tex
+[TODO] clmOscar                   p1=-        p2=0/1  16 ms  <- pass 1 missing; pass 2 missing for: Measured the oscar stage at [MASKED] in variant 0: the harness replays…
+[TODO] clmPapa                    p1=-        p2=1/1  17 ms  <- pass 1 missing (validator SKIP)
+[OK  ] clmQuebec                  p1=PRIMARY  p2=1/1  18 ms
+[TODO] clmRomeo                   p1=-        p2=1/1  19 ms  <- clmRomeo: manual pass 1 refused, the source changed since it was read: projects/lab/src.txt; pass 1 missing
+[TODO] clmSierra                  p1=PRIMARY  p2=0/1  21 ms  <- latest blind pass WEIRD_VERDICT: evidence for WEIRD_VERDICT
+[TODO] clmTango                   p1=PRIMARY  p2=0/1  22 ms  <- latest blind pass QUOTE_NOT_FOUND: evidence for QUOTE_NOT_FOUND
+[STMT] fig-alpha-0                statement pass 2 missing
+[STMT] fig-bravo-0                statement pass 2 missing
+[STMT] fig-charlie-0              statement pass 2 missing
+[STMT] fig-delta-0                statement pass 2 missing
+[STMT] fig-echo-0                 statement pass 2 missing
+[STMT] fig-foxtrot-0              statement pass 2 missing
+[STMT] fig-golf-0                 statement pass 2 missing
+[STMT] fig-hotel-0                statement pass 2 missing
+[STMT] fig-india-0                statement pass 2 missing
+[STMT] fig-juliet-0               statement pass 2 missing
+[STMT] fig-juliet-1               statement pass 2 missing
+[STMT] fig-lima-0                 statement pass 2 missing
+[STMT] fig-mike-0                 statement pass 2 missing
+[STMT] fig-november-0             statement pass 2 missing
+[STMT] fig-oscar-0                statement pass 2 missing
+[STMT] fig-papa-0                 statement pass 2 missing
+[STMT] fig-quebec-0               statement pass 2 missing
+[STMT] fig-romeo-0                statement pass 2 missing
+[STMT] fig-sierra-0               statement pass 2 missing
+[STMT] fig-tango-0                statement pass 2 missing
+[STMT] st-unsupported             statement pass 2 UNSUPPORTED: all assertions supported
+[STMT] st-missing                 statement pass 2 missing
+[STMT] st-stale                   statement source changed since it was checked: projects/lab/src.txt
+[STMT] st-nosrc                   no sources listed (statement pass 1)
+[STMT] st-badsrc                  source not found: projects/lab/missing.txt
+[STMT] st-circular                source restates claims (CV folder, knowledge.json, dossiers): career/CurriculumVitae/core/Claims.tex
+[STMT] st-other                   statement pass 2 NO_ANSWER: all assertions supported
+
+5/19 figures double-verified; 27 bullet statement checks outstanding

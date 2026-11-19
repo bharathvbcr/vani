@@ -1,0 +1,453 @@
+$ rkb claims export --used-in career/CurriculumVitae/resume/resumes/fixture.json --out claims-novm.json
+exit: 0
+--- stdout ---
+wrote claims-novm.json: 20 claims, 2 double-verified for the sentences they are used in
+--- claims-novm.json ---
+{
+  "generated": "<NOW>",
+  "resume_hash": "1f6c2589143d",
+  "claims_tex_sha256": "b6375cc7764658357af99fcd04e560abc8ebc7e702815bffeedbbcb48cf8f2c1",
+  "selection": "career/CurriculumVitae/resume/resumes/fixture.json",
+  "vm_report": null,
+  "claims": {
+    "clmAlpha": {
+      "value": "10 ms",
+      "kind": "time",
+      "check": "lab.alpha",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "90c4ac6a1f7f"
+      ],
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmBravo": {
+      "value": "20 ms",
+      "kind": "time",
+      "check": "lab.bravo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "8b958acbca77"
+      ],
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmCharlie": {
+      "value": "30 ms",
+      "kind": "time",
+      "check": "lab.charlie",
+      "source": "projects/lab/src.txt",
+      "double_verified": true,
+      "confirmed_sentences": [
+        "6d9880638f9e"
+      ],
+      "problems": null
+    },
+    "clmDelta": {
+      "value": "40 ms",
+      "kind": "time",
+      "check": "lab.delta",
+      "source": "projects/lab/src.txt",
+      "double_verified": true,
+      "confirmed_sentences": [
+        "50f0b43000cf"
+      ],
+      "problems": null
+    },
+    "clmEcho": {
+      "value": "50 ms",
+      "kind": "time",
+      "check": "lab.echo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "3e467f8f2cb7"
+      ],
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmFoxtrot": {
+      "value": "60 ms",
+      "kind": "time",
+      "check": "lab.foxtrot",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "latest blind pass MISMATCH: evidence for MISMATCH"
+      ],
+      "refuted_sentences": {
+        "4dd2e6afafbe": "MISMATCH: evidence for MISMATCH"
+      }
+    },
+    "clmGolf": {
+      "value": "70 ms",
+      "kind": "time",
+      "check": "lab.golf",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "latest blind pass SCOPE: evidence for SCOPE"
+      ],
+      "refuted_sentences": {
+        "dcefa15c7312": "SCOPE: evidence for SCOPE"
+      }
+    },
+    "clmHotel": {
+      "value": "80 ms",
+      "kind": "time",
+      "check": "lab.hotel",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "latest blind pass NO_ANSWER: evidence for NO_ANSWER"
+      ]
+    },
+    "clmIndia": {
+      "value": "90 ms",
+      "kind": "time",
+      "check": "lab.india",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "1e0a1969b2e9"
+      ],
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmJuliet": {
+      "value": "11 ms",
+      "kind": "time",
+      "check": "lab.juliet",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "0b4236100aea"
+      ],
+      "problems": [
+        "pass 1 missing",
+        "pass 2 missing for: Measured the juliet stage at [MASKED] in variant 1: the harness replay…"
+      ]
+    },
+    "clmKilo": {
+      "value": "12 ms",
+      "kind": "time",
+      "check": "lab.kilo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmLima": {
+      "value": "13 ms",
+      "kind": "time",
+      "check": "lab.lima",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "37d1c98bf006"
+      ],
+      "problems": [
+        "pass 1 missing",
+        "1 logged pass(es) void: value changed since"
+      ]
+    },
+    "clmMike": {
+      "value": "14 ms",
+      "kind": "time",
+      "check": "lab.mike",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "pass 2 source changed or deleted since it was read: projects/lab/src.txt"
+      ]
+    },
+    "clmNovember": {
+      "value": "15 ms",
+      "kind": "time",
+      "check": "lab.november",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "pass 2 cited a claims/resume/KB file, not an artifact: career/CurriculumVitae/core/Claims.tex"
+      ]
+    },
+    "clmOscar": {
+      "value": "16 ms",
+      "kind": "time",
+      "check": "",
+      "source": "",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "pass 2 missing for: Measured the oscar stage at [MASKED] in variant 0: the harness replays…"
+      ]
+    },
+    "clmPapa": {
+      "value": "17 ms",
+      "kind": "time",
+      "check": "lab.papa",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "ab3a4825c8ae"
+      ],
+      "problems": [
+        "pass 1 missing"
+      ]
+    },
+    "clmQuebec": {
+      "value": "18 ms",
+      "kind": "time",
+      "check": "lab.quebec",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "d3fb8b3bd8a4"
+      ],
+      "problems": [
+        "pass 1 missing"
+      ],
+      "caution": "CAUTION: measured on one phase only"
+    },
+    "clmRomeo": {
+      "value": "19 ms",
+      "kind": "time",
+      "check": "lab.romeo",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": [
+        "d3ce1583a214"
+      ],
+      "problems": [
+        "clmRomeo: manual pass 1 refused, the source changed since it was read: projects/lab/src.txt",
+        "pass 1 missing"
+      ]
+    },
+    "clmSierra": {
+      "value": "21 ms",
+      "kind": "time",
+      "check": "lab.sierra",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "latest blind pass WEIRD_VERDICT: evidence for WEIRD_VERDICT"
+      ]
+    },
+    "clmTango": {
+      "value": "22 ms",
+      "kind": "time",
+      "check": "lab.tango",
+      "source": "projects/lab/src.txt",
+      "double_verified": false,
+      "confirmed_sentences": null,
+      "problems": [
+        "pass 1 missing",
+        "latest blind pass QUOTE_NOT_FOUND: evidence for QUOTE_NOT_FOUND"
+      ]
+    }
+  },
+  "statements": {
+    "fig-alpha-0": {
+      "text_hash": "f07680ff04f9",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-bravo-0": {
+      "text_hash": "4eaf86084d61",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-charlie-0": {
+      "text_hash": "2291b47d91bc",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-delta-0": {
+      "text_hash": "bcbaa94db11c",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-echo-0": {
+      "text_hash": "d83dac4fd0e8",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-foxtrot-0": {
+      "text_hash": "3aea2ee167fc",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-golf-0": {
+      "text_hash": "14e9172db029",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-hotel-0": {
+      "text_hash": "f6a175cc7699",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-india-0": {
+      "text_hash": "1e47139bc23e",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-juliet-0": {
+      "text_hash": "1d9b3b74416a",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-juliet-1": {
+      "text_hash": "9c29e8ec2377",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-lima-0": {
+      "text_hash": "c9721bb6ae3f",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-mike-0": {
+      "text_hash": "7c2b09781ed8",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-november-0": {
+      "text_hash": "e154d4c2fb57",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-oscar-0": {
+      "text_hash": "9a8ff1ede92b",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-papa-0": {
+      "text_hash": "d2e011f4362e",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-quebec-0": {
+      "text_hash": "f8f0f76fed49",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-romeo-0": {
+      "text_hash": "bd5f9bb00da1",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-sierra-0": {
+      "text_hash": "56c16e17eb58",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "fig-tango-0": {
+      "text_hash": "08e554432a3c",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "lead:figs": {
+      "text_hash": "11e58febde6b",
+      "sources_ok": false,
+      "confirmed": false,
+      "problem": "no sources listed (statement pass 1)"
+    },
+    "st-attested": {
+      "text_hash": "5312d121a809",
+      "sources_ok": true,
+      "confirmed": true,
+      "attested": "client work, no artifact"
+    },
+    "st-badsrc": {
+      "text_hash": "eaec482d56f6",
+      "sources_ok": false,
+      "confirmed": true,
+      "problem": "source not found: projects/lab/missing.txt"
+    },
+    "st-circular": {
+      "text_hash": "f771c126ac09",
+      "sources_ok": false,
+      "confirmed": true,
+      "problem": "source restates claims (CV folder, knowledge.json, dossiers): career/CurriculumVitae/core/Claims.tex"
+    },
+    "st-confirmed": {
+      "text_hash": "6034164ae1b2",
+      "sources_ok": true,
+      "confirmed": true
+    },
+    "st-missing": {
+      "text_hash": "75f663569a61",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 missing"
+    },
+    "st-nosrc": {
+      "text_hash": "53ad8ce11ad8",
+      "sources_ok": false,
+      "confirmed": true,
+      "problem": "no sources listed (statement pass 1)"
+    },
+    "st-other": {
+      "text_hash": "266c637900f9",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 NO_ANSWER: all assertions supported"
+    },
+    "st-stale": {
+      "text_hash": "af3558617b55",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement source changed since it was checked: projects/lab/src.txt"
+    },
+    "st-unsupported": {
+      "text_hash": "d05b630ea3f9",
+      "sources_ok": true,
+      "confirmed": false,
+      "problem": "statement pass 2 UNSUPPORTED: all assertions supported",
+      "refuted": "UNSUPPORTED: all assertions supported"
+    }
+  },
+  "guards": 1
+}
