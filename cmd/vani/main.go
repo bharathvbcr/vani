@@ -397,7 +397,7 @@ commands:
                              one-time: move fallback-keyed (x:) postings, and their marks, to the
                              keys titles that keep C++/C#/.NET apart give them (backs up first;
                              refuses a second run; takes the ledger lock)
-  mcp servers [--json]       the local MCP servers vani mcp can start (gitpulse, devmap) and
+  mcp servers [--json]       the local MCP servers this command can start (gitpulse, devmap) and
                              whether each is installed; starts nothing
   mcp tools SERVER [--schema TOOL] [--timeout D]
                              start SERVER without an agent host and list its tools, each with

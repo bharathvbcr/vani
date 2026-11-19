@@ -17,7 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/mcpstdio"
 )
 
-// vani mcp asks a local MCP server directly, without an agent host's MCP
+// `vani mcp` asks a local MCP server directly, without an agent host's MCP
 // connection: it starts the server's binary, lists or calls one tool, prints
 // one JSON value and ends the process. It is how an agent reads GitPulse or
 // DevMap when the host's connection to them is down.
@@ -27,7 +27,7 @@ import (
 // literal true) can be called. There is no flag that allows a writer: over MCP
 // the host asks before each tool, and a shell command must not get around that.
 
-// mcpServerSpec is one server vani mcp may start.
+// mcpServerSpec is one server `vani mcp` may start.
 type mcpServerSpec struct {
 	Name    string
 	About   string
@@ -95,12 +95,12 @@ const (
 	codeMCPToolError     = "mcp_tool_error"
 )
 
-// mcpRefusal is a failure vani mcp decides itself, with its code.
+// mcpRefusal is a failure `vani mcp` decides itself, with its code.
 type mcpRefusal struct{ code, msg string }
 
 func (e *mcpRefusal) Error() string { return e.msg }
 
-// mcpCode is the envelope code of a vani mcp failure.
+// mcpCode is the envelope code of a `vani mcp` failure.
 func mcpCode(err error) string {
 	var r *mcpRefusal
 	var te *mcpstdio.ToolError
@@ -199,7 +199,7 @@ func (e *env) cmdMCPServers(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), `usage: vani mcp servers [--json]
 
-The servers vani mcp can start, and whether each one's binary is installed.
+The servers this command can start, and whether each one's binary is installed.
 Nothing is started.
 `)
 	}
@@ -268,7 +268,7 @@ type mcpToolsReply struct {
 	Tools      []mcpToolRow        `json:"tools"`
 	Count      int                 `json:"count"`
 	ReadOnly   int                 `json:"read_only"`
-	// Truncated means the server had more tools than vani mcp reads: Tools is
+	// Truncated means the server had more tools than `vani mcp` reads: Tools is
 	// the first of them, not all.
 	Truncated bool `json:"truncated"`
 }
@@ -398,7 +398,7 @@ mcp_write_refused before anything is sent to it, and no flag changes that.
 		return e.mcpFail(unknownToolErr(server, tool, list.Truncated))
 	}
 	if !t.ReadOnly {
-		return e.mcpFail(&mcpRefusal{codeMCPWriteRefused, fmt.Sprintf("mcp %s: %s is not marked read-only by the server, so vani mcp does not run it; use the MCP host, which asks before each tool", server, tool)})
+		return e.mcpFail(&mcpRefusal{codeMCPWriteRefused, fmt.Sprintf("mcp %s: %s is not marked read-only by the server, so this bridge does not run it; use the MCP host, which asks before each tool", server, tool)})
 	}
 	res, err := s.CallTool(ctx, tool, toolArgs)
 	if err != nil {
