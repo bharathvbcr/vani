@@ -355,7 +355,8 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 	// Pre-compute titleMatches and pre-warm shingles across CPU cores in
 	// newest-first order, only for records that actually have an earlier title
 	// match (overlap >= NearDupTitleMin), bounded to at most half the stage
-	// deadline so decide always keeps time for the newest postings.
+	// deadline. That bounds the pre-warm only; it does not reserve time for
+	// decide, which guarantees the newest posting its own way (see decide).
 	if sctx.Err() == nil && len(recs) >= 32 && deadline > 0 {
 		if workers := min(runtime.GOMAXPROCS(0), 8, len(recs)); workers > 1 {
 			wctx, wcancel := context.WithTimeout(sctx, min(deadline/2, 500*time.Millisecond))
@@ -402,11 +403,11 @@ func AnnotateNearDuplicates(ctx context.Context, led ledger.Ledger, now time.Tim
 	// can be reached before the oldest: a deadline then costs the oldest
 	// postings, whose pairs have had the most runs to be annotated. The
 	// outcomes are the ones a pass from oldest to newest would reach.
-	d := &nearDup{recs: recs, index: index, opt: opt, now: now, sctx: sctx, rep: &rep,
+	d := &nearDup{recs: recs, index: index, opt: opt, now: now, sctx: sctx, pctx: ctx, rep: &rep,
 		out:       make([]*nearDupOutcome, len(recs)),
 		simBudget: time.Duration(float64(deadline) * NearDupSimilarityShare)}
 	for i := len(recs) - 1; i >= 0; i-- {
-		if !d.decide(i) {
+		if !d.decide(i, i == len(recs)-1) {
 			break
 		}
 	}
@@ -460,6 +461,7 @@ type nearDup struct {
 	opt   NearDupOptions
 	now   time.Time
 	sctx  context.Context
+	pctx  context.Context // the caller's: a cancelled run stops even the newest posting
 	rep   *NearDupReport
 	out   []*nearDupOutcome // nil until decided
 	cut   bool              // the deadline stopped the phase
@@ -475,11 +477,32 @@ type nearDup struct {
 // against. It reports false once the deadline has cut the phase; a posting cut
 // mid-way is left undecided, because deciding on part of its pairs could clear
 // an annotation a full run keeps.
-func (d *nearDup) decide(i int) bool {
+//
+// newest is the one exemption from the deadline: the newest posting is decided
+// whenever the status of every candidate it has is known without further
+// comparison work, however long a stall before the phase began. Each
+// candidate is settled by the ordinary, deadline-bound decide; one the
+// deadline cut is settled anyway only when it has no title candidates of its
+// own (decideLeaf: it cannot be demoted, and there is nothing to compare). A
+// cut candidate that does have candidates has an unknown status, so the newest
+// posting is left undecided (the run is Partial and nothing is written for
+// it), because a guess could write a terminal Duplicate that a full run would
+// not. So a spent deadline may write less than a full run, never something
+// different. The work is bounded: the newest posting's own capped candidates,
+// one O(1) leaf decision each, and one reading of each candidate pair inside
+// the similarity budget, which a spent deadline leaves at nothing and counts
+// as skipped. A cancelled caller context still stops it: the exemption is
+// from the deadline only.
+func (d *nearDup) decide(i int, newest bool) bool {
 	if d.out[i] != nil {
 		return true
 	}
-	if d.cut || d.sctx.Err() != nil {
+	if newest {
+		if d.pctx.Err() != nil {
+			d.cut = true
+			return false
+		}
+	} else if d.cut || d.sctx.Err() != nil {
 		d.cut = true
 		return false
 	}
@@ -490,14 +513,18 @@ func (d *nearDup) decide(i int) bool {
 	capped := false
 	if a.company != "" && len(a.title) > 0 {
 		var cands []dupMatch
-		if a.candsReady {
-			cands, capped = a.cands, a.capped
-		} else {
-			cands, capped = titleMatches(a, i, d.recs, d.index)
-		}
+		cands, capped = d.candidates(i)
 		for _, tm := range cands {
-			if !d.decide(tm.j) {
-				return false
+			if !d.decide(tm.j, false) {
+				// The deadline cut candidate j. Only the newest posting goes on,
+				// and only when j has nothing of its own to be demoted by: then j
+				// is certainly a survivor, and deciding it is O(1) work. Any other
+				// j has an unknown status, and the newest is not decided from a
+				// guess (Duplicate is terminal).
+				if !newest || d.pctx.Err() != nil || !d.decideLeaf(tm.j) {
+					d.cut = true
+					return false
+				}
 			}
 			if d.out[tm.j].demoted {
 				continue
@@ -533,7 +560,7 @@ func (d *nearDup) decide(i int) bool {
 			}
 		}
 	}
-	if d.sctx.Err() != nil {
+	if newest && d.pctx.Err() != nil || !newest && d.sctx.Err() != nil {
 		d.cut = true
 		return false
 	}
@@ -554,7 +581,7 @@ func (d *nearDup) decide(i int) bool {
 		want[AnnDupCandidateOf] = string(d.recs[cand.j].rec.Key)
 		want[AnnDupScore] = scoreText(cand.score)
 		if d.opt.Similarity != nil {
-			cos, read, ok := d.cosine(a.desc, d.recs[cand.j].desc)
+			cos, read, ok := d.cosine(a.desc, d.recs[cand.j].desc, newest)
 			if !ok {
 				return false
 			}
@@ -590,27 +617,56 @@ func (d *nearDup) decide(i int) bool {
 	return true
 }
 
+// candidates is posting i's earlier title matches, from the pre-warm when it
+// ran.
+func (d *nearDup) candidates(i int) (cands []dupMatch, capped bool) {
+	a := d.recs[i]
+	if a.company == "" || len(a.title) == 0 {
+		return nil, false
+	}
+	if a.candsReady {
+		return a.cands, a.capped
+	}
+	return titleMatches(a, i, d.recs, d.index)
+}
+
+// decideLeaf decides posting j past the deadline when it has no title
+// candidates: nothing to compare and nothing to recurse into, so it is a
+// survivor in every run and its outcome is the one a full run gives (no
+// annotation, or one cleared). It reports false, deciding nothing, when j has
+// candidates or the caller's context is cancelled.
+func (d *nearDup) decideLeaf(j int) bool {
+	if cands, _ := d.candidates(j); len(cands) > 0 || d.pctx.Err() != nil {
+		return false
+	}
+	return d.decide(j, true)
+}
+
 // cosine takes the optional similarity's reading of one candidate pair inside
 // the similarity's own budget. read says a reading was taken; ok is false only
 // when the stage's deadline cut the reading off, which cuts the phase as a
 // deadline in the shingle pass does. Any other pair without a reading is
 // counted: an error or no data in SimilarityErrors, a pair not read (budget
 // spent, breaker open) or cut off by the budget in SimilaritySkipped.
-func (d *nearDup) cosine(a, b string) (cos float64, read, ok bool) {
+func (d *nearDup) cosine(a, b string, newest bool) (cos float64, read, ok bool) {
 	rep := d.rep
 	if d.simOpen || d.simSpent >= d.simBudget {
 		rep.SimilaritySkipped++
 		rep.SimilarityBudgetSpent = rep.SimilarityBudgetSpent || !d.simOpen
 		return 0, false, true
 	}
-	cctx, cancel := context.WithTimeout(d.sctx, d.simBudget-d.simSpent)
+	base := d.sctx
+	if newest {
+		base = d.pctx
+	}
+	cctx, cancel := context.WithTimeout(base, d.simBudget-d.simSpent)
 	start := time.Now()
 	cos, has, err := d.opt.Similarity(cctx, a, b)
 	d.simSpent += time.Since(start)
 	budgetCut := cctx.Err() != nil
 	cancel()
 	taken := err == nil && has
-	if d.sctx.Err() != nil {
+	if newest && d.pctx.Err() != nil || !newest && d.sctx.Err() != nil {
 		d.simOverran = true
 		if !taken { // the stage's deadline cut the reading off: not refused
 			d.cut = true
