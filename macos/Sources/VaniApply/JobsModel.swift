@@ -669,8 +669,11 @@ final class JobsModel {
             noteDrafts[key] = nil
         } else {
             noteDrafts[key] = text
-            // Typed while a save of this job runs: it is the latest, so it is saved when that one ends.
-            if notesSaving.contains(key) { notesQueued.insert(key) }
+            // Typed back to the confirmed note while a save of this job runs: an undo of that save, which
+            // nothing else would send (the pane commits on blur, and this draft is no longer "unsaved"
+            // to anyone who compares with the list). Saved, latest wins, when that save ends. Any other
+            // text stays an open draft until it is committed, as flushNoteDrafts reports.
+            if notesSaving.contains(key), trimmed == confirmedNotes[key] { notesQueued.insert(key) }
         }
     }
 

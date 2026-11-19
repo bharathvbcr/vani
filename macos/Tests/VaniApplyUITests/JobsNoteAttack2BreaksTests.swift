@@ -41,7 +41,7 @@ final class JobsNoteAttack2BreaksTests: XCTestCase {
         try slowNotes(f)
         try f.setListReply(JobsFixture.standardOrder, counts: ["new": 4, "all": 4], notes: [a: "orig"])
         let m = model(f)
-        try f.setWriteReply(a, note: "A1")
+        try f.echoNoteWrites(a)
         await m.refresh()
         m.editNote(a, "A1")
         let first = Task { await m.commitNote(self.a) }
