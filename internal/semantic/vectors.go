@@ -182,11 +182,28 @@ func evictTo(budget int64) vecPlan { return vecPlan{soft: budget, hard: budget, 
 // vecEvent is what a refresh or an append did besides the ordinary work.
 type vecEvent struct {
 	TornBytes int64 // incomplete trailing bytes cut off
-	Replaced  bool  // another model or ChunkVersion (or a torn header): the log was started anew
+	// Damaged is set when a structurally bad record was found and the log was cut
+	// back to the records before it.
+	Damaged   *vecDamage
+	Replaced  bool // another model or ChunkVersion (or a torn header): the log was started anew
 	Compacted bool
 	Evicted   int // postings dropped by a compaction (outside the live set, then lowest priority, then oldest)
 	Dropped   int // records a compaction shed because they failed their checksum
 	Refused   int // postings an append did not store: no room (or none for one ranked that low), or a bad record
+}
+
+// vecDamage is a structurally bad record refresh found: the log was truncated at
+// Off, so Bytes bytes (the bad record and everything after it, which cannot be
+// re-synchronised: records are length-prefixed with no marker) are gone and
+// Kept records before it survive.
+type vecDamage struct {
+	Off, Bytes int64
+	Kept       int
+	Why        string
+}
+
+func (d *vecDamage) err() error {
+	return fmt.Errorf("%w: chunk-vector log damaged at offset %d (%s): dropped %d bytes from there, kept the %d records before it", ErrCache, d.Off, d.Why, d.Bytes, d.Kept)
 }
 
 // parseTextHash turns a TextHash into the 16 bytes a record stores.
@@ -399,9 +416,11 @@ func (s *chunkStore) drop(h [16]byte) {
 // where the last whole record ends and how many bytes after it are an
 // incomplete tail (a length the file ends before, or a last record whose
 // checksum fails: a crash mid-append). A structurally impossible record anywhere
-// else (length, chunk count, width, a width unlike the rest) is errVecCorrupt;
-// payload checksums are verified when a record is read, and the last record's
-// here. scan never writes.
+// else (length, chunk count, width, a width unlike the rest) is errVecCorrupt,
+// returned with end at that record's offset: every record indexed before it is
+// good, and the caller decides what to do with the rest (refresh truncates
+// there). Payload checksums are verified when a record is read, and the last
+// record's here. scan never writes.
 func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, err error) {
 	off := start
 	var hdr [4 + recFixed]byte
@@ -455,8 +474,11 @@ func (s *chunkStore) scan(r io.ReaderAt, size, start int64) (end, torn int64, er
 // a header for another model or ChunkVersion replaces the file, an unchanged
 // generation is scanned from where the last scan stopped, and a changed
 // generation (another process compacted) is scanned afresh. An incomplete tail
-// is truncated. Corruption is an errVecCorrupt error and leaves the file alone;
-// the caller decides to remove it. The caller holds the cache lock.
+// is truncated, and so is a log with a structurally bad record: it is cut back to
+// the records before it (ev.Damaged). A header that is not this format is an
+// errVecCorrupt error and leaves the file alone; the caller decides to remove it.
+// A read that fails is an ErrCache error, never an empty log. The caller holds
+// the cache lock.
 func (s *chunkStore) refresh() (ev vecEvent, err error) {
 	s.close()
 	s.full = false
@@ -511,7 +533,17 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 	}
 	s.gen, s.hdrLen = h.gen, h.hdrLen
 	end, torn, serr := s.scan(f, size, start)
-	if serr != nil {
+	var dmg *vecDamage
+	switch {
+	case serr == nil:
+	case errors.Is(serr, errVecCorrupt):
+		// The records before the bad one were indexed and are good; the rest
+		// cannot be found again, so the log is cut back to them.
+		dmg = &vecDamage{Off: end, Bytes: size - end, Kept: len(s.idx), Why: serr.Error()}
+		torn = size - end
+	default:
+		// The log could not be read: that says nothing about its content, so the
+		// file is left alone and the caller sees an error, not an empty log.
 		s.resetIndex()
 		return ev, serr
 	}
@@ -522,7 +554,11 @@ func (s *chunkStore) refresh() (ev vecEvent, err error) {
 		if err = atomicfile.Sync(f); err != nil {
 			return ev, fmt.Errorf("%w: sync after truncate: %v", ErrCache, err)
 		}
-		ev.TornBytes = torn
+		if dmg != nil {
+			ev.Damaged = dmg
+		} else {
+			ev.TornBytes = torn
+		}
 	}
 	s.end, s.valid = end, true
 	return ev, nil
@@ -1036,8 +1072,10 @@ func (r *Report) noteVectors(err error) {
 
 // openVectors opens the log under the cache lock and brings its index up to
 // date, repairing what it can: an incomplete tail is truncated (VectorsTornBytes),
-// another model or ChunkVersion starts the log anew, and a corrupt log is removed and
-// started anew (VectorsRebuilt: that loss costs re-embedding). nil means the log
+// a structurally bad record cuts the log back to the records before it (reported
+// once in VectorsErr with its offset and the bytes dropped), another model or
+// ChunkVersion starts the log anew, and a log whose header is not this format is
+// removed and started anew (VectorsRebuilt: nothing in it was usable). nil means the log
 // cannot be used this Warm (reported in VectorsErr); scoring goes on without it.
 func (m *Matcher) openVectors(rep *Report, docs []Doc) *chunkStore {
 	if m.vs == nil {
@@ -1062,6 +1100,9 @@ func (m *Matcher) openVectors(rep *Report, docs []Doc) *chunkStore {
 		rep.noteVectors(err)
 		s.close()
 		return nil
+	}
+	if ev.Damaged != nil {
+		rep.noteVectors(ev.Damaged.err())
 	}
 	rep.VectorsTornBytes += ev.TornBytes
 	if ev.TornBytes > 0 {

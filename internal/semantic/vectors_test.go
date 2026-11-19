@@ -527,13 +527,16 @@ func TestVectorsTornTailTruncated(t *testing.T) {
 	})
 }
 
+// A structurally bad record cuts the log back to the records before it (the
+// rescored count is how many precede it); only a log whose header is unusable, or
+// whose every record is of another width than the model, is started over.
 func TestVectorsCorruptMidFileFailsClosed(t *testing.T) {
 	docs := vecDocs(8)
 	p2 := profile2(t)
 	want := oracle(t, p2, docs)
 	type tc struct {
 		damage    func(t *testing.T, dir string)
-		rebuilt   bool // the whole log is removed and rebuilt
+		rebuilt   bool // the whole log is removed and rebuilt (only when nothing in it was usable)
 		corrupt   int  // records read and refused
 		stale     int
 		rescored  int
@@ -566,24 +569,24 @@ func TestVectorsCorruptMidFileFailsClosed(t *testing.T) {
 	cases := map[string]tc{
 		"flipped length byte": {damage: func(t *testing.T, dir string) {
 			patch(t, dir, recOff(t, dir, 3)+3, 0x7f) // length now far over any record
-		}, rebuilt: true},
+		}, rescored: 3},
 		"length over the maximum": {damage: func(t *testing.T, dir string) {
 			patch(t, dir, recOff(t, dir, 1), binary.LittleEndian.AppendUint32(nil, maxRecLen+1)...)
-		}, rebuilt: true},
+		}, rescored: 1},
 		"length that disagrees with the shape": {damage: func(t *testing.T, dir string) {
 			_, recs := readLog(t, dir)
 			ln := binary.LittleEndian.Uint32(recs[2])
 			patch(t, dir, recOff(t, dir, 2), binary.LittleEndian.AppendUint32(nil, ln-4)...)
-		}, rebuilt: true},
+		}, rescored: 2},
 		"flipped payload byte": {damage: func(t *testing.T, dir string) {
 			patch(t, dir, recOff(t, dir, 3)+4+recFixed+5, 0xA5)
 		}, corrupt: 1, rescored: 7, healsInto: true},
 		"wrong width field": {damage: func(t *testing.T, dir string) {
 			patch(t, dir, recOff(t, dir, 2)+4+18, 8, 0)
-		}, rebuilt: true},
+		}, rescored: 2},
 		"a record of another width": {damage: func(t *testing.T, dir string) {
 			splice(t, dir, 2, craftRecord(hashOf(docs[2]), nChunks(docs[2]), 8, oneHot))
-		}, rebuilt: true},
+		}, rescored: 2},
 		"every record of another width": {damage: func(t *testing.T, dir string) {
 			hdr, _ := readLog(t, dir)
 			var recs [][]byte
@@ -597,10 +600,10 @@ func TestVectorsCorruptMidFileFailsClosed(t *testing.T) {
 		}, stale: 1, rescored: 7, healsInto: true},
 		"more chunks than a posting can have": {damage: func(t *testing.T, dir string) {
 			splice(t, dir, 4, craftRecord(hashOf(docs[4]), MaxPostingChunks+1, 256, oneHot))
-		}, rebuilt: true},
+		}, rescored: 4},
 		"zero chunks": {damage: func(t *testing.T, dir string) {
 			splice(t, dir, 4, craftRecord(hashOf(docs[4]), 0, 256, oneHot))
-		}, rebuilt: true},
+		}, rescored: 4},
 		"a zero vector": {damage: func(t *testing.T, dir string) {
 			splice(t, dir, 5, craftRecord(hashOf(docs[5]), nChunks(docs[5]), 256, func(int, int) float32 { return 0 }))
 		}, corrupt: 1, rescored: 7, healsInto: true},
