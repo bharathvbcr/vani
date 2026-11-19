@@ -230,6 +230,15 @@ func (e *env) doctor(ctx context.Context, o doctorOpts, plan *doctorPlanJSON) er
 		in.Rules = doctorRules(cfg)
 		plan.Drops, plan.Seed, plan.Strata, plan.LeftOut = len(drops), seed, strata, leftOut
 		fmt.Fprintf(out, "doctor: %d dropped postings sampled (seed %q) from %d strata\n", len(drops), seed, len(strata))
+		// The classes stay in the JSON plan (drops_left_out): they are the
+		// owner's own rules, so the text carries the count alone.
+		left := 0
+		for _, n := range leftOut {
+			left += n
+		}
+		if left > 0 {
+			fmt.Fprintf(out, "doctor: %d dropped posting(s) left out of the sample (their class is decided by the owner's own rules and is never sent)\n", left)
+		}
 	}
 
 	dcfg := doctor.Config{Model: model, TargetSummary: summary}
