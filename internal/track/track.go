@@ -232,6 +232,9 @@ func LoadWords(dir string) (Words, error) {
 	if len(data) > maxWordsBytes {
 		return Words{}, fmt.Errorf("track: %s exceeds %d bytes", WordsFile, maxWordsBytes)
 	}
+	// A byte-order mark in front of the first line (an editor's "UTF-8 with
+	// BOM") would hide a leading '#', so a comment-only file read as one term.
+	data = bytes.TrimPrefix(data, []byte("\ufeff"))
 	sc := bufio.NewScanner(bytes.NewReader(data))
 	line, n := 0, 0
 	for sc.Scan() {
