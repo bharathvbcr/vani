@@ -256,7 +256,15 @@ final class ScheduleAgentTests: XCTestCase {
         let s = ScheduleSupervisor(attempt: attempt, currentFingerprint: fingerprint, keyExists: keyExists, policy: policy,
                                    fallbackLog: rig.log, watchInterval: watch, stopGrace: grace, watchBound: watchBound)
         let done = DispatchSemaphore(value: 0)
-        Thread { s.run(); done.signal() }.start()
+        let ended = Box("running")
+        Thread { s.run(); ended.set("ended"); done.signal() }.start()
+        // A test that throws or fails an XCTUnwrap before its own stop() would leave its daemon
+        // script alive. Teardown stops this supervisor and SIGKILLs the child it launched (its own
+        // job, by the pid the supervisor holds; nothing is matched by name) until run() returns.
+        addTeardownBlock {
+            s.stop()
+            _ = pollUntil(8) { s.forceStopChild(); return ended.get() == "ended" }
+        }
         return (s, done)
     }
 
@@ -271,9 +279,7 @@ final class ScheduleAgentTests: XCTestCase {
     }
 
     private func waitUntil(_ timeout: TimeInterval = 10, _ condition: () -> Bool) -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        while Date() < end { if condition() { return true }; Thread.sleep(forTimeInterval: 0.02) }
-        return condition()
+        pollUntil(timeout, condition)
     }
 
     func testADaemonThatKeepsCrashingIsStartedAgainWithABoundedWaitAndNeverGivenUpOn() throws {
@@ -545,6 +551,30 @@ final class ScheduleAgentTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
         XCTAssertEqual(done.wait(timeout: .now() + 12), .success)
         XCTAssertEqual(s.starts, 1)
+    }
+
+    /// The class of leak behind ft-e331: a test that ends without calling stop() (a failed wait, a
+    /// throwing XCTUnwrap) used to leave its SIGTERM-ignoring daemon script running. The check is
+    /// registered first, so it runs last (teardown blocks run in reverse order), after supervise's own.
+    func testASupervisedDaemonIsReapedWhenTheTestEndsWithoutStopping() throws {
+        let r = try rig()
+        let pidFile = r.dir.appendingPathComponent("pid"), pidPart = r.dir.appendingPathComponent("pid.part")
+        let pidSeen = Box("")
+        addTeardownBlock {
+            let pid = Int32(pidSeen.get()) ?? 0
+            XCTAssertGreaterThan(pid, 0, "the test never saw the daemon's pid")
+            XCTAssertTrue(pollUntil(8) { kill(pid, 0) != 0 && errno == ESRCH }, "the daemon script outlived its test")
+            if pid > 0 { _ = kill(pid, SIGKILL) } // this test's own child, should the assertion above fail
+        }
+        let program = try r.script("trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; while :; do sleep 0.05; done")
+        let (s, _) = supervise(r, attempt: { r.start(program) }, grace: 30)
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8), isPublishedPid(raw) else { return false }
+            pidSeen.set(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            return true
+        })
+        XCTAssertEqual(s.starts, 1)
+        // No stop(), no done.wait(): the test ends with the daemon up.
     }
 
     func testForceStopChildKillsADaemonThatIgnoresSigterm() throws {
@@ -883,6 +913,13 @@ final class ScheduleAgentTests: XCTestCase {
             XCTAssertFalse(main.contains(forbidden), "the schedule agent must not listen or connect: \(forbidden)")
         }
     }
+}
+
+/// `waitUntil` without `self`, for teardown blocks, which must not capture the test case.
+private func pollUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while Date() < end { if condition() { return true }; Thread.sleep(forTimeInterval: 0.02) }
+    return condition()
 }
 
 private final class Counter: @unchecked Sendable {
