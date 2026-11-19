@@ -249,6 +249,35 @@ func TestSaveAtTheByteLimitStillKeepsANewAnswer(t *testing.T) {
 	}
 }
 
+func TestSaveReportsHowManyAnswersItDropped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	s := NewStore(path)
+	at := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
+	fatEntries(t, s, MaxEntries/2, at)
+	if err := s.Put("gh:new:1", entry("core", at.Add(24*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	held := s.Len()
+	if s.Dropped() != 0 {
+		t.Fatalf("Dropped %d before any Save", s.Dropped())
+	}
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	back, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := held - back.Len(); want < 1 || s.Dropped() != want || s.Len() != back.Len() {
+		t.Errorf("Dropped %d, held %d then %d saved (want %d dropped)", s.Dropped(), held, back.Len(), want)
+	}
+	// A second Save of a store that already fits drops nothing more.
+	was := s.Dropped()
+	if err := s.Save(); err != nil || s.Dropped() != was {
+		t.Errorf("second Save: err %v, Dropped %d, was %d", err, s.Dropped(), was)
+	}
+}
+
 func TestSaveUnderTheLimitsDropsNothing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), FileName)
 	s := NewStore(path)
@@ -263,5 +292,8 @@ func TestSaveUnderTheLimitsDropsNothing(t *testing.T) {
 	}
 	if back, err := OpenStore(path); err != nil || back.Len() != 50 {
 		t.Fatalf("reopened %v entries, err %v; want 50", back, err)
+	}
+	if s.Dropped() != 0 {
+		t.Errorf("Dropped %d for a store under the limit", s.Dropped())
 	}
 }

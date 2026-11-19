@@ -29,6 +29,8 @@ const (
 	// oldest answers on Save, so the entry limit can never leave Save refusing.
 	MaxEntries   = 20000
 	maxFileBytes = 8 << 20
+	// MaxFileBytes is maxFileBytes for callers that tell the owner the limit.
+	MaxFileBytes = maxFileBytes
 	maxKeyBytes  = 512
 	maxModelLen  = 128
 )
@@ -80,6 +82,9 @@ type Store struct {
 	// the paid ones eviction exists to keep. They go only after every older
 	// answer is gone.
 	fresh map[string]struct{}
+	// dropped is the answers Save has evicted to fit maxFileBytes since the
+	// store was opened; Dropped reports it.
+	dropped int
 }
 
 // NewStore is an empty store that will be saved at path.
@@ -152,6 +157,12 @@ func checkEntry(key string, e Entry) error {
 	return nil
 }
 
+// Dropped is how many answers Save has evicted since the store was opened to
+// keep the file under the byte limit. A caller reads it after Save to tell the
+// owner that paid answers were let go; answers past MaxEntries are Put's
+// bound, not counted here.
+func (s *Store) Dropped() int { return s.dropped }
+
 // Len is the number of answers held.
 func (s *Store) Len() int { return len(s.f.Entries) }
 
@@ -222,6 +233,7 @@ func (s *Store) encode() ([]byte, error) {
 // maxFileBytes first drops answers (the same order as MaxEntries) until
 // it fits, so a full store still saves the newest answer instead of refusing and
 // losing every paid answer of the run. It never writes a file over the limit.
+// What it dropped is counted in Dropped; it is never silent to a caller that asks.
 func (s *Store) Save() error {
 	raw, err := s.encode()
 	if err != nil {
@@ -232,7 +244,9 @@ func (s *Store) Save() error {
 		// least one; each pass re-measures, so the estimate only sets the pace.
 		n := len(s.f.Entries)
 		drop := max(1, (len(raw)-maxFileBytes)*n/len(raw)+1)
+		before := len(s.f.Entries)
 		s.evictOldest(drop)
+		s.dropped += before - len(s.f.Entries)
 		if raw, err = s.encode(); err != nil {
 			return err
 		}
