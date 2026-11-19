@@ -18,9 +18,9 @@ func TestAttack4Breaks(t *testing.T) {
 		checkPays(t, b, ParsePay(text), usd)
 	}
 	text := "Bonus and equity: the compensation range for this role is $150,000 - $180,000"
-	// The nearest not-pay word ("equity") decides, so this contrived line reads
-	// as no pay; the rule is not special-cased for it.
-	checkPays(t, text, ParsePay(text), nil)
+	// A salary sentence: the salary-word precedence rule decides it (a salary
+	// word anywhere in the sentence beats the not-pay words beside it).
+	checkPays(t, text, ParsePay(text), usd)
 	text = "Pay $90 - $110 \U0001F600 per hour"
 	for _, p := range ParsePay(text) {
 		if p.Period == Hour {

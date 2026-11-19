@@ -155,8 +155,8 @@ var periodWords = []struct {
 // beforePeriod: a period word just before the amount ("Hourly rate: $50").
 var beforePeriod = map[string]Period{"hourly": Hour, "annual": Year, "annually": Year, "yearly": Year, "monthly": Month, "weekly": Week, "daily": Day}
 
-// payWords say the amount after them is pay; notPay words say it is not. The
-// nearest one before an amount decides.
+// payWords say the amount after them is pay; notPay words say it is not. A
+// salary word in the amount's sentence wins over a not-pay one (nearestWord).
 var payWords = map[string]bool{
 	"salary": true, "salaries": true, "base": true, "pay": true, "compensation": true, "comp": true,
 	"wage": true, "wages": true, "rate": true, "rates": true, "earn": true, "earnings": true, "ote": true,
@@ -183,7 +183,12 @@ var notPay = map[string]bool{
 var genericPay = map[string]bool{
 	"compensation": true, "comp": true, "rate": true, "rates": true, "earnings": true,
 	"range": true, "ranges": true, "band": true, "bands": true, "starting": true, "between": true,
+	"hourly": true, "annual": true, "annually": true,
 }
+
+// wholePay are the genericPay words that name pay as a whole: a salary word
+// unless a not-pay word directly modifies them ("equity compensation").
+var wholePay = map[string]bool{"compensation": true, "comp": true, "earnings": true}
 
 // notPayAfter words, right after an amount, say it is not pay ("$10,000
 // signing bonus"). Narrower than notPay: "$150k, plus equity" is pay.
@@ -389,6 +394,11 @@ func parsePay(text, dollar string) []Pay {
 			next = next[:k]
 		}
 		nextWords := firstWords(next, 2)
+		// A not-pay word after "and" / "or" starts the next item ("$150,000 -
+		// $180,000 and bonus up to $20,000"), it does not label this amount.
+		if len(nextWords) > 0 && (nextWords[0] == "and" || nextWords[0] == "or") {
+			nextWords = nextWords[:1]
+		}
 		if anyIn(nextWords, notPayAfter) {
 			continue
 		}
@@ -867,21 +877,30 @@ func sentenceTail(s string) string {
 }
 
 // nearestWord is "pay" or "not" for what the words of the last sentence of s
-// say about the amount after them: the nearest salary word (payWords other
-// than genericPay) makes it "pay", the nearest notPay word "not". Every other
-// word, genericPay ones included, is transparent ("Bonus opportunity range",
-// "Equity grants are in a typical range"). A sentence with neither but a
-// generic pay word ("range", "between") reads "pay"; one with none reads "".
+// say about the amount after them. Any salary word makes it "pay", wherever it
+// stands and whatever not-pay word shares the sentence ("Salary and Bonus
+// Range", "Salary Range (bonus eligible)"). Salary words are payWords other
+// than genericPay, plus wholePay words ("compensation", "comp", "earnings")
+// unless a not-pay word directly modifies them ("equity compensation", "bonus
+// - earnings"). A sentence with none reads by its other words: a not-pay word
+// makes it "not" ("Bonus opportunity range"), generic pay words alone ("range",
+// "between") "pay", and no such word "".
 //
 // A phrase break between a not-pay word and the generic words that end the
 // sentence makes those a label of their own, so the amount is "pay": a line
-// break, an unclosed "(", and a comma, dash (but not one right after a not-pay word), "and" or "or" with only generic
-// words after it ("Bonus, Compensation: $150,000", "Equity and compensation
-// range: $150,000"). A comma with other words after it ("Equity compensation,
-// if any, is a range of $50,000") does not break it.
+// break, an unclosed "(", and a comma, dash (but not one right after a not-pay
+// word), "and" or "or" with only generic words after it ("Bonus, Range:
+// $150,000", "Equity and range: $150,000"). A comma with other words after it
+// ("Equity grants, if any, are a range of $50,000") does not break it.
 func nearestWord(s string) string {
 	t := strings.ToValidUTF8(sentenceTail(s), " ")
+	if i := strings.LastIndexAny(t, "0123456789"); i >= 0 {
+		t = t[i+1:] // an amount before ends the words that describe this one
+	}
 	w := wordSpans(t)
+	if hasSalaryWord(t, w) {
+		return "pay"
+	}
 	generic, allGeneric := false, true // allGeneric: every word after i is generic
 	for i := len(w) - 1; i >= 0; i-- {
 		if generic && phraseBreak(t, w, i, allGeneric) {
@@ -892,8 +911,6 @@ func nearestWord(s string) string {
 			return "not"
 		case genericPay[w[i].w]:
 			generic = true
-		case payWords[w[i].w]:
-			return "pay"
 		}
 		allGeneric = allGeneric && genericPay[w[i].w]
 	}
@@ -901,6 +918,41 @@ func nearestWord(s string) string {
 		return "pay"
 	}
 	return ""
+}
+
+// headingOfOther reports whether a not-pay word follows w[i] on a later line
+// of t with no salary word between ("Compensation\nBonus: ...").
+func headingOfOther(t string, w []wordSpan, i int) bool {
+	for j := i + 1; j < len(w); j++ {
+		if notPay[w[j].w] {
+			return strings.ContainsAny(t[w[i].end:w[j].start], lineBreaks)
+		}
+		if payWords[w[j].w] && !genericPay[w[j].w] || wholePay[w[j].w] {
+			return false
+		}
+	}
+	return false
+}
+
+// hasSalaryWord reports whether w, the words of t, holds a salary word (see
+// nearestWord).
+func hasSalaryWord(t string, w []wordSpan) bool {
+	for i, sp := range w {
+		switch {
+		case wholePay[sp.w]:
+			if i > 0 && notPay[w[i-1].w] && strings.Trim(t[w[i-1].end:sp.start], " \t-–—\u00a0") == "" {
+				continue
+			}
+			// A heading ("Compensation") with a not-pay word on a later
+			// line labels that line's amounts, not this word's.
+			if !headingOfOther(t, w, i) {
+				return true
+			}
+		case payWords[sp.w] && !genericPay[sp.w]:
+			return true
+		}
+	}
+	return false
 }
 
 // phraseBreak reports whether a phrase break stands between w[i] and the words
