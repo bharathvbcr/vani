@@ -206,6 +206,42 @@ final class RetriageModelTests: XCTestCase {
         XCTAssertNil(m.actionError)
     }
 
+    /// The owner stops a call after Sonnet answered and was paid: vani replies cancelled with the cost.
+    func testAStopAfterSonnetWasPaidShowsWhatItCostAndLooksForTheReading() async throws {
+        let paid = #"{"error":"cancelled","code":"cancelled","cost":{"input_tokens":1790,"output_tokens":212,"usd":0.0072}}"#
+        let jobs = try JobsFixture(self), f = try fake(run: paid)
+        try f.put("run.fail", "")
+        let m = model(jobs, f)
+        await m.refresh()
+        let before = listCalls(jobs)
+        m.startRetriage(try XCTUnwrap(m.jobs.first))
+        try await eventually("the confirmation") { m.retriage.confirming != nil }
+        m.retriage.confirm()
+        try await eventually("the stopped call") { if case .failed = m.retriage.phase { true } else { false } }
+        guard case let .failed(key, failure) = m.retriage.phase else { return XCTFail("\(m.retriage.phase)") }
+        XCTAssertEqual(key, "fx:alpha:1")
+        XCTAssertEqual(failure.code, "cancelled")
+        let text = try XCTUnwrap(RetriagePresentation.errorText(for: failure))
+        XCTAssertEqual(text.message, "Stopped after Sonnet answered.")
+        XCTAssertEqual(text.costNote, "Sonnet was asked and charged $0.007 before you stopped it.")
+        try await eventually("the list to be read again") { self.listCalls(jobs) > before }
+        XCTAssertFalse(m.retriage.isBusy)
+        m.retriage.dismiss()
+        XCTAssertEqual(m.retriage.phase, .idle)
+    }
+
+    func testAStopThatCostNothingGoesIdleWithNothingToShow() async throws {
+        let jobs = try JobsFixture(self), f = try fake(run: #"{"error":"cancelled","code":"cancelled"}"#)
+        try f.put("run.fail", "")
+        let m = model(jobs, f)
+        await m.refresh()
+        m.startRetriage(try XCTUnwrap(m.jobs.first))
+        try await eventually("the confirmation") { m.retriage.confirming != nil }
+        m.retriage.confirm()
+        try await eventually("the run to end") { m.retriage.phase == .idle && f.calls().count == 2 }
+        XCTAssertNil(m.actionError)
+    }
+
     func testClearingForgetsTheReadingAndRelists() async throws {
         let jobs = try JobsFixture(self), f = try fake()
         let m = model(jobs, f)

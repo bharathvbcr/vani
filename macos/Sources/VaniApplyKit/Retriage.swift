@@ -181,6 +181,10 @@ public struct RetriageCost: Decodable, Equatable, Sendable {
         outputTokens = (try? c.decode(Int.self, forKey: .outputTokens)).flatMap { $0 >= 0 ? $0 : nil }
         usd = (try? c.decode(Double.self, forKey: .usd)).flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
     }
+
+    /// The model answered and was paid for: a price above zero, or tokens used. Zero, absent,
+    /// negative and non-numeric figures (all read as nil or 0) are not a charge.
+    public var wasCharged: Bool { (usd ?? 0) > 0 || (inputTokens ?? 0) > 0 || (outputTokens ?? 0) > 0 }
 }
 
 /// `--dry-run`'s estimate. `spentUSD` and `remainingUSD` are nil when today's spend could not be
@@ -376,6 +380,16 @@ public enum RetriageOutcome<Value: Sendable>: Sendable {
 
 extension RetriageOutcome: Equatable where Value: Equatable {}
 
+extension RetriageOutcome {
+    /// vani ended itself on the SIGTERM this app sent. That is the owner's stop, not an error, unless
+    /// the model had already answered and been paid: then it is a `cancelled` failure carrying the
+    /// cost, so the owner is told what the stopped call cost.
+    static func stopped(message: String?, cost: RetriageCost?) -> RetriageOutcome {
+        guard let cost, cost.wasCharged else { return .cancelled }
+        return .failure(RetriageFailure(code: "cancelled", message: message ?? "cancelled", cost: cost))
+    }
+}
+
 /// Runs `vani jobs retriage` for one posting. It reuses the draft runner, so the key reaches the child
 /// exactly as it does for `vani draft` (through `anthropic-account` when the config names the
 /// anthropic provider), and the launch is refused when drafting would be. `VANI_NO_KEYCHAIN=1` is set
@@ -482,8 +496,9 @@ public struct RetriageClient: Sendable {
         let decoder = JobsClient.decoder
         if let failure = try? decoder.decode(Failure.self, from: out.stdout), let message = failure.error {
             let code = failure.code.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown"
-            // vani ended itself on the SIGTERM this app sent: the owner's own stop, not an error.
-            if code == "cancelled" { return .cancelled }
+            // vani ended itself on the SIGTERM this app sent: the owner's own stop, not an error,
+            // unless a paid answer had already come back.
+            if code == "cancelled" { return .stopped(message: message, cost: failure.cost) }
             return .failure(RetriageFailure(code: code, message: message, cost: failure.cost))
         }
         if out.status == 0 {
@@ -700,14 +715,15 @@ public enum RetriagePresentation {
 
     // MARK: Errors
 
-    /// Plain words for a failure; nil for `cancelled` and for nothing to say (the owner stopped it).
+    /// Plain words for a failure; nil for a `cancelled` that cost nothing (the owner stopped it).
     public static func errorText(for failure: RetriageFailure) -> RetriageErrorText? {
         let detail = clipped(failure.message)
         let message: String
         var retry = false
         switch failure.code {
         case "cancelled":
-            return nil
+            guard failure.cost?.wasCharged == true else { return nil }
+            message = "Stopped after Sonnet answered."
         case "bad_request": message = "Vani did not accept the request: \(detail)"
         case "unknown_key": message = "Vani no longer has this posting in its ledger. Refresh the list."
         case "text_gone": message = "The posting's text was cleared after the role closed, so there is nothing to send to Sonnet."
@@ -751,8 +767,18 @@ public enum RetriagePresentation {
     /// "Sonnet was asked and charged $0.007 but the reply could not be used." for a paid call that came
     /// to nothing; nil when no money was reported (or none was spent).
     static func failedCostNote(_ failure: RetriageFailure) -> String? {
+        if failure.code == "cancelled" { return stoppedCostNote(failure.cost) }
         guard let cost = failure.cost, let usd = cost.usd, usd > 0 else { return nil }
         return "Sonnet was asked and charged \(money(usd)) but the reply could not be used."
+    }
+
+    /// "Sonnet was asked and charged $0.007 before you stopped it."; with tokens and no price, the
+    /// tokens; nil when nothing was charged.
+    static func stoppedCostNote(_ cost: RetriageCost?) -> String? {
+        guard let cost, cost.wasCharged else { return nil }
+        if let usd = cost.usd, usd > 0 { return "Sonnet was asked and charged \(money(usd)) before you stopped it." }
+        let tokens = costSummary(RetriageCost(inputTokens: cost.inputTokens, outputTokens: cost.outputTokens)) ?? ""
+        return "Sonnet was asked before you stopped it: \(tokens). Vani reported no price."
     }
 
     private static func clipped(_ s: String, max: Int = 240) -> String {

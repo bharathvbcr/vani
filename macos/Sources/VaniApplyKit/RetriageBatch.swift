@@ -311,6 +311,7 @@ public struct RetriageBatchClient: Sendable {
             if reply.code == "cancelled" { return .cancelled }
             return .failure(RetriageFailure(code: reply.code ?? "provider", message: reply.error ?? "vani could not be started"))
         case let .output(out):
+            // A dry run asks no model, so a cancelled reply here has no cost to carry.
             if out.truncated { return .failure(RetriageFailure(code: "too_large", message: "vani's estimate was larger than 4 MB")) }
             if let f = Self.failure(in: out.stdout) {
                 return f.code == "cancelled" ? .cancelled : .failure(f)
@@ -348,7 +349,7 @@ public struct RetriageBatchClient: Sendable {
             // reports what it kept and why it stopped.
             if let summary = stream.summary { return .success(summary) }
             if let f = Self.failure(in: out.stdout) {
-                return f.code == "cancelled" ? .cancelled : .failure(f)
+                return f.code == "cancelled" ? .stopped(message: f.message, cost: f.cost) : .failure(f)
             }
             if let refusal = AnthropicAccount.refusal(in: out.stderr) {
                 return .failure(RetriageFailure(code: "account", message: refusal))

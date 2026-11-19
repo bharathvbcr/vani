@@ -270,6 +270,22 @@ final class RetriageBatchClientTests: XCTestCase {
         XCTAssertEqual(fail.code, "busy")
     }
 
+    func testAWholeBatchStoppedAfterAPaidAnswerCarriesItsCost() throws {
+        let f = try batchFake(self, out: [#"{"error":"cancelled","code":"cancelled","cost":{"input_tokens":1790,"output_tokens":212,"usd":0.0072}}"#], status: 1)
+        guard case let .failure(fail) = client(f).run(["gh:a:1"], skipRead: false, onEvent: { _ in }) else { return XCTFail("a paid stop was dropped") }
+        XCTAssertEqual(fail.code, "cancelled")
+        XCTAssertEqual(fail.cost?.usd, 0.0072)
+        XCTAssertEqual(RetriagePresentation.errorText(for: fail)?.costNote, "Sonnet was asked and charged $0.007 before you stopped it.")
+    }
+
+    func testAWholeBatchStoppedWithNoChargeIsAPlainCancel() throws {
+        for reply in [#"{"error":"cancelled","code":"cancelled"}"#, #"{"error":"cancelled","code":"cancelled","cost":{"usd":0}}"#,
+                      #"{"error":"cancelled","code":"cancelled","cost":{"usd":"NaN"}}"#] {
+            let f = try batchFake(self, out: [reply], status: 1)
+            guard case .cancelled = client(f).run(["gh:a:1"], skipRead: false, onEvent: { _ in }) else { return XCTFail(reply) }
+        }
+    }
+
     func testARunThatEndsWithoutDoneIsNoReply() throws {
         let f = try batchFake(self, out: [#"{"event":"start","total":1}"#, #"{"event":"ite"#], status: 0)
         guard case let .failure(fail) = client(f).run(["gh:a:1"], skipRead: false, onEvent: { _ in }) else { return XCTFail() }

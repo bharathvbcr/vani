@@ -312,6 +312,57 @@ final class RetriageClientTests: XCTestCase {
         XCTAssertEqual(f.cost, RetriageCost(inputTokens: 1790, outputTokens: 9, usd: 0.0072))
     }
 
+    /// What `retriageErrorReply` (cmd/vani/jobsretriage.go) writes when the owner stops a call after the
+    /// model answered and was paid.
+    private let paidCancelReply = #"{"error":"cancelled","code":"cancelled","cost":{"input_tokens":1790,"output_tokens":212,"usd":0.0072}}"#
+
+    func testAStopAfterSonnetWasPaidCarriesItsCostAndSaysSo() throws {
+        let fake = try retriageFake(self, reply: paidCancelReply, status: 1)
+        let f = try XCTUnwrap(RetriageClient(runner: runner(fake)).run("k").fail, "a paid stop is not a silent cancel")
+        XCTAssertEqual(f.code, "cancelled")
+        XCTAssertEqual(f.cost, RetriageCost(inputTokens: 1790, outputTokens: 212, usd: 0.0072))
+        let text = try XCTUnwrap(RetriagePresentation.errorText(for: f))
+        XCTAssertEqual(text.message, "Stopped after Sonnet answered.")
+        XCTAssertEqual(text.costNote, "Sonnet was asked and charged $0.007 before you stopped it.")
+        XCTAssertFalse(text.canRetry)
+    }
+
+    func testAStopThatCostNothingStaysAPlainCancel() throws {
+        let replies = [
+            #"{"error":"cancelled","code":"cancelled"}"#,
+            #"{"error":"cancelled","code":"cancelled","cost":{}}"#,
+            #"{"error":"cancelled","code":"cancelled","cost":null}"#,
+            #"{"error":"cancelled","code":"cancelled","cost":"0.01"}"#,
+            #"{"error":"cancelled","code":"cancelled","cost":{"usd":0}}"#,
+            #"{"error":"cancelled","code":"cancelled","cost":{"usd":0,"input_tokens":0,"output_tokens":0}}"#,
+            #"{"error":"cancelled","code":"cancelled","cost":{"usd":-0.5}}"#,
+            #"{"error":"cancelled","code":"cancelled","cost":{"usd":"NaN","input_tokens":-3}}"#,
+        ]
+        for reply in replies {
+            let fake = try retriageFake(self, reply: reply, status: 1)
+            XCTAssertEqual(RetriageClient(runner: runner(fake)).run("k"), .cancelled, reply)
+        }
+    }
+
+    func testAStopWithTokensButNoPriceSaysTokensAndNoPrice() throws {
+        let fake = try retriageFake(self, reply: #"{"error":"cancelled","code":"cancelled","cost":{"input_tokens":1790,"output_tokens":212}}"#, status: 1)
+        let f = try XCTUnwrap(RetriageClient(runner: runner(fake)).run("k").fail)
+        let note = try XCTUnwrap(RetriagePresentation.errorText(for: f)?.costNote)
+        XCTAssertTrue(note.contains("before you stopped it") && note.contains("1,790") && note.contains("212") && note.hasSuffix("Vani reported no price."), note)
+        XCTAssertFalse(note.contains("charged"), "no price was reported, so none is claimed")
+        // A price with a junk token count still reads as the price.
+        let priced = try retriageFake(self, reply: #"{"error":"cancelled","code":"cancelled","cost":{"usd":0.004,"input_tokens":"many"}}"#, status: 1)
+        let g = try XCTUnwrap(RetriageClient(runner: runner(priced)).run("k").fail)
+        XCTAssertEqual(RetriagePresentation.errorText(for: g)?.costNote, "Sonnet was asked and charged $0.004 before you stopped it.")
+    }
+
+    func testACostOnAnyOtherCodeIsStillCarried() throws {
+        for code in ["refused", "unsure", "unreadable", "store", "provider"] {
+            let fake = try retriageFake(self, reply: #"{"error":"m","code":"\#(code)","cost":{"usd":0.0072}}"#, status: 1)
+            XCTAssertEqual(RetriageClient(runner: runner(fake)).run("k").fail?.cost?.usd, 0.0072, code)
+        }
+    }
+
     func testAnErrorWithoutACodeIsUnknown() throws {
         let fake = try retriageFake(self, reply: #"{"error":"something new"}"#, status: 1)
         XCTAssertEqual(RetriageClient(runner: runner(fake)).run("k").fail, RetriageFailure(code: "unknown", message: "something new"))
