@@ -19,6 +19,10 @@ struct PipelineView: View {
                 if let err = pipeline.runError {
                     ErrorBanner(title: "The manual run could not start", message: err, stale: false)
                 }
+                if let why = pipeline.runUnverified {
+                    ErrorBanner(title: "The manual run ended with an error and vani's record of it could not be read",
+                                message: why, stale: false)
+                }
                 if let s = pipeline.status, s.lastRun.state == .running, let board = PipelineBoard.present(s.lastRun) {
                     PipelineBoardView(board: board, showsRunControls: true)
                 } else if pipeline.startingRun || pipeline.runInProgress || pipeline.waitingForDaemon {

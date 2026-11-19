@@ -95,6 +95,11 @@ type Config struct {
 	Getenv     func(string) string
 	Executable func() (string, error)
 	AppPath    string
+	// Elapsed, when set, decides how much of Budget one helper run used, given
+	// the question and the wall time the run took. Tests use it to charge the
+	// model time they mean instead of the host's wall time, which a loaded
+	// machine inflates. Nil means the wall time.
+	Elapsed func(q decide.Question, wall time.Duration) time.Duration
 }
 
 // Backend implements decide.Backend over the vani-fm helper.
@@ -252,7 +257,11 @@ func (b *Backend) slot(ctx context.Context, q decide.Question, s decide.Slot) (d
 	if status == statusCanceled {
 		return decide.SlotReading{}, ctx.Err()
 	}
-	b.spent.Add(int64(time.Since(start)))
+	took := time.Since(start)
+	if b.cfg.Elapsed != nil {
+		took = max(b.cfg.Elapsed(q, took), 0)
+	}
+	b.spent.Add(int64(took))
 	var got decide.SlotReading
 	if status == statusOK {
 		got = mapReply(out, s.Options)

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -164,26 +165,45 @@ func TestUnavailableTakesTheBackendDownForTheRun(t *testing.T) {
 	}
 }
 
+var modelMS = regexp.MustCompile(`MODE:model:(\d+)`)
+
+// modelTime charges a helper run the model time its question names
+// ("MODE:model:<ms>"), and nothing for any other question, whatever the host's
+// wall time was: the budget tests decide on a controlled duration, so a loaded
+// machine that starts the helper slowly cannot spend the budget.
+func modelTime(q decide.Question, _ time.Duration) time.Duration {
+	if m := modelMS.FindSubmatch(q.Context); m != nil {
+		ms, _ := strconv.Atoi(string(m[1]))
+		return time.Duration(ms) * time.Millisecond
+	}
+	return 0
+}
+
+// counted wraps modelTime and counts the helper runs it was asked about.
+func counted(runs *atomic.Int64) func(decide.Question, time.Duration) time.Duration {
+	return func(q decide.Question, wall time.Duration) time.Duration {
+		runs.Add(1)
+		return modelTime(q, wall)
+	}
+}
+
 // A model that answers slowly but inside its watchdog must not use up the caller's
-// triage bound one question at a time: once the helper wall time reaches the
+// triage bound one question at a time: once the helper time reaches the
 // budget the backend stands down as "slow" and starts nothing more. The question
 // that crossed the budget keeps its own reading.
 func TestSlowModelTripsTheBackendDownAfterTheBudget(t *testing.T) {
-	b := backend(t, func(c *Config) { c.Budget = 700 * time.Millisecond })
-	if rd := one(t, b, "MODE:sleep:400"); rd.Reading != decide.Answered {
+	var runs atomic.Int64
+	b := backend(t, func(c *Config) { c.Budget = 700 * time.Millisecond; c.Elapsed = counted(&runs) })
+	if rd := one(t, b, "MODE:model:400"); rd.Reading != decide.Answered {
 		t.Fatalf("under budget: %+v", rd)
 	}
-	if rd := one(t, b, "MODE:sleep:400"); rd.Reading != decide.Answered || rd.Detail != "" {
+	if rd := one(t, b, "MODE:model:400"); rd.Reading != decide.Answered || rd.Detail != "" {
 		t.Fatalf("the question that crossed the budget must keep its reading: %+v", rd)
 	}
 	ran := filepath.Join(t.TempDir(), "ran")
-	start := time.Now()
 	rd := one(t, b, "MODE:dumpreq:"+ran)
 	if rd.Reading != decide.Unavailable || rd.Detail != "slow" || rd.Value != "" {
 		t.Fatalf("after the budget: %+v", rd)
-	}
-	if d := time.Since(start); d > 200*time.Millisecond {
-		t.Fatalf("standing down took %v: it must answer at once", d)
 	}
 	if _, err := os.Stat(ran); !os.IsNotExist(err) {
 		t.Fatalf("a helper was started after the budget was spent: %v", err)
@@ -192,21 +212,54 @@ func TestSlowModelTripsTheBackendDownAfterTheBudget(t *testing.T) {
 	if rd := one(t, b, "MODE:answered"); rd.Detail != "slow" {
 		t.Fatalf("%+v", rd)
 	}
+	if n := runs.Load(); n != 2 {
+		t.Fatalf("%d helper runs were charged, want 2", n)
+	}
+}
+
+// The budget counts the model time a run was charged, not the host's wall time:
+// a helper that takes far longer than the budget to start (a loaded machine)
+// but whose model time is small must not trip it.
+func TestBudgetIgnoresHostWallTime(t *testing.T) {
+	b := backend(t, func(c *Config) { c.Budget = 100 * time.Millisecond; c.Elapsed = modelTime })
+	for i := range 3 {
+		if rd := one(t, b, "MODE:sleep:300"); rd.Reading != decide.Answered || rd.Detail != "" {
+			t.Fatalf("question %d: a slow host spent the budget: %+v", i, rd)
+		}
+	}
+	if rd := one(t, b, "MODE:answered"); rd.Reading != decide.Answered {
+		t.Fatalf("%+v", rd)
+	}
+}
+
+// A negative charge cannot refill the budget.
+func TestNegativeChargeIsNotACredit(t *testing.T) {
+	charges := []time.Duration{-time.Hour, 500 * time.Millisecond}
+	var i atomic.Int64
+	b := backend(t, func(c *Config) {
+		c.Budget = 400 * time.Millisecond
+		c.Elapsed = func(decide.Question, time.Duration) time.Duration { return charges[min(i.Add(1)-1, 1)] }
+	})
+	one(t, b, "MODE:answered")
+	one(t, b, "MODE:answered")
+	if rd := one(t, b, "MODE:answered"); rd.Detail != "slow" {
+		t.Fatalf("%+v", rd)
+	}
 }
 
 func TestSlowBackendSendsTheRestToTheNextBackendAtOnce(t *testing.T) {
 	// The slow helper answers with the first option; the stub with another, so the two are told apart.
-	r := decide.NewRouter(backend(t, func(c *Config) { c.Budget = 300 * time.Millisecond }), stub{value: fieldtriage.Fact})
-	first, err := r.Decide(context.Background(), question("MODE:sleep:400"))
+	var runs atomic.Int64
+	r := decide.NewRouter(backend(t, func(c *Config) { c.Budget = 300 * time.Millisecond; c.Elapsed = counted(&runs) }), stub{value: fieldtriage.Fact})
+	first, err := r.Decide(context.Background(), question("MODE:model:400"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rd := first.Slots[fieldtriage.Slot]; rd.Value != fieldtriage.Essay || !strings.Contains(rd.Detail, "backend="+Name) {
 		t.Fatalf("the slow question still has its own answer: %+v", rd)
 	}
-	start := time.Now()
 	for range 5 {
-		ans, err := r.Decide(context.Background(), question("MODE:sleep:400"))
+		ans, err := r.Decide(context.Background(), question("MODE:model:400"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,21 +267,26 @@ func TestSlowBackendSendsTheRestToTheNextBackendAtOnce(t *testing.T) {
 			t.Fatalf("%+v", rd)
 		}
 	}
-	// Five slow questions would be 2 s of helper time; standing down costs nothing.
-	if d := time.Since(start); d > 300*time.Millisecond {
-		t.Fatalf("five questions took %v after the budget was spent", d)
+	// Standing down starts no helper: only the first question ran one.
+	if n := runs.Load(); n != 1 {
+		t.Fatalf("%d helpers ran, want 1: the rest must go to the next backend without one", n)
 	}
 }
 
 func TestBudgetDoesNotTouchAFastModelOrAnEarlierDownReason(t *testing.T) {
-	fast := backend(t, nil)
+	fast := backend(t, func(c *Config) { c.Elapsed = modelTime })
 	for i := range 20 {
 		if rd := one(t, fast, "MODE:answered"); rd.Reading != decide.Answered {
 			t.Fatalf("question %d: %+v", i, rd)
 		}
 	}
-	// A reading that already took the backend down keeps its own detail.
-	b := backend(t, func(c *Config) { c.Budget = 100 * time.Millisecond; c.Timeout = 300 * time.Millisecond })
+	// A reading that already took the backend down keeps its own detail, even
+	// when the same run is also charged past the budget.
+	b := backend(t, func(c *Config) {
+		c.Budget = 100 * time.Millisecond
+		c.Timeout = 300 * time.Millisecond
+		c.Elapsed = func(decide.Question, time.Duration) time.Duration { return time.Second }
+	})
 	if rd := one(t, b, "MODE:hang"); rd.Detail != "timeout" {
 		t.Fatalf("%+v", rd)
 	}
@@ -241,7 +299,7 @@ func TestBudgetDoesNotTouchAFastModelOrAnEarlierDownReason(t *testing.T) {
 // slot, not only when they arrive: a page of questions must not each start a
 // slow helper because all of them passed the check before any finished.
 func TestBudgetIsRecheckedAfterWaitingForASlot(t *testing.T) {
-	b := backend(t, func(c *Config) { c.Budget = 400 * time.Millisecond })
+	b := backend(t, func(c *Config) { c.Budget = 400 * time.Millisecond; c.Elapsed = modelTime })
 	type result struct {
 		rd  decide.SlotReading
 		err error
@@ -249,7 +307,7 @@ func TestBudgetIsRecheckedAfterWaitingForASlot(t *testing.T) {
 	results := make(chan result, 8)
 	for range cap(results) {
 		go func() {
-			ans, err := b.Decide(context.Background(), question("MODE:sleep:300"))
+			ans, err := b.Decide(context.Background(), question("MODE:model:300"))
 			results <- result{ans.Slots[fieldtriage.Slot], err}
 		}()
 	}
@@ -268,8 +326,9 @@ func TestBudgetIsRecheckedAfterWaitingForASlot(t *testing.T) {
 			t.Fatalf("%+v", r.rd)
 		}
 	}
-	// MaxConcurrent run at once; one more pair can start before the first reaches the budget.
-	if answered < MaxConcurrent || answered > 2*MaxConcurrent || answered+slow != cap(results) {
+	// Two answers (300 ms each) are needed to pass 400 ms; MaxConcurrent can be in flight
+	// before the first is charged, and one more can start after one of them is.
+	if answered < 2 || answered > MaxConcurrent+1 || answered+slow != cap(results) {
 		t.Fatalf("answered %d, slow %d of %d", answered, slow, cap(results))
 	}
 }

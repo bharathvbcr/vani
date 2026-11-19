@@ -83,17 +83,64 @@ public enum NativeMessaging {
         return out
     }
 
-    /// Encode a reply, replacing one that would exceed Chrome's limit with an error.
-    public static func encodeReply(_ reply: [String: Any]) -> Data {
+    /// Encode a reply, replacing one that would exceed Chrome's limit with an error. `op` is the
+    /// request's op, when the caller knows it: the error names it and gives advice that fits it.
+    /// The error carries only the op (when it is a plain identifier) and byte counts, never any of
+    /// the reply's content.
+    public static func encodeReply(_ reply: [String: Any], op: String? = nil) -> Data {
         let body: Data
-        if let d = try? JSONSerialization.data(withJSONObject: reply, options: [.withoutEscapingSlashes]),
-           d.count <= maxReplyBytes {
-            body = d
+        // JSONSerialization raises an Objective-C exception, which `try?` does not catch, on a value
+        // JSON cannot hold (NaN, infinity): check first so that is an error reply, not a dead host.
+        if JSONSerialization.isValidJSONObject(reply),
+           let d = try? JSONSerialization.data(withJSONObject: reply, options: [.withoutEscapingSlashes]) {
+            body = d.count <= maxReplyBytes ? d : errorBody(oversized(op: op, bytes: d.count))
         } else {
-            let fallback: [String: Any] = ["error": "reply too large for Chrome (over 1 MB); delete some answers"]
-            body = (try? JSONSerialization.data(withJSONObject: fallback)) ?? Data(#"{"error":"reply encoding failed"}"#.utf8)
+            body = errorBody("reply encoding failed")
         }
         return frame(body)
+    }
+
+    /// The one path from a framed request to its framed reply, shared by the host loop and its tests:
+    /// the request's op is read here so an oversized reply is worded for it. `handle` receives the
+    /// parsed JSON and is not called for a request that is not JSON.
+    public static func replyFrame(forRequest request: Data, handle: (Any) -> [String: Any]) -> Data {
+        guard let obj = try? JSONSerialization.jsonObject(with: request) else {
+            return encodeReply(["error": "request is not JSON"])
+        }
+        return encodeReply(handle(obj), op: (obj as? [String: Any])?["op"] as? String)
+    }
+
+    private static func errorBody(_ message: String) -> Data {
+        (try? JSONSerialization.data(withJSONObject: ["error": message])) ?? Data(#"{"error":"reply encoding failed"}"#.utf8)
+    }
+
+    /// An op is echoed only when it is a short plain identifier: it comes from the request.
+    private static func plainOp(_ op: String?) -> String? {
+        guard let op, !op.isEmpty, op.utf8.count <= 32,
+              op.utf8.allSatisfy({ ($0 >= 0x61 && $0 <= 0x7A) || ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x30 && $0 <= 0x39) }) else { return nil }
+        return op
+    }
+
+    private static func oversized(op: String?, bytes: Int) -> String {
+        let what: String
+        let advice: String
+        switch plainOp(op) {
+        case "get"?:
+            (what, advice) = ("the saved answers", "delete some answers")
+        case "resumeGet"?, "resumeInfo"?, "resumePut"?, "resumeOpenData"?:
+            (what, advice) = ("the stored resume", "use a smaller resume file")
+        case "coverGet"?, "coverInfo"?:
+            (what, advice) = ("the stored cover letter", "use a smaller cover letter file")
+        case let known? where known.hasPrefix("job"):
+            (what, advice) = ("the job data", "narrow the request to fewer jobs")
+        case "draft"?:
+            (what, advice) = ("the drafted answer", "ask for a shorter draft")
+        case let other?:
+            (what, advice) = ("the \(other) reply", "narrow the request")
+        case nil:
+            (what, advice) = ("the reply", "narrow the request")
+        }
+        return "\(what) is \(bytes) bytes, over Chrome's \(maxReplyBytes)-byte limit for one message; \(advice)"
     }
 
     private static func readExactly(_ h: FileHandle, _ n: Int, allowEOF: Bool) throws -> Data? {

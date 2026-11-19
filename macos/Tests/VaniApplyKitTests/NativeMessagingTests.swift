@@ -36,6 +36,88 @@ final class NativeMessagingTests: XCTestCase {
         XCTAssertEqual(try NativeMessaging.readMessage(from: h), next, "the stream stays in step")
     }
 
+    private func errorText(_ reply: Data) throws -> String {
+        let body = try JSONSerialization.jsonObject(with: reply.dropFirst(4)) as? [String: Any]
+        return try XCTUnwrap(body?["error"] as? String)
+    }
+
+    func testOversizedRepliesNameWhatWasTooLargeAndGiveAdviceThatFitsTheRequest() throws {
+        let sentinel = "SENTINEL-reply-content"
+        let blob = sentinel + String(repeating: "x", count: NativeMessaging.maxReplyBytes)
+        let answers = NativeMessaging.encodeReply(["answers": blob], op: "get")
+        let resume = NativeMessaging.encodeReply(["data": blob], op: "resumeGet")
+        for reply in [answers, resume] {
+            XCTAssertLessThan(reply.count - 4, NativeMessaging.maxReplyBytes, "the frame stays under Chrome's limit")
+            XCTAssertEqual(reply.prefix(4), NativeMessaging.frame(reply.dropFirst(4)).prefix(4), "the frame header is the body length")
+        }
+        let a = try errorText(answers), r = try errorText(resume)
+        XCTAssertTrue(a.contains("saved answers") && a.contains("delete some answers"), a)
+        XCTAssertTrue(r.contains("stored resume") && !r.contains("answers"), "a resume reply is not blamed on answers: \(r)")
+        XCTAssertTrue(r.contains("use a smaller resume file"), r)
+        XCTAssertTrue(a.contains("\(blob.utf8.count + #"{"answers":""}"#.utf8.count) bytes"), "it says how large: \(a)")
+        for text in [a, r] { XCTAssertFalse(text.contains(sentinel), "no reply content is echoed") }
+    }
+
+    func testOversizedReplyWithoutAKnownRequestGetsNeutralAdvice() throws {
+        let blob = String(repeating: "x", count: NativeMessaging.maxReplyBytes)
+        let none = try errorText(NativeMessaging.encodeReply(["blob": blob]))
+        XCTAssertTrue(none.hasPrefix("the reply is "), none)
+        XCTAssertFalse(none.contains("answers"), "no advice about answers when the request is unknown: \(none)")
+        XCTAssertTrue(none.contains("narrow the request"), none)
+        // An op comes from the request: only a short plain identifier is echoed.
+        for hostile in ["", String(repeating: "a", count: 33), "get\nnow", "a b", "résumé", "<script>", "sk-or-v1-secret-key-value"] {
+            let text = try errorText(NativeMessaging.encodeReply(["blob": blob], op: hostile))
+            XCTAssertEqual(text, none, "\(hostile.debugDescription) is not echoed")
+        }
+        let named = try errorText(NativeMessaging.encodeReply(["blob": blob], op: "somethingNew"))
+        XCTAssertTrue(named.hasPrefix("the somethingNew reply is "), named)
+        let jobs = try errorText(NativeMessaging.encodeReply(["blob": blob], op: "jobFind"))
+        XCTAssertTrue(jobs.contains("job data") && !jobs.contains("answers"), jobs)
+    }
+
+    func testAReplyThatCannotBeEncodedIsNotCalledTooLarge() throws {
+        let text = try errorText(NativeMessaging.encodeReply(["bad": Double.nan], op: "get"))
+        XCTAssertEqual(text, "reply encoding failed")
+    }
+
+    func testAReplyJustUnderTheLimitPassesUnchanged() throws {
+        let overhead = #"{"b":""}"#.utf8.count
+        let ok = NativeMessaging.encodeReply(["b": String(repeating: "x", count: NativeMessaging.maxReplyBytes - overhead)], op: "get")
+        XCTAssertEqual(ok.count - 4, NativeMessaging.maxReplyBytes)
+        let over = NativeMessaging.encodeReply(["b": String(repeating: "x", count: NativeMessaging.maxReplyBytes - overhead + 1)], op: "get")
+        XCTAssertLessThan(over.count, 1024)
+        XCTAssertTrue(try errorText(over).contains("\(NativeMessaging.maxReplyBytes + 1) bytes"))
+    }
+
+    func testReplyFrameWordsAnOversizedReplyForTheRequestsOp() throws {
+        let blob = String(repeating: "x", count: NativeMessaging.maxReplyBytes)
+        func text(_ request: String) throws -> String {
+            try errorText(NativeMessaging.replyFrame(forRequest: Data(request.utf8)) { _ in ["blob": blob] })
+        }
+        let a = try text(#"{"op":"get"}"#), r = try text(#"{"op":"resumeGet"}"#)
+        XCTAssertTrue(a.contains("delete some answers"), a)
+        XCTAssertTrue(r.contains("use a smaller resume file") && !r.contains("answers"), r)
+        // No op, an op that is not a string, a request that is not an object: neutral wording.
+        for odd in [#"{}"#, #"{"op":7}"#, #"[1,2]"#, #"{"op":null}"#] {
+            XCTAssertTrue(try text(odd).hasPrefix("the reply is "), odd)
+        }
+    }
+
+    func testReplyFrameRefusesARequestThatIsNotJSONWithoutCallingTheHandler() throws {
+        for bad in ["", "not json", "{\"op\":"] {
+            var called = false
+            let reply = NativeMessaging.replyFrame(forRequest: Data(bad.utf8)) { _ in called = true; return [:] }
+            XCTAssertFalse(called, bad)
+            XCTAssertEqual(try errorText(reply), "request is not JSON")
+        }
+    }
+
+    func testReplyFramePassesASmallReplyThrough() throws {
+        let reply = NativeMessaging.replyFrame(forRequest: Data(#"{"op":"get"}"#.utf8)) { _ in ["ok": true] }
+        let body = try JSONSerialization.jsonObject(with: reply.dropFirst(4)) as? [String: Any]
+        XCTAssertEqual(body?["ok"] as? Bool, true)
+    }
+
     func testReplyOverChromesLimitBecomesAnError() throws {
         let reply = NativeMessaging.encodeReply(["blob": String(repeating: "x", count: NativeMessaging.maxReplyBytes)])
         XCTAssertLessThan(reply.count, 1024)

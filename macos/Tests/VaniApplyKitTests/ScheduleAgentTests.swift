@@ -256,7 +256,15 @@ final class ScheduleAgentTests: XCTestCase {
         let s = ScheduleSupervisor(attempt: attempt, currentFingerprint: fingerprint, keyExists: keyExists, policy: policy,
                                    fallbackLog: rig.log, watchInterval: watch, stopGrace: grace, watchBound: watchBound)
         let done = DispatchSemaphore(value: 0)
-        Thread { s.run(); done.signal() }.start()
+        let ended = Box("running")
+        Thread { s.run(); ended.set("ended"); done.signal() }.start()
+        // A test that throws or fails an XCTUnwrap before its own stop() would leave its daemon
+        // script alive. Teardown stops this supervisor and SIGKILLs the child it launched (its own
+        // job, by the pid the supervisor holds; nothing is matched by name) until run() returns.
+        addTeardownBlock {
+            s.stop()
+            _ = pollUntil(8) { s.forceStopChild(); return ended.get() == "ended" }
+        }
         return (s, done)
     }
 
@@ -271,9 +279,7 @@ final class ScheduleAgentTests: XCTestCase {
     }
 
     private func waitUntil(_ timeout: TimeInterval = 10, _ condition: () -> Bool) -> Bool {
-        let end = Date().addingTimeInterval(timeout)
-        while Date() < end { if condition() { return true }; Thread.sleep(forTimeInterval: 0.02) }
-        return condition()
+        pollUntil(timeout, condition)
     }
 
     func testADaemonThatKeepsCrashingIsStartedAgainWithABoundedWaitAndNeverGivenUpOn() throws {
@@ -547,14 +553,57 @@ final class ScheduleAgentTests: XCTestCase {
         XCTAssertEqual(s.starts, 1)
     }
 
+    /// The class of leak behind ft-e331: a test that ends without calling stop() (a failed wait, a
+    /// throwing XCTUnwrap) used to leave its SIGTERM-ignoring daemon script running. The check is
+    /// registered first, so it runs last (teardown blocks run in reverse order), after supervise's own.
+    func testASupervisedDaemonIsReapedWhenTheTestEndsWithoutStopping() throws {
+        let r = try rig()
+        let pidFile = r.dir.appendingPathComponent("pid"), pidPart = r.dir.appendingPathComponent("pid.part")
+        let pidSeen = Box("")
+        addTeardownBlock {
+            let pid = Int32(pidSeen.get()) ?? 0
+            XCTAssertGreaterThan(pid, 0, "the test never saw the daemon's pid")
+            XCTAssertTrue(pollUntil(8) { kill(pid, 0) != 0 && errno == ESRCH }, "the daemon script outlived its test")
+            if pid > 0 { _ = kill(pid, SIGKILL) } // this test's own child, should the assertion above fail
+        }
+        let program = try r.script("trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; while :; do sleep 0.05; done")
+        let (s, _) = supervise(r, attempt: { r.start(program) }, grace: 30)
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8), isPublishedPid(raw) else { return false }
+            pidSeen.set(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+            return true
+        })
+        XCTAssertEqual(s.starts, 1)
+        // No stop(), no done.wait(): the test ends with the daemon up.
+    }
+
     func testForceStopChildKillsADaemonThatIgnoresSigterm() throws {
         let r = try rig()
         let pidFile = r.dir.appendingPathComponent("pid")
-        let program = try r.script("echo $$ > '\(pidFile.path)'; trap '' TERM; while :; do sleep 0.05; done")
+        let pidPart = r.dir.appendingPathComponent("pid.part")
+        let go = r.dir.appendingPathComponent("go")
+        // The empty pid file exists first and the trap is installed only when `go` appears, so the
+        // window between "file exists" and "SIGTERM is ignored" is held open by the test. The pid is
+        // published by rename after the trap; the wait must not take the empty file for ready. The
+        // loop is capped at 5s so a missed `go` cannot spin.
+        let program = try r.script(
+            ": > '\(pidFile.path)'; i=0; "
+                + "while [ ! -f '\(go.path)' ] && [ \"$i\" -lt 250 ]; do i=$((i + 1)); sleep 0.02; done; "
+                + "trap '' TERM; echo $$ > '\(pidPart.path)'; /bin/mv '\(pidPart.path)' '\(pidFile.path)'; "
+                + "while :; do sleep 0.05; done")
         let slow = RelaunchPolicy(base: 30, cap: 30, stableAfter: 300)
         let (s, done) = supervise(r, attempt: { r.start(program) }, policy: slow, watch: 60, grace: 30)
-        XCTAssertTrue(waitUntil { FileManager.default.fileExists(atPath: pidFile.path) })
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return !isPublishedPid(raw)
+        }, "the empty pid file exists before the trap")
+        try Data("go\n".utf8).write(to: go)
+        XCTAssertTrue(waitUntil {
+            guard let raw = try? String(contentsOf: pidFile, encoding: .utf8) else { return false }
+            return isPublishedPid(raw)
+        }, "the pid is published only after the trap")
         let pid = try XCTUnwrap(Int32(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        addTeardownBlock { _ = kill(pid, SIGKILL) } // this test's own child, should the code under test leave it
         let started = Date()
         s.forceStopChild()
         XCTAssertTrue(waitUntil(2) { kill(pid, 0) != 0 && errno == ESRCH }, "SIGKILL without waiting out the grace")
@@ -864,6 +913,13 @@ final class ScheduleAgentTests: XCTestCase {
             XCTAssertFalse(main.contains(forbidden), "the schedule agent must not listen or connect: \(forbidden)")
         }
     }
+}
+
+/// `waitUntil` without `self`, for teardown blocks, which must not capture the test case.
+private func pollUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(timeout)
+    while Date() < end { if condition() { return true }; Thread.sleep(forTimeInterval: 0.02) }
+    return condition()
 }
 
 private final class Counter: @unchecked Sendable {

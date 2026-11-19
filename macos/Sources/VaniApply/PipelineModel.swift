@@ -42,6 +42,13 @@ final class PipelineModel {
     private(set) var startingRun = false
     /// Why the last manual run could not start, or ended before vani recorded it.
     private(set) var runError: String?
+    /// A manual run this app started ended with an error, and vani's record of it could not be
+    /// read afterwards (the status read failed), so whether vani ever
+    /// recorded it is not known. That is not "could not start": the run may well have started.
+    /// Cleared when the next run starts, or when a status read shows the run's record.
+    private(set) var runUnverified: String?
+    /// When the run behind `runUnverified` started; the record that clears it starts at or after this.
+    private var runUnverifiedSince: Date?
     /// The log of the last run this app started.
     private(set) var lastLog: URL?
     /// When this app asked the daemon for a run that has not started yet.
@@ -67,6 +74,8 @@ final class PipelineModel {
     private let announcer: RunAnnouncer?
     private let defaults: UserDefaults
     private var generation = 0
+    /// Callers whose read was superseded, waiting for the newer read that owns the result.
+    private var settleWaiters: [CheckedContinuation<ReadOutcome, Never>] = []
     private var watchTask: Task<Void, Never>?
     /// Bumped each time `follow` starts, so a cancelled follower does not clear the new one.
     private var followGeneration = 0
@@ -121,13 +130,28 @@ final class PipelineModel {
     /// `interactive` is a Refresh the user asked for: it shows the spinner.
     /// The timer passes false, so a run that is re-read every few seconds
     /// does not flash the button.
-    func refresh(interactive: Bool = true) async {
+    @discardableResult
+    func refresh(interactive: Bool = true) async -> ReadOutcome {
         generation += 1
         let gen = generation
         if interactive { loading = true }
         let c = client()
         let result = await BlockingWork.run { try c.status() }
-        guard gen == generation else { return } // a newer read superseded this one
+        guard gen == generation else { return .superseded } // a newer read superseded this one
+        let outcome = apply(result)
+        let waiting = settleWaiters
+        settleWaiters = []
+        for w in waiting { w.resume(returning: outcome) }
+        return outcome
+    }
+
+    /// The result of the newest read, once it lands. For a caller whose own read was superseded:
+    /// the newer read started after it, so its answer is as fresh as the caller needed.
+    private func newestRead() async -> ReadOutcome {
+        await withCheckedContinuation { settleWaiters.append($0) }
+    }
+
+    private func apply(_ result: Result<PipelineStatus, Error>) -> ReadOutcome {
         loading = false
         checkedAt = Date()
         switch result {
@@ -135,13 +159,23 @@ final class PipelineModel {
             status = s
             error = nil
             settleRequest(s)
+            if let since = runUnverifiedSince, let started = s.lastRun.startedAt, started >= since.addingTimeInterval(-2) {
+                runUnverified = nil // the record is readable now: the Last run section reports the run
+                runUnverifiedSince = nil
+            }
             announcer?.consider(s.lastRun, stateDir: s.stateDir)
+            return .applied
         case let .failure(err):
             // Keep the last good status on screen, marked stale by the error banner.
             error = String(describing: err)
             announcer?.unreadable(String(describing: err))
+            return .failed
         }
     }
+
+    /// What a status read came to: it replaced `status`, it failed (the old status stays), or a
+    /// newer read started first and owns the result.
+    enum ReadOutcome: Equatable { case applied, failed, superseded }
 
     /// Ask vani for the latest run's failure report (`vani runs failures`) and hand
     /// its text to `write`, the pasteboard. The call is bounded by the client's
@@ -211,6 +245,8 @@ final class PipelineModel {
             return
         }
         runError = nil
+        runUnverified = nil
+        runUnverifiedSince = nil
         if daemonRunning {
             await requestRun(options, remember: remember)
             return
@@ -342,11 +378,21 @@ final class PipelineModel {
         exitingRun = job
         // Re-read before letting go of the job, so the tab never shows the
         // record from before the run as this run's outcome.
-        await refresh()
+        var read = await refresh()
+        // A read a newer one superseded left the old status in place. That is not a failed read:
+        // a newer read is in flight, so take its result rather than give up or start another.
+        while read == .superseded { read = await newestRead() }
         let recorded = status?.lastRun.startedAt.map { $0 >= job.startedAt.addingTimeInterval(-2) } ?? false
         if code != 0 && !recorded {
             let why = VaniProcess.lastVaniLine(inLog: job.log) ?? "vani run-once exited \(code); see \(job.log.path)"
-            runError = why
+            if read == .applied {
+                runError = why
+            } else {
+                // The old status says nothing about this run: it may have been recorded after
+                // it. Do not call it a run that could not start.
+                runUnverified = why
+                runUnverifiedSince = job.startedAt
+            }
         }
         manualRun = nil
         exitingRun = nil
