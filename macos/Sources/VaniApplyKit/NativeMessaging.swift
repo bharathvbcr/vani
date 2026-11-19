@@ -100,6 +100,16 @@ public enum NativeMessaging {
         return frame(body)
     }
 
+    /// The one path from a framed request to its framed reply, shared by the host loop and its tests:
+    /// the request's op is read here so an oversized reply is worded for it. `handle` receives the
+    /// parsed JSON and is not called for a request that is not JSON.
+    public static func replyFrame(forRequest request: Data, handle: (Any) -> [String: Any]) -> Data {
+        guard let obj = try? JSONSerialization.jsonObject(with: request) else {
+            return encodeReply(["error": "request is not JSON"])
+        }
+        return encodeReply(handle(obj), op: (obj as? [String: Any])?["op"] as? String)
+    }
+
     private static func errorBody(_ message: String) -> Data {
         (try? JSONSerialization.data(withJSONObject: ["error": message])) ?? Data(#"{"error":"reply encoding failed"}"#.utf8)
     }

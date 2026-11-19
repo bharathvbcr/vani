@@ -113,14 +113,10 @@ while true {
     }
     lastActivity.lock(); lastRequest = Date(); busy = true; lastActivity.unlock()
 
-    let reply: [String: Any]
-    if let obj = try? JSONSerialization.jsonObject(with: request) {
+    output.write(NativeMessaging.replyFrame(forRequest: request) { obj in
         let contacts: ContactsRunning? = JarvisLocation.load(from: store.directory).map { ContactsClient(runner: drafter, jarvis: $0) }
-        reply = NativeProtocol.handle(obj, store: store, source: .chrome, drafter: drafter, agent: XPCAgentClient(), jobs: jobs,
-                                      openResume: { NSWorkspace.shared.open($0) }, sameQuestion: fmHelper, contacts: contacts)
-    } else {
-        reply = ["error": "request is not JSON"]
-    }
-    output.write(NativeMessaging.encodeReply(reply))
+        return NativeProtocol.handle(obj, store: store, source: .chrome, drafter: drafter, agent: XPCAgentClient(), jobs: jobs,
+                                     openResume: { NSWorkspace.shared.open($0) }, sameQuestion: fmHelper, contacts: contacts)
+    })
     lastActivity.lock(); lastRequest = Date(); busy = false; lastActivity.unlock()
 }

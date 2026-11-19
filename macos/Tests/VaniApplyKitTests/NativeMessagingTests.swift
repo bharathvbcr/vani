@@ -89,6 +89,35 @@ final class NativeMessagingTests: XCTestCase {
         XCTAssertTrue(try errorText(over).contains("\(NativeMessaging.maxReplyBytes + 1) bytes"))
     }
 
+    func testReplyFrameWordsAnOversizedReplyForTheRequestsOp() throws {
+        let blob = String(repeating: "x", count: NativeMessaging.maxReplyBytes)
+        func text(_ request: String) throws -> String {
+            try errorText(NativeMessaging.replyFrame(forRequest: Data(request.utf8)) { _ in ["blob": blob] })
+        }
+        let a = try text(#"{"op":"get"}"#), r = try text(#"{"op":"resumeGet"}"#)
+        XCTAssertTrue(a.contains("delete some answers"), a)
+        XCTAssertTrue(r.contains("use a smaller resume file") && !r.contains("answers"), r)
+        // No op, an op that is not a string, a request that is not an object: neutral wording.
+        for odd in [#"{}"#, #"{"op":7}"#, #"[1,2]"#, #"{"op":null}"#] {
+            XCTAssertTrue(try text(odd).hasPrefix("the reply is "), odd)
+        }
+    }
+
+    func testReplyFrameRefusesARequestThatIsNotJSONWithoutCallingTheHandler() throws {
+        for bad in ["", "not json", "{\"op\":"] {
+            var called = false
+            let reply = NativeMessaging.replyFrame(forRequest: Data(bad.utf8)) { _ in called = true; return [:] }
+            XCTAssertFalse(called, bad)
+            XCTAssertEqual(try errorText(reply), "request is not JSON")
+        }
+    }
+
+    func testReplyFramePassesASmallReplyThrough() throws {
+        let reply = NativeMessaging.replyFrame(forRequest: Data(#"{"op":"get"}"#.utf8)) { _ in ["ok": true] }
+        let body = try JSONSerialization.jsonObject(with: reply.dropFirst(4)) as? [String: Any]
+        XCTAssertEqual(body?["ok"] as? Bool, true)
+    }
+
     func testReplyOverChromesLimitBecomesAnError() throws {
         let reply = NativeMessaging.encodeReply(["blob": String(repeating: "x", count: NativeMessaging.maxReplyBytes)])
         XCTAssertLessThan(reply.count, 1024)
