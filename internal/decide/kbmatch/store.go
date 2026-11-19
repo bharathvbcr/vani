@@ -176,8 +176,10 @@ func (s *Store) Lookup(key string, kb, text string) (Entry, bool) {
 	return e, true
 }
 
-// Put records an answer, replacing any earlier one for key. The oldest are
-// dropped past MaxEntries. A new answer needs a time (a zero At would rank it
+// Put records an answer, replacing any earlier one for key. Past MaxEntries the
+// oldest others are dropped, never the answer being put: it was just paid for,
+// whatever its At. Those evictions are Put's count bound and are not counted in
+// Dropped, which is only what Save drops to fit the byte limit. A new answer needs a time (a zero At would rank it
 // oldest); a file already holding zero-At entries still opens.
 func (s *Store) Put(key string, e Entry) error {
 	if err := checkEntry(key, e); err != nil {
@@ -189,18 +191,24 @@ func (s *Store) Put(key string, e Entry) error {
 	s.f.Entries[key] = e
 	s.fresh[key] = struct{}{}
 	if len(s.f.Entries) > MaxEntries {
-		s.evictOldest(len(s.f.Entries) - MaxEntries)
+		s.evictOldestExcept(len(s.f.Entries)-MaxEntries, key)
 	}
 	return nil
 }
 
-// evictOldest drops n answers (all of them if n is larger): answers from before
-// this open first, oldest At first, ties by key, then this run's answers in the
-// same order.
-func (s *Store) evictOldest(n int) {
+// evictOldest drops n answers (all of them if n is larger).
+func (s *Store) evictOldest(n int) { s.evictOldestExcept(n, "") }
+
+// evictOldestExcept drops n answers other than the one under keep (all of them
+// if n is larger): answers from before this open first, oldest At first, ties by
+// key, then this run's answers in the same order. Keys are never empty, so an
+// empty keep protects nothing.
+func (s *Store) evictOldestExcept(n int, keep string) {
 	keys := make([]string, 0, len(s.f.Entries))
 	for k := range s.f.Entries {
-		keys = append(keys, k)
+		if k != keep {
+			keys = append(keys, k)
+		}
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		_, fi := s.fresh[keys[i]]

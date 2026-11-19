@@ -134,3 +134,37 @@ func TestAttackPutAtMaxEntriesStaysBounded(t *testing.T) {
 		t.Fatal("newest missing")
 	}
 }
+
+// The answer Put is never the one it evicts, even when its At is older than
+// every held answer; the oldest other answer goes instead, and Dropped (Save's
+// byte-limit count) does not count Put's evictions.
+func TestPutKeepsTheAnswerItWasGiven(t *testing.T) {
+	s := NewStore(filepath.Join(t.TempDir(), FileName))
+	for i := 0; i < MaxEntries; i++ {
+		if err := s.Put(fmt.Sprintf("k%d", i), entry("core", a3base.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Put("late", entry("core", a3base.Add(-time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Lookup("late", h64a, h64b); !ok {
+		t.Fatal("Put returned nil but the paid answer is not in the store")
+	}
+	if _, ok := s.Lookup("k0", h64a, h64b); ok {
+		t.Fatal("the oldest other answer was kept")
+	}
+	if s.Len() != MaxEntries || s.Dropped() != 0 {
+		t.Fatalf("len=%d dropped=%d", s.Len(), s.Dropped())
+	}
+	// Replacing an existing key at the bound evicts nothing.
+	if err := s.Put("late", entry("partial", a3base.Add(-2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if s.Len() != MaxEntries {
+		t.Fatalf("len=%d after replacing", s.Len())
+	}
+	if _, ok := s.Lookup("k1", h64a, h64b); !ok {
+		t.Fatal("a replace evicted another answer")
+	}
+}
