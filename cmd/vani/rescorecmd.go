@@ -105,17 +105,38 @@ func (w *wired) rescore(ctx context.Context, limit int) (rescoreReport, error) {
 	r := &pipeline.Runner{Ledger: w.led}
 	repaired, err := repairUnknownCoverage(ctx, w.led, r.RepairUnknownCoverage)
 	if err != nil {
-		return rescoreReport{Repaired: repaired, Refused: true}, err
+		return rescoreReport{Repaired: repaired, Refused: !stopped(err)}, err
 	}
 	if w.cfg.DevPrism.Binary == "" {
 		return rescoreReport{Repaired: repaired, Refused: true}, errScoringOff
 	}
 	if err := w.scoring(r); err != nil {
-		return rescoreReport{Repaired: repaired, Refused: true}, err
+		return rescoreReport{Repaired: repaired, Refused: !stopped(err)}, err
 	}
 	rep, err := rescoreWith(ctx, w.led, limit, w.cfg.AdvanceWorkers(), r.Rescore, w.warnf)
 	rep.Repaired = repaired
 	return rep, err
+}
+
+// stopped reports whether err is the caller stopping the command (Ctrl-C or a
+// deadline), which is a stop and never a refusal.
+func stopped(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// rescoreFailure words the error a rescore ends with. A refusal says nothing
+// was scored; a stop says it was stopped and keeps what was already written
+// (the 0-of-0 repairs), so it never claims "nothing was scored" after a write.
+func rescoreFailure(rep rescoreReport, err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case rep.Refused:
+		return fmt.Errorf("rescore refused, nothing was scored: %w", err)
+	case stopped(err):
+		return fmt.Errorf("rescore stopped; %d 0-of-0 coverage(s) marked unknown and %d posting(s) rescored before it were kept: %w", rep.Repaired, rep.Rescored, err)
+	}
+	return err
 }
 
 // rescoreWith is rescore over any ledger and rescore function, for tests.
@@ -311,9 +332,7 @@ func (e *env) cmdRescore(args []string) error {
 		return err
 	}
 	rep, err := app.Rescore(ctx, n)
-	if rep.Refused && err != nil {
-		err = fmt.Errorf("rescore refused, nothing was scored: %w", err)
-	}
+	err = rescoreFailure(rep, err)
 	if *asJSON {
 		return e.reply(true, &rescoreReply{Limit: n, Refused: rep.Refused, Plan: rep.Plan, Rescored: rep.Rescored, StillUnscored: rep.Plan.Eligible - rep.Rescored,
 			Repaired: rep.Repaired, ScoringOff: cfg.DevPrism.Binary == ""}, err, nil)

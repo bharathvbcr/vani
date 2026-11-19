@@ -121,6 +121,45 @@ func TestAttackWiredRescoreRefusalPathsSetRefused(t *testing.T) {
 	}
 }
 
+// A Ctrl-C is not a refusal: "refused, nothing was scored" would misreport a
+// stop (and a repair that already wrote). Cancelled mid-repair must not be
+// labelled refused.
+func TestAttackRescoreCancelledIsNotRefused(t *testing.T) {
+	l := rescoreLedger(t, []rescoreSeed{{"1", posting.Explained, "jd", "0"}})
+	w := &wired{led: l, cfg: config.Config{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rep, err := w.rescore(ctx, 5)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if rep.Refused {
+		t.Errorf("a cancelled rescore was labelled refused: %+v", rep)
+	}
+}
+
+// A stop after repairs wrote is reported as a stop that kept them, never as
+// "nothing was scored"; a deadline is a stop too; a genuine failure still
+// refuses.
+func TestAttackRescoreFailureWording(t *testing.T) {
+	for _, stop := range []error{context.Canceled, context.DeadlineExceeded} {
+		rep := rescoreReport{Repaired: 3}
+		if e := rescoreFailure(rep, stop); !errors.Is(e, stop) || strings.Contains(e.Error(), "nothing was scored") || !strings.Contains(e.Error(), "stopped") || !strings.Contains(e.Error(), "3 0-of-0") {
+			t.Errorf("stop %v worded %v", stop, e)
+		}
+	}
+	if e := rescoreFailure(rescoreReport{Refused: true}, errScoringOff); !strings.Contains(e.Error(), "refused, nothing was scored") {
+		t.Errorf("refusal worded %v", e)
+	}
+	if e := rescoreFailure(rescoreReport{}, nil); e != nil {
+		t.Errorf("nil error became %v", e)
+	}
+	disk := errors.New("disk full")
+	if e := rescoreFailure(rescoreReport{Repaired: 2}, disk); e != disk {
+		t.Errorf("a failure after planning was reworded: %v", e)
+	}
+}
+
 // ---- semantic warm ----
 
 func TestAttackWarmShortfallFailedWithSkipped(t *testing.T) {
