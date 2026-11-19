@@ -113,11 +113,13 @@ const (
 const codes = `USD|CAD|AUD|NZD|SGD|GBP|EUR|CHF|INR|JPY|SEK|NOK|DKK|PLN|TWD|MYR|CNY|KRW|RON|RSD|SAR`
 
 // moneyRE matches one amount: an optional currency before it (a symbol, a
-// code, or a code then a symbol, "CAD $"), the number (thousands separated by
+// code, or a code then a symbol, "CAD $"; a letter-prefixed dollar the symbols
+// table does not name, "NT$", "HK$", "R$", "MX$", reads as a conflict, never as
+// USD), the number (thousands separated by
 // , . or a non-breaking space; at most two decimals), an optional k, and an
 // optional currency after it. It matches bare numbers too; an amount counts
 // only with a currency on it or on its range partner.
-var moneyRE = regexp.MustCompile(`(?i)((?:\b(?:` + codes + `)[ \x{00a0}\x{202f}]?)?(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|SG\$|S\$|\$|£|€|₹|¥)|\b(?:` + codes + `)\b)?[ \x{00a0}\x{202f}]?` +
+var moneyRE = regexp.MustCompile(`(?i)((?:\b(?:` + codes + `)[ \x{00a0}\x{202f}]?)?(?:US\$|CA\$|C\$|AU\$|A\$|NZ\$|SG\$|S\$|\b[a-z]{1,3}\$|\$|£|€|₹|¥)|\b(?:` + codes + `)\b)?[ \x{00a0}\x{202f}]?` +
 	`(\d{1,3}(?:(?:,|\.|\x{00a0}|\x{202f})\d{3})+|\d+)(?:[.,](\d{1,2}))?` +
 	`(?:[ \x{00a0}]?(k)\b)?` +
 	`(?:[ \x{00a0}\x{202f}]?(\b(?:` + codes + `)\b|€|£))?`)
@@ -134,7 +136,9 @@ var symbols = map[string]string{
 var ambiguous = map[string]bool{"$": true, "¥": true}
 
 // periodWords, matched in the text just after an amount (lowercased, with -
-// and _ read as spaces). The earliest match wins.
+// and _ read as spaces). The earliest match wins, and only within the amount's
+// own sentence: a period word past a sentence end ("$50,000 - $60,000. Hourly
+// staff ...") belongs to what follows.
 var periodWords = []struct {
 	w string
 	p Period
@@ -466,6 +470,15 @@ func payWindows(text string) [][2]int {
 	return out
 }
 
+// letterRun is the length of the ASCII letters s starts with.
+func letterRun(s string) int {
+	n := 0
+	for n < len(s) && isLetterByte(s[n]) {
+		n++
+	}
+	return n
+}
+
 func isLetterByte(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
 func isWordByte(c byte) bool   { return isLetterByte(c) || (c >= '0' && c <= '9') || c == '_' }
 func isNumByte(c byte) bool    { return (c >= '0' && c <= '9') || c == ',' || c == '.' }
@@ -569,12 +582,19 @@ func resolve(pre, suf string) (cur string, symbolOnly bool) {
 		if c, ok := symbols[s]; ok {
 			return c, ambiguous[s]
 		}
-		if len(s) > 3 {
-			// Not a symbol and longer than a code: moneyRE matched a code
-			// then a symbol ("cad $", "cad$"). The code names the currency
-			// unless the symbol names another one ("usd c$").
-			c, sym := strings.ToUpper(s[:3]), strings.TrimLeftFunc(s[3:], unicode.IsSpace)
-			if sc, ok := symbols[sym]; ok && !ambiguous[sym] && sc != c {
+		if n := letterRun(s); n > 0 && n < len(s) {
+			// Not a symbol, and letters then more: moneyRE matched a code
+			// then a symbol ("cad $", "cad$"), or a letter-prefixed dollar the
+			// symbols table does not know ("nt$", "hk$", "r$"; a dollar that
+			// is not the US one). The code names the currency unless the
+			// symbol names another one ("usd c$"); an unknown prefix names
+			// no currency we read, so the amount conflicts and is dropped.
+			c := strings.ToUpper(s[:n])
+			if _, known := currencies[c]; !known {
+				return "!", false
+			}
+			sym := strings.TrimLeftFunc(s[n:], unicode.IsSpace)
+			if sc, ok := symbols[sym]; !ok || (!ambiguous[sym] && sc != c) {
 				return "!", false
 			}
 			return c, false
@@ -634,7 +654,7 @@ func readPeriod(text string, end int) (Period, int) {
 	best, bestAt, bestEnd := Period(""), len(low), end
 	for _, pw := range periodWords {
 		i := strings.Index(low, pw.w)
-		if i < 0 || i >= bestAt || !fillerOnly(low[:i]) {
+		if i < 0 || i >= bestAt || !fillerOnly(low[:i]) || strings.ContainsAny(low[:i], ".!?;\n") {
 			continue
 		}
 		best, bestAt, bestEnd = pw.p, i, end+min(i+len(strings.TrimRight(pw.w, " ")), len(win))
@@ -689,6 +709,11 @@ func nearestWord(s string) string {
 		case notPay[w[i]]:
 			return "not"
 		case payWords[w[i]]:
+			// A pay word the not-pay word right before it modifies is that
+			// word's own range: "bonus range", "equity compensation".
+			if i > 0 && notPay[w[i-1]] {
+				return "not"
+			}
 			return "pay"
 		}
 	}

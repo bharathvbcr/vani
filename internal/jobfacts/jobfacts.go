@@ -85,7 +85,10 @@ func Derive(v *jobinsight.Vocab, p posting.Posting) Facts {
 }
 
 // format changes whenever the stored layout, or what a field means, does.
-const format = 2
+// 3: the pay parser no longer reads bonus or equity ranges, nor NT$, HK$, R$,
+// MX$ or any other letter-prefixed dollar, as a salary, and a period word past
+// a sentence end no longer attaches to the range before it.
+const format = 3
 
 // Version identifies the derivers: the vocabulary, and each deriver's answers
 // over a probe that exercises them (titles, locations, pay forms, odd text).
