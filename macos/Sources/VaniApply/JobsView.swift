@@ -1700,16 +1700,11 @@ private struct JobDetailContent: View {
             }
             .backToTop(headerScrolledOff) { proxy.scrollTo(Self.topID, anchor: .top) }
         }
-        .onAppear { noteDraft = job.note ?? "" }
-        .onChange(of: job.key) { oldKey, newKey in
-            if noteChanged && noteBytes <= JobsClient.maxNoteBytes && !savingNote {
-                let key = oldKey
-                let text = noteDraft
-                Task { await jobs.saveNote(key, text) }
-            }
-            noteDraft = job.note ?? ""
-            saveStatusMessage = nil
-        }
+        // This view is rebuilt for each job (.id), so the typed note lives in the model, keyed by job,
+        // and the model saves it when the selection moves away (JobsModel.selection).
+        .onAppear { noteDraft = jobs.noteDrafts[job.key] ?? job.note ?? "" }
+        .onChange(of: noteDraft) { _, text in jobs.editNote(job.key, text) }
+        .onDisappear { Task { await jobs.commitNote(job.key) } }
         .onChange(of: noteFocused) { _, isFocused in
             if !isFocused && noteChanged && noteBytes <= JobsClient.maxNoteBytes && !savingNote {
                 saveNoteAction()

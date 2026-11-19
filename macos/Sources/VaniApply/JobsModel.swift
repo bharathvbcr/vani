@@ -47,7 +47,13 @@ final class JobsModel {
     /// it selects that role alone.
     var selection: String? {
         didSet {
-            if oldValue != selection { loadDetail() }
+            if oldValue != selection {
+                // The detail pane is rebuilt per job, so a note typed in it is saved here, where every
+                // way the selection moves (arrow keys, a click, a mark or exclusion moving it, a view
+                // change, a refresh) passes, not in the view that is about to be torn down.
+                if let oldValue, noteDrafts[oldValue] != nil { Task { await commitNote(oldValue) } }
+                loadDetail()
+            }
             if let selection {
                 if selectedKeys != [selection] { selectedKeys = [selection] }
             } else if selectedKeys.count == 1 {
@@ -114,6 +120,11 @@ final class JobsModel {
     /// A quiet re-list (one that shows no progress) is waiting or running.
     private(set) var reconciling = false
     private var detailGeneration = 0
+    /// Notes typed in the detail pane and not yet saved, by job key. A draft is dropped once it is
+    /// saved or typed back to the saved note; one that could not be saved stays, and the pane
+    /// shows it again when the job is reopened.
+    private(set) var noteDrafts: [String: String] = [:]
+    private var notesSaving: Set<String> = []
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
     /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
@@ -602,6 +613,35 @@ final class JobsModel {
         await setMark(job.key, job.mark == mark ? nil : mark)
     }
 
+    /// The note vani has for `key` as far as this page knows; nil when the job is on neither the
+    /// page nor the detail.
+    private func savedNote(_ key: String) -> String? {
+        let job = detail?.key == key ? detail : jobs.first { $0.key == key }
+        return job.map { $0.note ?? "" }
+    }
+
+    /// Keep what is typed in the note box for `key` as its draft (nothing when it equals the saved note).
+    func editNote(_ key: String, _ text: String) {
+        if text.trimmingCharacters(in: .whitespacesAndNewlines) == savedNote(key) {
+            noteDrafts[key] = nil
+        } else {
+            noteDrafts[key] = text
+        }
+    }
+
+    /// Save the draft for `key`, if it differs from the saved note and fits. One save per job at a time.
+    /// An oversized draft is kept, unsaved, for the pane to show.
+    @discardableResult
+    func commitNote(_ key: String) async -> Bool {
+        guard let text = noteDrafts[key], !notesSaving.contains(key) else { return false }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == savedNote(key) { noteDrafts[key] = nil; return false }
+        guard trimmed.utf8.count <= JobsClient.maxNoteBytes else { return false }
+        notesSaving.insert(key)
+        defer { notesSaving.remove(key) }
+        return await saveNote(key, text)
+    }
+
     @discardableResult
     func saveNote(_ key: String, _ text: String) async -> Bool {
         let c = client()
@@ -609,6 +649,9 @@ final class JobsModel {
         let result = await BlockingWork.run { try c.note(key, trimmed) }
         switch result {
         case let .success(j):
+            if let draft = noteDrafts[key], draft.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+                noteDrafts[key] = nil
+            }
             if detail?.key == key { detail = merged(j) }
             await applyWrite(j)
             return true
