@@ -77,7 +77,9 @@ final class JobsModel {
     /// The selected roles in list order (selected rows a reload removed are left out).
     var selectedJobs: [Job] { jobs.filter { selectedKeys.contains($0.key) } }
 
-    private(set) var page: JobsPage?
+    private(set) var page: JobsPage? {
+        didSet { page?.jobs.forEach(learnNote) }
+    }
     /// When `page` was last read from vani without error. While `error` is set the rows on screen are
     /// from this time, not current (`lastGoodLoad`).
     private(set) var pageLoadedAt: Date?
@@ -96,7 +98,9 @@ final class JobsModel {
     private(set) var loading = false
     private(set) var error: String?
     /// The selected job as `vani jobs show` returned it (with its description).
-    private(set) var detail: Job?
+    private(set) var detail: Job? {
+        didSet { if let detail { learnNote(detail) } }
+    }
     private(set) var detailError: String?
     /// The last failed mark or note, shown as an alert.
     var actionError: String?
@@ -137,6 +141,14 @@ final class JobsModel {
     /// Jobs whose draft was committed while a save of the same job was in flight; the save that is
     /// running saves the newest draft once it ends (latest wins).
     private var notesQueued: Set<String> = []
+    /// The note vani holds for a job, as far as this app knows: read from the list or the detail, or
+    /// confirmed by a save. Kept apart from the list, which loses a job that leaves the filter and
+    /// lags behind a save in flight. A job with no entry has never been read (a blank draft for it
+    /// is not a clear).
+    private var confirmedNotes: [String: String] = [:]
+    /// The text of the note save running for a job. A read that lands meanwhile may predate it, so
+    /// it is ignored; the save's own reply settles the record.
+    private var inflightNotes: [String: String] = [:]
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
     /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
@@ -632,9 +644,20 @@ final class JobsModel {
 
     /// The note vani has for `key` as far as this page knows; nil when the job is on neither the
     /// page nor the detail.
-    private func savedNote(_ key: String) -> String? {
-        let job = detail?.key == key ? detail : jobs.first { $0.key == key }
-        return job.map { $0.note ?? "" }
+    private func learnNote(_ job: Job) {
+        guard inflightNotes[job.key] == nil else { return }
+        confirmedNotes[job.key] = (job.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The newest note state this app knows for `key`: the save in flight, else the confirmed note;
+    /// nil when the note was never read.
+    private func knownNote(_ key: String) -> String? { inflightNotes[key] ?? confirmedNotes[key] }
+
+    /// Whether a draft is no change from the newest known note. A blank draft is no change either
+    /// when the stored note was never read: saving it would clear a note nobody saw.
+    private func isNoChange(_ key: String, _ trimmed: String) -> Bool {
+        let known = knownNote(key)
+        return trimmed == known || (trimmed.isEmpty && known == nil)
     }
 
     /// Keep what is typed in the note box for `key` as its draft (nothing when it equals the saved note).
@@ -642,10 +665,12 @@ final class JobsModel {
     /// clear a note nobody saw. Only an edit of a known note can clear it.
     func editNote(_ key: String, _ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == savedNote(key) || (trimmed.isEmpty && savedNote(key) == nil) {
+        if isNoChange(key, trimmed) {
             noteDrafts[key] = nil
         } else {
             noteDrafts[key] = text
+            // Typed while a save of this job runs: it is the latest, so it is saved when that one ends.
+            if notesSaving.contains(key) { notesQueued.insert(key) }
         }
     }
 
@@ -658,7 +683,7 @@ final class JobsModel {
         guard let text = noteDrafts[key] else { return false }
         if notesSaving.contains(key) { notesQueued.insert(key); return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == savedNote(key) || (trimmed.isEmpty && savedNote(key) == nil) { noteDrafts[key] = nil; return false }
+        if isNoChange(key, trimmed) { noteDrafts[key] = nil; return false }
         guard trimmed.utf8.count <= JobsClient.maxNoteBytes else { return false }
         notesSaving.insert(key)
         let saved = await saveNote(key, text)
@@ -697,9 +722,12 @@ final class JobsModel {
     func saveNote(_ key: String, _ text: String) async -> Bool {
         let c = client()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        inflightNotes[key] = trimmed
         let result = await BlockingWork.run { try c.note(key, trimmed) }
+        inflightNotes[key] = nil
         switch result {
         case let .success(j):
+            confirmedNotes[key] = trimmed
             if let draft = noteDrafts[key], draft.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
                 noteDrafts[key] = nil
             }
