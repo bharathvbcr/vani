@@ -179,6 +179,59 @@ final class RetriageStopAttackTests: XCTestCase {
         XCTAssertEqual(out.fail?.code ?? "cancelled", "cancelled")
     }
 
+    /// An estimate and a clear spend nothing, so a "cancelled with cost" reply there is not a paid stop.
+    func testAnEstimateOrClearStoppedWithACostLookingReplyIsAPlainCancel() throws {
+        let dir = try tempDir(self)
+        let reply = dir.appendingPathComponent("reply.json"), ready = dir.appendingPathComponent("ready")
+        try Data(paid.utf8).write(to: reply)
+        let (vani, _) = try atkScript(self, "trap 'cat \(reply.path); exit 1' TERM\necho up > '\(ready.path)'\nwhile true; do sleep 0.1; done")
+        let c = client(vani)
+        let (out, _) = try atkStop(ready) { c.estimate("k", cancellation: $0) }
+        XCTAssertEqual(out, .cancelled, "a dry run was shown as stopped-after-Sonnet-answered")
+        let ready2 = dir.appendingPathComponent("ready2")
+        let (vani2, _) = try atkScript(self, "trap 'cat \(reply.path); exit 1' TERM\necho up > '\(ready2.path)'\nwhile true; do sleep 0.1; done")
+        let c2 = client(vani2)
+        let (out2, _) = try atkStop(ready2) { c2.clear("k", cancellation: $0) }
+        XCTAssertEqual(out2, .cancelled, "a clear was shown as stopped-after-Sonnet-answered")
+    }
+
+    /// vani --batch answers a stop with item lines and a done summary (jobsretriagebatch.go), not one object.
+    func testABatchStoppedAfterPaidItemsKeepsItsSummaryAndCost() throws {
+        let dir = try tempDir(self)
+        let ready = dir.appendingPathComponent("ready")
+        let done = #"{"event":"done","summary":{"kept":1,"failed":0,"not_asked":2,"skipped":0,"changed":1,"usd":0.0072,"stopped":"cancelled","message":"stopped; the readings already made are kept"}}"#
+        let (vani, _) = try atkScript(self, "trap 'printf \"%s\\n\" '\"'\"'\(done)'\"'\"'; exit 1' TERM\nprintf '%s\\n' '{\"event\":\"start\",\"total\":3}'\necho up > '\(ready.path)'\nwhile true; do sleep 0.1; done")
+        let c = RetriageBatchClient(runner: DraftRunner(vaniBinary: vani, keys: .noKey, key: { "sk-test" }, decisionKey: { nil }), perPosting: 5, quickTimeout: 5)
+        let (out, _) = try atkStop(ready) { cancel in c.run(["gh:a:1", "gh:a:2", "gh:a:3"], skipRead: false, cancellation: cancel, onEvent: { _ in }) }
+        guard case let .success(s) = out else { return XCTFail("the paid batch's summary and cost were thrown away: \(out)") }
+        XCTAssertEqual(s.stopped, "cancelled")
+        XCTAssertEqual(s.usd, 0.0072)
+    }
+
+    /// A stopped batch whose stream has no done summary, or whose done line was torn (no newline), is a plain cancel.
+    func testABatchStoppedWithoutACompleteDoneLineIsAPlainCancel() throws {
+        let done = #"{"event":"done","summary":{"kept":1,"failed":0,"not_asked":2,"skipped":0,"changed":1,"usd":0.0072,"stopped":"cancelled","message":"m"}}"#
+        for (name, tail) in [("none", #"printf '%s\n' '{"event":"start","total":3}'"#), ("torn", "printf '%s' '\(done)'")] {
+            let dir = try tempDir(self)
+            let ready = dir.appendingPathComponent("ready")
+            let (vani, _) = try atkScript(self, "trap '\(tail); exit 1' TERM\necho up > '\(ready.path)'\nwhile true; do sleep 0.1; done")
+            let c = RetriageBatchClient(runner: DraftRunner(vaniBinary: vani, keys: .noKey, key: { "sk-test" }, decisionKey: { nil }), perPosting: 5, quickTimeout: 5)
+            let (out, _) = try atkStop(ready) { cancel in c.run(["gh:a:1"], skipRead: false, cancellation: cancel, onEvent: { _ in }) }
+            XCTAssertEqual(out, .cancelled, "\(name): an incomplete batch stream was accepted as a summary")
+        }
+    }
+
+    /// Resume Studio treats any cost on a cancelled reply as a paid stop, even a zero one.
+    func testResumeStopWithAZeroCostIsAPlainCancel() throws {
+        let dir = try tempDir(self)
+        let reply = dir.appendingPathComponent("reply.json"), ready = dir.appendingPathComponent("ready")
+        try Data(#"{"error":"stopped","code":"cancelled","cost":{"usd":0,"complete":false,"turns":0},"attempt_recorded":false}"#.utf8).write(to: reply)
+        let (vani, _) = try atkScript(self, "trap 'cat \(reply.path); exit 1' TERM\necho up > '\(ready.path)'\nwhile true; do sleep 0.1; done")
+        let c = ResumeStudioClient(runner: DraftRunner(vaniBinary: vani, key: { nil }, decisionKey: { nil }))
+        let (out, _) = try atkStop(ready) { c.build("gh:acme:1", cancellation: $0) }
+        XCTAssertEqual(out, .cancelled, "a zero-cost stop was shown as a failure: \(out)")
+    }
+
     /// call() and the other plain callers keep throwing VaniCallCancelled whatever the child wrote.
     func testPlainCallsStillThrowCancelledWhateverTheChildWrote() throws {
         let dir = try tempDir(self)

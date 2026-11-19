@@ -462,7 +462,7 @@ public struct RetriageClient: Sendable {
         let invocation = runner.invoke(arguments: Self.arguments(key, mode), timeout: mode == .run ? runTimeout : quickTimeout,
                                        usesModel: mode == .run, maxOutputBytes: Self.maxReplyBytes,
                                        extraEnvironment: ["VANI_NO_KEYCHAIN": "1"], cancellation: cancellation,
-                                       keepsCancelledReply: true)
+                                       keepCancelledOutput: mode == .run ? DraftRunner.singleCancelledObject : nil)
         switch invocation {
         case let .failure(reply):
             if reply.code == "cancelled" { return .cancelled }

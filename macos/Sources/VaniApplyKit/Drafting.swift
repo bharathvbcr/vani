@@ -564,14 +564,16 @@ public struct DraftRunner: Sendable {
 
     /// `vani <arguments>` through `prepare`, so the keys, launcher and refusal are the ones every
     /// other job gets. `extraEnvironment` is added to the launch's, after the keys; `cancellation`
-    /// ends the child early (the reply is then the failure code "cancelled"), unless `keepsCancelledReply`
-    /// is set and the child wrote one complete `{"code":"cancelled",...}` object on its way out: that
-    /// is handed back as the output, so a caller that reads the cost of a call the owner stopped after
-    /// the model was paid sees it. A caller that sets it must treat a cancelled reply as a stop. Nothing is read from
+    /// ends the child early (the reply is then the failure code "cancelled"), unless `keepCancelledOutput`
+    /// is set and says yes to what the child wrote on its way out: that is handed back as the output, so
+    /// a caller that reads the cost of a call the owner stopped after the model was paid sees it.
+    /// The predicate decides what a readable stopped reply is for that caller (`singleCancelledObject`
+    /// for one JSON object); it must refuse truncated output. A caller that sets it must treat a
+    /// stopped reply as a stop. Nothing is read from
     /// the Keychain for a call with `usesModel` false.
     func invoke(arguments: [String], input: Data? = nil, timeout: TimeInterval? = nil, withDecisionKey: Bool = false,
                 usesModel: Bool = true, maxOutputBytes: Int = DraftRunner.maxOutputBytes,
-                extraEnvironment: [String: String] = [:], cancellation: CancelFlag? = nil, keepsCancelledReply: Bool = false,
+                extraEnvironment: [String: String] = [:], cancellation: CancelFlag? = nil, keepCancelledOutput: (@Sendable (VaniProcess.Outcome) -> Bool)? = nil,
                 onStdout: (@Sendable (Data) -> Void)? = nil) -> Invocation {
         let launch: Launch
         switch prepare(arguments, withDecisionKey: withDecisionKey, usesModel: usesModel) {
@@ -584,7 +586,7 @@ public struct DraftRunner: Sendable {
                                   environment: launch.environment.merging(extraEnvironment) { _, extra in extra }, input: input,
                                   timeout: t, maxOutputBytes: maxOutputBytes, cancellation: cancellation, onStdout: onStdout)
         if out.cancelled {
-            if keepsCancelledReply, Self.isCancelledReply(out) { return .output(out) }
+            if let keep = keepCancelledOutput, keep(out) { return .output(out) }
             return .failure(.failure("cancelled", "vani \(name) was cancelled"))
         }
         if let launchError = out.launchError { return .failure(.failure("config", launchError)) }
@@ -593,7 +595,7 @@ public struct DraftRunner: Sendable {
     }
 
     /// Whether a stopped child's stdout is one complete JSON object that says it was cancelled.
-    static func isCancelledReply(_ out: VaniProcess.Outcome) -> Bool {
+    @Sendable static func singleCancelledObject(_ out: VaniProcess.Outcome) -> Bool {
         guard !out.truncated, let object = (try? JSONSerialization.jsonObject(with: out.stdout)) as? [String: Any] else { return false }
         return object["code"] as? String == "cancelled"
     }

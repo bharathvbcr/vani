@@ -339,7 +339,7 @@ public struct RetriageBatchClient: Sendable {
         let invocation = runner.invoke(arguments: Self.arguments(keys, dryRun: false, skipRead: skipRead),
                                        timeout: runTimeout(postings: keys.count), usesModel: true, maxOutputBytes: Self.maxReplyBytes,
                                        extraEnvironment: ["VANI_NO_KEYCHAIN": "1"], cancellation: cancellation,
-                                       keepsCancelledReply: true, onStdout: { stream.feed($0) })
+                                       keepCancelledOutput: Self.endsWithSummary, onStdout: { stream.feed($0) })
         switch invocation {
         case let .failure(reply):
             if reply.code == "cancelled" { return .cancelled }
@@ -357,6 +357,17 @@ public struct RetriageBatchClient: Sendable {
             let tooOld = out.status == 2 ? " (this vani cannot re-triage several roles at once; rebuild the app)" : ""
             return .failure(RetriageFailure(code: "no_reply", message: "vani jobs retriage --batch exited \(out.status ?? -1) before it finished\(tooOld)"))
         }
+    }
+
+    /// Whether a stopped batch's stdout is a complete NDJSON stream (every line newline-ended, none
+    /// dropped as too long, output not truncated) whose last event is a `done` summary.
+    @Sendable static func endsWithSummary(_ out: VaniProcess.Outcome) -> Bool {
+        guard !out.truncated else { return false }
+        var splitter = LineSplitter(maxLine: maxLineBytes)
+        let lines = splitter.feed(out.stdout)
+        guard splitter.tail.isEmpty, splitter.dropped == 0, let last = lines.last,
+              case .done = RetriageBatchEvent.decode(line: last) else { return false }
+        return true
     }
 
     private struct Failure: Decodable {

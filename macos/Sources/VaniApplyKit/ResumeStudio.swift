@@ -65,6 +65,9 @@ public struct ResumeCost: Decodable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey { case usd, complete, turns }
 
+    /// Whether any model turn was paid for. An incomplete cost is a lower bound, so it counts as charged.
+    public var wasCharged: Bool { (usd ?? 0) > 0 || turns > 0 }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         usd = (try? c.decode(Double.self, forKey: .usd)).flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
@@ -826,7 +829,7 @@ public struct ResumeStudioClient: Sendable {
         if let refusal = Self.refuse(key: key) { return .failure(refusal) }
         let invocation = runner.invoke(arguments: call.arguments, input: call.input, timeout: call.timeout, usesModel: call.usesModel,
                                        maxOutputBytes: call.maxBytes, extraEnvironment: ["VANI_NO_KEYCHAIN": "1"],
-                                       cancellation: cancellation, keepsCancelledReply: true)
+                                       cancellation: cancellation, keepCancelledOutput: DraftRunner.singleCancelledObject)
         switch invocation {
         case let .failure(reply):
             if reply.code == "cancelled" { return .cancelled }
@@ -873,7 +876,7 @@ public struct ResumeStudioClient: Sendable {
             let code = failure.code.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown"
             // vani ended itself on the SIGTERM this app sent: the owner's own stop, not an error...
             // unless model turns were paid for, which the owner is told (the attempt is on record).
-            if code == "cancelled", failure.cost == nil { return .cancelled }
+            if code == "cancelled", failure.cost?.wasCharged != true { return .cancelled }
             return .failure(ResumeFailure(code: code, message: message, cost: failure.cost,
                                           attemptRecorded: failure.attemptRecorded, eligibility: failure.eligibility))
         }
