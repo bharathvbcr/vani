@@ -184,6 +184,12 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, c.Binary, "serve", "--root", c.Root, "--bank", c.BankPath())
+	// Wait must never depend on a descendant: it closes the pipes once the
+	// child has exited, and WaitDelay bounds anything it would still wait on to
+	// one second after the call's own deadline. The client starts the child in
+	// the caller's process group and does not signal descendants: one that
+	// outlives the child is left running, but its writes to the closed stderr
+	// pipe fail, so a stderr-only flood ends with the call.
 	cmd.WaitDelay = time.Second
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "TMPDIR=" + os.TempDir()}
 	stdin, err := cmd.StdinPipe()
@@ -201,12 +207,14 @@ func (c Client) call(ctx context.Context, op string, params any, dest any, secre
 	if err := cmd.Start(); err != nil {
 		return &Error{Code: CodeUnavailable, Message: "jarvis serve did not start"}
 	}
+	// Drain stderr, keeping none of it: a child that writes more than the pipe
+	// holds would otherwise block on it and never reply. This ends when the
+	// pipe does, which is when Wait closes it (below), not when every holder of
+	// the write end has gone: a descendant that inherited stderr cannot hold the
+	// call.
+	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 	errCh := make(chan error, 1)
 	go func() {
-		// Drain stderr to the end, keeping none of it: a child that writes more
-		// than the pipe holds would otherwise block on it and never reply. The
-		// call's own timeout bounds how long this runs.
-		_, _ = io.Copy(io.Discard, stderr)
 		// Wait closes the stdout pipe when the process has exited, and replies
 		// the process wrote just before exiting (it exits on stdin EOF) are
 		// still in that pipe: closing it under the reader below loses them, and
