@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build, sign and (unless --dry-run) publish a private GitHub release of Vani.
-#   scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests]
+#   scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests] [--allow-no-tessl]
 # Policy (docs/RELEASE.md): signed with the Apple Development identity exactly as
 # macos/scripts/bundle.sh signs, not notarized, published as a GitHub release in
 # the private repo, rolled back by reinstalling the previous release's zip.
@@ -8,6 +8,17 @@
 # --dry-run builds, signs and verifies into dist/ and reports every precondition
 #   that would refuse a real release; it never tags, pushes or creates a release.
 # --skip-tests skips `go test` and `swift test`; the release notes say so loudly.
+# --allow-no-tessl lets a release embed a vani built without -tags tessl (no semantic matching); without the flag
+#   such a build is refused, and with it the release notes say so.
+#
+# The tag must name the tree that was built. The build reads the live working tree, so after it (immediately before
+# tagging) the script re-verifies that HEAD is still HEAD_SHA, that no tracked or untracked file appeared or changed
+# (gitignored build outputs stay ignored), and that go.work and go.work.sum, the ignored files the Go build reads, hash
+# as they did before the build; it refuses otherwise. The other ignored inputs are not compared: the extension's dist
+# folders and macos/.build are outputs the build itself regenerates, and the Tessl archive lives outside the repo
+# (bundle.sh records its hash in the engine stamp).
+# (Chosen over building in a detached worktree of HEAD_SHA: the build needs ignored local state - go.work, the
+# extension's dist folders, the Tessl archive - that a fresh worktree does not carry.)
 #
 # Test seams (tests only; never set them for a real release):
 #   VANI_RELEASE_GIT  git executable (default: git)
@@ -27,16 +38,18 @@ die() { echo "release.sh: refusing: $*" >&2; exit 1; }
 
 DRY=0
 SKIP_TESTS=0
+ALLOW_NO_TESSL=0
 VERSION=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
     --skip-tests) SKIP_TESTS=1 ;;
-    -*) die "unknown flag $arg (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests])" ;;
+    --allow-no-tessl) ALLOW_NO_TESSL=1 ;;
+    -*) die "unknown flag $arg (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests] [--allow-no-tessl])" ;;
     *) [ -z "$VERSION" ] || die "more than one VERSION given"; VERSION="$arg" ;;
   esac
 done
-[ -n "$VERSION" ] || die "VERSION missing (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests])"
+[ -n "$VERSION" ] || die "VERSION missing (usage: scripts/release.sh vMAJOR.MINOR.PATCH [--dry-run] [--skip-tests] [--allow-no-tessl])"
 
 # Preconditions that always refuse, dry run or not.
 [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
@@ -64,8 +77,20 @@ problem() {
   fi
 }
 
+# Ignored files the Go build reads (go.work points the build at sibling checkouts); git cannot see them change.
+build_inputs() {
+  local f
+  for f in go.work go.work.sum; do
+    if [ -f "$ROOT/$f" ]; then shasum -a 256 "$ROOT/$f"; else echo "absent $f"; fi
+  done
+}
+
 HEAD_SHA="$("$GIT" -C "$ROOT" rev-parse HEAD)"
-[ -z "$("$GIT" -C "$ROOT" status --porcelain)" ] || problem "dirty-tree: working tree has uncommitted changes"
+INPUTS_BEFORE="$(build_inputs)"
+# Every emptiness test on a command's output below captures that output on its own line first: a failed command prints
+# nothing, and testing "$(cmd)" inline would read its failure as a clean result.
+TREE_STATUS="$("$GIT" -C "$ROOT" status --porcelain)" || problem "git-status-failed: could not read the working tree state"
+[ -z "$TREE_STATUS" ] || problem "dirty-tree: working tree has uncommitted changes"
 BRANCH="$("$GIT" -C "$ROOT" branch --show-current)"
 [ "$BRANCH" = "main" ] || problem "not-on-main: HEAD is on '${BRANCH:-detached}'"
 REMOTE_MAIN="$("$GIT" -C "$ROOT" ls-remote origin refs/heads/main | cut -f1)" \
@@ -78,7 +103,8 @@ fi
 if "$GIT" -C "$ROOT" rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
   problem "tag-exists-locally: $VERSION"
 fi
-[ -z "$("$GIT" -C "$ROOT" ls-remote --tags origin "refs/tags/$VERSION")" ] || problem "tag-exists-on-origin: $VERSION"
+REMOTE_TAG="$("$GIT" -C "$ROOT" ls-remote --tags origin "refs/tags/$VERSION")" || problem "tag-lookup-failed: could not ask origin whether $VERSION exists"
+[ -z "$REMOTE_TAG" ] || problem "tag-exists-on-origin: $VERSION"
 
 if [ "$SKIP_TESTS" = 1 ]; then
   echo "release.sh: WARNING tests skipped (--skip-tests); the release notes will say so" >&2
@@ -110,7 +136,19 @@ fi
 # Build: bundle.sh signs inside-out and stamps the embedded vani with VANI_VERSION.
 rm -rf "$DIST"
 mkdir -p "$DIST"
-VANI_VERSION="$VERSION" "$ROOT/macos/scripts/bundle.sh"
+BUILD_INFO="$DIST/.build-info"
+VANI_BUILD_INFO_OUT="$BUILD_INFO" VANI_VERSION="$VERSION" "$ROOT/macos/scripts/bundle.sh"
+# The embedding engine must be in the vani that ships: bundle.sh records whether it was (a build without it only warns).
+NO_TESSL=0
+TESSL_STATE="$(sed -n 's/^tessl=//p' "$BUILD_INFO" 2>/dev/null | head -n1 || true)"
+if [ "$TESSL_STATE" != "1" ]; then
+  NO_TESSL=1
+  if [ "$ALLOW_NO_TESSL" = 1 ]; then
+    echo "release.sh: WARNING vani built without -tags tessl (--allow-no-tessl); the release notes say so" >&2
+  else
+    problem "no-tessl: the embedded vani was not built with -tags tessl (build info: '${TESSL_STATE:-missing}'); this build is refused unless --allow-no-tessl is passed (or build the engine archive)"
+  fi
+fi
 APP="$ROOT/macos/build/$APP_NAME"
 codesign --verify --deep --strict "$APP" || die "codesign-verify-failed: $APP"
 
@@ -143,6 +181,7 @@ NOTES_FILE="$DIST/.release-notes.md"
   case " ${NOTES[*]:-} " in
     *tests-skipped*) echo "- **TESTS WERE SKIPPED for this release (--skip-tests).**" ;;
   esac
+  [ "$NO_TESSL" = 0 ] || echo "- **Built WITHOUT the Tessl embedding engine** (--allow-no-tessl): semantic knowledge-base matching reports \"not run\"."
   [ -z "$SWIFT_SKIPPED" ] || echo "- **$SWIFT_SKIPPED Swift tests skipped, not run** (no Go vani built, or the runner not trusted for accessibility)."
   echo
   echo "## First open"
@@ -161,6 +200,15 @@ NOTES_FILE="$DIST/.release-notes.md"
 echo
 echo "built $VERSION at ${HEAD_SHA:0:7}: $SUMMARY"
 ls -l "$DIST/$APP_ZIP" "$DIST/$CLI_ZIP" "$DIST/SHA256SUMS"
+
+# The tag below names HEAD_SHA, so the artifacts above must have been built from exactly that tree: HEAD must not have
+# moved, no tracked file may differ from it, no untracked file may have appeared (the build's own outputs are
+# gitignored), and the ignored files the build reads must be unchanged.
+[ "$("$GIT" -C "$ROOT" rev-parse HEAD)" = "$HEAD_SHA" ] || problem "head-moved: HEAD changed from ${HEAD_SHA:0:7} during the build; the artifacts do not match it"
+TREE_STATUS="$("$GIT" -C "$ROOT" status --porcelain)" || problem "git-status-failed: could not re-read the working tree state after the build"
+[ -z "$TREE_STATUS" ] || problem "tree-changed: a file changed or appeared during the build; the artifacts do not match ${HEAD_SHA:0:7}"
+INPUTS_AFTER="$(build_inputs)"
+[ "$INPUTS_AFTER" = "$INPUTS_BEFORE" ] || problem "build-inputs-changed: go.work or go.work.sum changed during the build; the artifacts do not match ${HEAD_SHA:0:7}"
 
 if [ "$DRY" = 1 ]; then
   echo "dry run: nothing tagged, pushed or published. Notes: $NOTES_FILE"

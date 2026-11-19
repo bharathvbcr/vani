@@ -44,7 +44,7 @@ of the app is not cut until this check is deliberately changed.
 Refusals, each named in the message: `version-format`, `version-mismatch`, `repo-not-private`,
 `dirty-tree`, `not-on-main`, `head-not-origin-main`, `tag-exists-locally`, `tag-exists-on-origin`,
 `go-tests-failed`, `swift-tests-failed`, `extension-tests-failed`, `typecheck-failed`,
-`codesign-verify-failed`. `--skip-tests` skips every test run and says so in the release notes. Swift tests
+`codesign-verify-failed`. `--skip-tests` skips every test run and says so in the release notes. `--allow-no-tessl` lets a release embed a `vani` built without the Tessl engine (a build without it is otherwise refused as `no-tessl`), and the notes say so. Swift tests
 that skipped rather than ran (no Go `vani` built, runner not trusted for accessibility) do not refuse the
 release, but the notes name how many. In `--dry-run` the git-state refusals are reported, not enforced.
 
