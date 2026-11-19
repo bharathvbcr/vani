@@ -1126,6 +1126,30 @@ struct ListTopScroller: NSViewRepresentable {
 
 // MARK: - List
 
+/// Shown over rows that a failed refresh left in place: they are from `readAt`, not current.
+private struct StaleRowsBanner: View {
+    @Environment(JobsModel.self) private var jobs
+    let readAt: Date
+    let error: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Couldn't refresh. These roles are from \(readAt.formatted(date: .omitted, time: .shortened)) and may be out of date.")
+                    .font(.callout.weight(.semibold))
+                Text(verbatim: String(error.prefix(240)))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+            }
+            Spacer()
+            Button("Try Again") { jobs.reload() }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.orange.opacity(0.12))
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct JobList: View {
     @Environment(JobsModel.self) private var jobs
     static let hideDuplicatesKey = "jobs.hidePossibleDuplicates"
@@ -1142,6 +1166,9 @@ private struct JobList: View {
         @Bindable var jobs = jobs
         VStack(spacing: 0) {
             RetriageBatchBanner()
+            if let at = jobs.lastGoodLoad, let err = jobs.error {
+                StaleRowsBanner(readAt: at, error: err)
+            }
             if let page = jobs.page, !jobs.jobs.isEmpty {
                 listHeader(page)
             }

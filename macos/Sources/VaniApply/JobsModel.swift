@@ -78,6 +78,13 @@ final class JobsModel {
     var selectedJobs: [Job] { jobs.filter { selectedKeys.contains($0.key) } }
 
     private(set) var page: JobsPage?
+    /// When `page` was last read from vani without error. While `error` is set the rows on screen are
+    /// from this time, not current (`lastGoodLoad`).
+    private(set) var pageLoadedAt: Date?
+    /// The time the rows on screen were last read, once a refresh has failed since; nil while they
+    /// are current (or there are none). A failed refresh keeps the rows, so they are never shown as
+    /// current without this.
+    var lastGoodLoad: Date? { page != nil && error != nil ? pageLoadedAt : nil }
     /// Distributions over the selection, loaded with the list while Insights is open.
     private(set) var stats: JobsStats?
     private(set) var statsError: String?
@@ -318,6 +325,7 @@ final class JobsModel {
         switch result {
         case let .success(p):
             page = p
+            pageLoadedAt = Date()
             error = nil
             // Only ranked roles were put in front of the owner to pass over; an
             // unranked posting awaiting triage is not "seen and passed".
