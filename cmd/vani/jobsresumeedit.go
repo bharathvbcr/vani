@@ -81,10 +81,33 @@ func (e *env) jobsResumeRender(args []string) error {
 	})
 }
 
-// readEdit reads the owner's edit from stdin, at most maxResumeEdit bytes. Its
-// shape is Render's to judge (bad_edit); only its size is checked here.
-func readEdit() ([]byte, *resumeError) {
-	raw, err := io.ReadAll(io.LimitReader(resumeInput, maxResumeEdit+1))
+// readEdit reads the owner's edit from stdin, at most maxResumeEdit bytes, and
+// returns early with the cancelled code when ctx ends first (Ctrl-C while a
+// pipe that never closes is being read): a blocked read cannot be interrupted,
+// so it is left to finish on its own goroutine, which only the exiting process
+// outlives. Its shape is Render's to judge (bad_edit); only its size is checked here.
+func readEdit(ctx context.Context) ([]byte, *resumeError) {
+	type result struct {
+		raw []byte
+		err error
+	}
+	if ctx.Err() != nil {
+		return nil, jrErr(rkbresume.CodeCancel, "jobs resume: stopped")
+	}
+	in := resumeInput // read now: the goroutine may outlive a caller that swaps it back
+	done := make(chan result, 1)
+	go func() {
+		raw, err := io.ReadAll(io.LimitReader(in, maxResumeEdit+1))
+		done <- result{raw, err}
+	}()
+	var raw []byte
+	var err error
+	select {
+	case r := <-done:
+		raw, err = r.raw, r.err
+	case <-ctx.Done():
+		return nil, jrErr(rkbresume.CodeCancel, "jobs resume: stopped")
+	}
 	if err != nil {
 		return nil, jrErr(jrBadRequest, "jobs resume: read the edit: %s", oneLine(err.Error(), 200))
 	}
@@ -105,7 +128,7 @@ func (e *env) renderPrep(ctx context.Context, rawKey string) (resumeJob, *resume
 	if serr != nil {
 		return resumeJob{}, nil, nil, resumeWiring{}, serr
 	}
-	edit, eerr := readEdit()
+	edit, eerr := readEdit(ctx)
 	if eerr != nil {
 		return resumeJob{}, nil, nil, resumeWiring{}, eerr
 	}
