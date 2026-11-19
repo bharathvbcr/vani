@@ -99,7 +99,7 @@ final class JobsModel {
     private(set) var error: String?
     /// The selected job as `vani jobs show` returned it (with its description).
     private(set) var detail: Job? {
-        didSet { if let detail { learnNote(detail) } }
+        didSet { if let detail, !learnSuppressed { learnNote(detail) } }
     }
     private(set) var detailError: String?
     /// The last failed mark or note, shown as an alert.
@@ -149,6 +149,14 @@ final class JobsModel {
     /// The text of the note save running for a job. A read that lands meanwhile may predate it, so
     /// it is ignored; the save's own reply settles the record.
     private var inflightNotes: [String: String] = [:]
+    /// Moves whenever a note save for a job starts or ends. A read of that job (the detail) records it
+    /// when it starts and, if it moved by the time the read lands, the read may predate the save, so
+    /// what it holds of the note is not learned (the same rule a list read follows through
+    /// `applyWrite`, which stops a list that started before a write).
+    private var notesConfirmedBySave: Set<String> = []
+    private var noteSaveGeneration: [String: Int] = [:]
+    /// Set while a detail read that predates a save is being shown: its note is not vani's newest.
+    private var learnSuppressed = false
 
     /// "Re-triage with Sonnet": its state is shared by the detail pane and the row menu, and a
     /// reading made or cleared re-lists the jobs here. `retriage` builds the runner that holds the
@@ -429,11 +437,15 @@ final class JobsModel {
         guard let key = selection else { detail = nil; return }
         if detail?.key != key { detail = nil }
         let c = client()
+        let savesAtStart = noteSaveGeneration[key, default: 0]
         Task {
             let result = await BlockingWork.run { try c.show(key) }
             guard gen == detailGeneration else { return }
             switch result {
-            case let .success(j): detail = j
+            case let .success(j):
+                learnSuppressed = noteSaveGeneration[key, default: 0] != savesAtStart
+                detail = j
+                learnSuppressed = false
             case let .failure(err): detailError = String(describing: err)
             }
         }
@@ -646,7 +658,13 @@ final class JobsModel {
     /// page nor the detail.
     private func learnNote(_ job: Job) {
         guard inflightNotes[job.key] == nil else { return }
-        confirmedNotes[job.key] = (job.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = (job.note ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        // A read with no note for a job whose non-blank note this app just confirmed by a save is no
+        // evidence the note is gone: the resident reader's list can lag a write. A read that carries a
+        // note ends that protection and is believed.
+        if note.isEmpty, notesConfirmedBySave.contains(job.key) { return }
+        notesConfirmedBySave.remove(job.key)
+        confirmedNotes[job.key] = note
     }
 
     /// The newest note state this app knows for `key`: the save in flight, else the confirmed note;
@@ -665,7 +683,10 @@ final class JobsModel {
     /// clear a note nobody saw. Only an edit of a known note can clear it.
     func editNote(_ key: String, _ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if isNoChange(key, trimmed) {
+        // While a save of this job runs, no draft is dropped as "no change": a draft equal to the text in
+        // flight is the only copy of it if that save fails (saveNote restores or keeps it, and clears it
+        // once the save confirms).
+        if inflightNotes[key] == nil, isNoChange(key, trimmed) {
             noteDrafts[key] = nil
         } else {
             noteDrafts[key] = text
@@ -726,11 +747,14 @@ final class JobsModel {
         let c = client()
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         inflightNotes[key] = trimmed
+        noteSaveGeneration[key, default: 0] += 1
         let result = await BlockingWork.run { try c.note(key, trimmed) }
         inflightNotes[key] = nil
+        noteSaveGeneration[key, default: 0] += 1
         switch result {
         case let .success(j):
             confirmedNotes[key] = trimmed
+            if trimmed.isEmpty { notesConfirmedBySave.remove(key) } else { notesConfirmedBySave.insert(key) }
             if let draft = noteDrafts[key], draft.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
                 noteDrafts[key] = nil
             }
@@ -738,6 +762,8 @@ final class JobsModel {
             await applyWrite(j)
             return true
         case let .failure(err):
+            // The text that failed to save is not lost: it is the draft again unless a newer one was typed.
+            if noteDrafts[key] == nil { noteDrafts[key] = trimmed }
             actionError = String(describing: err)
             return false
         }
