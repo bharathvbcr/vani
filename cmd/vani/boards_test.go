@@ -847,11 +847,10 @@ func TestListBoardsBoardTimeoutDoesNotCancelRun(t *testing.T) {
 	}
 }
 
-// When an early board finishes List and releases its slot while a second board on
-// the same host was already parked in the same scan pass, a later board on that
-// host can take the freed slot and leave the parked board waiting in cond.Wait.
-// If the early board's reconcile then fails, abandon must wake the launcher and
-// drain all boards without deadlocking.
+// When an early board finishes List and releases its slot, the earlier parked
+// board on that host (b) takes it and the later one (d) stays parked in the
+// launcher's cond.Wait. If the early board's reconcile then fails, abandon must
+// wake the launcher and drain all boards without deadlocking.
 func TestListBoardsReconcileFailureWhileEarlierBoardParkedDoesNotDeadlock(t *testing.T) {
 	withBoardListParallel(t, 2)
 	b0 := sources.Board{ATS: posting.Greenhouse, Token: "a", Company: "A"}
@@ -876,7 +875,7 @@ func TestListBoardsReconcileFailureWhileEarlierBoardParkedDoesNotDeadlock(t *tes
 			case "a":
 				<-b0AllowReturn
 				return boardPostings(b, 1), nil
-			case "d":
+			case "b":
 				close(b3Entered)
 				<-ctx.Done()
 				return nil, ctx.Err()

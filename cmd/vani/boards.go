@@ -396,6 +396,10 @@ func launchBoardFetches(ctx context.Context, watchlist []sources.Board, srcs map
 			return
 		}
 		var parked []int
+		// A board that could not start holds its host for the rest of the pass:
+		// a slot a finished fetch frees mid-scan goes to the earlier parked
+		// board on the next pass, never to a later board of the same host.
+		blockedHost := map[string]bool{}
 		progressed := false
 		halt := false
 		for n, i := range pending {
@@ -405,8 +409,14 @@ func launchBoardFetches(ctx context.Context, watchlist []sources.Board, srcs map
 				break
 			}
 			b := watchlist[i]
+			host := listFetchHost(b)
+			if blockedHost[host] {
+				parked = append(parked, i)
+				continue
+			}
 			give, ok := gate.tryAcquire(b)
 			if !ok {
+				blockedHost[host] = true
 				if gate.parallel == 1 {
 					// One at a time: the caller returns the slot, in watchlist
 					// order, after it has read that board's result. A later
