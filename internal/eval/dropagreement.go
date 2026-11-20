@@ -48,6 +48,9 @@ type AgreementRow struct {
 type DropAgreement struct {
 	Primary string         `json:"primary"`
 	Rows    []AgreementRow `json:"rows"`
+	// Skipped names each rule the report could not use (a minimum probability
+	// outside (0, 1]); candidates it would have matched are not counted.
+	Skipped []string `json:"skipped_rules,omitempty"`
 
 	llmModel string // Names.LLMModel, shown beside the "llm" shadow
 }
@@ -63,18 +66,20 @@ func (d DropAgreement) shadowLabel(name string) string {
 }
 
 // BuildDropAgreement counts, over recs, how often each shadow backend agreed
-// with the primary on the slots the rules would drop on. Inherited readings are
+// with the primary on the slots the rules would drop on: a slot's rules are
+// alternatives and any one that matches makes the record a candidate; a rule
+// with no usable minimum probability is listed in Skipped, never dropped silently. Inherited readings are
 // copies, not observations, and are left out; so are escalation readings. A
 // slot read by the primary under a rule's threshold is not a candidate.
 func BuildDropAgreement(labels map[posting.Key]Entry, recs []ledger.Record, rules []DropRuleSpec, names Names) DropAgreement {
 	out := DropAgreement{Primary: names.probability(), llmModel: names.LLMModel}
-	byslot := map[string]DropRuleSpec{}
+	byslot := map[string][]DropRuleSpec{}
 	for _, r := range rules {
 		if r.MinP > 0 && r.MinP <= 1 {
-			if _, dup := byslot[r.Slot]; !dup {
-				byslot[r.Slot] = r
-			}
+			byslot[r.Slot] = append(byslot[r.Slot], r)
+			continue
 		}
+		out.Skipped = append(out.Skipped, fmt.Sprintf("%s %v: min_p %v is outside (0, 1], so it cannot drop on a probability", r.Slot, r.Values, r.MinP))
 	}
 	wantedLabel := func(k posting.Key) (judged, hit bool) {
 		e, ok := labels[k]
@@ -103,7 +108,7 @@ func BuildDropAgreement(labels map[posting.Key]Entry, recs []ledger.Record, rule
 		if _, inherited := r.Annotations[ledger.AnnTriageInheritedFrom]; inherited {
 			continue
 		}
-		for slot, rule := range byslot {
+		for slot, slotRules := range byslot {
 			pre := ledger.AnnTriagePrefix + slot
 			if r.Annotations[pre+ledger.AnnTriageSuffixReading] != "answered" {
 				continue
@@ -112,11 +117,8 @@ func BuildDropAgreement(labels map[posting.Key]Entry, recs []ledger.Record, rule
 				continue
 			}
 			value := r.Annotations[pre]
-			if !containsString(rule.Values, value) {
-				continue
-			}
 			p, err := strconv.ParseFloat(r.Annotations[pre+ledger.AnnTriageSuffixP], 64)
-			if err != nil || math.IsNaN(p) || p < rule.MinP {
+			if err != nil || math.IsNaN(p) || !dropsOn(slotRules, value, p) {
 				continue
 			}
 			shadow := r.Annotations[pre+ledger.AnnTriageSuffixShadowBackend]
@@ -159,6 +161,18 @@ func BuildDropAgreement(labels map[posting.Key]Entry, recs []ledger.Record, rule
 	return out
 }
 
+// dropsOn reports whether any rule of a slot would drop a reading of value at
+// probability p: the rules are alternatives, so a later one counts as much as
+// the first.
+func dropsOn(rules []DropRuleSpec, value string, p float64) bool {
+	for _, r := range rules {
+		if p >= r.MinP && containsString(r.Values, value) {
+			return true
+		}
+	}
+	return false
+}
+
 func containsString(vs []string, v string) bool {
 	for _, x := range vs {
 		if x == v {
@@ -188,6 +202,7 @@ func (d DropAgreement) Markdown() string {
 				fmt.Fprintf(&b, "- %s: %d candidate(s), none asked\n", r.Slot, r.NotAsked)
 			}
 		}
+		d.writeSkipped(&b)
 		return b.String()
 	}
 	b.WriteString("| slot | shadow | asked | unavailable | answered | agreement | disagreements | labelled | wanted |\n|---|---|---|---|---|---|---|---|---|\n")
@@ -206,5 +221,13 @@ func (d DropAgreement) Markdown() string {
 	for _, r := range unasked {
 		fmt.Fprintf(&b, "\n- %s: %d candidate(s) with no shadow reading (before the mode was on, or not asked)\n", r.Slot, r.NotAsked)
 	}
+	d.writeSkipped(&b)
 	return b.String()
+}
+
+// writeSkipped lists the rules BuildDropAgreement could not use.
+func (d DropAgreement) writeSkipped(b *strings.Builder) {
+	for _, s := range d.Skipped {
+		fmt.Fprintf(b, "\n- skipped rule: %s\n", s)
+	}
 }
