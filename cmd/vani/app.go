@@ -399,7 +399,10 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		if len(only) == 0 {
 			// The previous run may have been cut to some boards (--board); the app
 			// still holds that cut, and the last applied config is the whole list.
-			app.Reload(prev)
+			// An app that holds the whole list is left alone, as before.
+			if _, cut := boardCutHeld.LoadAndDelete(e); cut {
+				app.Reload(prev)
+			}
 			return prev, stale
 		}
 		fresh, read = prev, time.Time{}
@@ -426,12 +429,22 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 		}
 	}
 	app.Reload(fresh)
+	if len(only) > 0 {
+		boardCutHeld.Store(e, struct{}{})
+	} else {
+		boardCutHeld.Delete(e)
+	}
 	if restart {
 		e.requestConfigRestart()
 		return fresh, errConfigRestart
 	}
 	return fresh, stale
 }
+
+// boardCutHeld records that the app was last handed a watchlist cut to some
+// boards (--board) for this *env, so a stale reload knows to put the whole
+// list back (reloadConfig).
+var boardCutHeld sync.Map
 
 // errConfigRestart means a process-lifetime field changed (processPinned).
 // This process keeps the value it started with. The caller exits
