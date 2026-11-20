@@ -396,6 +396,9 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 	if err != nil {
 		stale = fmt.Errorf("%w; this run uses the previous watchlist, allowed_hosts and policy: %w", errConfigStale, err)
 		if len(only) == 0 {
+			// The previous run may have been cut to some boards (--board); the app
+			// still holds that cut, and the last applied config is the whole list.
+			app.Reload(prev)
 			return prev, stale
 		}
 		fresh, read = prev, time.Time{}
