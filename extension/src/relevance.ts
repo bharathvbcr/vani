@@ -181,6 +181,23 @@ export function detectSeniority(text: string): { name: string; rank: number } | 
   return null;
 }
 
+/**
+ * Read a free-text visa-sponsorship answer: true when it says sponsorship is
+ * required, false when it says it is not, undefined when it does not say
+ * ("unknown", "not sure", empty). A leading yes/true wins; otherwise any
+ * negation is read before the keyword "require", so "No, I will not require
+ * sponsorship" is false, and the whole-word match keeps "unknown" from being "no".
+ */
+export function parseSponsorship(raw: string): boolean | undefined {
+  const s = raw.toLowerCase().trim();
+  if (!s) return undefined;
+  if (/\b(unknown|unsure|not\s+sure|undecided|n\/a|prefer\s+not)\b/.test(s)) return undefined;
+  if (/^(yes|y|true)\b/.test(s)) return true;
+  if (/\b(no|not|never|without|false)\b|n't/.test(s)) return false;
+  if (/\b(require|requires|required|need|needs)\b/.test(s)) return true;
+  return undefined;
+}
+
 /** Construct a tailored UserTargetProfile dynamically from user's Bank and Basics. */
 export function targetProfileFromBank(bank: Bank | null): UserTargetProfile {
   if (!bank) return { ...DEFAULT_PROFILE };
@@ -188,12 +205,8 @@ export function targetProfileFromBank(bank: Bank | null): UserTargetProfile {
   const profile: UserTargetProfile = { ...DEFAULT_PROFILE };
 
   // Visa sponsorship
-  const sponsorVal = (v["visa-sponsorship"] ?? "").toLowerCase();
-  if (sponsorVal.includes("yes") || sponsorVal.includes("require") || sponsorVal === "true") {
-    profile.requiresSponsorship = true;
-  } else if (sponsorVal.includes("no") || sponsorVal === "false") {
-    profile.requiresSponsorship = false;
-  }
+  const sponsors = parseSponsorship(v["visa-sponsorship"] ?? "");
+  if (sponsors !== undefined) profile.requiresSponsorship = sponsors;
 
   // Remote & location preferences
   const inPersonVal = (v["open-to-working-in-person"] ?? "").toLowerCase();

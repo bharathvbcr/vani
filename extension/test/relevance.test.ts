@@ -7,6 +7,7 @@ import {
   extractSalaryRange,
   extractSkills,
   extractWorkplaceType,
+  parseSponsorship,
   targetProfileFromBank,
 } from "../src/relevance";
 
@@ -160,6 +161,35 @@ describe("relevance engine", () => {
     expect(profile.targetTitles).toContain("staff distributed systems engineer");
     expect(profile.skills).toContain("kafka");
     expect(profile.skills).toContain("rust");
+  });
+
+  test("parseSponsorship reads negation before the keyword and never reads unknown as no", () => {
+    const table: [string, boolean | undefined][] = [
+      ["No, I will not require sponsorship", false],
+      ["I do not require sponsorship", false],
+      ["I don't need sponsorship", false],
+      ["No", false],
+      ["false", false],
+      ["unknown", undefined],
+      ["not sure", undefined],
+      ["", undefined],
+      ["   ", undefined],
+      ["Yes", true],
+      ["Yes, I require sponsorship", true],
+      ["I will require sponsorship", true],
+      ["true", true],
+      ["maybe later", undefined],
+    ];
+    for (const [input, want] of table) {
+      expect([input, parseSponsorship(input)]).toEqual([input, want]);
+    }
+  });
+
+  test("targetProfileFromBank keeps the default when the sponsorship answer says nothing", () => {
+    const bank = { version: 1, answers: { a: { key: "basics:visa-sponsorship", value: ["unknown"], kind: "text", labels: ["Visa sponsorship"], uses: 1, fills: 1, savedAt: 1 } }, settings: { captureSelfId: false, disabledHosts: [] } } as any;
+    expect(targetProfileFromBank(bank).requiresSponsorship).toBe(DEFAULT_PROFILE.requiresSponsorship);
+    bank.answers.a.value = ["No, I will not require sponsorship"];
+    expect(targetProfileFromBank(bank).requiresSponsorship).toBe(false);
   });
 
   test("detectSeniority identifies correct ranks and detects genuine seniority mismatches", () => {
