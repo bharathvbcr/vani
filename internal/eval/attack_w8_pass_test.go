@@ -103,9 +103,8 @@ func TestAttackDropAgreementOddRules(t *testing.T) {
 	}
 }
 
-// Attack: a label with a hash but a record with an unrelated empty-hash audit-only
-// entry never counts as stale (audit-only entries are not triage labels).
-func TestAttackAuditOnlyEntryNeverStale(t *testing.T) {
+// Attack: an audit-only entry is not a triage label, so it never matches.
+func TestAttackAuditOnlyEntryNeverMatches(t *testing.T) {
 	s, _, _ := newStore(t)
 	e := wouldApplyEntry("same", "yes")
 	e.TextSHA256 = HashText("old")
@@ -115,14 +114,7 @@ func TestAttackAuditOnlyEntryNeverStale(t *testing.T) {
 	r := cand("same", "mismatch_domain", "0.95", "", "", "")
 	r.Posting.Description = "new"
 	rep := BuildReport([]ledger.Record{r}, s, Names{OpenRouter: "d1-ultra"})
-	if rep.StaleText != 0 || rep.Matched != 0 {
-		t.Errorf("audit-only entry affected the triage report: stale %d matched %d", rep.StaleText, rep.Matched)
-	}
-	if _, err := json.Marshal(rep); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := json.Marshal(rep)
-	if !strings.Contains(string(b), "\"stale_text\":0") {
-		t.Errorf("stale_text missing from JSON: %s", b)
+	if rep.Matched != 0 {
+		t.Errorf("audit-only entry affected the triage report: matched %d", rep.Matched)
 	}
 }

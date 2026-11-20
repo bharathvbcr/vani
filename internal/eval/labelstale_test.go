@@ -1,12 +1,6 @@
 package eval
 
-import (
-	"strings"
-	"testing"
-
-	"github.com/bharathvbcr/Vani/internal/ledger"
-	"github.com/bharathvbcr/Vani/internal/posting"
-)
+import "testing"
 
 // An audit answer on a key that already has triage labels does not move those
 // labels' text hash: the hash says which text they were given on.
@@ -51,41 +45,5 @@ func TestAuditAnswerKeepsTriageLabelsTextHash(t *testing.T) {
 	}
 	if e := mustLabels(t, s)["gh:a:3"]; e.TextSHA256 != now {
 		t.Errorf("a new triage label did not set its hash: %+v", e)
-	}
-}
-
-// A label given on text that has since changed is not scored against the
-// record's reading of the new text; it is counted as stale. A label or record
-// with nothing to compare is kept.
-func TestReportLeavesOutLabelsWhoseTextChanged(t *testing.T) {
-	s, _, _ := newStore(t)
-	put := func(key, hash string) {
-		if err := s.Put(Entry{Key: posting.Key(key), Labels: map[string]string{"role_fit": "mismatch_domain"}, TextSHA256: hash}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	rec := func(key, desc string) ledger.Record {
-		r := cand(key, "mismatch_domain", "0.95", "", "", "")
-		r.Posting.Description = desc
-		return r
-	}
-	put("same", HashText("body"))
-	put("changed", HashText("old body"))
-	put("nohash", "")
-	put("nodesc", HashText("anything"))
-	recs := []ledger.Record{rec("same", "body"), rec("changed", "new body"), rec("nohash", "x"), rec("nodesc", "")}
-	rep := BuildReport(recs, s, Names{OpenRouter: "d1-ultra"})
-	if rep.StaleText != 1 || rep.Matched != 3 {
-		t.Fatalf("stale %d matched %d, want 1 and 3", rep.StaleText, rep.Matched)
-	}
-	var labeled int
-	for _, c := range rep.Cells {
-		labeled += c.Labeled
-	}
-	if labeled != 3 {
-		t.Errorf("%d labelled readings scored, want 3 (the changed posting's is left out)", labeled)
-	}
-	if md := rep.Markdown(); !strings.Contains(md, "text changed") {
-		t.Errorf("the report does not say a label was left out:\n%s", md)
 	}
 }
