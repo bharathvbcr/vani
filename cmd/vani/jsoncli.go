@@ -37,13 +37,14 @@ const (
 // Codes the envelope carries when the command wrote no reply of its own. A
 // command's own codes (draft, rkbresume) are snake_case nouns too.
 const (
-	codeUsage       = "usage"
-	codeRuntime     = "runtime"
-	codeUnsupported = "unsupported" // the global --json on a command with no JSON form
-	codeBusy        = "busy"        // another vani holds the ledger or an index; retry when it is done
-	codeShrinks     = "shrinks"     // lca import would replace a bigger fiscal year; --replace allows it
-	codeCrash       = "crash"       // the command panicked; the exit code is exitCrash
-	codeStale       = "stale"       // a save built on a copy another writer has since changed; read again
+	codeUsage        = "usage"
+	codeRuntime      = "runtime"
+	codeUnsupported  = "unsupported"   // the global --json on a command with no JSON form
+	codeBusy         = "busy"          // another vani holds the ledger or an index; retry when it is done
+	codeShrinks      = "shrinks"       // lca import would replace a bigger fiscal year; --replace allows it
+	codeCrash        = "crash"         // the command panicked; the exit code is exitCrash
+	codeRelativePath = "relative_path" // VANI_CONFIG or VANI_STATE_DIR is not absolute; still exit 2
+	codeStale        = "stale"         // a save built on a copy another writer has since changed; read again
 )
 
 // jsonLeaf is one leaf command: the words that name it, as usageTemplate
@@ -348,6 +349,8 @@ func envelopeCode(err error) string {
 	switch {
 	case errors.As(err, new(panicError)):
 		return codeCrash
+	case errors.Is(err, config.ErrRelativePath):
+		return codeRelativePath
 	case errors.As(err, new(unsupportedError)):
 		return codeUnsupported
 	case errors.As(err, new(usageError)):

@@ -516,6 +516,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	paths, err := config.ResolveDefault()
 	if err != nil {
 		fmt.Fprintf(stderr, "vani: %v\n", err)
+		// The command has not run, so no reply can have been written: a caller
+		// that asked for JSON gets the envelope naming the variable.
+		if wantsJSONReply(args) {
+			if werr := writeJSON(stdout, errorReply{err.Error(), envelopeCode(err)}); werr != nil {
+				fmt.Fprintf(stderr, "vani: write error reply: %v\n", werr)
+			}
+		}
 		return exitCode("", err)
 	}
 	if paths.Warning != "" {
