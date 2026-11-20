@@ -181,20 +181,39 @@ export function detectSeniority(text: string): { name: string; rank: number } | 
   return null;
 }
 
+const SPONSOR_TAG = /<\/?[a-z][^<>]{0,100}>/gi;
+const SPONSOR_UNSURE = /\b(?:unknown|unsure|not\s+sure|undecided|not\s+yet\s+decided|not\s+applicable|n\/a|prefer\s+not|(?:do\s+not|don't|dont)\s+know)\b|^na$/;
+// A negation scoped to the require/need verb, or "no sponsorship (is) required".
+const SPONSOR_NEGATED_REQUIREMENT =
+  /\b(?:(?:do|does|did|will|would|shall)\s+not|don't|doesn't|won't|wouldn't|never|not)\s+(?:currently\s+|really\s+|ever\s+)?(?:require|need)\b|\bno\s+(?:visa\s+|work\s+)?sponsorship\s+(?:is\s+|will\s+be\s+)?(?:required|needed|necessary)\b|\bnot\s+(?:be\s+)?(?:required|needed)\b/;
+const SPONSOR_REQUIRED = /\b(?:require|requires|required|need|needs)\b|\bwithout\s+(?:\w+\s+){0,2}sponsorship\b/;
+
 /**
  * Read a free-text visa-sponsorship answer: true when it says sponsorship is
- * required, false when it says it is not, undefined when it does not say
- * ("unknown", "not sure", empty). A leading yes/true wins; otherwise any
- * negation is read before the keyword "require", so "No, I will not require
- * sponsorship" is false, and the whole-word match keeps "unknown" from being "no".
+ * required, false when it says it is not, undefined when it does not say.
+ * Order: (a) an unsure answer ("unknown", "I do not know", "not yet decided",
+ * "not applicable", "n/a") is undefined; (b) a negation scoped to the
+ * require/need verb ("do not require", "no sponsorship needed") is false; (c)
+ * a require/need verb or "cannot work without sponsorship" is true, so "no,
+ * but I will require it after OPT" is true (a future requirement is still a
+ * requirement) and a stray "no" elsewhere does not flip it; (d) otherwise a
+ * bare leading no/false is false and yes/true is true; (e) anything else is
+ * undefined. The whole-word matches keep "unknown" and "nobody" from being
+ * "no". Leading HTML tags and zero-width characters are removed first.
  */
 export function parseSponsorship(raw: string): boolean | undefined {
-  const s = raw.toLowerCase().trim();
+  const s = raw
+    .replace(SPONSOR_TAG, " ")
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, "")
+    .replace(/[\u2018\u2019]/g, "'")
+    .toLowerCase()
+    .trim();
   if (!s) return undefined;
-  if (/\b(unknown|unsure|not\s+sure|undecided|n\/a|prefer\s+not)\b/.test(s)) return undefined;
-  if (/^(yes|y|true)\b/.test(s)) return true;
-  if (/\b(no|not|never|without|false)\b|n't/.test(s)) return false;
-  if (/\b(require|requires|required|need|needs)\b/.test(s)) return true;
+  if (SPONSOR_UNSURE.test(s)) return undefined;
+  if (SPONSOR_NEGATED_REQUIREMENT.test(s)) return false;
+  if (SPONSOR_REQUIRED.test(s)) return true;
+  if (/^(?:no|nope|none|false)\b/.test(s)) return false;
+  if (/^(?:yes|y|true)\b/.test(s)) return true;
   return undefined;
 }
 
