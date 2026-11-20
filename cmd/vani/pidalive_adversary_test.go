@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -369,18 +368,7 @@ func TestDaemonIdentityConcurrentSwap(t *testing.T) {
 // pidalive_windows.go returns not-alive from every OpenProcess error,
 // ERROR_ACCESS_DENIED included; that path was read and not executed.
 func TestDaemonIdentityAccessDeniedIsNotLive(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		err := syscall.Kill(1, 0)
-		if !errors.Is(err, syscall.EPERM) {
-			t.Fatalf("pid 1: %v, want EPERM", err)
-		}
-		if processExists(1) {
-			t.Fatal("EPERM reads as alive")
-		}
-		if id := readProcIdentity(1); id.OK || id.Exe != "" || !id.Started.IsZero() {
-			t.Fatalf("EPERM identity: %+v", id)
-		}
-	}
+	requireUninspectablePidIsNotLive(t)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
