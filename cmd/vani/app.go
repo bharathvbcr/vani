@@ -372,6 +372,7 @@ func (e *env) restoreRecordAfterRestart(prior []byte, priorErr error) {
 // any; the cut is this run's and is never remembered.
 func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.Config, error) {
 	prev := e.lastApplied(cfg)
+	e.trimErrLog()
 	// A replaced binary is decided before the file is read: the new binary may
 	// have added keys this one rejects, and a restart is the only fix.
 	if e.binary.replaced(e.stderr) {
@@ -386,7 +387,7 @@ func (e *env) reloadConfig(app *App, cfg config.Config, only []string) (config.C
 	}
 	read := time.Now() // before the read: a removal saved during it is not in what it returns
 	fresh, old, err := config.LoadWithDeprecations(e.configPath)
-	e.warnDeprecated(old)
+	e.warnDeprecatedOnce(old)
 	if err == nil {
 		// A summary edited into the config while the daemon runs is held to the
 		// check wireApp made at start: one that fails it is not applied.
