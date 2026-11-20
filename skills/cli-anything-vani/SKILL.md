@@ -54,7 +54,11 @@ whether a binary has them.
   `run-once` keeps the run's record, a stopped `kbmatch run` keeps what it asked, and a
   `jobs export` refused with `already_exported` keeps the count of roles exported before. Re-run
   it with `--already-exported skip` or `include` only after asking the owner.
-- **Exit codes:** 0 ok, 1 runtime failure, 2 usage error or unsupported. 75 comes only from
+- **Exit codes:** 0 ok, 1 runtime failure, 2 usage error or unsupported, 70 a command panicked
+  (recovered at the dispatch seam: one stderr line `vani: crashed: <text>`, and the
+  `{"error","code":"crash"}` envelope when JSON was asked; a bare Go panic would have been 2, which
+  the Mac app reads as "too old"). A relative `VANI_CONFIG`/`VANI_STATE_DIR` is exit 2 with code
+  `relative_path` when JSON was asked. 75 comes only from
   `vani daemon` (restart for a config change, or its own binary replaced on disk). The same
   restart from `run-once` is exit 1, not 75: that command's daemon cancel is nil, so the
   error is a runtime failure. 75 is not a `run-once` exit.

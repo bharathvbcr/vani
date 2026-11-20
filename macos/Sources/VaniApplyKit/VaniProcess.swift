@@ -355,7 +355,75 @@ extension VaniProcess {
         if let failure = try? decoder.decode(Failure.self, from: out.stdout) {
             return BankError(failure.error, code: failure.code)
         }
-        return BankError("\(name) exited \(out.status ?? -1) without a reply" + (out.status == 2 ? " (\(tooOld))" : ""))
+        return BankError(VaniExit.noReply(command: name, out: out, what: "without a reply", tooOld: tooOld))
+    }
+}
+
+/// The one reading of a vani that exited without a reply this app can use. Exit 2 is vani's usage
+/// code, and a Go panic that nothing recovers also exits 2, so 2 alone cannot mean "this vani is
+/// too old". vani recovers a panic itself and exits `crash` (exitCrash in main.go) with its last
+/// stderr line "vani: crashed: <text>"; an older vani lets the panic exit 2 and Go's own report
+/// ("panic: ...", "fatal error: ...") is what stderr holds. A coded `{"error","code"}` reply is
+/// read before this is reached, so a usage refusal that names its cause (a relative VANI_CONFIG,
+/// code relative_path) never gets here.
+public enum VaniExit {
+    /// exitUsage in main.go.
+    public static let usage: Int32 = 2
+    /// exitCrash in main.go (sysexits EX_SOFTWARE).
+    public static let crash: Int32 = 70
+
+    /// Most of a crash line shown.
+    static let maxCrashLine = 200
+
+    public enum Reading: Equatable, Sendable {
+        /// vani crashed; the line says how, bounded and without control characters.
+        case crashed(line: String)
+        /// exit 2 with nothing to say it was anything but a usage error: an older vani.
+        case tooOld
+        case other
+    }
+
+    public static func read(status: Int32?, stderr: Data) -> Reading {
+        let text = String(decoding: stderr, as: UTF8.self)
+        if status == crash { return .crashed(line: crashLine(text) ?? "no reason given") }
+        if status == usage, let line = goPanicLine(text) { return .crashed(line: line) }
+        return status == usage ? .tooOld : .other
+    }
+
+    /// "<command> exited N <what>", with the reading appended: how vani crashed, or `tooOld` for exit 2.
+    static func noReply(command: String, out: VaniProcess.Outcome, what: String, tooOld: String? = nil) -> String {
+        switch read(status: out.status, stderr: out.stderr) {
+        case let .crashed(line): return "\(command) crashed: \(line)"
+        case .tooOld where tooOld != nil: return "\(command) exited \(out.status ?? -1) \(what) (\(tooOld ?? ""))"
+        case .tooOld, .other: return "\(command) exited \(out.status ?? -1) \(what)"
+        }
+    }
+
+    /// The failure code for an exit with no reply: "crashed" for a crash, else "no_reply".
+    static func code(_ out: VaniProcess.Outcome) -> String {
+        if case .crashed = read(status: out.status, stderr: out.stderr) { return "crashed" }
+        return "no_reply"
+    }
+
+    private static func lines(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private static func bounded(_ s: String) -> String {
+        let clean = String(String.UnicodeScalarView(s.unicodeScalars.map { $0.properties.generalCategory == .control ? " " : $0 }))
+        return clean.count > maxCrashLine ? String(clean.prefix(maxCrashLine)) + "..." : clean
+    }
+
+    private static func crashLine(_ text: String) -> String? {
+        let prefix = "vani: crashed: "
+        if let line = lines(text).last(where: { $0.hasPrefix(prefix) }) { return bounded(String(line.dropFirst(prefix.count))) }
+        return lines(text).last.map(bounded)
+    }
+
+    /// The first line of a Go runtime panic or fatal error, or nil when stderr has none.
+    private static func goPanicLine(_ text: String) -> String? {
+        lines(text).first { $0.hasPrefix("panic: ") || $0.hasPrefix("fatal error: ") }
+            .map { bounded($0.hasPrefix("panic: ") ? String($0.dropFirst("panic: ".count)) : $0) }
     }
 }
 

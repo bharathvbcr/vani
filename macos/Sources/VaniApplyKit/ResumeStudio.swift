@@ -895,7 +895,7 @@ public struct ResumeStudioClient: Sendable {
         if call.usesModel, let refusal = AnthropicAccount.refusal(in: out.stderr) {
             return .failure(ResumeFailure(code: "account", message: refusal))
         }
-        let tooOld = out.status == 2 ? " (this vani has no resume command; rebuild the app)" : ""
-        return .failure(ResumeFailure(code: "no_reply", message: "vani jobs resume exited \(out.status ?? -1) without a reply\(tooOld)"))
+        return .failure(ResumeFailure(code: VaniExit.code(out), message: VaniExit.noReply(
+            command: "vani jobs resume", out: out, what: "without a reply", tooOld: "this vani has no resume command; rebuild the app")))
     }
 }
