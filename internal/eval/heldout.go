@@ -104,7 +104,7 @@ func (sp Split) Assign(keys []posting.Key) (heldOut, fit []posting.Key) {
 // HeldOut is the Promotion table over a registered split's held-out postings.
 type HeldOut struct {
 	Split   Split         `json:"split"`
-	Ranked  int           `json:"ranked"`   // labelled postings ranked: every distinct key in the label file
+	Ranked  int           `json:"ranked"`   // labelled postings ranked: every distinct key whose label line carries a triage slot (a would_apply-only line is not ranked)
 	HeldOut []posting.Key `json:"held_out"` // in rank order
 	Fit     int           `json:"fit"`
 	// Promotions is BuildReport's Promotion table computed over the held-out
@@ -114,11 +114,12 @@ type HeldOut struct {
 
 // BuildHeldOut reads the label set in s once and returns both the all-labels
 // report (what BuildReport returns) and sp's split with the Promotion rows
-// over its held-out postings. Every distinct key in the label file
-// (latest line per key) is a labelled posting and is ranked, whether or not
-// it has a ledger record or any non-skip label, so the split is a function of
-// the label file alone: no ledger or shadow state can move a posting between
-// the halves.
+// over its held-out postings. Every distinct key whose latest label line
+// carries at least one triage slot is a labelled posting and is ranked, whether
+// or not it has a ledger record or any non-skip label. A key whose line holds
+// only the audit's would_apply labels (triageLabels drops it, as the all-labels
+// report does) is not ranked. So the split is a function of the label file
+// alone: no ledger or shadow state can move a posting between the halves.
 //
 // It refuses, rather than reporting, when the label file cannot be read or
 // has any line it skipped as unreadable: a skipped line may be a key missing
@@ -204,7 +205,7 @@ func smallerSplitAdvice(n int, what string) string {
 func (h HeldOut) Markdown() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n## Held-out promotion: %s\n\n", h.Split.Name)
-	fmt.Fprintf(&b, "- split: every distinct key in the label file, ranked by sha256(%q || 0x00 || posting key) ascending; the first %d are held out\n",
+	fmt.Fprintf(&b, "- split: every distinct key whose label line has a triage slot (would_apply-only lines are not ranked), ranked by sha256(%q || 0x00 || posting key) ascending; the first %d are held out\n",
 		h.Split.Salt, h.Split.Size)
 	fmt.Fprintf(&b, "- labelled postings ranked: %d, held out: %d, fit: %d\n", h.Ranked, len(h.HeldOut), h.Fit)
 	b.WriteString("- the Promotion table above is over all labelled postings and is in-sample; this table is over the held-out postings only\n\n")

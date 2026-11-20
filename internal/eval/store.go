@@ -259,8 +259,11 @@ func (s *Store) Put(l Entry) error {
 // would_apply, whose reason, Source and PSelect travel with it (a new answer
 // without a reason drops the old one's). A next with no triage slot keeps
 // prev's; a next with no would_apply keeps prev's, with its reason and
-// sampling fields. TextSHA256 is next's when it has one. next's V and
-// LabeledAt are kept as given, so Update stamps them.
+// sampling fields. TextSHA256 is next's when it has one, except that a next
+// with no triage slot (the audit's would_apply answer) never replaces the hash
+// of triage labels it leaves in place: the hash says which text those labels
+// were given on, and an audit on today's text must not vouch for them. next's
+// V and LabeledAt are kept as given, so Update stamps them.
 func Merge(prev, next Entry) Entry {
 	out := next
 	out.Labels = make(map[string]string, len(prev.Labels)+len(next.Labels))
@@ -284,7 +287,13 @@ func Merge(prev, next Entry) Entry {
 			out.Source, out.PSelect = prev.Source, prev.PSelect
 		}
 	}
-	if out.TextSHA256 == "" {
+	keptSlots := false
+	for slot := range prev.Labels {
+		if !auditSlot(slot) && !nextSlots {
+			keptSlots = true
+		}
+	}
+	if out.TextSHA256 == "" || keptSlots {
 		out.TextSHA256 = prev.TextSHA256
 	}
 	return out

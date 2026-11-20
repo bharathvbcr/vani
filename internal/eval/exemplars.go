@@ -41,7 +41,7 @@ const (
 )
 
 // ErrNotFrozen means no exemplar set has been written yet.
-var ErrNotFrozen = errors.New("eval: no frozen exemplar set (run `vani silver freeze`)")
+var ErrNotFrozen = errors.New("eval: no frozen exemplar set (run `vani teacher freeze`)")
 
 // ExemplarEntry is one frozen exemplar. Key is kept so the evaluation can leave
 // the exemplar postings out of every pair and out of the evaluation set.
