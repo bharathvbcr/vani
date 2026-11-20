@@ -99,7 +99,7 @@ final class VaniExitTests: XCTestCase {
     func testTheFailureCodeNamesACrash() {
         var out = VaniProcess.Outcome(status: 70, stdout: Data(), timedOut: false)
         out.stderr = Data("vani: crashed: x\n".utf8)
-        XCTAssertEqual(VaniExit.code(out), "crashed")
+        XCTAssertEqual(VaniExit.code(out), "crash", "the same spelling as vani's own {\"code\":\"crash\"} envelope")
         out.status = 2
         out.stderr = Data()
         XCTAssertEqual(VaniExit.code(out), "no_reply")

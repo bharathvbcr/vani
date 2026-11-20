@@ -434,9 +434,12 @@ public enum VaniExit {
         }
     }
 
-    /// The failure code for an exit with no reply: "crashed" for a crash, else "no_reply".
+    /// The failure code of a crash: the `code` of vani's own `{"error","code":"crash"}` envelope.
+    public static let crashCode = "crash"
+
+    /// The failure code for an exit with no reply: `crashCode` for a crash, else "no_reply".
     static func code(_ out: VaniProcess.Outcome) -> String {
-        if case .crashed = read(status: out.status, stderr: out.stderr) { return "crashed" }
+        if case .crashed = read(status: out.status, stderr: out.stderr) { return crashCode }
         return "no_reply"
     }
 

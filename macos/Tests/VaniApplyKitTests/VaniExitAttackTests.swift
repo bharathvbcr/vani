@@ -121,6 +121,17 @@ final class VaniExitAttackTests: XCTestCase {
         XCTAssertEqual(e.description, "vani x crashed: second")
     }
 
+    /// Every way a crash is read gives the one failure code Go's envelope uses.
+    func testEveryCrashReadingCarriesTheCodeCrash() throws {
+        for (status, err) in [(Int32(70), "vani: crashed: x\n"), (Int32(70), ""), (Int32(2), "panic: x\n\ngoroutine 1 [running]:\n")] {
+            var out = VaniProcess.Outcome(status: status, stdout: Data(), timedOut: false)
+            out.stderr = Data(err.utf8)
+            XCTAssertEqual(VaniExit.code(out), "crash")
+                    }
+        let envelope = try XCTUnwrap(failure(try fakeVani(out: "{\"error\":\"crashed: boom\",\"code\":\"crash\"}\n", status: 70)))
+        XCTAssertEqual(envelope.code, "crash")
+    }
+
     func testCrashLineWithUnicodeBidiAndEmojiIsBounded() {
         let s = String(repeating: "\u{202E}😀", count: 500)
         guard case let .crashed(line) = VaniExit.read(status: 70, stderr: Data("vani: crashed: \(s)\n".utf8)) else { return XCTFail() }
