@@ -59,7 +59,7 @@ final class VaniExitAttackTests: XCTestCase {
     }
 
     func testGoPanicWithLeadingWhitespaceAndStackOnlyStillCrash() throws {
-        let e = try XCTUnwrap(failure(try fakeVani(err: Data("   panic: indented\n".utf8), status: 2)))
+        let e = try XCTUnwrap(failure(try fakeVani(err: Data("   panic: indented\n\ngoroutine 1 [running]:\n".utf8), status: 2)))
         XCTAssertTrue(e.description.contains("crashed"), e.description)
         let stackOnly = try XCTUnwrap(failure(try fakeVani(err: Data("goroutine 1 [running]:\nmain.main()\n".utf8), status: 2)))
         XCTAssertTrue(stackOnly.description.contains("too old"), stackOnly.description) // documents the reading: no panic: line
@@ -94,6 +94,31 @@ final class VaniExitAttackTests: XCTestCase {
         let e = try XCTUnwrap(failure(try fakeVani(err: Data(big.utf8), status: 2)))
         XCTAssertTrue(e.description.contains("too old"), e.description)
         XCTAssertLessThan(e.description.count, 400)
+    }
+
+    /// A stderr write without a newline right before the Go runtime's report puts "panic:" mid-line.
+    func testPanicAfterAnUnterminatedStderrWriteIsStillACrash() throws {
+        let e = try XCTUnwrap(failure(try fakeVani(err: Data("fetching 12/40...panic: boom\n\ngoroutine 1 [running]:\n".utf8), status: 2)))
+        XCTAssertEqual(e.description, "vani x crashed: boom")
+        let fatal = try XCTUnwrap(failure(try fakeVani(err: Data("loading...fatal error: all goroutines are asleep - deadlock!\n\ngoroutine 1 [chan receive]:\n".utf8), status: 2)))
+        XCTAssertEqual(fatal.description, "vani x crashed: fatal error: all goroutines are asleep - deadlock!")
+    }
+
+    /// The word "panic:" in an ordinary message, with no goroutine report after it, is not a crash.
+    func testPanicWordWithoutAGoroutineReportIsNotACrash() throws {
+        for err in ["retry after panic: x\n", "panic: x\n", "fatal error: x\n", "panic: x\ngoroutine x [running]:\n",
+                    "panic: x\ngoroutine 1 running\n", "goroutine 1 [running]:\nthen later panic: x\n", ""] {
+            let e = try XCTUnwrap(failure(try fakeVani(err: Data(err.utf8), status: 2)))
+            XCTAssertTrue(e.description.contains("too old"), "\(err.debugDescription): \(e.description)")
+        }
+    }
+
+    /// Several goroutines, a nested panic and a log line mentioning panic: the report that
+    /// precedes the stack is the one shown.
+    func testTheReportBeforeTheStackIsShown() throws {
+        let err = "worker: panic: handled elsewhere\nstarting\npanic: first [recovered]\n\tpanic: second\n\ngoroutine 1 [running]:\nmain.f()\n\ngoroutine 7 [select]:\n"
+        let e = try XCTUnwrap(failure(try fakeVani(err: Data(err.utf8), status: 2)))
+        XCTAssertEqual(e.description, "vani x crashed: second")
     }
 
     func testCrashLineWithUnicodeBidiAndEmojiIsBounded() {

@@ -58,7 +58,7 @@ final class VaniExitTests: XCTestCase {
         let vani = try fakeVani(err: "panic: runtime error: index out of range [3] with length 2\n\ngoroutine 1 [running]:\nmain.f()\n", status: 2)
         let e = try XCTUnwrap(failure(vani))
         XCTAssertEqual(e.description, "vani x crashed: runtime error: index out of range [3] with length 2")
-        let fatal = try XCTUnwrap(failure(try fakeVani(err: "fatal error: all goroutines are asleep - deadlock!\n", status: 2)))
+        let fatal = try XCTUnwrap(failure(try fakeVani(err: "fatal error: all goroutines are asleep - deadlock!\n\ngoroutine 1 [chan receive]:\n", status: 2)))
         XCTAssertEqual(fatal.description, "vani x crashed: fatal error: all goroutines are asleep - deadlock!")
     }
 

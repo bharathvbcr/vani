@@ -455,10 +455,32 @@ public enum VaniExit {
         return lines(text).last.map(bounded)
     }
 
-    /// The first line of a Go runtime panic or fatal error, or nil when stderr has none.
+    /// The Go runtime's report: a line holding "panic: " or "fatal error: " (at its start, or after
+    /// text an unterminated write left on the line) followed by the "goroutine N [" stack header the
+    /// runtime always prints after it. The marker line nearest before the last header is the report
+    /// (a nested panic prints one line per panic). A marker with no header after it is ordinary
+    /// text, not a crash. Nil when stderr holds no report.
     private static func goPanicLine(_ text: String) -> String? {
-        lines(text).first { $0.hasPrefix("panic: ") || $0.hasPrefix("fatal error: ") }
-            .map { bounded($0.hasPrefix("panic: ") ? String($0.dropFirst("panic: ".count)) : $0) }
+        let all = lines(text)
+        guard let header = all.lastIndex(where: isGoroutineHeader) else { return nil }
+        for line in all[..<header].reversed() {
+            let panic = line.range(of: "panic: "), fatal = line.range(of: "fatal error: ")
+            switch (panic, fatal) {
+            case let (p?, f?): return bounded(p.lowerBound < f.lowerBound ? String(line[p.upperBound...]) : String(line[f.lowerBound...]))
+            case let (p?, nil): return bounded(String(line[p.upperBound...]))
+            case let (nil, f?): return bounded(String(line[f.lowerBound...]))
+            case (nil, nil): continue
+            }
+        }
+        return nil
+    }
+
+    /// "goroutine 12 [running]:" and its variants ("[chan receive, 3 minutes]:").
+    private static func isGoroutineHeader(_ line: String) -> Bool {
+        guard line.hasPrefix("goroutine ") else { return false }
+        let rest = line.dropFirst("goroutine ".count)
+        let digits = rest.prefix { $0.isASCII && $0.isNumber }
+        return !digits.isEmpty && rest.dropFirst(digits.count).hasPrefix(" [")
     }
 }
 
