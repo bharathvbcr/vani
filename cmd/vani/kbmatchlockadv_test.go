@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -80,7 +79,7 @@ func startHelper(t *testing.T, logPath, sleep string) (*exec.Cmd, *bytes.Buffer)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = syscall.Kill(cmd.Process.Pid, syscall.SIGKILL) })
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
 	return cmd, &out
 }
 
@@ -137,7 +136,7 @@ func TestKBMatchSIGKILLedRunDoesNotWedgeTheNext(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(k.state, kbmatch.FileName+".lock")); err != nil {
 		t.Fatalf("the run holds no lock file: %v", err)
 	}
-	if err := syscall.Kill(c1.Process.Pid, syscall.SIGKILL); err != nil {
+	if err := c1.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
 	_ = c1.Wait()

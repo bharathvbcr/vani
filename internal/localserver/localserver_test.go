@@ -37,7 +37,9 @@ func fakeServer(mode string) {
 	case "exit3":
 		os.Exit(3)
 	case "sigkill":
-		_ = syscall.Kill(os.Getpid(), syscall.SIGKILL)
+		if p, err := os.FindProcess(os.Getpid()); err == nil {
+			_ = p.Kill()
+		}
 		time.Sleep(time.Hour)
 	case "never-ready":
 		sig := make(chan os.Signal, 1)

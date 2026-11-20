@@ -250,6 +250,11 @@ const fakeGoForGate = `#!/bin/sh
 dir=.
 [ "$1" = -C ] && { dir=$2; shift 2; }
 case "$1 $2" in
+  "vet ./...")
+    if [ "$GOOS" = windows ] && [ -n "$FAKE_GO_WINVET_FAIL" ] && [ "$(basename "$dir")" = "$FAKE_GO_WINVET_FAIL" -o "$FAKE_GO_WINVET_FAIL" = root -a "$(basename "$dir")" != decide -a "$(basename "$dir")" != rkb ]; then
+      echo "vet: pkg/x_test.go:7:3: undefined: syscall.Kill"; exit 1
+    fi
+    echo "ok  	example.invalid/$(basename "$dir")	vet GOOS=$GOOS" ;;
   "list -m") echo "${FAKE_GO_DECIDE_DIR:-$dir/decide}" ;;
   "list ./...") echo "example.invalid/vani/pkg"; echo "example.invalid/vani/cmd/vani" ;;
   "test -list") echo "TestOne" ;;
@@ -311,6 +316,31 @@ func TestTestScriptGoSuiteNestedModules(t *testing.T) {
 	out, code, _ = runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb", "FAKE_GO_NESTED_FAIL=rkb")
 	if code != 1 || !strings.Contains(out, "nested modules rc=1") {
 		t.Fatalf("a failing nested module must fail the suite: exit %d:\n%s", code, out)
+	}
+}
+
+// The go suite also vets the root module and each nested module for windows/amd64, so a test file that uses a
+// unix-only syscall without a build constraint fails the suite (with the compiler's message in go.log) instead
+// of passing here and breaking the Windows build.
+func TestTestScriptGoSuiteVetsForWindows(t *testing.T) {
+	out, code, log := runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb")
+	if code != 0 {
+		t.Fatalf("all green: exit %d:\n%s\n%s", code, out, log)
+	}
+	// the fake go names the directory it vetted: the repo root's name varies, the nested modules' do not
+	if n := strings.Count(log, "\tvet GOOS=windows"); n != 3 {
+		t.Errorf("want the root, decide and rkb vetted for windows (3 runs), got %d; go.log:\n%s", n, log)
+	}
+	for _, m := range []string{"decide", "rkb"} {
+		if !strings.Contains(log, "example.invalid/"+m+"\tvet GOOS=windows") {
+			t.Errorf("nested module %s not vetted for windows; go.log:\n%s", m, log)
+		}
+	}
+	for _, failing := range []string{"root", "decide", "rkb"} {
+		out, code, log = runGoGate(t, "VANI_TEST_GO_NESTED=decide rkb", "FAKE_GO_WINVET_FAIL="+failing)
+		if code != 1 || !strings.Contains(out, "windows vet rc=1") || !strings.Contains(log, "undefined: syscall.Kill") {
+			t.Fatalf("a windows vet failure in %s must fail the suite: exit %d:\n%s\n%s", failing, code, out, log)
+		}
 	}
 }
 

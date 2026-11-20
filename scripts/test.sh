@@ -263,10 +263,19 @@ run_go() {
     fi
     GOWORK=off go -C "$ROOT/$m" test "${flags[@]}" ./... >> "$log" 2>&1 || rc_nested=1
   done
-  if [ "$rc_cmd" -eq 0 ] && [ "$rc_others" -eq 0 ] && [ "$rc_nested" -eq 0 ]; then
+  # A test file that calls a unix-only syscall (syscall.Kill, Mkfifo, ...) without a build constraint compiles
+  # here and breaks the Windows build of the test binary; vet type-checks test files too, so vetting for
+  # windows/amd64 catches it. The unix-only test belongs in a *_unix_test.go file (//go:build unix).
+  local rc_winvet=0
+  GOOS=windows GOARCH=amd64 go -C "$ROOT" vet ./... >> "$log" 2>&1 || rc_winvet=1
+  for m in $GO_NESTED; do
+    [ -f "$ROOT/$m/go.mod" ] || continue
+    GOWORK=off GOOS=windows GOARCH=amd64 go -C "$ROOT/$m" vet ./... >> "$log" 2>&1 || rc_winvet=1
+  done
+  if [ "$rc_cmd" -eq 0 ] && [ "$rc_others" -eq 0 ] && [ "$rc_nested" -eq 0 ] && [ "$rc_winvet" -eq 0 ]; then
     finish go "pass ($(grep -c '^ok' "$log") packages + cmd/vani: $total tests in $GO_SHARDS shards)" 0 "$t0"
   else
-    finish go "FAIL (other packages rc=$rc_others, cmd/vani rc=$rc_cmd, nested modules rc=$rc_nested; see go.log, go-cmd-*.log)" 1 "$t0"
+    finish go "FAIL (other packages rc=$rc_others, cmd/vani rc=$rc_cmd, nested modules rc=$rc_nested, windows vet rc=$rc_winvet; see go.log, go-cmd-*.log)" 1 "$t0"
   fi
 }
 

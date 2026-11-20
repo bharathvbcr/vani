@@ -5,7 +5,7 @@ concurrently. It is what `scripts/release.sh` calls (with `--fresh --ui`).
 
 Hosted CI (`.github/workflows/fresh-install.yml`) runs the Go suite only, on Linux and macOS, from a fresh
 clone set up by `scripts/bootstrap.sh` (siblings pinned in `scripts/deps.lock`): `go vet` and
-`scripts/test.sh --suite go --fresh` over the root module and the nested `decide` and `rkb` modules, then
+`scripts/test.sh --suite go --fresh` over the root module and the nested `decide` and `rkb` modules (the Go suite also runs `GOOS=windows go vet` over all three, so a test file using a unix-only syscall needs a `*_unix_test.go` name or a `//go:build unix` line), then
 re-runs by name the checks that may skip and fails if one did. Swift, Bun and the type-check run only here,
 on this Mac: the Swift suite and release need its signing identity.
 

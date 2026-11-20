@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -14,6 +13,10 @@ import (
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
 )
+
+// makeFIFO creates a named pipe; it is nil where the platform has none
+// (set by w4attack_unix_test.go), and the FIFO case is then not run.
+var makeFIFO func(path string) error
 
 func pinWarnBuf(t *testing.T) *bytes.Buffer {
 	t.Helper()
@@ -56,11 +59,14 @@ func TestAttackPinLabelledShapes(t *testing.T) {
 		}
 	}
 	// A symlink, a FIFO and a directory in the list's place: no pins, no hang.
-	for name, mk := range map[string]func() error{
+	shapes := map[string]func() error{
 		"symlink": func() error { return os.Symlink(filepath.Join(state, "elsewhere"), path) },
-		"fifo":    func() error { return syscall.Mkfifo(path, 0o600) },
 		"dir":     func() error { return os.Mkdir(path, 0o700) },
-	} {
+	}
+	if makeFIFO != nil {
+		shapes["fifo"] = func() error { return makeFIFO(path) }
+	}
+	for name, mk := range shapes {
 		_ = os.Remove(path)
 		if err := mk(); err != nil {
 			t.Fatalf("%s: %v", name, err)
