@@ -22,7 +22,7 @@ import (
 // {"error","code"}. Under a command's own --json, or for a command whose
 // output is JSON regardless, a runtime failure is that envelope too, and a
 // usage error keeps its old form: exit 2, nothing on stdout. Exit codes are
-// unchanged: 0 ok, 1 runtime, 2 usage. skills/cli-anything-vani/SKILL.md is
+// 0 ok, 1 runtime, 2 usage, 70 a command panicked (exitCrash). skills/cli-anything-vani/SKILL.md is
 // the agent-facing description of it.
 
 // jsonMode is how one leaf command answers in JSON.
@@ -37,12 +37,14 @@ const (
 // Codes the envelope carries when the command wrote no reply of its own. A
 // command's own codes (draft, rkbresume) are snake_case nouns too.
 const (
-	codeUsage       = "usage"
-	codeRuntime     = "runtime"
-	codeUnsupported = "unsupported" // the global --json on a command with no JSON form
-	codeBusy        = "busy"        // another vani holds the ledger or an index; retry when it is done
-	codeShrinks     = "shrinks"     // lca import would replace a bigger fiscal year; --replace allows it
-	codeStale       = "stale"       // a save built on a copy another writer has since changed; read again
+	codeUsage        = "usage"
+	codeRuntime      = "runtime"
+	codeUnsupported  = "unsupported"   // the global --json on a command with no JSON form
+	codeBusy         = "busy"          // another vani holds the ledger or an index; retry when it is done
+	codeShrinks      = "shrinks"       // lca import would replace a bigger fiscal year; --replace allows it
+	codeCrash        = "crash"         // the command panicked; the exit code is exitCrash
+	codeRelativePath = "relative_path" // VANI_CONFIG or VANI_STATE_DIR is not absolute; still exit 2
+	codeStale        = "stale"         // a save built on a copy another writer has since changed; read again
 )
 
 // jsonLeaf is one leaf command: the words that name it, as usageTemplate
@@ -202,6 +204,38 @@ func splitGlobalJSON(args []string) (rest []string, global bool, err error) {
 	return args, global, nil
 }
 
+// wantsJSONReply reports whether args ask for a JSON reply before any command
+// has run: the global --json, a jsonAlways command, or a command's own --json.
+func wantsJSONReply(args []string) bool {
+	rest, global, err := splitGlobalJSON(args)
+	if err != nil || global {
+		return err == nil
+	}
+	leaf, n, ok := leafOf(rest)
+	switch {
+	case !ok:
+		return false
+	case leaf.Mode == jsonAlways:
+		return true
+	case leaf.Mode != jsonFlag:
+		return false
+	}
+	for _, a := range rest[n:] {
+		if a == "--" {
+			break // the flag parser stops here: what follows is arguments, not flags
+		}
+		name, val, hasVal := strings.Cut(a, "=")
+		if name != "--json" && name != "-json" {
+			continue
+		}
+		on, perr := strconv.ParseBool(val)
+		if !hasVal || perr == nil && on {
+			return true
+		}
+	}
+	return false
+}
+
 // jsonFlag declares a command's --json flag and records it on e, so runEnv
 // knows the command was asked for JSON when it fails without replying.
 func (e *env) jsonFlag(fs *flag.FlagSet, usage string) *bool {
@@ -316,6 +350,10 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // envelopeCode is the code a failure's envelope carries.
 func envelopeCode(err error) string {
 	switch {
+	case errors.As(err, new(panicError)):
+		return codeCrash
+	case errors.Is(err, config.ErrRelativePath):
+		return codeRelativePath
 	case errors.As(err, new(unsupportedError)):
 		return codeUnsupported
 	case errors.As(err, new(usageError)):

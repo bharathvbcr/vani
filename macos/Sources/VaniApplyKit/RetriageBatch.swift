@@ -323,8 +323,9 @@ public struct RetriageBatchClient: Sendable {
                 }
                 return .success(plan)
             }
-            let tooOld = out.status == 2 ? " (this vani cannot re-triage several roles at once; rebuild the app)" : ""
-            return .failure(RetriageFailure(code: "no_reply", message: "vani jobs retriage --batch exited \(out.status ?? -1) without an estimate\(tooOld)"))
+            return .failure(RetriageFailure(code: VaniExit.code(out), message: VaniExit.noReply(
+                command: "vani jobs retriage --batch", out: out, what: "without an estimate",
+                tooOld: "this vani cannot re-triage several roles at once; rebuild the app")))
         }
     }
 
@@ -354,8 +355,9 @@ public struct RetriageBatchClient: Sendable {
             if let refusal = AnthropicAccount.refusal(in: out.stderr) {
                 return .failure(RetriageFailure(code: "account", message: refusal))
             }
-            let tooOld = out.status == 2 ? " (this vani cannot re-triage several roles at once; rebuild the app)" : ""
-            return .failure(RetriageFailure(code: "no_reply", message: "vani jobs retriage --batch exited \(out.status ?? -1) before it finished\(tooOld)"))
+            return .failure(RetriageFailure(code: VaniExit.code(out), message: VaniExit.noReply(
+                command: "vani jobs retriage --batch", out: out, what: "before it finished",
+                tooOld: "this vani cannot re-triage several roles at once; rebuild the app")))
         }
     }
 

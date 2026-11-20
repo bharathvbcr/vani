@@ -25,6 +25,11 @@ const (
 	exitOK      = 0
 	exitRuntime = 1
 	exitUsage   = 2
+	// exitCrash is sysexits EX_SOFTWARE (70): a command panicked. A Go panic
+	// that nothing recovers exits 2, which is exitUsage, and the Mac app reads
+	// 2 as "this vani is too old"; runEnv recovers at the dispatch seam and
+	// answers 70 instead. VaniExit.crash in VaniProcess.swift is the same number.
+	exitCrash = 70
 	// exitConfigRestart is sysexits EX_TEMPFAIL (75). `vani daemon` returns it
 	// when a process-lifetime field changed — the schedule, or devprism.binary
 	// / devprism.tools_hash — so a supervisor starts a process that reads the
@@ -451,6 +456,10 @@ type env struct {
 	// command did not report itself.
 	jsonAsked *bool
 
+	// dispatchFn replaces dispatch when set. A test sets it to run a command
+	// that panics; nil is the real dispatch.
+	dispatchFn func(args []string) error
+
 	// lastFacts is the text facts of the last Jobs view read (jobsListRead),
 	// for what reports how a read found them; nil before one.
 	lastFacts *textFacts
@@ -507,6 +516,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	paths, err := config.ResolveDefault()
 	if err != nil {
 		fmt.Fprintf(stderr, "vani: %v\n", err)
+		// The command has not run, so no reply can have been written: a caller
+		// that asked for JSON gets the envelope naming the variable.
+		if wantsJSONReply(args) {
+			if werr := writeJSON(stdout, errorReply{err.Error(), envelopeCode(err)}); werr != nil {
+				fmt.Fprintf(stderr, "vani: write error reply: %v\n", werr)
+			}
+		}
 		return exitCode("", err)
 	}
 	if paths.Warning != "" {
@@ -565,14 +581,17 @@ func runEnv(e *env, args []string) int {
 		cmdErr = errNoJSON(leaf)
 	}
 	if cmdErr == nil {
-		cmdErr = e.dispatch(args)
+		cmdErr = e.guardedDispatch(args)
 	}
 
 	// A usage error replies in JSON only under the global flag: a command's own
 	// --json has always exited 2 with nothing on stdout for one, and the Mac app
 	// reads that silence as an older vani (ResumeStudio.swift).
 	code := exitCode(args[0], cmdErr)
-	asked := global || code != exitUsage && (leaf.Mode == jsonAlways || e.jsonAsked != nil && *e.jsonAsked)
+	// A panic can come before the command parsed its flags, so its --json is
+	// read from args.
+	asked := global || code != exitUsage && (leaf.Mode == jsonAlways || e.jsonAsked != nil && *e.jsonAsked ||
+		code == exitCrash && wantsJSONReply(args))
 	if code != exitOK && asked && out.n.Load() == 0 && !errors.Is(cmdErr, errAlreadyReported) {
 		if err := writeJSON(out, errorReply{cmdErr.Error(), envelopeCode(cmdErr)}); err != nil {
 			fmt.Fprintf(stderr, "vani: write error reply: %v\n", err)
@@ -592,6 +611,30 @@ func runEnv(e *env, args []string) int {
 		fmt.Fprintf(stderr, "vani: %v\n", cmdErr)
 		return code
 	}
+}
+
+// panicError is a command's panic, recovered by guardedDispatch. It exits
+// exitCrash and replies with codeCrash, never as a usage error.
+type panicError struct{ text string }
+
+func (p panicError) Error() string { return "crashed: " + p.text }
+
+// guardedDispatch is the one recover for every command: a panic that reaches
+// the dispatch seam becomes a panicError, with the value as one bounded line
+// and the stack on stderr. The recovers inside a command stay because each
+// does more than this one can: contain a goroutine or one request, finish the
+// run record, or let a loop go on.
+func (e *env) guardedDispatch(args []string) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			writePanic(e.stderr, "vani: panic: ", p)
+			err = panicError{panicText(p)}
+		}
+	}()
+	if e.dispatchFn != nil {
+		return e.dispatchFn(args)
+	}
+	return e.dispatch(args)
 }
 
 // dispatch runs the command args name.
@@ -702,6 +745,8 @@ func exitCode(command string, err error) int {
 	switch {
 	case err == nil, errors.Is(err, flag.ErrHelp):
 		return exitOK
+	case errors.As(err, new(panicError)):
+		return exitCrash
 	case errors.As(err, new(usageError)), errors.As(err, new(unsupportedError)),
 		errors.Is(err, config.ErrRelativePath):
 		return exitUsage

@@ -35,8 +35,30 @@ final class VaniProcessTests: XCTestCase {
         XCTAssertEqual(out.status, 0)
         XCTAssertEqual(String(decoding: out.stdout, as: UTF8.self), "ok")
         XCTAssertFalse(out.truncated)
-        XCTAssertEqual(out.stderr.count, 64 * 1024, "stderr keeps only its first 64 KiB")
+        XCTAssertLessThanOrEqual(out.stderr.count, 64 * 1024 + 64, "stderr keeps a bounded head and tail")
+        XCTAssertGreaterThan(out.stderr.count, 64 * 1024 - 1)
         XCTAssertEqual(out.stderr.first, UInt8(ascii: "e"))
+        XCTAssertTrue(String(decoding: out.stderr, as: UTF8.self).contains("stderr cut"))
+    }
+
+    /// stderr over the bound keeps its first 32 KiB and its last 32 KiB with a marker between, so
+    /// the line a crashing vani writes last is not lost behind earlier logging.
+    func testLongStderrKeepsItsHeadAndItsTail() throws {
+        let out = try XCTUnwrap(run("printf 'HEAD\\n'; head -c 300000 /dev/zero | tr '\\0' e >&2; printf '\\nTAIL\\n' >&2; printf ok"))
+        XCTAssertEqual(out.status, 0)
+        let text = String(decoding: out.stderr, as: UTF8.self)
+        XCTAssertTrue(text.hasSuffix("\nTAIL\n"), "the last line was lost: \(text.suffix(20))")
+        XCTAssertTrue(text.contains("stderr cut"))
+        XCTAssertLessThanOrEqual(out.stderr.count, 64 * 1024 + 64)
+    }
+
+    /// Head first: stderr written first is kept from its first byte, and stderr that fits is kept whole, with no marker.
+    func testStderrWithinTheBoundIsKeptWhole() throws {
+        let out = try XCTUnwrap(run("printf 'first\\n' >&2; head -c 65000 /dev/zero | tr '\\0' m >&2; printf '\\nlast\\n' >&2"))
+        let text = String(decoding: out.stderr, as: UTF8.self)
+        XCTAssertEqual(out.stderr.count, 6 + 65000 + 6)
+        XCTAssertTrue(text.hasPrefix("first\n") && text.hasSuffix("\nlast\n"))
+        XCTAssertFalse(text.contains("stderr cut"))
     }
 
     /// A child that writes a lot of stdout before it reads its stdin must not
@@ -61,7 +83,7 @@ final class VaniProcessTests: XCTestCase {
     }
 
     /// Both ceilings hold together: stdout is cut at maxOutputBytes and marked
-    /// truncated, stderr at 64 KiB, and the child still runs to completion.
+    /// truncated, stderr at 64 KiB (head and tail), and the child still runs to completion.
     func testBothStreamsBounded() throws {
         let out = try XCTUnwrap(run("head -c 150000 /dev/zero | tr '\\0' e >&2; head -c 150000 /dev/zero | tr '\\0' o; exit 3",
                                     maxOutputBytes: 1000))
@@ -69,7 +91,8 @@ final class VaniProcessTests: XCTestCase {
         XCTAssertEqual(out.status, 3)
         XCTAssertEqual(out.stdout.count, 1000)
         XCTAssertTrue(out.truncated)
-        XCTAssertEqual(out.stderr.count, 64 * 1024)
+        XCTAssertLessThanOrEqual(out.stderr.count, 64 * 1024 + 64)
+        XCTAssertGreaterThan(out.stderr.count, 64 * 1024 - 1)
     }
 
     /// The timeout still terminates a child that never finishes.

@@ -102,7 +102,7 @@ extension DraftRunner {
             if usesModel, keys != .noKey, let refusal = AnthropicAccount.refusal(in: out.stderr) {
                 return .refused(Self.refusal("account", refusal))
             }
-            return .refused(Self.refusal("provider", "vani \(name) exited \(out.status ?? -1) without a reply"))
+            return .refused(Self.refusal("provider", VaniExit.noReply(command: "vani \(name)", out: out, what: "without a reply")))
         }
     }
 

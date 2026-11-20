@@ -45,7 +45,8 @@ final class VaniProcessAdversarialTests: XCTestCase {
         XCTAssertEqual(out.status, 0)
         XCTAssertFalse(out.timedOut)
         XCTAssertEqual(out.stdout.count, 400_000)
-        XCTAssertEqual(out.stderr.count, 64 * 1024)
+        XCTAssertLessThanOrEqual(out.stderr.count, 64 * 1024 + 64)
+        XCTAssertGreaterThan(out.stderr.count, 64 * 1024 - 1)
         XCTAssertLessThan(elapsed, 5)
     }
 

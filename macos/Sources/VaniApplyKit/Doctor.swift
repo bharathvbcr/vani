@@ -453,7 +453,7 @@ public struct DoctorClient: Sendable {
             if out.truncated { return .failure(Self.tooLarge) }
             if out.status == 0, let last = try? JobsClient.decoder.decode(DoctorLast.self, from: out.stdout) { return .success(last) }
             if let f = RetriageBatchClient.failure(in: out.stdout) { return .failure(f) }
-            return .failure(Self.noReply(out.status, what: "the newest report"))
+            return .failure(Self.noReply(out, what: "without the newest report"))
         }
     }
 
@@ -480,7 +480,7 @@ public struct DoctorClient: Sendable {
             }
             if let f = RetriageBatchClient.failure(in: out.stdout) { return .failed(f) }
             if let refusal = AnthropicAccount.refusal(in: out.stderr) { return .failed(RetriageFailure(code: "account", message: refusal)) }
-            return .failed(noReply(out.status, what: "a reply"))
+            return .failed(noReply(out, what: "without a reply"))
         }
     }
 
@@ -490,9 +490,10 @@ public struct DoctorClient: Sendable {
 
     private static let tooLarge = RetriageFailure(code: "too_large", message: "vani doctor's reply was larger than 8 MB")
 
-    private static func noReply(_ status: Int32?, what: String) -> RetriageFailure {
-        let tooOld = status == 2 ? " (this vani has no doctor that answers the app; rebuild the app)" : ""
-        return RetriageFailure(code: "no_reply", message: "vani doctor exited \(status ?? -1) without \(what)\(tooOld)")
+    private static func noReply(_ out: VaniProcess.Outcome, what: String) -> RetriageFailure {
+        let message = VaniExit.noReply(command: "vani doctor", out: out, what: what,
+                                       tooOld: "this vani has no doctor that answers the app; rebuild the app")
+        return RetriageFailure(code: VaniExit.code(out), message: message)
     }
 }
 

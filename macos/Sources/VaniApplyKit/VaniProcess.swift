@@ -26,7 +26,9 @@ public enum VaniProcess {
         public var launchError: String?
         /// stdout reached the byte ceiling, so it may be cut short.
         public var truncated = false
-        /// The first 64 KB of stderr. Never put in a reply as is: a caller
+        /// stderr, bounded: all of it up to `stderrHead + stderrTail` bytes, else the first
+        /// `stderrHead` bytes, `stderrCutMarker`, and the last `stderrTail` bytes (a crash report
+        /// is written last, after any amount of logging). Never put in a reply as is: a caller
         /// picks out only lines it knows carry no secret.
         public var stderr = Data()
         /// The caller's `CancelFlag` was set: the child was stopped (SIGTERM, then SIGKILL) and
@@ -63,6 +65,13 @@ public enum VaniProcess {
         if let stateDir, !stateDir.isEmpty { env["VANI_STATE_DIR"] = stateDir }
         return env
     }
+
+    /// How much of the start and of the end of stderr is kept.
+    public static let stderrHead = 32 * 1024
+    public static let stderrTail = 32 * 1024
+    /// Between the kept ends when the middle of stderr was dropped; its own lines, so line-based
+    /// reading never joins a marker to log text.
+    public static let stderrCutMarker = Data("\n[... stderr cut ...]\n".utf8)
 
     /// How long a child gets to act on SIGTERM before SIGKILL, and again to be reaped after it.
     public static let terminationGrace: TimeInterval = 1
@@ -131,7 +140,7 @@ public enum VaniProcess {
         let outFd = outPipe.fileHandleForReading.fileDescriptor, errFd = errPipe.fileHandleForReading.fileDescriptor
         // One byte past the ceiling is read, so a reply of exactly the ceiling is told from a longer one.
         spawn(done) { box.out = drain(outFd, limit: maxOutputBytes + 1, cancel: cancel, onChunk: onStdout) }
-        spawn(done) { box.err = drain(errFd, limit: 64 * 1024, cancel: cancel) }
+        spawn(done) { box.err = drainEnds(errFd, head: stderrHead, tail: stderrTail, cancel: cancel) }
         defer {
             // Whatever happened, no thread is left on these descriptors when they are closed.
             cancel.set()
@@ -197,6 +206,34 @@ public enum VaniProcess {
     /// even when a grandchild keeps the pipe open and silent. `onChunk` sees every chunk read.
     private static func drain(_ fd: Int32, limit: Int, cancel: CancelFlag, onChunk: (@Sendable (Data) -> Void)? = nil) -> Data {
         var out = Data()
+        pump(fd, cancel: cancel) { bytes in
+            onChunk?(Data(bytes))
+            if out.count < limit { out.append(contentsOf: bytes.prefix(limit - out.count)) }
+        }
+        return out
+    }
+
+    /// Like `drain`, but keeps the first `head` and the last `tail` bytes, with `stderrCutMarker`
+    /// between them when anything was dropped. Memory stays under head + 2 * tail + one chunk.
+    private static func drainEnds(_ fd: Int32, head: Int, tail: Int, cancel: CancelFlag) -> Data {
+        var first = Data(), last = Data(), cut = false
+        pump(fd, cancel: cancel) { bytes in
+            var rest = bytes
+            if first.count < head {
+                let take = min(head - first.count, rest.count)
+                first.append(contentsOf: rest.prefix(take))
+                rest = rest.dropFirst(take)
+            }
+            guard !rest.isEmpty else { return }
+            last.append(contentsOf: rest)
+            if last.count > 2 * tail { last = Data(last.suffix(tail)); cut = true }
+        }
+        if last.count > tail { last = Data(last.suffix(tail)); cut = true }
+        return cut ? first + stderrCutMarker + last : first + last
+    }
+
+    /// Reads `fd` chunk by chunk to end of file or until `cancel` is set, giving each chunk to `sink`.
+    private static func pump(_ fd: Int32, cancel: CancelFlag, _ sink: (ArraySlice<UInt8>) -> Void) {
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         while !cancel.isSet {
             var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -206,10 +243,8 @@ public enum VaniProcess {
             let n = read(fd, &chunk, chunk.count)
             if n < 0 { if errno == EINTR || errno == EAGAIN { continue } else { break } }
             if n == 0 { break }
-            onChunk?(Data(chunk.prefix(n)))
-            if out.count < limit { out.append(contentsOf: chunk.prefix(min(n, limit - out.count))) }
+            sink(chunk.prefix(n))
         }
-        return out
     }
 
     /// Write all of `data` to the non-blocking `fd`, giving up on any error (EPIPE: the child
@@ -355,7 +390,100 @@ extension VaniProcess {
         if let failure = try? decoder.decode(Failure.self, from: out.stdout) {
             return BankError(failure.error, code: failure.code)
         }
-        return BankError("\(name) exited \(out.status ?? -1) without a reply" + (out.status == 2 ? " (\(tooOld))" : ""))
+        return BankError(VaniExit.noReply(command: name, out: out, what: "without a reply", tooOld: tooOld))
+    }
+}
+
+/// The one reading of a vani that exited without a reply this app can use. Exit 2 is vani's usage
+/// code, and a Go panic that nothing recovers also exits 2, so 2 alone cannot mean "this vani is
+/// too old". vani recovers a panic itself and exits `crash` (exitCrash in main.go) with its last
+/// stderr line "vani: crashed: <text>"; an older vani lets the panic exit 2 and Go's own report
+/// ("panic: ...", "fatal error: ...") is what stderr holds. A coded `{"error","code"}` reply is
+/// read before this is reached, so a usage refusal that names its cause (a relative VANI_CONFIG,
+/// code relative_path) never gets here.
+public enum VaniExit {
+    /// exitUsage in main.go.
+    public static let usage: Int32 = 2
+    /// exitCrash in main.go (sysexits EX_SOFTWARE).
+    public static let crash: Int32 = 70
+
+    /// Most of a crash line shown.
+    static let maxCrashLine = 200
+
+    public enum Reading: Equatable, Sendable {
+        /// vani crashed; the line says how, bounded and without control characters.
+        case crashed(line: String)
+        /// exit 2 with nothing to say it was anything but a usage error: an older vani.
+        case tooOld
+        case other
+    }
+
+    public static func read(status: Int32?, stderr: Data) -> Reading {
+        let text = String(decoding: stderr, as: UTF8.self)
+        if status == crash { return .crashed(line: crashLine(text) ?? "no reason given") }
+        if status == usage, let line = goPanicLine(text) { return .crashed(line: line) }
+        return status == usage ? .tooOld : .other
+    }
+
+    /// "<command> exited N <what>", with the reading appended: how vani crashed, or `tooOld` for exit 2.
+    static func noReply(command: String, out: VaniProcess.Outcome, what: String, tooOld: String? = nil) -> String {
+        switch read(status: out.status, stderr: out.stderr) {
+        case let .crashed(line): return "\(command) crashed: \(line)"
+        case .tooOld where tooOld != nil: return "\(command) exited \(out.status ?? -1) \(what) (\(tooOld ?? ""))"
+        case .tooOld, .other: return "\(command) exited \(out.status ?? -1) \(what)"
+        }
+    }
+
+    /// The failure code of a crash: the `code` of vani's own `{"error","code":"crash"}` envelope.
+    public static let crashCode = "crash"
+
+    /// The failure code for an exit with no reply: `crashCode` for a crash, else "no_reply".
+    static func code(_ out: VaniProcess.Outcome) -> String {
+        if case .crashed = read(status: out.status, stderr: out.stderr) { return crashCode }
+        return "no_reply"
+    }
+
+    private static func lines(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private static func bounded(_ s: String) -> String {
+        let clean = String(String.UnicodeScalarView(s.unicodeScalars.map { $0.properties.generalCategory == .control ? " " : $0 }))
+        return clean.count > maxCrashLine ? String(clean.prefix(maxCrashLine)) + "..." : clean
+    }
+
+    private static func crashLine(_ text: String) -> String? {
+        let prefix = "vani: crashed: "
+        if let line = lines(text).last(where: { $0.hasPrefix(prefix) }) { return bounded(String(line.dropFirst(prefix.count))) }
+        return lines(text).last.map(bounded)
+    }
+
+    /// The Go runtime's report: a line holding "panic: " or "fatal error: " (at its start, or after
+    /// text an unterminated write left on the line) followed by the "goroutine N [" stack header the
+    /// runtime always prints after it. The marker line nearest before the last header is the report
+    /// (a nested panic prints one line per panic). A marker with no header after it is ordinary
+    /// text, not a crash. Nil when stderr holds no report.
+    private static func goPanicLine(_ text: String) -> String? {
+        let all = lines(text)
+        guard let header = all.lastIndex(where: isGoroutineHeader) else { return nil }
+        for line in all[..<header].reversed() {
+            let panic = line.range(of: "panic: "), fatal = line.range(of: "fatal error: ")
+            switch (panic, fatal) {
+            case let (p?, f?): return bounded(p.lowerBound < f.lowerBound ? String(line[p.upperBound...]) : String(line[f.lowerBound...]))
+            case let (p?, nil): return bounded(String(line[p.upperBound...]))
+            case let (nil, f?): return bounded(String(line[f.lowerBound...]))
+            case (nil, nil): continue
+            }
+        }
+        return nil
+    }
+
+    /// "goroutine 12 [running]:" and its variants ("[chan receive, 3 minutes]:").
+    private static func isGoroutineHeader(_ line: String) -> Bool {
+        guard line.hasPrefix("goroutine ") else { return false }
+        let rest = line.dropFirst("goroutine ".count)
+        let digits = rest.prefix { $0.isASCII && $0.isNumber }
+        return !digits.isEmpty && rest.dropFirst(digits.count).hasPrefix(" [")
     }
 }
 

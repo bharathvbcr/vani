@@ -518,8 +518,8 @@ public struct RetriageClient: Sendable {
         if usedKey, let refusal = AnthropicAccount.refusal(in: out.stderr) {
             return .failure(RetriageFailure(code: "account", message: refusal))
         }
-        let tooOld = out.status == 2 ? " (this vani has no re-triage command; rebuild the app)" : ""
-        return .failure(RetriageFailure(code: "no_reply", message: "vani jobs retriage exited \(out.status ?? -1) without a reply\(tooOld)"))
+        return .failure(RetriageFailure(code: VaniExit.code(out), message: VaniExit.noReply(
+            command: "vani jobs retriage", out: out, what: "without a reply", tooOld: "this vani has no re-triage command; rebuild the app")))
     }
 }
 

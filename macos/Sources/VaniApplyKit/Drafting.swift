@@ -428,7 +428,7 @@ public struct DraftRunner: Sendable {
                 if keys != .noKey, let refusal = AnthropicAccount.refusal(in: out.stderr) {
                     return .failure("account", refusal)
                 }
-                return .failure("provider", "vani draft exited \(out.status ?? -1) without a reply")
+                return .failure("provider", VaniExit.noReply(command: "vani draft", out: out, what: "without a reply"))
             }
             return reply
         }
@@ -453,7 +453,7 @@ public struct DraftRunner: Sendable {
             if keys != .noKey, let refusal = AnthropicAccount.refusal(in: out.stderr) {
                 failure = .failure("account", refusal)
             } else {
-                failure = .failure("provider", "vani \(kind.rawValue) exited \(out.status ?? -1) without a reply")
+                failure = .failure("provider", VaniExit.noReply(command: "vani \(kind.rawValue)", out: out, what: "without a reply"))
             }
         }
         return (try? JSONSerialization.data(withJSONObject: failure.asJSONObject)) ?? Data(#"{"error":"encoding failed","code":"provider"}"#.utf8)
