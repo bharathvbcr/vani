@@ -190,6 +190,11 @@ type Report struct {
 	// is not a second observation, and counting it would inflate n.
 	Inherited      int    `json:"inherited"`
 	MalformedLines int    `json:"malformed_lines"` // label-file lines skipped as unreadable
+	// StaleText counts matched labels left out because the label's stored text
+	// hash differs from the hash of the record's description now: the label was
+	// given on other text. A label with no hash, or a record with no
+	// description, cannot be compared and is kept.
+	StaleText int `json:"stale_text"`
 	LoadError      string `json:"load_error"`
 	// LegacyPrimary counts scored slot readings whose primary backend was
 	// recorded as LegacyOpenRouterName and is reported under
@@ -218,6 +223,12 @@ func triageLabels(labels map[posting.Key]Entry) map[posting.Key]Entry {
 		}
 	}
 	return out
+}
+
+// staleLabel reports whether e was given on different text than r's posting
+// carries now: both hashes exist and differ.
+func staleLabel(e Entry, r ledger.Record) bool {
+	return e.TextSHA256 != "" && r.Posting.Description != "" && e.TextSHA256 != HashText(r.Posting.Description)
 }
 
 func ratio(num, den int) (float64, bool) {
@@ -268,6 +279,10 @@ func buildReport(recs []ledger.Record, labels map[posting.Key]Entry, bad int, er
 		}
 		e, ok := labels[r.Key]
 		if !ok {
+			continue
+		}
+		if staleLabel(e, r) {
+			rep.StaleText++
 			continue
 		}
 		rep.Matched++
@@ -474,6 +489,9 @@ func (r Report) Markdown() string {
 		r.LabelEntries, r.Matched, r.NoTriage)
 	if r.Inherited > 0 {
 		fmt.Fprintf(&b, "- records with an inherited reading (copied from an identical posting), left out of every count: %d\n", r.Inherited)
+	}
+	if r.StaleText > 0 {
+		fmt.Fprintf(&b, "- labels left out because the posting's text changed since they were given: %d\n", r.StaleText)
 	}
 	if r.MalformedLines > 0 {
 		fmt.Fprintf(&b, "- label lines skipped as unreadable: %d\n", r.MalformedLines)
