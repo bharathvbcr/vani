@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/bharathvbcr/Vani/internal/filelock"
 )
 
 // The daemon's stderr goes to <state dir>/logs/vani.err.log, a file launchd
@@ -49,6 +53,15 @@ func (e *env) trimErrLog() {
 	if err != nil || !info.Mode().IsRegular() || info.Size() <= errLogMax {
 		return
 	}
+	lock, err := filelock.TryAcquire(path + ".trim.lock")
+	if errors.Is(err, filelock.ErrWouldBlock) {
+		return // another vani is trimming it now
+	}
+	if err != nil {
+		fmt.Fprintf(e.stderr, "vani: could not trim %s: %v\n", path, err)
+		return
+	}
+	defer lock.Release()
 	if err := trimTail(path, info.Size(), errLogKeep); err != nil {
 		fmt.Fprintf(e.stderr, "vani: could not trim %s: %v\n", path, err)
 		return
@@ -56,17 +69,36 @@ func (e *env) trimErrLog() {
 	fmt.Fprintf(e.stderr, "vani: trimmed %s from %d bytes to its last %d\n", path, info.Size(), errLogKeep)
 }
 
-func trimTail(path string, size, keep int64) error {
+// trimTail cuts the file at path to its last keep bytes, from a line boundary.
+// seen is the size the caller's stat reported; it is never used for the
+// arithmetic, because another vani (daemon and CLI both reload) may have
+// trimmed the file since. The size comes from the opened file, a file no longer
+// over errLogMax is left alone, and a read that returns fewer bytes than asked
+// means the file changed underneath: nothing is written then.
+func trimTail(path string, seen, keep int64) error {
+	_ = seen
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	tail := make([]byte, keep)
-	if _, err := f.ReadAt(tail, size-keep); err != nil && err != io.EOF {
+	st, err := f.Stat()
+	if err != nil {
 		return err
 	}
-	if i := strings.IndexByte(string(tail), '\n'); i >= 0 && i+1 < len(tail) {
+	size := st.Size()
+	if !st.Mode().IsRegular() || size <= errLogMax || size < keep {
+		return nil
+	}
+	tail := make([]byte, keep)
+	n, err := f.ReadAt(tail, size-keep)
+	if int64(n) != keep {
+		if err != nil && err != io.EOF {
+			return err
+		}
+		return nil
+	}
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 && i+1 < len(tail) {
 		tail = tail[i+1:]
 	}
 	if _, err := f.WriteAt(tail, 0); err != nil {
