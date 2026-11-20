@@ -26,7 +26,9 @@ public enum VaniProcess {
         public var launchError: String?
         /// stdout reached the byte ceiling, so it may be cut short.
         public var truncated = false
-        /// The first 64 KB of stderr. Never put in a reply as is: a caller
+        /// stderr, bounded: all of it up to `stderrHead + stderrTail` bytes, else the first
+        /// `stderrHead` bytes, `stderrCutMarker`, and the last `stderrTail` bytes (a crash report
+        /// is written last, after any amount of logging). Never put in a reply as is: a caller
         /// picks out only lines it knows carry no secret.
         public var stderr = Data()
         /// The caller's `CancelFlag` was set: the child was stopped (SIGTERM, then SIGKILL) and
@@ -63,6 +65,13 @@ public enum VaniProcess {
         if let stateDir, !stateDir.isEmpty { env["VANI_STATE_DIR"] = stateDir }
         return env
     }
+
+    /// How much of the start and of the end of stderr is kept.
+    public static let stderrHead = 32 * 1024
+    public static let stderrTail = 32 * 1024
+    /// Between the kept ends when the middle of stderr was dropped; its own lines, so line-based
+    /// reading never joins a marker to log text.
+    public static let stderrCutMarker = Data("\n[... stderr cut ...]\n".utf8)
 
     /// How long a child gets to act on SIGTERM before SIGKILL, and again to be reaped after it.
     public static let terminationGrace: TimeInterval = 1
@@ -131,7 +140,7 @@ public enum VaniProcess {
         let outFd = outPipe.fileHandleForReading.fileDescriptor, errFd = errPipe.fileHandleForReading.fileDescriptor
         // One byte past the ceiling is read, so a reply of exactly the ceiling is told from a longer one.
         spawn(done) { box.out = drain(outFd, limit: maxOutputBytes + 1, cancel: cancel, onChunk: onStdout) }
-        spawn(done) { box.err = drain(errFd, limit: 64 * 1024, cancel: cancel) }
+        spawn(done) { box.err = drainEnds(errFd, head: stderrHead, tail: stderrTail, cancel: cancel) }
         defer {
             // Whatever happened, no thread is left on these descriptors when they are closed.
             cancel.set()
@@ -197,6 +206,34 @@ public enum VaniProcess {
     /// even when a grandchild keeps the pipe open and silent. `onChunk` sees every chunk read.
     private static func drain(_ fd: Int32, limit: Int, cancel: CancelFlag, onChunk: (@Sendable (Data) -> Void)? = nil) -> Data {
         var out = Data()
+        pump(fd, cancel: cancel) { bytes in
+            onChunk?(Data(bytes))
+            if out.count < limit { out.append(contentsOf: bytes.prefix(limit - out.count)) }
+        }
+        return out
+    }
+
+    /// Like `drain`, but keeps the first `head` and the last `tail` bytes, with `stderrCutMarker`
+    /// between them when anything was dropped. Memory stays under head + 2 * tail + one chunk.
+    private static func drainEnds(_ fd: Int32, head: Int, tail: Int, cancel: CancelFlag) -> Data {
+        var first = Data(), last = Data(), cut = false
+        pump(fd, cancel: cancel) { bytes in
+            var rest = bytes
+            if first.count < head {
+                let take = min(head - first.count, rest.count)
+                first.append(contentsOf: rest.prefix(take))
+                rest = rest.dropFirst(take)
+            }
+            guard !rest.isEmpty else { return }
+            last.append(contentsOf: rest)
+            if last.count > 2 * tail { last = Data(last.suffix(tail)); cut = true }
+        }
+        if last.count > tail { last = Data(last.suffix(tail)); cut = true }
+        return cut ? first + stderrCutMarker + last : first + last
+    }
+
+    /// Reads `fd` chunk by chunk to end of file or until `cancel` is set, giving each chunk to `sink`.
+    private static func pump(_ fd: Int32, cancel: CancelFlag, _ sink: (ArraySlice<UInt8>) -> Void) {
         var chunk = [UInt8](repeating: 0, count: 64 * 1024)
         while !cancel.isSet {
             var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -206,10 +243,8 @@ public enum VaniProcess {
             let n = read(fd, &chunk, chunk.count)
             if n < 0 { if errno == EINTR || errno == EAGAIN { continue } else { break } }
             if n == 0 { break }
-            onChunk?(Data(chunk.prefix(n)))
-            if out.count < limit { out.append(contentsOf: chunk.prefix(min(n, limit - out.count))) }
+            sink(chunk.prefix(n))
         }
-        return out
     }
 
     /// Write all of `data` to the non-blocking `fd`, giving up on any error (EPIPE: the child

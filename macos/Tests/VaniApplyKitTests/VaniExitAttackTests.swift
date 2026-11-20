@@ -71,6 +71,31 @@ final class VaniExitAttackTests: XCTestCase {
         XCTAssertTrue(e.description.contains("too old"), e.description)
     }
 
+    /// An old vani that logged more than the first 64 KB of stderr before it panicked: the
+    /// panic is past the head of the capture, so it is read from the tail.
+    func testPanicAfterMoreThan64KBOfStderrIsStillACrash() throws {
+        let noise = String(repeating: "progress line\n", count: 8_000)
+        let e = try XCTUnwrap(failure(try fakeVani(err: Data((noise + "panic: boom\n\ngoroutine 1 [running]:\n").utf8), status: 2)))
+        XCTAssertTrue(e.description.contains("crashed: boom"), e.description)
+    }
+
+    /// Exit 70 after more than 64 KB of stderr: the crash line is read from the tail, so the
+    /// reason shown is the crash line, not an arbitrary log line.
+    func testCrashAfterMoreThan64KBShowsTheCrashLine() throws {
+        let noise = String(repeating: "progress line\n", count: 8_000)
+        let e = try XCTUnwrap(failure(try fakeVani(err: Data((noise + "vani: crashed: the real reason\n").utf8), status: 70)))
+        XCTAssertEqual(e.description, "vani x crashed: the real reason")
+    }
+
+    /// A noisy but healthy new vani: exit 2 with a huge stderr and a panic-looking word in the
+    /// head only is still "too old" (no goroutine report), and the text shown stays bounded.
+    func testHugeStderrWithPanicWordInTheHeadIsStillBounded() throws {
+        let big = "retry after panic: x\n" + String(repeating: "usage line\n", count: 20_000)
+        let e = try XCTUnwrap(failure(try fakeVani(err: Data(big.utf8), status: 2)))
+        XCTAssertTrue(e.description.contains("too old"), e.description)
+        XCTAssertLessThan(e.description.count, 400)
+    }
+
     func testCrashLineWithUnicodeBidiAndEmojiIsBounded() {
         let s = String(repeating: "\u{202E}😀", count: 500)
         guard case let .crashed(line) = VaniExit.read(status: 70, stderr: Data("vani: crashed: \(s)\n".utf8)) else { return XCTFail() }
