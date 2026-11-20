@@ -100,6 +100,11 @@ func daemonModelFor(cfg config.Config, lookup keyLookup) *daemonModel {
 // whether it keeps the schedule: only a problem, one line.
 func daemonLines(d daemonFacet) []string {
 	var lines []string
+	if !d.OK && d.Reason != "" {
+		// Not "no daemon": the record exists or could not be looked at, and
+		// whether a daemon runs is unknown (status --json says the same).
+		return []string{"daemon: daemon.json could not be read, so whether a daemon is running is unknown: " + d.Reason}
+	}
 	if d.Running && d.Binary == daemonBinaryOther {
 		lines = append(lines, "daemon: "+d.Reason)
 	}
