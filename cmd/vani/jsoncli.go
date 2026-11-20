@@ -221,6 +221,9 @@ func wantsJSONReply(args []string) bool {
 		return false
 	}
 	for _, a := range rest[n:] {
+		if a == "--" {
+			break // the flag parser stops here: what follows is arguments, not flags
+		}
 		name, val, hasVal := strings.Cut(a, "=")
 		if name != "--json" && name != "-json" {
 			continue

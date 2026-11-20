@@ -140,6 +140,11 @@ func TestAttackWantsJSONReply(t *testing.T) {
 		{[]string{"status", "--json=false", "--json"}, true},
 		{[]string{"STATUS", "--json"}, false},
 		{[]string{"bogus", "--json"}, false},
+		// "--" ends the flags, as the flag parser reads it: what follows is not a flag.
+		{[]string{"status", "--", "--json"}, false},
+		{[]string{"status", "--json", "--", "x"}, true},
+		{[]string{"status", "--", "--json=true", "--json"}, false},
+		{[]string{"draft", "--", "--json"}, true},
 	} {
 		if got := wantsJSONReply(tc.args); got != tc.want {
 			t.Errorf("wantsJSONReply(%q) = %v, want %v", tc.args, got, tc.want)
