@@ -348,7 +348,7 @@ type backendStat struct {
 	// returned an answer.
 	Readings map[string]int `json:"readings,omitempty"`
 	// FailedDetails counts Failed readings by the reason the backend gave
-	// (truncated, unparseable, invalid_value, missing_slot, http_413, ...): the
+	// (truncated, empty_reply, not_json, unparseable, invalid_value, ...): the
 	// Detail up to its first ';' tag, at most maxFailedDetailLen bytes of
 	// [a-z0-9_-], at most maxFailedDetails keys, the rest under "other". The
 	// ledger keeps only that a shadow reading failed, so this is where a run

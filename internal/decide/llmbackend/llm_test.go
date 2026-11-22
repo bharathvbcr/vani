@@ -507,7 +507,37 @@ func TestTruncatedReplyReadsTruncated(t *testing.T) {
 	// A reply that ended on its own keeps the parser's detail.
 	b, _ = New(&fakeProvider{text: "not json"}, Config{Model: "m"})
 	a, _ = b.Decide(context.Background(), question())
-	if rd := a.Slots["mode"]; rd.Reading != decide.Failed || rd.Detail != "unparseable" {
-		t.Errorf("unparseable reply = %+v", rd)
+	if rd := a.Slots["mode"]; rd.Reading != decide.Failed || rd.Detail != "not_json" {
+		t.Errorf("prose reply = %+v, want failed/not_json", rd)
+	}
+}
+
+// An unusable reply says what it was: no text at all (a reasoning model that
+// spent the turn thinking), prose where the object should start, or an object
+// that does not decode. The escalate tier's failures read only "unparseable"
+// before (2026-11-22, 48 of 48), which could not tell these apart.
+func TestUnusableReplyNamesItsShape(t *testing.T) {
+	for text, want := range map[string]string{
+		"":                                 "empty_reply",
+		"   \n\t":                          "empty_reply",
+		"```json\n\n```":                   "empty_reply",
+		"Looking at this posting, remote.": "not_json",
+		`Here: {"mode":"remote","level":"senior"}`: "not_json",
+		`["remote","senior"]`:              "not_json",
+		`"remote"`:                         "not_json",
+		`{"mode":"remote","level":}`:       "unparseable",
+		`{"mode":"remote"`:                 "unparseable",
+		`{"mode":"remote","level":"senior"} and why`: "trailing_data",
+	} {
+		b, _ := New(&fakeProvider{text: text}, Config{Model: "m"})
+		a, err := b.Decide(context.Background(), question())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []string{"mode", "level"} {
+			if rd := a.Slots[s]; rd.Reading != decide.Failed || rd.Detail != want {
+				t.Errorf("%q: %s = %+v, want failed/%s", text, s, rd, want)
+			}
+		}
 	}
 }

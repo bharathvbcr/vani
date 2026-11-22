@@ -371,7 +371,16 @@ func parse(name string, q decide.Question, text string) decide.Answer {
 	if len(text) > maxReplyBytes {
 		return bad("reply_too_large")
 	}
-	dec := json.NewDecoder(bytes.NewReader([]byte(stripFence(text))))
+	body := stripFence(text)
+	switch {
+	case body == "":
+		// No text at all: a reasoning model can end its turn on thinking alone.
+		return bad("empty_reply")
+	case body[0] != '{':
+		// Prose, a bare string or an array where the object should start.
+		return bad("not_json")
+	}
+	dec := json.NewDecoder(bytes.NewReader([]byte(body)))
 	var obj map[string]json.RawMessage
 	if err := dec.Decode(&obj); err != nil || obj == nil {
 		return bad("unparseable")
