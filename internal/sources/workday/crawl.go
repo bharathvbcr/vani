@@ -60,7 +60,52 @@ func (f facetChoice) sum() int {
 	return n
 }
 
-func (f facetChoice) location() bool { return strings.Contains(strings.ToLower(f.param), "location") }
+// location reports a facet that places jobs. A job in two places counts in
+// both, so its sum overstates the jobs and never sizes a query. Tenants name
+// these facets freely: "locations" and "locationCountry", but also Applied
+// Materials' "Country" and "State_Region_Province" (2026-11-22), which read as
+// plain facets outran the facets that agree on the board and failed it on
+// every run. So "location" anywhere in the name, or any word of it that is a
+// kind of place, marks one.
+func (f facetChoice) location() bool {
+	if strings.Contains(strings.ToLower(f.param), "location") {
+		return true
+	}
+	for _, w := range facetWords(f.param) {
+		if placeWords[w] {
+			return true
+		}
+	}
+	return false
+}
+
+// placeWords are the words of a facet name that make it a location facet.
+var placeWords = map[string]bool{
+	"country": true, "countries": true, "state": true, "states": true, "province": true, "provinces": true,
+	"region": true, "regions": true, "city": true, "cities": true, "county": true, "counties": true,
+}
+
+// facetWords splits a facet parameter into lower-case words at '_', '-' and
+// each lower-to-upper case change: "locationRegionStateProvince" is location,
+// region, state, province; "State_Region_Province" is state, region, province.
+// Words are whole, so "Ethnicity" is not "city".
+func facetWords(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		switch {
+		case i == len(s) || s[i] == '_' || s[i] == '-':
+			if i > start {
+				out = append(out, strings.ToLower(s[start:i]))
+			}
+			start = i + 1
+		case i > start && s[i] >= 'A' && s[i] <= 'Z' && s[i-1] >= 'a' && s[i-1] <= 'z':
+			out = append(out, strings.ToLower(s[start:i]))
+			start = i
+		}
+	}
+	return out
+}
 
 // listPage is one listing answer as read: total is nil when the answer gave
 // none that can be believed.

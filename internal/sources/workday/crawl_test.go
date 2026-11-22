@@ -685,6 +685,52 @@ func TestReadFacets(t *testing.T) {
 	}
 }
 
+// Applied Materials (amat/External, 2026-11-22) names its location facets
+// "Country" and "State_Region_Province". Read as plain facets, the state sum
+// (a job in two states counts twice) outran the three facets that agree on the
+// board, so every run failed it as counted "by one facet only".
+func TestLocationFacetsNamedWithoutLocation(t *testing.T) {
+	v := func(counts ...int) []facetValue {
+		var out []facetValue
+		for i, c := range counts {
+			out = append(out, facetValue{id: fid(9, i), count: c})
+		}
+		return out
+	}
+	n := func(x int) *int { return &x }
+	fam := facetChoice{param: "jobFamilyGroup", values: v(1309, 1000)}
+	ws := facetChoice{param: "workerSubType", values: v(2300, 9)}
+	tt := facetChoice{param: "timeType", values: v(2305, 4)}
+	country := facetChoice{param: "Country", values: v(2000, 361)}
+	state := facetChoice{param: "State_Region_Province", values: v(1500, 1187)}
+	none := map[string][]string{}
+
+	if c, ok := expectedTotal(n(2000), []facetChoice{country, state, fam, ws, tt}, none); c != 2309 || !ok {
+		t.Errorf("expectedTotal = %d %v, want 2309 corroborated (Country and State_Region_Province left out)", c, ok)
+	}
+	if f, ok := chooseSplit([]facetChoice{state, country, tt, ws, fam}, none); !ok || f.param != "jobFamilyGroup" {
+		t.Errorf("split by %q, want jobFamilyGroup before the place facets", f.param)
+	}
+	// Facet names seen on the watchlist's Workday boards, 2026-11-22.
+	for _, name := range []string{
+		"locations", "locationCountry", "Location_Country", "Location", "primaryLocation", "primarylocation",
+		"locationHierarchy1", "locationMainGroup", "locationRegionStateProvince", "Location_Region_State_Province",
+		"Country", "State_Region_Province", "State_Province_Region", "City", "Region", "County", "countries",
+	} {
+		if !(facetChoice{param: name}).location() {
+			t.Errorf("%q is not read as a location facet", name)
+		}
+	}
+	for _, name := range []string{
+		"jobFamilyGroup", "workerSubType", "timeType", "jobFamily", "Job_Family", "jobFamilies", "Job_Profile",
+		"Skills", "remoteType", "isRemote", "spotlightJob", "distance", "Ethnicity", "Capacity", "Statement", "a",
+	} {
+		if (facetChoice{param: name}).location() {
+			t.Errorf("%q is read as a location facet", name)
+		}
+	}
+}
+
 func TestExpectedTotalAndChooseSplit(t *testing.T) {
 	v := func(counts ...int) []facetValue {
 		var out []facetValue
