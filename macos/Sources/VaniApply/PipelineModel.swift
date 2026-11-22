@@ -247,6 +247,19 @@ final class PipelineModel {
         runError = nil
         runUnverified = nil
         runUnverifiedSince = nil
+        // The status this app holds can predate a daemon that has just started
+        // or stopped (the app relaunched beside a restarting schedule agent):
+        // run-once chosen on it is refused while the daemon holds the ledger,
+        // and run-request asks a daemon that is gone. Read it again so the
+        // choice follows the daemon as it is now; a read that fails keeps the
+        // last good status, and a run that started meanwhile blocks this one.
+        startingRun = true
+        if await refresh(interactive: false) == .superseded { _ = await newestRead() }
+        startingRun = false
+        if let blocker = runBlocker {
+            runError = blocker
+            return
+        }
         if daemonRunning {
             await requestRun(options, remember: remember)
             return

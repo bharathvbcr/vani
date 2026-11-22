@@ -109,6 +109,18 @@ private struct PipelineFixture {
         try Data(status.utf8).write(to: dir.appendingPathComponent("status.json"))
     }
 
+    /// The daemon facet as vani would report it now: a daemon that announced
+    /// itself (or went away) after the app last read the status.
+    func setDaemon(_ json: String) throws {
+        try Data(json.utf8).write(to: dir.appendingPathComponent("daemon"))
+        let url = dir.appendingPathComponent("status.json")
+        let old = try String(contentsOf: url, encoding: .utf8)
+        guard let r = old.range(of: #","daemon":\{[^}]*\}"#, options: .regularExpression) else {
+            throw NSError(domain: "fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "status.json has no daemon facet"])
+        }
+        try Data(old.replacingCharacters(in: r, with: #","daemon":"# + json).utf8).write(to: url)
+    }
+
     func calls() -> [String] {
         ((try? String(contentsOf: dir.appendingPathComponent("calls"), encoding: .utf8)) ?? "")
             .split(separator: "\n").map(String.init)
@@ -310,6 +322,38 @@ final class PipelineModelTests: XCTestCase {
         XCTAssertFalse(m.daemonRunning)
         await m.startRun(ManualRunOptions(noDigest: true))
         try await eventually("run-once's refusal") { m.runError != nil && m.manualRun == nil }
+        XCTAssertTrue(f.calls().contains("run-once --no-digest"), "\(f.calls())")
+        XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-request") }, "\(f.calls())")
+    }
+
+    /// The status the app holds predates a daemon that has since announced
+    /// itself (the app was relaunched with the schedule agent, 2026-11-22: Run
+    /// Now chose run-once and vani refused it, "directory is locked by another
+    /// process"). Run Now reads the status again and asks the daemon.
+    func testRunNowAsksADaemonThatStartedAfterTheLastRead() async throws {
+        let f = try PipelineFixture(self, mode: "daemon-picks", lastRun: oldRun,
+                                    daemon: #"{"ok":true,"running":false,"reason":"no daemon has announced itself"}"#)
+        let m = try model(f)
+        await m.refresh()
+        XCTAssertFalse(m.daemonRunning)
+        try f.setDaemon(daemonUp)
+        await m.startRun(ManualRunOptions(advance: 9))
+        XCTAssertNil(m.runError, m.runError ?? "")
+        XCTAssertTrue(f.calls().contains("run-request --advance 9 --json"), "\(f.calls())")
+        XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-once") }, "\(f.calls())")
+        try await eventually("the daemon's run to end") { !m.waitingForDaemon && m.status?.lastRun.state == .ok && !m.runInProgress }
+    }
+
+    /// The other way round: the held status shows a daemon that has gone since.
+    /// Run Now reads again and starts run-once instead of asking nobody.
+    func testRunNowStartsRunOnceWhenTheDaemonWentAwaySinceTheLastRead() async throws {
+        let f = try PipelineFixture(self, mode: "recorded", lastRun: oldRun, daemon: daemonUp)
+        let m = try model(f)
+        await m.refresh()
+        XCTAssertTrue(m.daemonRunning)
+        try f.setDaemon(#"{"ok":true,"running":false,"reason":"no daemon has announced itself"}"#)
+        await m.startRun(ManualRunOptions(noDigest: true))
+        try await eventually("run-once's run to end") { m.status?.lastRun.state == .ok && m.status?.lastRun.trigger == .manual && !m.runInProgress }
         XCTAssertTrue(f.calls().contains("run-once --no-digest"), "\(f.calls())")
         XCTAssertFalse(f.calls().contains { $0.hasPrefix("run-request") }, "\(f.calls())")
     }
