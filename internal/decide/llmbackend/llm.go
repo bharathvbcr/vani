@@ -187,7 +187,7 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 		MaxTokens: b.max,
 	}
 	Shape(b.p, &req)
-	text, err := Turn(ctx, b.p, req)
+	reply, err := TurnReply(ctx, b.p, req)
 	if err != nil {
 		if status := requestRejected(err); status != 0 && ctx.Err() == nil {
 			// A reading, not an error: the router turns any error into Unavailable,
@@ -200,8 +200,24 @@ func (b *Backend) Decide(ctx context.Context, q decide.Question) (decide.Answer,
 		}
 		return allSlots(b.name, q, decide.SlotReading{Reading: decide.Unavailable, Detail: detail}), err
 	}
-	return parse(b.name, q, text), nil
+	ans := parse(b.name, q, reply.Text)
+	if reply.Truncated() {
+		// The reply ran into max_tokens: what failed to parse was cut off, not
+		// written wrong (low-effort thinking can spend the whole budget on a
+		// hard posting). A slot the cut-off text still answered whole stands.
+		for name, rd := range ans.Slots {
+			if rd.Reading == decide.Failed {
+				rd.Detail = DetailTruncated
+				ans.Slots[name] = rd
+			}
+		}
+	}
+	return ans, nil
 }
+
+// DetailTruncated is the Detail of a slot whose reply ran into max_tokens
+// before it was answered.
+const DetailTruncated = "truncated"
 
 // requestRejected returns the HTTP status when err is a provider's final refusal
 // of this request's own content, else 0. Only the statuses HTTP defines as about

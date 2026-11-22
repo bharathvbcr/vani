@@ -475,3 +475,39 @@ func TestTurnReplyReportsTheStopReasonAndTurnIgnoresIt(t *testing.T) {
 		t.Error("a response error was swallowed")
 	}
 }
+
+// A reply cut off at max_tokens (thinking spent the budget, or the JSON ran
+// long) reads Failed "truncated", not "unparseable": the two need different
+// fixes, and the run record counts them apart (backend_stats failed_details).
+func TestTruncatedReplyReadsTruncated(t *testing.T) {
+	for name, text := range map[string]string{"empty": "", "cut JSON": `{"mode":"rem`, "prose": "Let me think"} {
+		b, _ := New(&fakeProvider{text: text, stop: llm.StopMaxTokens}, Config{Model: "m"})
+		a, err := b.Decide(context.Background(), question())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range []string{"mode", "level"} {
+			if rd := a.Slots[s]; rd.Reading != decide.Failed || rd.Detail != "truncated" {
+				t.Errorf("%s: %s = %+v, want failed/truncated", name, s, rd)
+			}
+		}
+	}
+	// A whole answer that also reached the limit is still the answer.
+	b, _ := New(&fakeProvider{text: `{"mode":"remote","level":"senior"}`, stop: llm.StopMaxTokens}, Config{Model: "m"})
+	a, err := b.Decide(context.Background(), question())
+	if err != nil || a.Slots["mode"].Reading != decide.Answered || a.Slots["level"].Value != "senior" {
+		t.Errorf("whole answer at the limit = %+v, %v", a.Slots, err)
+	}
+	// An answer missing one slot at the limit: the missing slot was cut off.
+	b, _ = New(&fakeProvider{text: `{"mode":"remote"}`, stop: llm.StopMaxTokens}, Config{Model: "m"})
+	a, _ = b.Decide(context.Background(), question())
+	if a.Slots["mode"].Reading != decide.Answered || a.Slots["level"].Detail != "truncated" {
+		t.Errorf("partial answer at the limit = %+v", a.Slots)
+	}
+	// A reply that ended on its own keeps the parser's detail.
+	b, _ = New(&fakeProvider{text: "not json"}, Config{Model: "m"})
+	a, _ = b.Decide(context.Background(), question())
+	if rd := a.Slots["mode"]; rd.Reading != decide.Failed || rd.Detail != "unparseable" {
+		t.Errorf("unparseable reply = %+v", rd)
+	}
+}

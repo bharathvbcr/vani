@@ -613,3 +613,61 @@ func TestStatsAreBoundedByBackendName(t *testing.T) {
 		t.Fatalf("%d entries, other = %+v", len(st), st[otherBackend])
 	}
 }
+
+// Failed readings are counted by why the backend said they failed, so a run
+// record tells a cut-off reply (truncated) from prose (unparseable) from a
+// value off the list (invalid_value). Tags after ';' are not part of the key,
+// a missing detail is named, an errored call counts nothing, and a backend
+// inventing details cannot grow the record past maxFailedDetails keys.
+func TestFailedReadingsAreCountedByDetail(t *testing.T) {
+	sink := newBackendErrors()
+	sink.record("escalate", decide.Answer{Slots: map[string]decide.SlotReading{
+		"a": {Reading: decide.Failed, Detail: "truncated"},
+		"b": {Reading: decide.Failed, Detail: "unparseable;backend=escalate;model=m"},
+		"c": {Reading: decide.Failed},
+		"d": {Reading: decide.Answered, Value: "x"},
+		"e": {Reading: decide.Unavailable, Detail: "deadline"},
+	}}, false, false, time.Millisecond)
+	sink.record("escalate", decide.Answer{Slots: map[string]decide.SlotReading{
+		"a": {Reading: decide.Failed, Detail: "truncated"},
+	}}, false, false, time.Millisecond)
+	sink.record("escalate", decide.Answer{Slots: map[string]decide.SlotReading{
+		"a": {Reading: decide.Failed, Detail: "errored"},
+	}}, true, false, time.Millisecond)
+	st := sink.stats()["escalate"]
+	want := map[string]int{"truncated": 2, "unparseable": 1, "unspecified": 1}
+	if fmt.Sprint(st.FailedDetails) != fmt.Sprint(want) {
+		t.Errorf("failed_details = %v, want %v", st.FailedDetails, want)
+	}
+	if st.Readings["failed"] != 4 {
+		t.Errorf("readings = %v", st.Readings)
+	}
+
+	flood := newBackendErrors()
+	for i := range 3 * maxFailedDetails {
+		flood.record("llm", decide.Answer{Slots: map[string]decide.SlotReading{
+			"a": {Reading: decide.Failed, Detail: fmt.Sprintf("made_up_%d", i)},
+			"b": {Reading: decide.Failed, Detail: strings.Repeat("x", 500)},
+			"c": {Reading: decide.Failed, Detail: "WEIRD detail\n"},
+		}}, false, false, 0)
+	}
+	fd := flood.stats()["llm"].FailedDetails
+	total := 0
+	for k, v := range fd {
+		total += v
+		if len(k) > maxFailedDetailLen {
+			t.Errorf("key %q longer than %d", k, maxFailedDetailLen)
+		}
+	}
+	if len(fd) > maxFailedDetails+1 || fd["other"] == 0 || total != 9*maxFailedDetails {
+		t.Errorf("flooded failed_details: %d keys, other %d, total %d (%v)", len(fd), fd["other"], total, fd)
+	}
+	if _, err := json.Marshal(flood.stats()); err != nil {
+		t.Fatal(err)
+	}
+	// stats hands out a copy.
+	fd["truncated"] = 99
+	if flood.stats()["llm"].FailedDetails["truncated"] != 0 {
+		t.Error("stats() shares its failed_details map")
+	}
+}

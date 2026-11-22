@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -346,6 +347,13 @@ type backendStat struct {
 	// Readings counts slot readings by kind (decide.Reading), from calls that
 	// returned an answer.
 	Readings map[string]int `json:"readings,omitempty"`
+	// FailedDetails counts Failed readings by the reason the backend gave
+	// (truncated, unparseable, invalid_value, missing_slot, http_413, ...): the
+	// Detail up to its first ';' tag, at most maxFailedDetailLen bytes of
+	// [a-z0-9_-], at most maxFailedDetails keys, the rest under "other". The
+	// ledger keeps only that a shadow reading failed, so this is where a run
+	// says why. Additive.
+	FailedDetails map[string]int `json:"failed_details,omitempty"`
 	// CostUSD sums the backend's reported cost; a negative, NaN or infinite
 	// figure counts as zero.
 	CostUSD float64 `json:"cost_usd"`
@@ -437,7 +445,47 @@ func (b *backendErrors) record(backend string, a decide.Answer, errored, cancele
 			st.Readings = map[string]int{}
 		}
 		st.Readings[readingKind(rd.Reading)]++
+		if rd.Reading == decide.Failed {
+			if st.FailedDetails == nil {
+				st.FailedDetails = map[string]int{}
+			}
+			k := failedDetailKey(rd.Detail)
+			if _, ok := st.FailedDetails[k]; !ok && len(st.FailedDetails) >= maxFailedDetails {
+				k = otherFailedDetail
+			}
+			st.FailedDetails[k]++
+		}
 	}
+}
+
+// Bounds of backendStat.FailedDetails: a backend that invents a detail per
+// call cannot grow the run record.
+const (
+	maxFailedDetails   = 16
+	maxFailedDetailLen = 40
+	otherFailedDetail  = "other"
+)
+
+// failedDetailKey is the key a Failed reading's Detail counts under: the
+// reason before the first ';' (the router and the model tag follow it),
+// "unspecified" when there is none, "other" when it is not a short
+// [a-z0-9_-] word.
+func failedDetailKey(detail string) string {
+	d, _, _ := strings.Cut(detail, ";")
+	d = strings.TrimSpace(d)
+	if d == "" {
+		return "unspecified"
+	}
+	if len(d) > maxFailedDetailLen {
+		return otherFailedDetail
+	}
+	for i := 0; i < len(d); i++ {
+		c := d[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return otherFailedDetail
+		}
+	}
+	return d
 }
 
 // reject counts a call the open breaker turned away.
@@ -513,6 +561,12 @@ func (b *backendErrors) stats() map[string]backendStat {
 			c.Readings = make(map[string]int, len(st.Readings))
 			for k, v := range st.Readings {
 				c.Readings[k] = v
+			}
+		}
+		if st.FailedDetails != nil {
+			c.FailedDetails = make(map[string]int, len(st.FailedDetails))
+			for k, v := range st.FailedDetails {
+				c.FailedDetails[k] = v
 			}
 		}
 		out[name] = c
