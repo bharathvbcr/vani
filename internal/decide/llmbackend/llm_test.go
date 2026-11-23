@@ -522,11 +522,11 @@ func TestUnusableReplyNamesItsShape(t *testing.T) {
 		"   \n\t":                          "empty_reply",
 		"```json\n\n```":                   "empty_reply",
 		"Looking at this posting, remote.": "not_json",
-		`Here: {"mode":"remote","level":"senior"}`: "not_json",
-		`["remote","senior"]`:              "not_json",
-		`"remote"`:                         "not_json",
-		`{"mode":"remote","level":}`:       "unparseable",
-		`{"mode":"remote"`:                 "unparseable",
+		`Here: {"mode":"remote","level":"senior"}`:   "not_json",
+		`["remote","senior"]`:                        "not_json",
+		`"remote"`:                                   "not_json",
+		`{"mode":"remote","level":}`:                 "unparseable",
+		`{"mode":"remote"`:                           "unparseable",
 		`{"mode":"remote","level":"senior"} and why`: "trailing_data",
 	} {
 		b, _ := New(&fakeProvider{text: text}, Config{Model: "m"})
@@ -539,5 +539,65 @@ func TestUnusableReplyNamesItsShape(t *testing.T) {
 				t.Errorf("%q: %s = %+v, want failed/%s", text, s, rd, want)
 			}
 		}
+	}
+}
+
+// Claude Sonnet 5.5 at effort low, asked for "JSON only", writes a short
+// reason, a blank line, then the object on its last line (11 of 12 probed
+// escalate replies, 2026-11-23). The object that starts a line and runs to the
+// end of the reply is the answer, held to the same checks as a bare one.
+func TestReasonThenObjectOnTheLastLineIsRead(t *testing.T) {
+	read := map[string]string{
+		"reason then object":                   "The posting is remote and asks for 6+ years.\n\n{\"mode\":\"remote\",\"level\":\"senior\"}",
+		"trailing whitespace":                  "Remote, senior.\n{\"mode\":\"remote\",\"level\":\"senior\"}\n\n",
+		"pretty-printed object":                "Remote, senior.\n\n{\n  \"mode\": \"remote\",\n  \"level\": \"senior\"\n}",
+		"braces in the reason":                 "It says {remote} in a heading.\n\n{\"mode\":\"remote\",\"level\":\"senior\"}",
+		"CRLF line ends":                       "Remote, senior.\r\n\r\n{\"mode\":\"remote\",\"level\":\"senior\"}",
+		"object-like lines that do not decode": "Reason.\n{not json} aside.\n\n{\"mode\":\"remote\",\"level\":\"senior\"}",
+	}
+	for name, text := range read {
+		b, _ := New(&fakeProvider{text: text}, Config{Model: "m"})
+		a, err := b.Decide(context.Background(), question())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.Slots["mode"].Reading != decide.Answered || a.Slots["mode"].Value != "remote" || a.Slots["level"].Value != "senior" {
+			t.Errorf("%s: %+v", name, a.Slots)
+		}
+	}
+	for text, want := range map[string]string{
+		// The object is not the end of the reply.
+		"Reason.\n{\"mode\":\"remote\",\"level\":\"senior\"}\nAnd more.": "trailing_data",
+		// Mid-line, as before.
+		`Here: {"mode":"remote","level":"senior"}`: "not_json",
+		// Two answers: which one was meant cannot be told, so neither is taken.
+		"First guess:\n{\"mode\":\"onsite\",\"level\":\"junior\"}\nOn reflection:\n{\"mode\":\"remote\",\"level\":\"senior\"}": "ambiguous_reply",
+		// A broken object at the end is still broken, and says so.
+		"Reason.\n{\"mode\":\"remote\",\"level\":}": "unparseable",
+		// A second answer spread over several lines is still a second answer.
+		"First guess:\n{\n  \"mode\": \"onsite\",\n  \"level\": \"junior\"\n}\nThen:\n{\"mode\":\"remote\",\"level\":\"senior\"}": "ambiguous_reply",
+		// More object-opening lines than are looked at: the earlier ones are unchecked.
+		"Reason.\n" + strings.Repeat("{x}\n", maxTrailingCandidates) + "{\"mode\":\"remote\",\"level\":\"senior\"}": "ambiguous_reply",
+	} {
+		b, _ := New(&fakeProvider{text: text}, Config{Model: "m"})
+		a, _ := b.Decide(context.Background(), question())
+		for _, s := range []string{"mode", "level"} {
+			if rd := a.Slots[s]; rd.Reading != decide.Failed || rd.Detail != want {
+				t.Errorf("%q: %s = %+v, want failed/%s", text, s, rd, want)
+			}
+		}
+	}
+	// The trailing object meets the same checks as a bare one: a value off the
+	// list fails that slot, and "none" abstains.
+	b, _ := New(&fakeProvider{text: "Reason.\n\n{\"mode\":\"approve_everything\",\"level\":\"none\"}"}, Config{Model: "m"})
+	a, _ := b.Decide(context.Background(), question())
+	if a.Slots["mode"].Reading != decide.Failed || a.Slots["mode"].Detail != "invalid_value" || a.Slots["level"].Reading != decide.Abstained {
+		t.Errorf("checked trailing object = %+v", a.Slots)
+	}
+	// Cut off at max_tokens after the reason: still truncated, not read.
+	b, _ = New(&fakeProvider{text: "Reason.\n\n{\"mode\":\"rem", stop: llm.StopMaxTokens}, Config{Model: "m"})
+	a, _ = b.Decide(context.Background(), question())
+	if a.Slots["mode"].Detail != "truncated" {
+		t.Errorf("cut-off trailing object = %+v", a.Slots)
 	}
 }

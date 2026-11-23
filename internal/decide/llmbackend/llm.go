@@ -362,8 +362,75 @@ func stripFence(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// parse reads the reply strictly: one JSON object; extra keys ignored; each
-// slot must be present and be a string equal to an option or "none".
+// maxTrailingCandidates bounds how many object-opening lines trailingObject
+// looks at, from the end: a reply is at most maxReplyBytes, and each look
+// decodes up to the end of the reply.
+const maxTrailingCandidates = 16
+
+// trailingObject finds the answer in a reply that opens with a reason: the
+// JSON object that starts at the beginning of a line and runs exactly to the
+// end of the reply. The object gets the same checks as a bare one; this only
+// skips the reason before it. why, when there is no answer:
+//   - "ambiguous_reply": an earlier line also opens an object that decodes
+//     (two answers; which was meant cannot be told), or there are more
+//     object-opening lines than maxTrailingCandidates, so the earlier ones
+//     were never looked at;
+//   - "trailing_data": the last object-opening line decodes, but text follows it;
+//   - "unparseable": the last object-opening line does not decode;
+//   - "not_json": no line opens an object (prose, or an object mid-line).
+func trailingObject(body string) (map[string]json.RawMessage, string) {
+	// decodeFrom decodes one object at the start of s: ok, or trailing when
+	// something follows it.
+	decodeFrom := func(s string) (o map[string]json.RawMessage, ok, trailing bool) {
+		dec := json.NewDecoder(strings.NewReader(s))
+		if err := dec.Decode(&o); err != nil || o == nil {
+			return nil, false, false
+		}
+		if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+			return o, true, true
+		}
+		return o, true, false
+	}
+	var starts []int // line starts that open an object, last first
+	more := false    // object-opening lines past the cap
+	for i := len(body) - 1; i > 0; i-- {
+		if body[i] == '{' && body[i-1] == '\n' {
+			if len(starts) == maxTrailingCandidates {
+				more = true
+				break
+			}
+			starts = append(starts, i)
+		}
+	}
+	if len(starts) == 0 {
+		return nil, "not_json"
+	}
+	for n, at := range starts {
+		obj, ok, trailing := decodeFrom(body[at:])
+		if !ok || trailing {
+			continue
+		}
+		// An earlier object in the reason, on one line or several, is a
+		// second answer.
+		for _, earlier := range starts[n+1:] {
+			if _, ok, _ := decodeFrom(body[earlier:]); ok {
+				return nil, "ambiguous_reply"
+			}
+		}
+		if more {
+			return nil, "ambiguous_reply"
+		}
+		return obj, ""
+	}
+	if _, ok, _ := decodeFrom(body[starts[0]:]); ok {
+		return nil, "trailing_data"
+	}
+	return nil, "unparseable"
+}
+
+// parse reads the reply strictly: one JSON object, bare or after a reason (see
+// trailingObject); extra keys ignored; each slot must be present and be a
+// string equal to an option or "none".
 func parse(name string, q decide.Question, text string) decide.Answer {
 	bad := func(detail string) decide.Answer {
 		return allSlots(name, q, decide.SlotReading{Reading: decide.Failed, Detail: detail})
@@ -372,21 +439,29 @@ func parse(name string, q decide.Question, text string) decide.Answer {
 		return bad("reply_too_large")
 	}
 	body := stripFence(text)
+	var obj map[string]json.RawMessage
 	switch {
 	case body == "":
 		// No text at all: a reasoning model can end its turn on thinking alone.
 		return bad("empty_reply")
 	case body[0] != '{':
-		// Prose, a bare string or an array where the object should start.
-		return bad("not_json")
-	}
-	dec := json.NewDecoder(bytes.NewReader([]byte(body)))
-	var obj map[string]json.RawMessage
-	if err := dec.Decode(&obj); err != nil || obj == nil {
-		return bad("unparseable")
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return bad("trailing_data")
+		// A reason before the answer: Claude Sonnet 5.5 at effort low writes one,
+		// then the object on its last line, whatever the prompt asks (11 of 12
+		// probed escalate replies, 2026-11-23). The object that starts a line
+		// and runs to the end of the reply is the answer; anything else is prose.
+		o, why := trailingObject(body)
+		if why != "" {
+			return bad(why)
+		}
+		obj = o
+	default:
+		dec := json.NewDecoder(bytes.NewReader([]byte(body)))
+		if err := dec.Decode(&obj); err != nil || obj == nil {
+			return bad("unparseable")
+		}
+		if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+			return bad("trailing_data")
+		}
 	}
 	ans := decide.Answer{Backend: name, Slots: make(map[string]decide.SlotReading, len(q.Slots))}
 	for _, s := range q.Slots {
