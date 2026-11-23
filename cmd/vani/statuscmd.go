@@ -355,7 +355,13 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 			u := unwatchedCompaniesOf(out.Ledger.recs, cfg, e.stateDir)
 			out.UnwatchedCompanies = &u
 		}
-		bh := e.boardHealthFacet(cfg, at)
+		// The zero-board check asks the ledger: give it this read's fold, so
+		// status folds the ledger once and within its bound.
+		folded := &foldedLedger{recs: out.Ledger.recs}
+		if !out.Ledger.OK {
+			folded.why = "the ledger could not be read: " + out.Ledger.Reason
+		}
+		bh := e.boardHealthFacetFrom(cfg, at, folded)
 		out.BoardHealth = &bh
 	}
 	return out

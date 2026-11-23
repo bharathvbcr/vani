@@ -224,3 +224,53 @@ func TestRunsShowNamesABoardThatListsNothing(t *testing.T) {
 		t.Errorf("failures report carried it:\n%s", f.Text)
 	}
 }
+
+// Status folds the ledger once: the zero-board check takes the fold status
+// already holds instead of reading the whole ledger again (a second unbounded
+// fold made status take 9-19 s on a 1.1 GB ledger, 2026-11-23). A board whose
+// postings the fold holds is not named, and nothing is read.
+func TestZeroBoardCheckUsesTheFoldItIsGiven(t *testing.T) {
+	b := bhBoard("held")
+	state := zeroRun(t, b, zeros(0, 8))
+	putLedgerPosting(t, state, b, "1", posting.Live)
+	snap, err := ledger.ReadSnapshotScoped(filepath.Join(state, "ledger"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := 0
+	old := statusLedgerRead
+	statusLedgerRead = func(dir string) (ledger.Snapshot, error) { reads++; return old(dir) }
+	t.Cleanup(func() { statusLedgerRead = old })
+	cfg := config.Default()
+	cfg.Watchlist = []sources.Board{b}
+	at := zeroT0.Add(8*24*time.Hour + time.Hour)
+	e := &env{stateDir: state}
+
+	f := e.boardHealthFacetFrom(cfg, at, &foldedLedger{recs: snap.Records})
+	if reads != 0 || len(f.ListsNothing) != 0 || f.ListsNothingNote != "" {
+		t.Errorf("with a fold given: %d read(s), named %+v, note %q", reads, f.ListsNothing, f.ListsNothingNote)
+	}
+	// Without one (the text status, the run), it reads the ledger itself, once.
+	if f := e.boardHealthFacet(cfg, at); reads != 1 || len(f.ListsNothing) != 0 {
+		t.Errorf("without a fold: %d read(s), named %+v", reads, f.ListsNothing)
+	}
+}
+
+// A fold that could not be read in time leaves the check undone and says so:
+// nothing is named, and no second read of the ledger is started.
+func TestZeroBoardCheckSkipsWhenTheGivenFoldFailed(t *testing.T) {
+	b := bhBoard("typo")
+	state := zeroRun(t, b, zeros(0, 8))
+	reads := 0
+	old := statusLedgerRead
+	statusLedgerRead = func(dir string) (ledger.Snapshot, error) { reads++; return old(dir) }
+	t.Cleanup(func() { statusLedgerRead = old })
+	cfg := config.Default()
+	cfg.Watchlist = []sources.Board{b}
+	at := zeroT0.Add(8*24*time.Hour + time.Hour)
+	e := &env{stateDir: state}
+	f := e.boardHealthFacetFrom(cfg, at, &foldedLedger{why: "the ledger could not be read: ledger: the read did not finish within 8s"})
+	if reads != 0 || len(f.ListsNothing) != 0 || !strings.Contains(f.ListsNothingNote, "not checked") || !strings.Contains(f.ListsNothingNote, "did not finish") {
+		t.Errorf("%d read(s), named %+v, note %q", reads, f.ListsNothing, f.ListsNothingNote)
+	}
+}

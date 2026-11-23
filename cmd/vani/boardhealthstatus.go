@@ -36,10 +36,16 @@ type boardHealthFacet struct {
 // boardHealthFacet reads board health and the last run's report as they stand,
 // judged at at. It writes nothing.
 func (e *env) boardHealthFacet(cfg config.Config, at time.Time) boardHealthFacet {
+	return e.boardHealthFacetFrom(cfg, at, nil)
+}
+
+// boardHealthFacetFrom is boardHealthFacet over a ledger fold the caller
+// already holds (nil: read it if a board needs it).
+func (e *env) boardHealthFacetFrom(cfg config.Config, at time.Time, folded *foldedLedger) boardHealthFacet {
 	v := readBoardHealthView(e.stateDir, cfg.Watchlist, at)
 	f := boardHealthFacet{facet: facet{OK: true}, Tracked: v.Tracked, Updated: v.Updated, Stale: v.Stale, StaleCount: v.StaleCount,
 		Untracked: v.Untracked, UntrackedCount: v.UntrackedN}
-	f.ListsNothing, f.ListsNothingCount, f.ListsNothingNote = e.zeroBoardsOf(v.ZeroCandidates)
+	f.ListsNothing, f.ListsNothingCount, f.ListsNothingNote = e.zeroBoardsOf(v.ZeroCandidates, folded)
 	if v.Warn != "" {
 		f.OK, f.Reason = false, oneLine(v.Warn, 300)
 	}

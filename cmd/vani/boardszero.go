@@ -104,19 +104,38 @@ func zeroCandidatesOf(doc boardHealthDoc, boards []sources.Board, at time.Time) 
 	return out
 }
 
+// foldedLedger is a lean ledger fold a caller already holds (status folds once,
+// within its bound), so the zero-board check need not fold the whole ledger
+// again. why, when set, says that fold could not be read; the check then does
+// not run. recs is nil for a state dir with no ledger.
+type foldedLedger struct {
+	recs []ledger.Record
+	why  string
+}
+
 // zeroBoardsOf keeps the candidates the ledger holds no posting for, at most
-// maxStaleListed with the exact count. The ledger is read (lean, writing
-// nothing) only when there is a candidate. A ledger that cannot be read leaves
-// the question open: it names nothing and note says the check did not run, so
-// "no board lists nothing" never covers a ledger nobody looked in. No ledger at
-// all holds nothing.
-func (e *env) zeroBoardsOf(cands []zeroBoard) (out []zeroBoard, n int, note string) {
+// maxStaleListed with the exact count. The ledger is asked only when there is
+// a candidate: through folded when the caller has it, else read here (lean,
+// writing nothing). A ledger that cannot be read leaves the question open: it
+// names nothing and note says the check did not run, so "no board lists
+// nothing" never covers a ledger nobody looked in. No ledger at all holds
+// nothing.
+func (e *env) zeroBoardsOf(cands []zeroBoard, folded *foldedLedger) (out []zeroBoard, n int, note string) {
 	if len(cands) == 0 {
 		return nil, 0, ""
 	}
-	snap, err := ledger.ReadSnapshotScoped(filepath.Join(e.stateDir, "ledger"), nil)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, 0, oneLine("boards that list nothing not checked: the ledger could not be read: "+err.Error(), 300)
+	var snap ledger.Snapshot
+	switch {
+	case folded != nil && folded.why != "":
+		return nil, 0, oneLine("boards that list nothing not checked: "+folded.why, 300)
+	case folded != nil:
+		snap.Records = folded.recs
+	default:
+		var err error
+		snap, err = statusLedgerRead(filepath.Join(e.stateDir, "ledger"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, 0, oneLine("boards that list nothing not checked: the ledger could not be read: "+err.Error(), 300)
+		}
 	}
 	held := map[string]bool{}
 	want := map[string]bool{}
@@ -188,6 +207,6 @@ func (e *env) runZeroLines(rep *boardsReport, at time.Time) []string {
 			read = append(read, sources.Board{ATS: posting.ATS(it.ATS), Token: it.Token, Company: it.Company})
 		}
 	}
-	boards, n, note := e.zeroBoardsOf(zeroCandidatesOf(doc, read, at))
+	boards, n, note := e.zeroBoardsOf(zeroCandidatesOf(doc, read, at), nil)
 	return zeroBoardLines(boards, n, note)
 }
