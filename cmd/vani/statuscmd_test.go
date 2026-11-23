@@ -843,3 +843,40 @@ func TestRunRecordIsPrivateAndReplacedWhole(t *testing.T) {
 		t.Errorf("record: %+v %v", r, err)
 	}
 }
+
+// A ledger that takes longer to fold than statusTimeout (a 1.1 GB ledger on a
+// loaded Mac took 52 s, 2026-11-23, past the app's 15 s) must not hold status:
+// the ledger facet says it could not be read in time, never zero, and the rest
+// still answer, the spend read included (it runs before the ledger wait).
+func TestStatusJSONSlowLedgerReadIsBoundedAndUnknown(t *testing.T) {
+	cfgPath, stateDir := setup(t)
+	initWithLLM(t, cfgPath)
+	writeStateFile(t, stateDir, "budget/llm-"+today()+".json", llmLedgerFixture)
+	if err := os.MkdirAll(filepath.Join(stateDir, "ledger"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	oldRead, oldTimeout := statusLedgerRead, statusTimeout
+	statusLedgerRead = func(string) (ledger.Snapshot, error) {
+		<-release
+		return ledger.Snapshot{}, nil
+	}
+	statusTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { statusLedgerRead, statusTimeout = oldRead, oldTimeout })
+
+	started := time.Now()
+	s := statusOf(t)
+	if took := time.Since(started); took > 3*time.Second {
+		t.Errorf("status waited %v on a slow ledger read", took)
+	}
+	if s.Ledger.OK || s.Ledger.Total != 0 || !strings.Contains(s.Ledger.Reason, "deadline") {
+		t.Errorf("ledger facet = %+v, want not ok, no count, a deadline reason", s.Ledger)
+	}
+	if l := llmItem(t, s); !l.OK || l.SpentUSD == nil {
+		t.Errorf("the slow ledger took the spend read with it: %+v", l)
+	}
+	if !s.Config.OK || !s.Daemon.OK {
+		t.Errorf("other facets: config %+v daemon %+v", s.Config, s.Daemon)
+	}
+}

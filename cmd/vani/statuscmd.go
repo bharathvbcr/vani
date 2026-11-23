@@ -30,8 +30,9 @@ import (
 // Every section is a facet with its own ok/reason, and a facet that could not
 // be read says so; it is never reported as zero, empty or "fine". One facet
 // failing never fails the command. The ledger is read with
-// ledger.ReadSnapshotScoped and no scope (no lock, no description loaded), so the answer comes while a run or the daemon holds the ledger,
-// which the text `status` (it opens the ledger) cannot do.
+// ledger.ReadSnapshotScoped and no scope (no lock, no description loaded),
+// within statusTimeout, so the answer comes while a run or the daemon holds
+// the ledger, which the text `status` (it opens the ledger) cannot do.
 
 // statusTimeout bounds the whole read, the budget ledger's lock wait included.
 // A variable so a test can hold the lock without waiting out the real bound.
@@ -305,6 +306,9 @@ func (e *env) statusReport() error {
 func (e *env) buildStatus(ctx context.Context) statusJSON {
 	at := now()
 	out := statusJSON{Version: statusVersion, GeneratedAt: at.UTC(), StateDir: e.stateDir}
+	// The ledger fold is the slow read: it runs beside the others and is
+	// waited for, within ctx, where its facet is first needed.
+	ledgerRead := e.startLedgerRead()
 	if p := e.paths; p.ConfigFrom != "" {
 		out.Paths = &pathsJSON{Config: e.configPath, ConfigFrom: p.ConfigFrom, StateFrom: p.StateFrom, AppSettings: p.AppSettings}
 	}
@@ -315,7 +319,10 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 		n := len(cfg.Watchlist)
 		out.Config = configFacet{facet: facet{OK: true}, Boards: &n}
 	}
-	out.Ledger = e.ledgerFacet()
+	// The spend read takes ctx too: it goes before the ledger wait, which can
+	// use the whole bound.
+	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
+	out.Ledger = e.ledgerFacetOfRead(ctx, ledgerRead)
 	out.LastRun = e.lastRunFacet(at)
 	out.LastSkip = e.lastSkipFacet()
 	out.Inbox = e.inboxFacet()
@@ -336,7 +343,6 @@ func (e *env) buildStatus(ctx context.Context) statusJSON {
 		}
 		out.Schedule = withAwaitingUS(scheduleKeeping(cfg, out.Schedule, out.Daemon, out.LastRun, live, at), out.Ledger.liveUS)
 	}
-	out.Backends = e.backendsOf(ctx, cfg, cfgErr, at)
 	out.Decide = decideOf(cfg, cfgErr)
 	out.TargetSummary = e.targetSummaryFacetOf(cfg, cfgErr)
 	if cfgErr == nil {
@@ -405,15 +411,57 @@ func (e *env) runRequestFacet(at time.Time) runRequestFacet {
 	return f
 }
 
-func (e *env) ledgerFacet() ledgerFacet {
-	dir := filepath.Join(e.stateDir, "ledger")
-	// Status reports counts, never text: the scoped read folds the heads and
-	// loads no description (a nil scope hydrates nothing), where ReadSnapshot
-	// would materialise every body of a ledger the daemon holds lean.
-	snap, err := ledger.ReadSnapshotScoped(dir, nil)
-	f := ledgerFacetOf(dir, snap, err)
+// statusLedgerRead folds the ledger for status. Status reports counts, never
+// text: the scoped read folds the heads and loads no description (a nil scope
+// hydrates nothing), where ReadSnapshot would materialise every body of a
+// ledger the daemon holds lean. It still reads the whole file: ~10 s for a
+// 1.1 GB ledger on an idle Mac, 52 s under load (2026-11-23), so buildStatus
+// bounds the wait for it. A variable so a test can make it slow.
+var statusLedgerRead = func(dir string) (ledger.Snapshot, error) {
+	return ledger.ReadSnapshotScoped(dir, nil)
+}
+
+// ledgerRead is a ledger fold started by startLedgerRead.
+type ledgerRead struct {
+	dir  string
+	done chan ledgerReadResult
+}
+
+type ledgerReadResult struct {
+	snap ledger.Snapshot
+	err  error
+}
+
+// startLedgerRead begins the fold in the background, so buildStatus can read
+// the other facets while it runs.
+func (e *env) startLedgerRead() ledgerRead {
+	r := ledgerRead{dir: filepath.Join(e.stateDir, "ledger"), done: make(chan ledgerReadResult, 1)}
+	go func() {
+		snap, err := statusLedgerRead(r.dir)
+		r.done <- ledgerReadResult{snap, err}
+	}()
+	return r
+}
+
+// ledgerFacetOfRead waits for the fold until ctx ends. statusTimeout bounds the
+// whole status read, and the app's own timeout (15 s) relies on it, so a fold
+// still running then makes the facet unknown, never zero; the fold is left to
+// finish or die with the process.
+func (e *env) ledgerFacetOfRead(ctx context.Context, r ledgerRead) ledgerFacet {
+	var res ledgerReadResult
+	select {
+	case res = <-r.done:
+	case <-ctx.Done():
+		res.err = fmt.Errorf("ledger: the read did not finish within %s: %w", statusTimeout, ctx.Err())
+	}
+	f := ledgerFacetOf(r.dir, res.snap, res.err)
 	f.PendingReopens, f.PendingReopensError = e.pendingReopens()
 	return f
+}
+
+// ledgerFacet is the ledger facet of a fold that is waited for in full.
+func (e *env) ledgerFacet() ledgerFacet {
+	return e.ledgerFacetOfRead(context.Background(), e.startLedgerRead())
 }
 
 // ledgerFacetOf is the ledger facet of a read of dir (without the pending
