@@ -880,3 +880,26 @@ func TestStatusJSONSlowLedgerReadIsBoundedAndUnknown(t *testing.T) {
 		t.Errorf("other facets: config %+v daemon %+v", s.Config, s.Daemon)
 	}
 }
+
+// A fold that finished is reported even when the deadline has also passed:
+// with both ready, select used to pick either, so a slow spend read made a
+// finished ledger read "unknown" about half the time (found by review of
+// e28a3332 as a TestStatusJSONHeldBudgetLockIsBoundedAndUnknown flake).
+func TestStatusLedgerWaitPrefersAFinishedFold(t *testing.T) {
+	_, stateDir := setup(t)
+	e := &env{stateDir: stateDir}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := range 200 {
+		r := ledgerRead{dir: filepath.Join(stateDir, "ledger"), done: make(chan ledgerReadResult, 1)}
+		r.done <- ledgerReadResult{snap: ledger.Snapshot{}, err: nil}
+		if f := e.ledgerFacetOfRead(ctx, r); !f.OK || strings.Contains(f.Reason, "did not finish") {
+			t.Fatalf("try %d: a finished fold was reported as %+v", i, f.facet)
+		}
+	}
+	// A fold still running at the deadline stays unknown.
+	r := ledgerRead{dir: filepath.Join(stateDir, "ledger"), done: make(chan ledgerReadResult, 1)}
+	if f := e.ledgerFacetOfRead(ctx, r); f.OK || !strings.Contains(f.Reason, "did not finish") {
+		t.Fatalf("a running fold at the deadline: %+v", f.facet)
+	}
+}

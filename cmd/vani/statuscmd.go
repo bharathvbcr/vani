@@ -452,7 +452,14 @@ func (e *env) ledgerFacetOfRead(ctx context.Context, r ledgerRead) ledgerFacet {
 	select {
 	case res = <-r.done:
 	case <-ctx.Done():
-		res.err = fmt.Errorf("ledger: the read did not finish within %s: %w", statusTimeout, ctx.Err())
+		// The spend read before this wait can use the whole bound while the
+		// fold finishes; with both ready, select picks either, so a finished
+		// fold is taken first and only a fold still running is unknown.
+		select {
+		case res = <-r.done:
+		default:
+			res.err = fmt.Errorf("ledger: the read did not finish within %s: %w", statusTimeout, ctx.Err())
+		}
 	}
 	f := ledgerFacetOf(r.dir, res.snap, res.err)
 	f.PendingReopens, f.PendingReopensError = e.pendingReopens()
