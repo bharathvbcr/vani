@@ -72,7 +72,11 @@ commands:
                    [--region eu] (lv) [--board-name N] (ab) [--host H] (wd, oc, ef, jb, av, tb)
                    [--search S]... (wd, oc, az, gg, ap, ef, jb, ib, tt, hm)
                    [--filter name=value]... (az, gg, ap, ef, jb, sr, tt, hm)
-                   [--url U] (av, fd, pg) [--link-pattern RE] (pg) [--domain HOST [--icon URL]]
+                   [--url U] (av, fd, pg) [--link-pattern RE] [--next-pattern RE]
+                   [--scroll-steps N] [--wait-selector CSS]
+                   [--extract-title CSS] [--extract-description CSS]
+                   [--extract-location CSS] [--extract-company CSS] (pg)
+                   [--domain HOST [--icon URL]]
                    watchlist add -h says what each flag and token is per CODE
   watchlist remove [--json] --ats A --token T [--keep-postings | --close-postings]
                              the next run closes the board's open postings (adding it back
@@ -85,11 +89,15 @@ commands:
                              asked for first ("" clears it; the board needs a domain)
   watchlist discover --search TEXT [--country US] [--work-mode remote|hybrid|onsite]
                    [--seniority LEVEL] [--pages N] [--json] [--allow-host]
+                   | --site DOMAIN [--json] [--allow-host]
                              ask freehire.me (a third-party site; it must be in allowed_hosts,
                              or pass --allow-host) which boards have roles matching a search:
                              the boards ranked by matches, marked watched or new, each with the
                              watchlist add that adds it, and the results Vani has no board for.
-                             One request of 100 results by default, at most 3 pages. It never
+                             One request of 100 results by default, at most 3 pages. With --site
+                             DOMAIN, inspect DOMAIN directly (robots.txt, sitemaps and career
+                             pages; DOMAIN must be in allowed_hosts or pass --allow-host) for
+                             its ATS or pg board without contacting external hosts. It never
                              edits the watchlist
   logos refresh [--force]    fetch the icons of boards with a domain now (the daily run does it
                              too); --force refetches cached and recently failed ones

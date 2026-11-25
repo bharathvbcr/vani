@@ -42,27 +42,31 @@ const maxJSONLDParseDepth = 64
 // page, a single JobPosting that has neither url nor sameAs is used, and
 // anything else is left unread so a sibling's title or expiry cannot apply.
 func findJobPosting(pageURL string, blocks []string, now time.Time) (jobPosting, bool) {
-	var matched, bare []map[string]any
-	others := 0
+	var nodes []map[string]any
 	for _, raw := range blocks {
 		v, err := unmarshalOrdered(strings.TrimSpace(raw))
 		if err != nil {
 			continue
 		}
-		var nodes []map[string]any
 		collectJobPostings(v, 0, &nodes)
-		for _, n := range nodes {
-			refs := postingRefs(n)
-			if len(refs) == 0 {
-				bare = append(bare, n)
-				continue
-			}
-			if refsMatch(pageURL, refs) {
-				matched = append(matched, n)
-				continue
-			}
-			others++
+	}
+	return selectJobPosting(pageURL, nodes, now)
+}
+
+func selectJobPosting(pageURL string, nodes []map[string]any, now time.Time) (jobPosting, bool) {
+	var matched, bare []map[string]any
+	others := 0
+	for _, n := range nodes {
+		refs := postingRefs(n)
+		if len(refs) == 0 {
+			bare = append(bare, n)
+			continue
 		}
+		if refsMatch(pageURL, refs) {
+			matched = append(matched, n)
+			continue
+		}
+		others++
 	}
 	if len(matched) > 0 {
 		first := readJobPosting(matched[0])

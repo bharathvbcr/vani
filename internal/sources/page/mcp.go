@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,8 @@ import (
 	"time"
 
 	"github.com/bharathvbcr/Vani/internal/childenv"
+	"github.com/bharathvbcr/Vani/internal/posting"
+	"github.com/bharathvbcr/Vani/internal/sources"
 )
 
 const (
@@ -41,6 +44,12 @@ const (
 	// navTimeoutCode and a stalled transfer as a failed navigation (both
 	// measured 2026-10-19, lightpanda 1.1.0-nightly.10455).
 	gotoTimeoutMs = 5000
+	// waitTimeoutMs bounds waitForSelector and post-navigation waitForState.
+	waitTimeoutMs = 5000
+	// scrollWaitMs bounds waitForState after each virtual-scroll step.
+	scrollWaitMs = 2000
+	// scrollStepPx is the vertical scroll step per scroll call.
+	scrollStepPx = 1200
 	// navTimeoutCode is the JSON-RPC error lightpanda's goto returns when no
 	// response arrived before its timeout ("NavigationTimeout").
 	navTimeoutCode = -32002
@@ -85,6 +94,32 @@ type Browser interface {
 	Reset() error
 }
 
+// LoadOptions configures rich page loading through RichBrowser.LoadPage.
+type LoadOptions struct {
+	WaitSelector       string
+	ScrollSteps        int
+	WantStructuredData bool
+	ExtractSchema      string
+}
+
+// PageDoc holds the rendered HTML and optional scroll/extraction artifacts from
+// RichBrowser.LoadPage.
+type PageDoc struct {
+	HTML           []byte
+	ExtraHTML      [][]byte
+	StructuredData []byte
+	Extracted      map[string]string
+}
+
+// RichBrowser extends Browser with SPA hydration waits, scroll snapshots,
+// structuredData extraction, and CSS selector extraction.
+type RichBrowser interface {
+	Browser
+	LoadPage(ctx context.Context, rawURL string, opts LoadOptions) (PageDoc, error)
+}
+
+var _ RichBrowser = (*MCPBrowser)(nil)
+
 // MCPBrowser drives one `lightpanda mcp` process over stdio (JSON-RPC, one
 // message per line). The process starts on the first Load, starts again on
 // the next Load after it dies or is killed (at most MaxRestarts times between
@@ -127,10 +162,37 @@ func NewMCPBrowser(binary string, flags []string, loadTimeout time.Duration) (*M
 // is read: after a failed navigation lightpanda's page holds its own error
 // document, which must never be taken for the posting.
 func (b *MCPBrowser) Load(ctx context.Context, rawURL string) ([]byte, error) {
+	var doc []byte
+	if err := b.withProc(ctx, func(ctx context.Context, p *mcpProc) error {
+		var err error
+		doc, err = load(ctx, p, rawURL)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+// LoadPage navigates to rawURL, optionally waits for SPA hydration or a CSS
+// selector, scrolls virtualized lists, and asks Lightpanda's structuredData and
+// extract tools when needed.
+func (b *MCPBrowser) LoadPage(ctx context.Context, rawURL string, opts LoadOptions) (PageDoc, error) {
+	var doc PageDoc
+	if err := b.withProc(ctx, func(ctx context.Context, p *mcpProc) error {
+		var err error
+		doc, err = loadPage(ctx, p, rawURL, opts)
+		return err
+	}); err != nil {
+		return PageDoc{}, err
+	}
+	return doc, nil
+}
+
+func (b *MCPBrowser) withProc(ctx context.Context, fn func(context.Context, *mcpProc) error) error {
 	select {
 	case b.sem <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
 	defer func() { <-b.sem }()
 	ctx, cancel := context.WithTimeoutCause(ctx, b.loadTimeout, errLoadTimeout)
@@ -138,18 +200,18 @@ func (b *MCPBrowser) Load(ctx context.Context, rawURL string) ([]byte, error) {
 
 	p, err := b.process(ctx)
 	if err != nil {
-		return nil, b.procError(ctx, nil, err)
+		return b.procError(ctx, nil, err)
 	}
-	doc, err := load(ctx, p, rawURL)
+	err = fn(ctx, p)
 	var pe pageError
 	if errors.As(err, &pe) {
-		return nil, pe.err // the page failed; the process is fine
+		return pe.err // the page failed; the process is fine
 	}
 	if err != nil {
 		b.discard(p)
-		return nil, b.procError(ctx, p, err)
+		return b.procError(ctx, p, err)
 	}
-	return doc, nil
+	return nil
 }
 
 // Reset ends the current process; see Browser.
@@ -247,37 +309,156 @@ func (e pageError) Error() string { return e.err.Error() }
 // load is goto, then html, on a live process. A pageError leaves the process
 // in use; any other error means it can no longer be trusted.
 func load(ctx context.Context, p *mcpProc, rawURL string) ([]byte, error) {
+	if err := gotoPage(ctx, p, rawURL); err != nil {
+		return nil, err
+	}
+	return readHTML(ctx, p)
+}
+
+func loadPage(ctx context.Context, p *mcpProc, rawURL string, opts LoadOptions) (PageDoc, error) {
+	if err := gotoPage(ctx, p, rawURL); err != nil {
+		return PageDoc{}, err
+	}
+	if sel := strings.TrimSpace(opts.WaitSelector); sel != "" {
+		_, ok, err := callOptionalTool(ctx, p, "waitForSelector", map[string]any{
+			"selector": sel,
+			"timeout":  waitTimeoutMs,
+		})
+		if err != nil {
+			return PageDoc{}, err
+		}
+		if !ok {
+			if _, _, err := callOptionalTool(ctx, p, "waitForState", map[string]any{
+				"state":   "networkidle",
+				"timeout": waitTimeoutMs,
+			}); err != nil {
+				return PageDoc{}, err
+			}
+		}
+	}
+
+	htmlBytes, err := readHTML(ctx, p)
+	if err != nil {
+		return PageDoc{}, err
+	}
+	if strings.TrimSpace(opts.WaitSelector) == "" && looksLikeShell(string(htmlBytes)) {
+		if _, _, err := callOptionalTool(ctx, p, "waitForState", map[string]any{
+			"state":   "networkidle",
+			"timeout": waitTimeoutMs,
+		}); err != nil {
+			return PageDoc{}, err
+		}
+		htmlBytes, err = readHTML(ctx, p)
+		if err != nil {
+			return PageDoc{}, err
+		}
+	}
+
+	out := PageDoc{HTML: htmlBytes}
+	if steps := min(opts.ScrollSteps, sources.MaxPageScrollSteps); steps > 0 {
+		seen := map[[32]byte]bool{sha256.Sum256(htmlBytes): true}
+		for step := 1; step <= steps; step++ {
+			_, ok, err := callOptionalTool(ctx, p, "scroll", map[string]any{"y": step * scrollStepPx})
+			if err != nil {
+				return PageDoc{}, err
+			}
+			if !ok {
+				break
+			}
+			if _, _, err := callOptionalTool(ctx, p, "waitForState", map[string]any{
+				"state":   "networkidle",
+				"timeout": scrollWaitMs,
+			}); err != nil {
+				return PageDoc{}, err
+			}
+			snap, err := readHTML(ctx, p)
+			if err != nil {
+				return PageDoc{}, err
+			}
+			sum := sha256.Sum256(snap)
+			if seen[sum] {
+				break
+			}
+			seen[sum] = true
+			out.ExtraHTML = append(out.ExtraHTML, snap)
+		}
+	}
+
+	canonURL, _ := posting.CanonicalURL(rawURL)
+	now := time.Now()
+	_, hasJP := findJobPosting(canonURL, scanHTML(string(out.HTML)).ldJSON, now)
+
+	if opts.WantStructuredData && !hasJP {
+		tr, ok, err := callOptionalTool(ctx, p, "structuredData", map[string]any{})
+		if err != nil {
+			return PageDoc{}, err
+		}
+		if ok {
+			payload, err := toolPayload(tr)
+			if err != nil {
+				return PageDoc{}, err
+			}
+			if len(payload) > 0 {
+				out.StructuredData = payload
+				_, hasJP = findStructuredJobPosting(canonURL, payload, now)
+			}
+		}
+	}
+
+	if opts.ExtractSchema != "" && !hasJP {
+		tr, ok, err := callOptionalTool(ctx, p, "extract", map[string]any{"schema": opts.ExtractSchema})
+		if err != nil {
+			return PageDoc{}, err
+		}
+		if ok {
+			payload, err := toolPayload(tr)
+			if err != nil {
+				return PageDoc{}, err
+			}
+			out.Extracted = decodeExtracted(payload)
+		}
+	}
+
+	return out, nil
+}
+
+func gotoPage(ctx context.Context, p *mcpProc, rawURL string) error {
 	res, rerr, err := p.call(ctx, "tools/call", toolCall{Name: "goto", Arguments: map[string]any{"url": rawURL, "timeout": gotoTimeoutMs}})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if rerr != nil {
 		if rerr.Code == navTimeoutCode {
-			return nil, pageError{fmt.Errorf("%w: %s", ErrEmptyDocument, rerr)}
+			return pageError{fmt.Errorf("%w: %s", ErrEmptyDocument, rerr)}
 		}
-		return nil, pageError{fmt.Errorf("page: lightpanda goto: %s", rerr)}
+		return pageError{fmt.Errorf("page: lightpanda goto: %s", rerr)}
 	}
 	var nav toolResult
 	if err := json.Unmarshal(res, &nav); err != nil {
-		return nil, fmt.Errorf("%w: goto's reply is not a tool result", ErrBrowserGone)
+		return fmt.Errorf("%w: goto's reply is not a tool result", ErrBrowserGone)
 	}
 	if nav.IsError {
-		return nil, pageError{fmt.Errorf("page: lightpanda: %s", oneLine(nav.text(), stderrInError))}
+		return pageError{fmt.Errorf("page: lightpanda: %s", oneLine(nav.text(), stderrInError))}
 	}
-	status := 0
-	if nav.Structured != nil {
-		status = nav.Structured.HTTPStatus
+	var navStatus struct {
+		HTTPStatus int `json:"httpStatus"`
+	}
+	if len(nav.Structured) > 0 && string(bytes.TrimSpace(nav.Structured)) != "null" {
+		_ = json.Unmarshal(nav.Structured, &navStatus)
 	}
 	switch {
-	case status >= 400:
-		return nil, pageError{fmt.Errorf("%w %d", ErrHTTPStatus, status)}
-	case status <= 0:
-		return nil, pageError{errors.New("page: lightpanda reported no HTTP status for the page")}
+	case navStatus.HTTPStatus >= 400:
+		return pageError{fmt.Errorf("%w %d", ErrHTTPStatus, navStatus.HTTPStatus)}
+	case navStatus.HTTPStatus <= 0:
+		return pageError{errors.New("page: lightpanda reported no HTTP status for the page")}
 	}
+	return nil
+}
 
+func readHTML(ctx context.Context, p *mcpProc) ([]byte, error) {
 	// No url (html would navigate again, and prefixes a warning to a 4xx/5xx
 	// body) and no maxBytes (it truncates).
-	res, rerr, err = p.call(ctx, "tools/call", toolCall{Name: "html", Arguments: map[string]any{}})
+	res, rerr, err := p.call(ctx, "tools/call", toolCall{Name: "html", Arguments: map[string]any{}})
 	if err != nil {
 		return nil, err
 	}
@@ -300,6 +481,46 @@ func load(ctx context.Context, p *mcpProc, rawURL string) ([]byte, error) {
 	return []byte(doc.Content[0].Text), nil
 }
 
+// callOptionalTool runs a fail-soft Lightpanda MCP tool. Fatal transport or
+// context errors are returned in err; JSON-RPC tool errors or isError replies
+// return ok=false, err=nil so older binaries or unmet waits do not break the
+// page load.
+func callOptionalTool(ctx context.Context, p *mcpProc, name string, args map[string]any) (toolResult, bool, error) {
+	res, rerr, err := p.call(ctx, "tools/call", toolCall{Name: name, Arguments: args})
+	if err != nil {
+		return toolResult{}, false, err
+	}
+	if rerr != nil {
+		return toolResult{}, false, nil
+	}
+	var tr toolResult
+	if err := json.Unmarshal(res, &tr); err != nil {
+		return toolResult{}, false, fmt.Errorf("%w: %s's reply is not a tool result", ErrBrowserGone, name)
+	}
+	if tr.IsError {
+		return tr, false, nil
+	}
+	return tr, true, nil
+}
+
+func toolPayload(tr toolResult) ([]byte, error) {
+	if len(tr.Content) == 1 && tr.Content[0].Type == "text" {
+		if len(tr.Content[0].Text) > MaxStdout {
+			return nil, pageError{ErrOutputTooLarge}
+		}
+		if strings.TrimSpace(tr.Content[0].Text) != "" {
+			return []byte(tr.Content[0].Text), nil
+		}
+	}
+	if raw := bytes.TrimSpace(tr.Structured); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
+		if len(raw) > MaxStdout {
+			return nil, pageError{ErrOutputTooLarge}
+		}
+		return bytes.Clone(raw), nil
+	}
+	return nil, nil
+}
+
 type toolCall struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
@@ -310,10 +531,8 @@ type toolResult struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
-	Structured *struct {
-		HTTPStatus int `json:"httpStatus"`
-	} `json:"structuredContent"`
-	IsError bool `json:"isError"`
+	Structured json.RawMessage `json:"structuredContent"`
+	IsError    bool            `json:"isError"`
 }
 
 func (r toolResult) text() string {

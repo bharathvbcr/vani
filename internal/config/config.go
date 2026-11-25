@@ -1096,6 +1096,54 @@ func httpsBoardURL(kind string, b sources.Board) error {
 	return nil
 }
 
+func validPageSelector(token, field, sel string) error {
+	if strings.TrimSpace(sel) == "" || len(sel) > sources.MaxSelectorLen || !cleanText(sel) {
+		return fmt.Errorf("page board %s %s must be 1..%d non-blank bytes with no control characters", token, field, sources.MaxSelectorLen)
+	}
+	return nil
+}
+
+func validPageOptions(b sources.Board) error {
+	if b.NextPattern != "" {
+		if strings.TrimSpace(b.NextPattern) == "" || len(b.NextPattern) > maxLinkPattern {
+			return fmt.Errorf("page board %s next_pattern must be 1..%d bytes", b.Token, maxLinkPattern)
+		}
+		if _, err := regexp.Compile(b.NextPattern); err != nil {
+			return fmt.Errorf("page board %s next_pattern: %v", b.Token, err)
+		}
+	}
+	if b.ScrollSteps < 0 || b.ScrollSteps > sources.MaxPageScrollSteps {
+		return fmt.Errorf("page board %s scroll_steps %d must be within 0..%d", b.Token, b.ScrollSteps, sources.MaxPageScrollSteps)
+	}
+	if b.WaitSelector != "" {
+		if err := validPageSelector(b.Token, "wait_selector", b.WaitSelector); err != nil {
+			return err
+		}
+	}
+	if b.Extract != nil {
+		selectors := []struct{ field, val string }{
+			{"extract.title", b.Extract.Title},
+			{"extract.description", b.Extract.Description},
+			{"extract.location", b.Extract.Location},
+			{"extract.company", b.Extract.Company},
+		}
+		set := 0
+		for _, s := range selectors {
+			if s.val == "" {
+				continue
+			}
+			if err := validPageSelector(b.Token, s.field, s.val); err != nil {
+				return err
+			}
+			set++
+		}
+		if set == 0 {
+			return fmt.Errorf("page board %s extract must set at least one selector", b.Token)
+		}
+	}
+	return nil
+}
+
 // ValidBoard checks a single watchlist entry.
 func ValidBoard(b sources.Board) error {
 	switch b.ATS {
@@ -1263,15 +1311,23 @@ func ValidBoard(b sources.Board) error {
 		if _, err := regexp.Compile(b.LinkPattern); err != nil {
 			return fmt.Errorf("page board %s link_pattern: %v", b.Token, err)
 		}
-	} else if b.ATS == posting.Feed {
-		if err := httpsBoardURL("feed", b); err != nil {
+		if err := validPageOptions(b); err != nil {
 			return err
 		}
-		if b.LinkPattern != "" {
-			return fmt.Errorf("board %s/%s: link_pattern applies to page boards only", b.ATS, b.Token)
+	} else {
+		if b.ATS == posting.Feed {
+			if err := httpsBoardURL("feed", b); err != nil {
+				return err
+			}
+			if b.LinkPattern != "" {
+				return fmt.Errorf("board %s/%s: link_pattern applies to page boards only", b.ATS, b.Token)
+			}
+		} else if (b.URL != "" && b.ATS != posting.Avature) || b.LinkPattern != "" {
+			return fmt.Errorf("board %s/%s: url applies to pg, fd and av boards, link_pattern to page boards only", b.ATS, b.Token)
 		}
-	} else if (b.URL != "" && b.ATS != posting.Avature) || b.LinkPattern != "" {
-		return fmt.Errorf("board %s/%s: url applies to pg, fd and av boards, link_pattern to page boards only", b.ATS, b.Token)
+		if b.NextPattern != "" || b.ScrollSteps != 0 || b.WaitSelector != "" || b.Extract != nil {
+			return fmt.Errorf("board %s/%s: next_pattern, scroll_steps, wait_selector and extract apply to pg boards only", b.ATS, b.Token)
+		}
 	}
 	switch b.Region {
 	case "":

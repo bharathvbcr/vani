@@ -284,13 +284,39 @@ type Board struct {
 	// LinkPattern is a Go regexp an absolute link on URL must match to count
 	// as a posting page. Page boards only.
 	LinkPattern string `json:"link_pattern,omitempty"`
+	// NextPattern is an optional Go regexp an absolute same-host link on a
+	// page board's listing page must match to be followed as a next listing
+	// page (up to page.MaxListingPages). Page boards only.
+	NextPattern string `json:"next_pattern,omitempty"`
+	// ScrollSteps is how many scroll steps a page board runs on its listing
+	// page to surface lazy-loaded or virtualized links (0..MaxPageScrollSteps).
+	// Page boards only.
+	ScrollSteps int `json:"scroll_steps,omitempty"`
+	// WaitSelector is an optional CSS selector a page board waits for before
+	// reading HTML on listing and posting pages. Page boards only.
+	WaitSelector string `json:"wait_selector,omitempty"`
+	// Extract declares optional CSS selectors for reading fields from a page
+	// board's posting pages when JSON-LD and Microdata are absent. Page boards
+	// only.
+	Extract *PageExtract `json:"extract,omitempty"`
 }
 
-// Bounds on a board's search terms and filters.
+// PageExtract declares CSS selectors for reading posting fields on a page
+// board when structured data is absent.
+type PageExtract struct {
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Location    string `json:"location,omitempty"`
+	Company     string `json:"company,omitempty"`
+}
+
+// Bounds on a board's search terms, filters, and page-board options.
 const (
-	MaxSearches     = 10
-	MaxSearchLen    = 100
-	MaxFilterValues = 10
+	MaxSearches        = 10
+	MaxSearchLen       = 100
+	MaxFilterValues    = 10
+	MaxPageScrollSteps = 10
+	MaxSelectorLen     = 256
 	// MaxPostingsCeiling bounds Board.MaxPostings. Workday stops counting one
 	// query at 2,000 (checked 2026-10-19 on NVIDIA), and the adapter lists a
 	// larger board by splitting it on its facets, which count past that; at

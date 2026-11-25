@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type CrawlProgress,
   type CrawlReport,
   type Http,
   type PageDeps,
   type PageJob,
+  DEFAULT_PAGE_DETAILS,
   MAX_BATCH_BYTES,
   WORKDAY_WINDOW,
   wireBytes,
@@ -553,6 +555,290 @@ describe("crawlPages", () => {
     const r = await crawlPages(doc, page, { scrape: () => [job(1)], load: async () => { throw new Error("HTTP 500"); }, sleep: async () => {} });
     expect(r.jobs.length).toBe(1);
     expect(r.notes).toEqual(["page 2 could not be loaded: HTTP 500"]);
+  });
+});
+
+function detailDoc(opts: { ld?: unknown; mainText?: string; navText?: string }): Document {
+  const ldNode = opts.ld !== undefined ? { textContent: JSON.stringify(opts.ld) } : null;
+  const navNode = opts.navText
+    ? { nodeType: 1, localName: "nav", childNodes: [{ nodeType: 3, textContent: opts.navText }], getAttribute: () => null }
+    : null;
+  const pNode = opts.mainText
+    ? { nodeType: 1, localName: "p", childNodes: [{ nodeType: 3, textContent: opts.mainText }], getAttribute: () => null }
+    : null;
+  const mainNode = pNode
+    ? { nodeType: 1, localName: "main", childNodes: [pNode], getAttribute: () => null }
+    : null;
+  const bodyNode = {
+    nodeType: 1,
+    localName: "body",
+    childNodes: [navNode, mainNode].filter(Boolean),
+    getAttribute: () => null,
+  };
+  return {
+    body: bodyNode,
+    querySelector(sel: string) {
+      if (sel === "main") return mainNode;
+      if (sel === "body") return bodyNode;
+      return null;
+    },
+    querySelectorAll(sel: string) {
+      if (sel.includes("ld+json") && ldNode) return [ldNode];
+      return [];
+    },
+  } as unknown as Document;
+}
+
+describe("crawlPages: same-origin detail fetching", () => {
+  const page = "https://careers.acme.com/search?q=go";
+
+  test("exports DEFAULT_PAGE_DETAILS = 50 and enriches thin same-origin jobs while skipping cross-origin and full-snippet jobs", async () => {
+    expect(DEFAULT_PAGE_DETAILS).toBe(50);
+    const fullSnippet = "Already full job description. ".repeat(20).trim();
+    expect(bytes(fullSnippet)).toBeGreaterThanOrEqual(400);
+
+    const sameThin: PageJob = { title: "Staff Go Engineer", company: "Acme", location: "", url: "https://careers.acme.com/jobs/1", snippet: "" };
+    const sameWithLoc: PageJob = { title: "Platform Engineer", company: "Acme", location: "Remote", url: "https://careers.acme.com/jobs/2", snippet: "Short", posted: "2026-11-01" };
+    const sameFull: PageJob = { title: "Full Role", company: "Acme", location: "", url: "https://careers.acme.com/jobs/3", snippet: fullSnippet };
+    const crossOrigin: PageJob = { title: "Cross Role", company: "Acme", location: "", url: "https://job-boards.greenhouse.io/acme/jobs/4", snippet: "" };
+    const crossProto: PageJob = { title: "Http Role", company: "Acme", location: "", url: "http://careers.acme.com/jobs/5", snippet: "" };
+
+    const fetched: string[] = [];
+    const progressEvents: CrawlProgress[] = [];
+    const r = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => [sameThin, sameWithLoc, sameFull, crossOrigin, crossProto],
+        loadDetail: async url => {
+          fetched.push(url);
+          if (url.endsWith("/1")) {
+            return detailDoc({
+              ld: {
+                "@type": "JobPosting",
+                url,
+                description: `<p>${"Design distributed Go storage systems. ".repeat(150)}</p>`,
+                jobLocation: { "@type": "Place", name: "Austin, TX" },
+                datePosted: "2026-11-18",
+              },
+            });
+          }
+          return detailDoc({ navText: "Home Jobs Privacy", mainText: "Run Kubernetes clusters and Go APIs." });
+        },
+        sleep: async () => {},
+      },
+      {
+        delayMs: 0,
+        onProgress: p => progressEvents.push(p),
+      },
+    );
+
+    expect(fetched).toEqual(["https://careers.acme.com/jobs/1", "https://careers.acme.com/jobs/2"]);
+    expect(r.complete).toBe(true);
+    expect(r.notes).toEqual([]);
+    expect(r.requests).toBe(2);
+    expect(r.shortened).toBe(1);
+    expect(r.jobs[0]!.location).toBe("Austin, TX");
+    expect(r.jobs[0]!.posted).toBe("2026-11-18");
+    expect(bytes(r.jobs[0]!.snippet)).toBeLessThanOrEqual(4000);
+    // Backfill never overwrites already-known location/posted
+    expect(r.jobs[1]!.location).toBe("Remote");
+    expect(r.jobs[1]!.posted).toBe("2026-11-01");
+    expect(r.jobs[1]!.snippet).toBe("Run Kubernetes clusters and Go APIs.");
+    expect(r.jobs[2]!.snippet).toBe(fullSnippet);
+    expect(r.jobs[3]!.snippet).toBe("");
+    expect(r.jobs[4]!.snippet).toBe("");
+    expect(progressEvents.filter(p => p.phase === "details")).toEqual([
+      { phase: "details", done: 1, of: 2, jobs: 1 },
+      { phase: "details", done: 2, of: 2, jobs: 2 },
+    ]);
+  });
+
+  test("ranks thin same-origin jobs, respects maxDetails cap, keeps unfetched rows, and marks incomplete with notes", async () => {
+    const items: PageJob[] = [
+      ...Array.from({ length: 5 }, (_, i) => ({
+        title: `Sales Associate ${i}`,
+        company: "Acme",
+        location: "NY",
+        url: `https://careers.acme.com/jobs/sales-${i}`,
+        snippet: `sales ${i}`,
+      })),
+      {
+        title: "Senior Software Engineer",
+        company: "Acme",
+        location: "SF",
+        url: "https://careers.acme.com/jobs/se",
+        snippet: "short",
+      },
+    ];
+    const fetched: string[] = [];
+    const r = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => items,
+        loadDetail: async url => {
+          fetched.push(url);
+          return detailDoc({ mainText: `Full description for ${url}` });
+        },
+        sleep: async () => {},
+      },
+      {
+        maxDetails: 2,
+        delayMs: 0,
+        profile: { targetTitles: ["software engineer"], skills: [] },
+      },
+    );
+
+    expect(fetched[0]).toBe("https://careers.acme.com/jobs/se");
+    expect(fetched).toHaveLength(2);
+    expect(r.jobs).toHaveLength(6);
+    expect(r.jobs.find(j => j.url.endsWith("/se"))!.snippet).toContain("Full description");
+    expect(r.jobs.filter(j => j.snippet.startsWith("sales "))).toHaveLength(4);
+    expect(r.complete).toBe(false);
+    expect(r.notes.join(" ")).toContain("4 thin jobs left without full descriptions");
+  });
+
+  test("keeps original row on failed fetches and stops after 5 consecutive detail failures", async () => {
+    const items = Array.from({ length: 8 }, (_, i) => ({
+      title: `Engineer ${i}`,
+      company: "Acme",
+      location: "",
+      url: `https://careers.acme.com/jobs/${i}`,
+      snippet: `card ${i}`,
+    }));
+    let calls = 0;
+    const r = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => items,
+        loadDetail: async () => {
+          calls++;
+          throw new Error("HTTP 403");
+        },
+        sleep: async () => {},
+      },
+      { delayMs: 0 },
+    );
+
+    expect(calls).toBe(5);
+    expect(r.jobs).toHaveLength(8);
+    expect(r.jobs.map(j => j.snippet)).toEqual(items.map(j => j.snippet));
+    expect(r.complete).toBe(false);
+    expect(r.notes.join(" ")).toContain("5 job descriptions could not be read");
+    expect(r.notes.join(" ")).toContain("5 failures in a row");
+  });
+
+  test("resets consecutive failure streak when a detail fetch succeeds", async () => {
+    const items = Array.from({ length: 9 }, (_, i) => ({
+      title: `Engineer ${i}`,
+      company: "Acme",
+      location: "",
+      url: `https://careers.acme.com/jobs/${i}`,
+      snippet: `card ${i}`,
+    }));
+    let calls = 0;
+    const r = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => items,
+        loadDetail: async url => {
+          calls++;
+          if (url.endsWith("/4")) return detailDoc({ mainText: "Succeeded in the middle." });
+          throw new Error("HTTP 500");
+        },
+        sleep: async () => {},
+      },
+      { delayMs: 0 },
+    );
+    expect(calls).toBe(9);
+    expect(r.jobs[4]!.snippet).toBe("Succeeded in the middle.");
+    expect(r.complete).toBe(false);
+    expect(r.notes.join(" ")).toContain("8 job descriptions could not be read");
+    expect(r.notes.join(" ")).not.toContain("5 failures in a row");
+  });
+
+  test("respects timeoutMs and abort signal during detail fetching without dropping collected rows", async () => {
+    const items = [job(1), job(2), job(3)];
+    const timedOut = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => [items[0]!],
+        loadDetail: (_u, sig) => new Promise((_, reject) => sig.addEventListener("abort", () => reject(new Error("timeout")))),
+        sleep: async () => {},
+      },
+      { delayMs: 0, timeoutMs: 20 },
+    );
+    expect(timedOut.jobs).toHaveLength(1);
+    expect(timedOut.jobs[0]!.snippet).toBe("role 1");
+    expect(timedOut.complete).toBe(false);
+    expect(timedOut.notes.join(" ")).toContain("1 job description could not be read");
+
+    const ac = new AbortController();
+    let detailCalls = 0;
+    const aborted = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => items,
+        loadDetail: async url => {
+          detailCalls++;
+          ac.abort();
+          return detailDoc({ mainText: `Detail for ${url}` });
+        },
+        sleep: async () => {},
+      },
+      { signal: ac.signal, delayMs: 0 },
+    );
+    expect(detailCalls).toBe(1);
+    expect(aborted.jobs).toHaveLength(3);
+    expect(aborted.complete).toBe(false);
+    expect(aborted.notes).toContain("stopped");
+
+    // Abort during delay before first detail fetch makes 0 detail calls
+    const acSleep = new AbortController();
+    let sleepCalls = 0;
+    const abortedBeforeFetch = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => [job(1)],
+        loadDetail: async () => {
+          sleepCalls++;
+          return detailDoc({ mainText: "Should not run" });
+        },
+        sleep: async () => { acSleep.abort(); },
+      },
+      { signal: acSleep.signal, delayMs: 7 },
+    );
+    expect(sleepCalls).toBe(0);
+    expect(abortedBeforeFetch.complete).toBe(false);
+    expect(abortedBeforeFetch.notes).toContain("stopped");
+  });
+
+  test("default DEFAULT_PAGE_DETAILS (50) caps fetches when maxDetails is omitted", async () => {
+    const items = Array.from({ length: 55 }, (_, i) => job(i));
+    let fetched = 0;
+    const r = await crawlPages(
+      fakeDoc(() => []),
+      page,
+      {
+        scrape: () => items,
+        loadDetail: async url => {
+          fetched++;
+          return detailDoc({ mainText: `Detail for ${url}` });
+        },
+        sleep: async () => {},
+      },
+      { delayMs: 0 },
+    );
+    expect(fetched).toBe(DEFAULT_PAGE_DETAILS);
+    expect(r.jobs).toHaveLength(55);
+    expect(r.complete).toBe(false);
+    expect(r.notes.join(" ")).toContain("5 thin jobs left without full descriptions (descriptions fetched for the top 50)");
   });
 });
 

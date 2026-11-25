@@ -43,7 +43,7 @@ function pageLoader(deps: CrawlRunDeps): PageDeps["load"] {
   return async (url, signal) => {
     const res = await get(url, { signal, credentials: "same-origin", redirect: "error", headers: { Accept: "text/html" } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    if (!/html/i.test(res.headers.get("content-type") ?? "")) throw new Error("the next page is not HTML");
+    if (!/html/i.test(res.headers.get("content-type") ?? "")) throw new Error("the page is not HTML");
     return parse(await readBody(res, MAX_PAGE_BYTES));
   };
 }
@@ -66,7 +66,8 @@ export async function runCrawlToVani(deps: CrawlRunDeps, saveSearch: boolean, si
     const r = scrapePageJobs(d, host, deps.profile, url);
     return { jobs: r.jobs.map(j => ({ title: j.title, company: j.company, location: j.location, url: j.url, snippet: j.description || j.snippet, posted: j.posted })), unread: r.unread, ...(r.boardTotal !== undefined ? { boardTotal: r.boardTotal } : {}) };
   };
-  const pageDeps: PageDeps = { scrape, load: pageLoader(deps), sleep: ms => (deps.http ? deps.http.sleep(ms) : new Promise(r => setTimeout(r, ms))) };
+  const loader = pageLoader(deps);
+  const pageDeps: PageDeps = { scrape, load: loader, loadDetail: loader, sleep: ms => (deps.http ? deps.http.sleep(ms) : new Promise(r => setTimeout(r, ms))) };
   const company = workdayCompany(deps.doc); // the board's API does not name it
   onStatus("Starting the crawl…");
   const report = await crawlListing(deps.doc, deps.pageUrl, pageDeps, {
@@ -109,7 +110,7 @@ export function crawlRow(doc: Document, deps: () => CrawlRunDeps, saveSearch: ()
   const go = doc.createElement("button");
   go.type = "button";
   go.textContent = "Crawl all pages → Vani";
-  go.title = "Read every page of this listing and send its jobs to Vani. On a Workday board it reads the board's own API and fetches the descriptions of the most relevant jobs; elsewhere a job carries what its listing shows";
+  go.title = "Read every page of this listing and send its jobs to Vani. On a Workday board it reads the board's own API and fetches the descriptions of the most relevant jobs; elsewhere it walks the listing and fetches same-origin posting pages for the most relevant roles";
   const stop = doc.createElement("button");
   stop.type = "button";
   stop.textContent = "Stop";

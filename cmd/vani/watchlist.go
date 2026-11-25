@@ -92,6 +92,13 @@ func (e *env) watchlistAdd(args []string) error {
 	})
 	pageURL := fs.String("url", "", "https URL (pg: the careers listing page; av: the portal's listing page, e.g. https://careers.twosigma.com/careers/OpenRoles; fd: the XML job feed)")
 	linkPattern := fs.String("link-pattern", "", "regexp a posting link must match (pg only)")
+	nextPattern := fs.String("next-pattern", "", "regexp a next-page link must match to walk multiple listing pages (pg only)")
+	scrollSteps := fs.Int("scroll-steps", 0, fmt.Sprintf("scroll steps on the listing page to surface dynamic links, 0..%d (pg only)", sources.MaxPageScrollSteps))
+	waitSelector := fs.String("wait-selector", "", "CSS selector to wait for before reading listing and posting pages (pg only)")
+	extractTitle := fs.String("extract-title", "", "CSS selector for job title when structured data is absent (pg only)")
+	extractDesc := fs.String("extract-description", "", "CSS selector for job description when structured data is absent (pg only)")
+	extractLoc := fs.String("extract-location", "", "CSS selector for job location when structured data is absent (pg only)")
+	extractCompany := fs.String("extract-company", "", "CSS selector for company name when structured data is absent (pg only)")
 	domain := fs.String("domain", "", "the company's website host, for its icon (www.example.com)")
 	icon := fs.String("icon", "", "https URL of the company's icon, when --domain serves none at the usual paths")
 	allow := fs.Bool("allow-host", false, "also add the board's API host, --domain and the --icon host to allowed_hosts")
@@ -102,8 +109,30 @@ func (e *env) watchlistAdd(args []string) error {
 	if *ats == "" || *token == "" || *company == "" {
 		return usagef("watchlist add: --ats, --token and --company are required")
 	}
-	b := sources.Board{ATS: posting.ATS(*ats), Token: *token, Company: *company, Region: *region, BoardName: *boardName,
-		Host: *host, URL: *pageURL, LinkPattern: *linkPattern, Filters: filters, Domain: *domain, Icon: *icon}
+	b := sources.Board{
+		ATS:          posting.ATS(*ats),
+		Token:        *token,
+		Company:      *company,
+		Region:       *region,
+		BoardName:    *boardName,
+		Host:         *host,
+		URL:          *pageURL,
+		LinkPattern:  *linkPattern,
+		NextPattern:  *nextPattern,
+		ScrollSteps:  *scrollSteps,
+		WaitSelector: *waitSelector,
+		Filters:      filters,
+		Domain:       *domain,
+		Icon:         *icon,
+	}
+	if *extractTitle != "" || *extractDesc != "" || *extractLoc != "" || *extractCompany != "" {
+		b.Extract = &sources.PageExtract{
+			Title:       *extractTitle,
+			Description: *extractDesc,
+			Location:    *extractLoc,
+			Company:     *extractCompany,
+		}
+	}
 	switch len(searches) {
 	case 0:
 	case 1:
@@ -327,23 +356,47 @@ type boardReply struct {
 }
 
 func boardJSON(b sources.Board) watchlistJSON {
-	return watchlistJSON{ATS: b.ATS, Token: b.Token, Company: b.Company, Region: b.Region, Host: b.Host,
-		Search: b.Search, Searches: b.Searches, URL: b.URL, LinkPattern: b.LinkPattern, Domain: b.Domain, Icon: b.Icon}
+	var ext *sources.PageExtract
+	if b.Extract != nil {
+		cp := *b.Extract
+		ext = &cp
+	}
+	return watchlistJSON{
+		ATS:          b.ATS,
+		Token:        b.Token,
+		Company:      b.Company,
+		Region:       b.Region,
+		Host:         b.Host,
+		Search:       b.Search,
+		Searches:     b.Searches,
+		URL:          b.URL,
+		LinkPattern:  b.LinkPattern,
+		NextPattern:  b.NextPattern,
+		ScrollSteps:  b.ScrollSteps,
+		WaitSelector: b.WaitSelector,
+		Extract:      ext,
+		Domain:       b.Domain,
+		Icon:         b.Icon,
+	}
 }
 
 // watchlistJSON is one board in `watchlist list --json`.
 type watchlistJSON struct {
-	ATS         posting.ATS `json:"ats"`
-	Token       string      `json:"token"`
-	Company     string      `json:"company"`
-	Region      string      `json:"region,omitempty"`
-	Host        string      `json:"host,omitempty"`
-	Search      string      `json:"search,omitempty"`
-	Searches    []string    `json:"searches,omitempty"`
-	URL         string      `json:"url,omitempty"`
-	LinkPattern string      `json:"link_pattern,omitempty"`
-	Domain      string      `json:"domain,omitempty"`
-	Icon        string      `json:"icon,omitempty"`
+	ATS          posting.ATS          `json:"ats"`
+	Token        string               `json:"token"`
+	Company      string               `json:"company"`
+	Region       string               `json:"region,omitempty"`
+	Host         string               `json:"host,omitempty"`
+	Search       string               `json:"search,omitempty"`
+	Searches     []string             `json:"searches,omitempty"`
+	URL          string               `json:"url,omitempty"`
+	LinkPattern  string               `json:"link_pattern,omitempty"`
+	NextPattern  string               `json:"next_pattern,omitempty"`
+	ScrollSteps  int                  `json:"scroll_steps,omitempty"`
+	WaitSelector string               `json:"wait_selector,omitempty"`
+	Extract      *sources.PageExtract `json:"extract,omitempty"`
+	Domain       string               `json:"domain,omitempty"`
+	Icon         string               `json:"icon,omitempty"`
 }
 
 // invalidBoardError wraps the reason config.ValidBoard refused a board.

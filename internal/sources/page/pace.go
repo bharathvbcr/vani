@@ -80,13 +80,50 @@ func NewRobotsPaced(next Browser, d egress.Doer, floor time.Duration) (*Paced, e
 		robots: d, robotsTimeout: robotsTimeout, intervals: map[string]time.Duration{}}, nil
 }
 
+var _ RichBrowser = (*Paced)(nil)
+
 // Load waits for rawURL's host's turn, then loads it through next. A context
 // cancelled while waiting returns its error without starting a load and
 // without delaying the callers behind it.
 func (p *Paced) Load(ctx context.Context, rawURL string) ([]byte, error) {
+	var out []byte
+	if err := p.withHost(ctx, rawURL, func() error {
+		var err error
+		out, err = p.next.Load(ctx, rawURL)
+		return err
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// LoadPage waits for rawURL's host's turn, then loads it through next's
+// RichBrowser implementation (or falls back to Browser.Load when next is a
+// plain Browser).
+func (p *Paced) LoadPage(ctx context.Context, rawURL string, opts LoadOptions) (PageDoc, error) {
+	var out PageDoc
+	if err := p.withHost(ctx, rawURL, func() error {
+		if rb, ok := p.next.(RichBrowser); ok {
+			var err error
+			out, err = rb.LoadPage(ctx, rawURL, opts)
+			return err
+		}
+		raw, err := p.next.Load(ctx, rawURL)
+		if err != nil {
+			return err
+		}
+		out = PageDoc{HTML: raw}
+		return nil
+	}); err != nil {
+		return PageDoc{}, err
+	}
+	return out, nil
+}
+
+func (p *Paced) withHost(ctx context.Context, rawURL string, run func() error) error {
 	host, err := targetHost(rawURL)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	slot := p.join(host)
 	defer p.leave(slot)
@@ -94,27 +131,27 @@ func (p *Paced) Load(ctx context.Context, rawURL string) ([]byte, error) {
 	select {
 	case slot.token <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
 	defer func() { <-slot.token }()
 
 	// Under the token, so one host's robots.txt is read by one caller, and
 	// only after the host's rest from the last visit, a failed read included.
 	if err := p.rest(ctx, slot); err != nil {
-		return nil, err
+		return err
 	}
 	interval, err := p.intervalFor(ctx, slot, host)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if err := p.rest(ctx, slot); err != nil {
-		return nil, err
+		return err
 	}
 
-	out, err := p.next.Load(ctx, rawURL)
+	err = run()
 	// Ended, successfully or not: the host gets its rest either way.
 	p.visited(slot, interval)
-	return out, err
+	return err
 }
 
 // Reset resets next. The per-host schedule and Crawl-delays are kept: they

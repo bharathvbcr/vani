@@ -14,9 +14,12 @@
 // Page content is untrusted: it only ever becomes data in an ingest batch, bounded by ingest.ts.
 
 import { isWorkdaySharedHost, workdaySharedPath } from "./applied";
+import { clipBytes, excerpt, extractDetail, plainText } from "./detail";
 import { isRecord } from "./guards";
 import { type IngestOutcome, type IngestPage, type IngestSource, MAX_INGEST_JOBS, MAX_SNIPPET, buildIngestBatch, describeIngest, isIngestReply, leftOutText, prepareIngest, sendable } from "./ingest";
 import { type UserTargetProfile, rankListing } from "./relevance";
+
+export { clipBytes, excerpt, plainText };
 
 export const WORKDAY_PAGE = 20;
 /** The most rows one Workday listing query serves; offsets at or past it return page 1 again. */
@@ -41,6 +44,10 @@ const MAX_DETAIL_FAILS_IN_ROW = 8;
  * Jobs past it are listed, counted in the notes and not sent.
  */
 export const DEFAULT_WORKDAY_DETAILS = 200;
+/** Descriptions a generic DOM crawl fetches by default from same-origin posting URLs, most relevant first. */
+export const DEFAULT_PAGE_DETAILS = 50;
+const MAX_PAGE_DETAIL_FAILS_IN_ROW = 5;
+const THIN_SNIPPET_BYTES = 400;
 
 export interface CrawlOptions {
   /** Stops the crawl; what was collected so far is still returned. */
@@ -113,102 +120,6 @@ const bytes = (s: string): number => new TextEncoder().encode(s).length;
 
 function clean(s: unknown): string {
   return typeof s === "string" ? s.replace(/\s+/g, " ").trim() : "";
-}
-
-/** `s` cut to at most `max` UTF-8 bytes at a whole code point, then back to a word end, marked with an ellipsis. */
-export function clipBytes(s: string, max: number): string {
-  if (bytes(s) <= max) return s;
-  const mark = max >= bytes("…") ? "…" : "";
-  const room = max - bytes(mark);
-  let out = "";
-  let n = 0;
-  for (const ch of s) {
-    const b = bytes(ch);
-    if (n + b > room) break;
-    out += ch;
-    n += b;
-  }
-  const space = out.search(/\s\S*$/);
-  if (space > room / 2) out = out.slice(0, space);
-  return `${out.trimEnd()}${mark}`;
-}
-
-// Where a description's substance starts; the company boilerplate before it is what gets dropped first.
-const SUBSTANCE = /(what you('|’)ll be doing|what you will do|responsibilities|what we need to see|requirements|qualifications|about the (role|team|job)|the role|job description|you will)\b/i;
-
-/** A description within the ingest bound, starting where the role is described when it has to be cut. */
-export function excerpt(text: string, max = MAX_SNIPPET): { text: string; shortened: boolean } {
-  if (bytes(text) <= max) return { text, shortened: false };
-  const hit = text.search(SUBSTANCE);
-  // From the start of the line the role starts on, so the excerpt never opens mid-sentence.
-  const at = hit > 0 ? text.lastIndexOf("\n", hit) + 1 : 0;
-  const from = at > 0 && bytes(text.slice(0, at)) < bytes(text) / 2 ? text.slice(at) : text;
-  return { text: clipBytes(from, max), shortened: true };
-}
-
-const ENTITY: Record<string, string> = {
-  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", ensp: " ", emsp: " ", thinsp: " ", shy: "",
-  rsquo: "’", lsquo: "‘", rdquo: "”", ldquo: "“", ndash: "–", mdash: "—", hellip: "…", bull: "•", middot: "·",
-};
-
-/** Character references decoded in one pass, so `&amp;lt;` stays the text `&lt;`. */
-function decodeEntities(s: string): string {
-  return s.replace(/&(#\d{1,7}|#x[0-9a-f]{1,6}|[a-z]{2,8});/gi, (m, ref: string) => {
-    if (ref[0] !== "#") return ENTITY[ref.toLowerCase()] ?? m;
-    const cp = ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
-    return cp > 0 && cp <= 0x10ffff && !(cp >= 0xd800 && cp <= 0xdfff) ? String.fromCodePoint(cp) : "";
-  });
-}
-
-const BLOCK_TAG = /^(br|p|li|div|h[1-6]|ul|ol|tr|table|section|article|header|footer|blockquote|pre|dd|dt)$/;
-const RAW_TAG = /^(script|style|noscript|template|textarea|title|xmp|iframe|noembed|noframes)$/;
-
-/**
- * HTML flattened to text without running or loading anything, in one forward pass (no backtracking
- * on hostile input). Script and style bodies are dropped; an element left open drops the rest.
- */
-export function plainText(html: string): string {
-  const lower = html.toLowerCase();
-  const parts: string[] = [];
-  let i = 0;
-  let gtAt = -2; // the next ">" found so far, kept so "<a<a<a…" is scanned once, not once per "<"
-  while (i < html.length) {
-    const lt = html.indexOf("<", i);
-    if (lt < 0) { parts.push(decodeEntities(html.slice(i))); break; }
-    if (lt > i) parts.push(decodeEntities(html.slice(i, lt)));
-    const c = html[lt + 1] ?? "";
-    if (!/[A-Za-z/!?]/.test(c)) { parts.push("<"); i = lt + 1; continue; } // "a < b" is text
-    if (html.startsWith("<!--", lt)) {
-      const end = html.indexOf("-->", lt + 4);
-      if (end < 0) break;
-      i = end + 3;
-      continue;
-    }
-    if (gtAt !== -1 && gtAt <= lt) gtAt = html.indexOf(">", lt + 1);
-    const gt = gtAt;
-    if (gt < 0) break; // an unclosed tag: the rest is markup, never text
-    const inner = html.indexOf("<", lt + 1);
-    if (inner >= 0 && inner < gt) { parts.push(" "); i = inner; continue; } // "<scr<script>": the inner "<" opens the tag
-    const name = /^\/?\s*([a-z][a-z0-9-]*)/.exec(lower.slice(lt + 1, Math.min(gt, lt + 40)))?.[1] ?? "";
-    const closing = html[lt + 1] === "/";
-    if (!closing && RAW_TAG.test(name)) {
-      const close = lower.indexOf(`</${name}`, gt + 1);
-      if (close < 0) break; // a raw element left open drops everything after it
-      const end = html.indexOf(">", close);
-      parts.push(" ");
-      if (end < 0) break;
-      i = end + 1;
-      continue;
-    }
-    parts.push(BLOCK_TAG.test(name) ? "\n" : " ");
-    i = gt + 1;
-  }
-  return parts.join("")
-    .replace(/[​-‍⁠﻿­]/g, "")
-    .replace(/[  -   　]/g, " ")
-    .replace(/[ \t\f\v\r]+/g, " ")
-    .replace(/ *\n\s*/g, "\n")
-    .trim();
 }
 
 /** Text that says something: at least one letter or digit. */
@@ -762,6 +673,8 @@ export interface PageDeps {
   scrape(doc: Document, pageUrl: string): readonly PageJob[] | PageScrape;
   /** Fetch a same-listing URL and parse it; absent where no parser exists. */
   load?(url: string, signal: AbortSignal): Promise<Document>;
+  /** Fetch a same-origin posting URL and parse it; absent where no parser exists. */
+  loadDetail?(url: string, signal: AbortSignal): Promise<Document>;
   sleep(ms: number): Promise<void>;
 }
 
@@ -881,6 +794,21 @@ export function findNext(doc: Document, pageUrl: string): NextStep {
 
 const fingerprint = (jobs: readonly PageJob[]): string => `${jobs.length}|${jobs[0]?.url ?? ""}|${jobs[jobs.length - 1]?.url ?? ""}`;
 
+/** Exact same http(s) origin as `a`, without credentials. */
+function sameOriginHttp(a: string, b: string): boolean {
+  try {
+    const x = new URL(a);
+    const y = new URL(b);
+    return (x.protocol === "http:" || x.protocol === "https:") &&
+      (y.protocol === "http:" || y.protocol === "https:") &&
+      x.origin === y.origin &&
+      !y.username &&
+      !y.password;
+  } catch {
+    return false;
+  }
+}
+
 /** A job link as a dedupe key: the URL as parsed (host lowercased, path case kept), without a trailing slash or fragment. */
 function jobKey(url: string): string {
   try {
@@ -999,6 +927,93 @@ export async function crawlPages(doc: Document, pageUrl: string, deps: PageDeps,
   // when the board counts more jobs than the walk found.
   const short = expected !== undefined && seen.size < expected;
   if (complete && short) notes.push(`the board lists ${expected} jobs and ${seen.size} were read`);
+
+  const rawMaxDetails = options.maxDetails ?? DEFAULT_PAGE_DETAILS;
+  const maxDetails = Number.isFinite(rawMaxDetails) ? Math.max(0, Math.min(Math.floor(rawMaxDetails), maxJobs)) : 0;
+  if (deps.loadDetail && maxDetails > 0 && seen.size > 0 && !options.signal?.aborted) {
+    const timeoutMs = options.timeoutMs ?? 15_000;
+    const thin = [...seen.entries()].filter(([, j]) => bytes(j.snippet) < THIN_SNIPPET_BYTES && sameOriginHttp(pageUrl, j.url));
+    const ranked = thin
+      .map(([key, j], idx) => ({ key, j, idx, score: rankListing(j, options.profile) }))
+      .sort((a, b) => b.score - a.score || a.idx - b.idx);
+    const picked = ranked.slice(0, maxDetails);
+    let failedInRow = 0;
+    let detailFailed = 0;
+    let filled = 0;
+    let done = 0;
+    let stoppedByFails = false;
+    for (const item of picked) {
+      if (options.signal?.aborted) {
+        if (!notes.includes("stopped")) notes.push("stopped");
+        complete = false;
+        break;
+      }
+      await deps.sleep(delay);
+      if (options.signal?.aborted) {
+        if (!notes.includes("stopped")) notes.push("stopped");
+        complete = false;
+        break;
+      }
+      const ac = new AbortController();
+      const onAbort = () => ac.abort();
+      options.signal?.addEventListener("abort", onAbort);
+      const timer = setTimeout(() => ac.abort(), timeoutMs);
+      let detailDoc: Document | null = null;
+      let fetchErr = false;
+      try {
+        requests++;
+        detailDoc = await deps.loadDetail(item.j.url, ac.signal);
+      } catch {
+        fetchErr = true;
+      } finally {
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
+      }
+      if (options.signal?.aborted) {
+        if (!notes.includes("stopped")) notes.push("stopped");
+        complete = false;
+        break;
+      }
+      done++;
+      if (fetchErr || !detailDoc) {
+        detailFailed++;
+        failedInRow++;
+        complete = false;
+        try { options.onProgress?.({ phase: "details", done, of: picked.length, jobs: filled }); } catch {}
+        if (failedInRow >= MAX_PAGE_DETAIL_FAILS_IN_ROW) {
+          stoppedByFails = true;
+          break;
+        }
+        continue;
+      }
+      failedInRow = 0;
+      const detail = extractDetail(detailDoc, item.j.url);
+      const updated: PageJob = { ...item.j };
+      if (detail.description) {
+        updated.snippet = detail.description;
+        if (detail.shortened) shortened++;
+        filled++;
+      }
+      if (!updated.location && detail.location) updated.location = detail.location;
+      if (!updated.posted && detail.posted) updated.posted = detail.posted;
+      seen.set(item.key, updated);
+      try { options.onProgress?.({ phase: "details", done, of: picked.length, jobs: filled }); } catch {}
+    }
+    if (detailFailed > 0) {
+      complete = false;
+      notes.push(`${detailFailed} job description${detailFailed === 1 ? "" : "s"} could not be read; listing text kept`);
+    }
+    if (stoppedByFails) {
+      complete = false;
+      notes.push(`stopped reading descriptions after ${MAX_PAGE_DETAIL_FAILS_IN_ROW} failures in a row`);
+    }
+    if (thin.length > picked.length) {
+      complete = false;
+      const left = thin.length - picked.length;
+      notes.push(`${left} thin job${left === 1 ? "" : "s"} left without full descriptions (descriptions fetched for the top ${picked.length})`);
+    }
+  }
+
   const whole = complete && unread === 0 && !short;
   return {
     mode: "pages",

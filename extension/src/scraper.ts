@@ -228,14 +228,48 @@ function readAshbyAppData(doc: Document): Record<string, unknown> | null {
 }
 
 const GENERIC_BOARD_HEADING =
-  /^(?:open\s+(?:roles|positions)|current\s+(?:job\s+)?openings|job\s+openings|openings|jobs|job\s+board|careers(?:\s+home|\s+page)?|back\s+to\s+(?:careers|jobs)|career\s+opportunities|job\s+opportunities|available\s+(?:positions|roles)|all\s+(?:jobs|positions|roles)|search\s+(?:for\s+)?(?:jobs|careers|positions|roles)|explore\s+(?:jobs|careers|opportunities|roles)|find\s+a\s+job|work\s+with\s+us|(?:come\s+)?join\s+(?:our\s+team|us)|we(?:'re|\s+are)\s+hiring)(?:\s*\(\d+\))?$/i;
+  /^(?:open\s+(?:roles|positions)|current\s+(?:job\s+|career\s+)?(?:openings|opportunities|roles|positions)|(?:job|career)\s+(?:openings|opportunities)|company\s+(?:openings|opportunities|positions|roles|jobs|careers)|openings|opportunities|jobs|job\s+board|career\s+board|careers?(?:\s+home|\s+page|\s+portal|\s+site)?|back\s+to\s+(?:careers|jobs)|available\s+(?:positions|roles|jobs|openings|opportunities)|(?:all|browse|view)\s+(?:open\s+)?(?:jobs|positions|roles|openings|opportunities)|search\s+(?:for\s+)?(?:jobs|careers|positions|roles)|explore\s+(?:jobs|careers|opportunities|roles)|find\s+a\s+job|work\s+with\s+us|(?:come\s+)?join\s+(?:our\s+team|us)|we(?:'re|\s+are)\s+hiring)(?:\s*\(\d+\))?\s*[!.]*$/i;
 
 const GENERIC_COUNT_HEADING =
-  /^(?:(?:we\s+have|there\s+are|showing|found|view(?:\s+all)?|browse(?:\s+all)?)\s+)?\d+\+?\s+(?:open\s+|available\s+|current\s+)?(?:positions?|roles?|jobs?|openings?)$/i;
+  /^(?:(?:we\s+have|there\s+are|showing|found|view(?:\s+all)?|browse(?:\s+all)?)\s+)?\d+\+?\s+(?:open\s+|available\s+|current\s+)?(?:positions?|roles?|jobs?|openings?|opportunities)(?:\s+(?:open|available|found))?\s*[!.]*$/i;
+
+const GENERIC_ATS_LABEL =
+  /^(?:greenhouse|lever|ashby|workday|smartrecruiters|icims)(?:\s+(?:hq|software|careers?|jobs?|job\s+board|careers?\s+portal|portal))?\s*[!.]*$/i;
+
+const GENERIC_COMPANY_WORD =
+  /^(?:open|all|current|search(?:\s+for)?|back(?:\s+to)?|return(?:\s+to)?|explore|find|browse|view(?:\s+all)?|available|our|company|home|portal|hiring)\s*[!.]*$/i;
 
 function isGenericBoardHeading(s: string): boolean {
   const t = clean(s);
   return !t || GENERIC_BOARD_HEADING.test(t) || GENERIC_COUNT_HEADING.test(t);
+}
+
+function isGenericCompanyCandidate(s: string): boolean {
+  const t = clean(s);
+  if (isGenericBoardHeading(t) || GENERIC_ATS_LABEL.test(t) || GENERIC_COMPANY_WORD.test(t)) return true;
+  const parts = t.split(/\s*\|\s*|\s+[-–—·]\s+/).map(clean).filter(Boolean);
+  if (parts.length >= 2 && parts.every(p => isGenericBoardHeading(p) || GENERIC_ATS_LABEL.test(p) || GENERIC_COMPANY_WORD.test(p))) {
+    return true;
+  }
+  const atBoard = /^(?:jobs|careers|openings|opportunities)\s+(?:at|with)\s+(.+)$/i.exec(t);
+  if (atBoard && atBoard[1] && isGenericCompanyCandidate(atBoard[1])) return true;
+  const prefixBoard = /^(.+?)\s+(?:jobs|careers|openings|job\s+board|careers?\s+portal)$/i.exec(t);
+  if (prefixBoard && prefixBoard[1] && isGenericCompanyCandidate(prefixBoard[1])) return true;
+  return false;
+}
+
+/** Extract `<Company>` from separator-based titles like `"<Company> | Careers"` or `"Jobs - <Company>"`. */
+function companyFromSeparatedTitle(title: string): string {
+  const parts = clean(title).split(/\s*\|\s*|\s+[-–—·]\s+/).map(clean).filter(Boolean);
+  if (parts.length < 2) return "";
+  const generic = parts.filter(p => isGenericCompanyCandidate(p));
+  const named = parts.filter(p => !isGenericCompanyCandidate(p));
+  if (generic.length === 0 || named.length !== 1) return "";
+  const candidate = named[0]!;
+  if (candidate.length < 2 || !/[\p{L}\p{N}]/u.test(candidate)) return "";
+  const stripped = candidate.replace(/\s+(?:jobs|careers|openings|open\s+(?:roles|positions)|job\s+board|careers?\s+portal)$/i, "").trim();
+  if (stripped && stripped.length >= 2 && !isGenericCompanyCandidate(stripped)) return stripped;
+  return isGenericCompanyCandidate(candidate) ? "" : candidate;
 }
 
 /** Extract a tenant slug from a shared-board path such as `/<tenant>/public/careers`. */
@@ -259,15 +293,19 @@ function tenantFromBoardUrl(base?: string): string {
 
 /** Intelligently extract company name from document or ATS metadata. */
 function extractCompanyName(doc: Document, fallbackTitle?: string, base?: string): string {
-  // 1. Open Graph site_name
+  // 1. Open Graph site_name (skip generic board headings and ATS platform labels)
   const ogSite = doc.querySelector("meta[property='og:site_name']")?.getAttribute("content");
-  if (ogSite && ogSite.trim()) return clean(ogSite);
+  if (ogSite) {
+    const cleanedSite = clean(ogSite);
+    if (cleanedSite && !isGenericCompanyCandidate(cleanedSite)) return cleanedSite;
+  }
 
   // 2. Ashby window.__appData organization.name
   const appData = readAshbyAppData(doc);
   const org = appData?.organization as Record<string, unknown> | undefined;
-  if (typeof org?.name === "string" && clean(org.name)) {
-    return clean(org.name);
+  if (typeof org?.name === "string") {
+    const orgName = clean(org.name);
+    if (orgName && !isGenericCompanyCandidate(orgName)) return orgName;
   }
 
   // 3. Logo image alt text (e.g. "Anthropic Logo" -> "Anthropic", or Ashby nav logo alt="Perplexity")
@@ -276,7 +314,7 @@ function extractCompanyName(doc: Document, fallbackTitle?: string, base?: string
     ?.getAttribute("alt");
   if (logoAlt) {
     const cleaned = clean(logoAlt.replace(/\s+logo$/i, ""));
-    if (cleaned && cleaned.length > 1 && !/^(company|careers?|jobs?|logo)$/i.test(cleaned)) {
+    if (cleaned && cleaned.length > 1 && !/^logo$/i.test(cleaned) && !isGenericCompanyCandidate(cleaned)) {
       return cleaned;
     }
   }
@@ -286,23 +324,26 @@ function extractCompanyName(doc: Document, fallbackTitle?: string, base?: string
   const atMatch = docTitle.match(/(?:@|\bat)\s+([A-Z][A-Za-z0-9\s&.,'-]+)$/);
   if (atMatch && atMatch[1]) {
     const candidate = clean(atMatch[1]);
-    if (candidate && !/^(greenhouse|lever|ashby|workday|careers?)$/i.test(candidate)) {
+    if (candidate && !isGenericCompanyCandidate(candidate)) {
       return candidate;
     }
   }
   const jobsAtMatch = docTitle.match(/^jobs\s+at\s+([^|-]+)/i) ?? docTitle.match(/^careers\s+at\s+([^|-]+)/i);
   if (jobsAtMatch && jobsAtMatch[1]) {
-    return clean(jobsAtMatch[1]);
+    const candidate = clean(jobsAtMatch[1]);
+    if (candidate && !isGenericCompanyCandidate(candidate)) return candidate;
   }
 
-  // 5. Open Graph title (only if not matching the job h1 title)
+  // 5. Open Graph title (only if not matching the job h1 title or generic labels)
   const h1Text = clean(doc.querySelector("h1")?.textContent);
   const ogTitle = doc.querySelector("meta[property='og:title']")?.getAttribute("content");
   if (ogTitle && ogTitle.trim()) {
-    const cleanedOg = clean(ogTitle).replace(/\s+(jobs|careers|openings|open\s+positions)$/i, "").trim();
+    const rawOg = clean(ogTitle);
+    const sepOg = companyFromSeparatedTitle(rawOg);
+    const cleanedOg = sepOg || rawOg.replace(/\s+(jobs|careers|openings|open\s+positions)$/i, "").trim();
     if (
       cleanedOg &&
-      !isGenericBoardHeading(cleanedOg) &&
+      !isGenericCompanyCandidate(cleanedOg) &&
       !/^job\s+application/i.test(cleanedOg) &&
       cleanedOg.toLowerCase() !== h1Text.toLowerCase()
     ) {
@@ -310,25 +351,24 @@ function extractCompanyName(doc: Document, fallbackTitle?: string, base?: string
     }
   }
 
-  // 6. Check h1 or .company-name, avoiding generic page headers ("Open Positions (131)", "We have 68 open positions", "Join our team")
+  // 6. Check h1 or .company-name, avoiding generic page headers ("Open Positions (131)", "We have 68 open positions", "Join our team!")
   const h1 = doc.querySelector("h1, .company-name")?.textContent;
   if (h1) {
     const cleanedH1 = clean(h1);
-    if (!isGenericBoardHeading(cleanedH1)) {
+    if (!isGenericCompanyCandidate(cleanedH1)) {
       return cleanedH1;
     }
   }
 
-  // 7. "<Company> Jobs" / "<Company> Careers" in document.title when h1 was a generic header
-  if (!isGenericBoardHeading(docTitle)) {
-    const suffixMatch = docTitle.match(/^([A-Z][A-Za-z0-9\s&.,'-]+?)\s+(?:jobs|careers|openings|job\s+board)$/i);
+  // 7. "<Company> | Careers", "<Company> - Jobs", "Careers | <Company>", "Jobs - <Company>", or "<Company> Jobs" in document.title
+  if (!isGenericCompanyCandidate(docTitle)) {
+    const sepTitle = companyFromSeparatedTitle(docTitle);
+    if (sepTitle) return sepTitle;
+
+    const suffixMatch = docTitle.match(/^([A-Z][A-Za-z0-9\s&.,'-]+?)\s+(?:jobs|careers|openings|job\s+board|careers?\s+portal)$/i);
     if (suffixMatch && suffixMatch[1]) {
       const candidate = clean(suffixMatch[1]);
-      if (
-        candidate &&
-        !isGenericBoardHeading(candidate) &&
-        !/^(open|all|current|search(\s+for)?|back(\s+to)?|return(\s+to)?|explore|find|browse|view(\s+all)?|available|our|company|greenhouse|lever|ashby|workday)$/i.test(candidate)
-      ) {
+      if (candidate && !isGenericCompanyCandidate(candidate)) {
         return candidate;
       }
     }
@@ -338,7 +378,7 @@ function extractCompanyName(doc: Document, fallbackTitle?: string, base?: string
   if (tenant) return tenant;
 
   const fb = clean(fallbackTitle ?? "");
-  return isGenericBoardHeading(fb) ? "" : fb;
+  return isGenericCompanyCandidate(fb) ? "" : fb;
 }
 
 /** The role text of a posting the page holds whole, cut to the ingest bound; nothing when there is none. */
@@ -584,9 +624,12 @@ function scrapeIndeed(doc: Document, base: string, profile?: Partial<UserTargetP
  */
 export function workdayCompany(doc: Document): string {
   const meta = (p: string) => doc.querySelector?.(`meta[property="${p}"]`)?.getAttribute("content") ?? "";
-  const named = doc.querySelector?.("[data-automation-id='companyName']")?.textContent ?? "";
+  const named = clean(doc.querySelector?.("[data-automation-id='companyName']")?.textContent ?? "");
+  const rawSite = clean(meta("og:site_name"));
+  const site = isGenericCompanyCandidate(rawSite) ? "" : rawSite;
   const careersAt = /^\s*careers\s+(?:at|with)\s+(.{1,100}?)\s*$/i.exec(meta("og:title"))?.[1] ?? "";
-  return (named || meta("og:site_name") || careersAt).replace(/\s+/g, " ").trim().slice(0, 200);
+  const candidate = named || site || clean(careersAt);
+  return (isGenericCompanyCandidate(candidate) ? "" : candidate).slice(0, 200);
 }
 
 /** The page's URL as the base for its relative links when it is on `host`; otherwise the host's root. */
@@ -1165,7 +1208,7 @@ function scrapeGeneric(doc: Document, base: string, profile?: Partial<UserTarget
   // Look for links that match job URLs
   const candidateLinks = Array.from(doc.querySelectorAll<HTMLAnchorElement>("a[href]")).filter(isJobLink);
 
-  const company = extractCompanyName(doc, clean(doc.querySelector("meta[property='og:site_name']")?.getAttribute("content") ?? doc.title), base);
+  const company = extractCompanyName(doc, clean(doc.title), base);
 
   // A container is read once however many links share it: a page that wraps every card in one
   // div class="jobs" would otherwise read the whole list's text again for each of its links.

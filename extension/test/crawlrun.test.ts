@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Http } from "../src/crawler";
-import { progressText, runCrawlToVani } from "../src/crawlrun";
+import { crawlRow, progressText, runCrawlToVani } from "../src/crawlrun";
 import { MAX_PAGE_JOB_LINKS } from "../src/scraper";
 
 const ORIGIN = "https://acme.wd1.myworkdayjobs.com";
@@ -197,6 +197,114 @@ describe("runCrawlToVani", () => {
       false, new AbortController().signal, () => {},
     );
     expect((sent[0]!.jobs as Array<{ company: string }>)[0]!.company).toBe("acme");
+  });
+
+  test("non-Workday DOM crawl fetches same-origin posting details via pageLoader, skips cross-origin, and handles failures", async () => {
+    const anchors = [
+      {
+        children: [],
+        parentElement: null,
+        textContent: "Staff Go Engineer",
+        getAttribute: (n: string) => (n === "href" ? "/jobs/101" : null),
+        closest: () => null,
+      },
+      {
+        children: [],
+        parentElement: null,
+        textContent: "Platform Engineer",
+        getAttribute: (n: string) => (n === "href" ? "/jobs/102" : null),
+        closest: () => null,
+      },
+      {
+        children: [],
+        parentElement: null,
+        textContent: "External Engineer",
+        getAttribute: (n: string) => (n === "href" ? "https://other.example/jobs/103" : null),
+        closest: () => null,
+      },
+    ];
+    const listingDoc = {
+      title: "Acme | Careers",
+      querySelector: () => null,
+      querySelectorAll: (sel: string) => (sel === "a[href]" ? anchors : []),
+    } as unknown as Document;
+
+    const fetched: Array<{ url: string; init: RequestInit }> = [];
+    const sent: Array<Record<string, unknown>> = [];
+    const statuses: string[] = [];
+    const http: Http = {
+      sleep: async () => {},
+      async fetch(url, init) {
+        fetched.push({ url, init });
+        if (url === "https://careers.acme.com/jobs/101") {
+          return new Response("DETAIL:Build resilient Go services and Kubernetes tooling.", {
+            status: 200,
+            headers: { "content-type": "text/html; charset=utf-8" },
+          });
+        }
+        return new Response("pdf", { status: 200, headers: { "content-type": "application/pdf" } });
+      },
+    };
+    const parseHtml = (html: string) => {
+      const text = html.replace(/^DETAIL:/, "");
+      const body = { nodeType: 1, localName: "body", childNodes: [{ nodeType: 3, textContent: text }], getAttribute: () => null };
+      return {
+        body,
+        querySelector: (s: string) => (s === "body" ? body : null),
+        querySelectorAll: () => [],
+      } as unknown as Document;
+    };
+
+    const r = await runCrawlToVani(
+      {
+        doc: listingDoc,
+        pageUrl: "https://careers.acme.com/careers",
+        pageTitle: "Acme | Careers",
+        http,
+        parseHtml,
+        send: async m => { sent.push(m as Record<string, unknown>); return { queued: (m as { jobs: unknown[] }).jobs.length }; },
+      },
+      false,
+      new AbortController().signal,
+      t => statuses.push(t),
+    );
+
+    expect(fetched.map(f => f.url)).toEqual(["https://careers.acme.com/jobs/101", "https://careers.acme.com/jobs/102"]);
+    expect(fetched.every(f => f.init.credentials === "same-origin" && f.init.redirect === "error")).toBe(true);
+    expect(statuses.some(s => s === "Reading descriptions 1/2…")).toBe(true);
+    const jobs = sent[0]!.jobs as Array<{ url: string; snippet: string; company: string }>;
+    expect(jobs).toHaveLength(3);
+    expect(jobs.find(j => j.url.endsWith("/101"))!.snippet).toBe("Build resilient Go services and Kubernetes tooling.");
+    expect(jobs.find(j => j.url.endsWith("/101"))!.company).toBe("Acme");
+    expect(r.report.complete).toBe(false);
+    expect(r.text).toContain("1 job description could not be read");
+  });
+
+  test("crawlRow tooltip describes same-origin detail fetching outside Workday", () => {
+    let goButton: { title: string } | null = null;
+    const fakeUiDoc = {
+      createElement: (tag: string) => {
+        const el = {
+          type: "",
+          textContent: "",
+          title: "",
+          className: "",
+          hidden: false,
+          disabled: false,
+          style: { cssText: "" },
+          setAttribute: () => {},
+          append: () => {},
+          addEventListener: () => {},
+        };
+        if (tag === "button" && !goButton) goButton = el;
+        return el;
+      },
+    } as unknown as Document;
+
+    crawlRow(fakeUiDoc, () => ({ doc: doc(), pageUrl: PAGE, pageTitle: "", send: async () => ({}) }), () => false, () => {});
+    expect(goButton!.title).toContain("Workday");
+    expect(goButton!.title).toContain("same-origin");
+    expect(goButton!.title).not.toContain("elsewhere a job carries what its listing shows");
   });
 });
 

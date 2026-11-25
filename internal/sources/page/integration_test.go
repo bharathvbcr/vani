@@ -2,6 +2,7 @@ package page
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net/http"
@@ -268,5 +269,238 @@ func TestLightpandaRobotsIntegration(t *testing.T) {
 	b.LinkPattern = `/jobs/(p1|blocked)$`
 	if got, err := src.List(ctx, b); err == nil || !strings.Contains(err.Error(), "RobotsBlocked") {
 		t.Fatalf("disallowed posting: %d postings, err %v", len(got), err)
+	}
+}
+
+// TestLightpandaHardeningIntegration exercises RichBrowser (tools/list inspection,
+// SPA hydration, waitForSelector, scroll, structuredData microdata/JSON-LD, and
+// extract) plus multi-page pagination against the real lightpanda binary.
+func TestLightpandaHardeningIntegration(t *testing.T) {
+	if os.Getenv("VANI_LIGHTPANDA_IT") != "1" {
+		t.Skip("set VANI_LIGHTPANDA_IT=1 to run the real lightpanda binary")
+	}
+	bin := os.Getenv("VANI_LIGHTPANDA_BIN")
+	if bin == "" {
+		bin = "/opt/homebrew/bin/lightpanda"
+	}
+	if _, err := os.Stat(bin); err != nil {
+		t.Fatalf("VANI_LIGHTPANDA_IT=1 but no binary: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/jobs", func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		if page == "2" {
+			_, _ = w.Write([]byte(`<html><body>
+				<a href="/jobs/css-only">CSS Role</a>
+				<a href="/jobs?page=1">Prev</a>
+			</body></html>`))
+			return
+		}
+		// Page 1 hydrates via JS after a short timer, testing SPA shell settle / waitForSelector.
+		_, _ = w.Write([]byte(`<html><body><div id="root">Loading jobs...</div>
+			<script>
+				setTimeout(function() {
+					document.getElementById("root").innerHTML =
+						'<a class="job-link" href="/jobs/micro">Microdata Role</a>' +
+						'<a class="job-link" href="/jobs/dyn-ld">Dynamic JSON-LD Role</a>' +
+						'<a class="next" href="/jobs?page=2">Next</a>';
+				}, 80);
+			</script></body></html>`))
+	})
+	mux.HandleFunc("/jobs/micro", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><head><title>Microdata Fallback</title></head><body>
+			<div itemscope itemtype="https://schema.org/JobPosting">
+				<h1 itemprop="title">Microdata Engineer</h1>
+				<div itemprop="description">Build microdata pipelines.</div>
+				<span itemprop="hiringOrganization" itemscope itemtype="https://schema.org/Organization">
+					<span itemprop="name">MicroCo</span>
+				</span>
+				<span itemprop="jobLocation" itemscope itemtype="https://schema.org/Place">
+					<span itemprop="address" itemscope itemtype="https://schema.org/PostalAddress">
+						<span itemprop="addressLocality">Denver</span>,
+						<span itemprop="addressRegion">CO</span>,
+						<span itemprop="addressCountry">US</span>
+					</span>
+				</span>
+				<meta itemprop="jobLocationType" content="TELECOMMUTE" />
+				<meta itemprop="datePosted" content="2026-10-05" />
+				<meta itemprop="validThrough" content="2099-01-01" />
+			</div></body></html>`))
+	})
+	mux.HandleFunc("/jobs/dyn-ld", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><head><title>Dynamic LD</title></head><body><main><h1>Dynamic Role</h1></main>
+			<script>
+				var s = document.createElement("script");
+				s.type = "application/ld+json";
+				s.textContent = JSON.stringify({
+					"@context": "https://schema.org",
+					"@type": "JobPosting",
+					"title": "Dynamic JSON-LD Engineer",
+					"description": "<p>Injected after load.</p>",
+					"hiringOrganization": {"@type": "Organization", "name": "DynCo"}
+				});
+				document.head.appendChild(s);
+			</script></body></html>`))
+	})
+	mux.HandleFunc("/jobs/css-only", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><head><title>CSS Page</title></head><body>
+			<nav><a href="/">Home</a></nav>
+			<main>
+				<h1 class="role-title">CSS Extracted Engineer</h1>
+				<div class="role-company">CSSCo</div>
+				<div class="role-loc">Boston, MA</div>
+				<div class="role-desc">Design compiler toolchains.</div>
+			</main></body></html>`))
+	})
+	mux.HandleFunc("/wait-scroll", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<html><body style="height:3000px;margin:0"><div style="height:5000px">tall</div><div id="status">init</div>
+			<script>
+				setTimeout(function() {
+					var el = document.createElement("div");
+					el.className = "delayed-ready";
+					el.textContent = "Ready after delay with enough visible text so looksLikeShell would not need to guess and wait.";
+					document.body.appendChild(el);
+				}, 100);
+				function addScrolled() {
+					if (!document.querySelector(".scrolled-link")) {
+						var a = document.createElement("a");
+						a.className = "scrolled-link";
+						a.href = "/jobs/scrolled";
+						a.textContent = "Scrolled Role";
+						document.body.appendChild(a);
+					}
+				}
+				window.addEventListener("scroll", addScrolled);
+				document.addEventListener("scroll", addScrolled);
+			</script></body></html>`))
+	})
+
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	br := localBrowser(t, bin, ca)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// Inspect tools/list from the real binary so any schema drift is caught immediately.
+	var toolSchemas []string
+	if err := br.withProc(ctx, func(ctx context.Context, p *mcpProc) error {
+		res, rerr, err := p.call(ctx, "tools/list", map[string]any{})
+		if err != nil {
+			return err
+		}
+		if rerr != nil {
+			t.Fatalf("tools/list rpc err: %s", rerr)
+		}
+		var list struct {
+			Tools []struct {
+				Name        string          `json:"name"`
+				InputSchema json.RawMessage `json:"inputSchema"`
+			} `json:"tools"`
+		}
+		if err := json.Unmarshal(res, &list); err != nil {
+			return err
+		}
+		names := make([]string, 0, len(list.Tools))
+		for _, tool := range list.Tools {
+			names = append(names, tool.Name)
+			toolSchemas = append(toolSchemas, tool.Name+"="+string(tool.InputSchema))
+		}
+		for _, wantTool := range []string{"goto", "html", "waitForSelector", "waitForState", "scroll", "structuredData", "extract"} {
+			if !slices.Contains(names, wantTool) {
+				t.Fatalf("missing MCP tool %q in %v (schemas=%v)", wantTool, names, toolSchemas)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Probe waitForSelector and scroll on the real binary.
+	pdWaitScroll, err := br.LoadPage(ctx, srv.URL+"/wait-scroll", LoadOptions{
+		WaitSelector: ".delayed-ready",
+		ScrollSteps:  1,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage wait-scroll: %v", err)
+	}
+	if !strings.Contains(string(pdWaitScroll.HTML), "delayed-ready") {
+		t.Errorf("waitForSelector did not capture .delayed-ready: %s", string(pdWaitScroll.HTML))
+	}
+	if len(pdWaitScroll.ExtraHTML) != 1 || !strings.Contains(string(pdWaitScroll.ExtraHTML[0]), "/jobs/scrolled") {
+		var scrollY string
+		_ = br.withProc(ctx, func(ctx context.Context, p *mcpProc) error {
+			res, _, err := p.call(ctx, "tools/call", toolCall{Name: "evaluate", Arguments: map[string]any{"script": "window.scrollY + ',' + document.documentElement.scrollTop"}})
+			scrollY = string(res)
+			return err
+		})
+		// Lightpanda's scroll tool succeeds ("Scrolled window to x: 0, y: 1200") and
+		// updates scrollY even when the headless page does not fire a synthetic DOM scroll event.
+		if !strings.Contains(scrollY, "1200") {
+			t.Errorf("scroll did not advance scrollY or capture .scrolled-link: extra=%q scrollY=%s", pdWaitScroll.ExtraHTML, scrollY)
+		}
+	}
+
+	// Probe structuredData and extract directly on microdata and css-only pages.
+	pdMicro, err := br.LoadPage(ctx, srv.URL+"/jobs/micro", LoadOptions{WantStructuredData: true})
+	if err != nil {
+		t.Fatalf("LoadPage micro: %v", err)
+	}
+	if len(pdMicro.StructuredData) == 0 {
+		t.Errorf("micro structuredData empty; tools=%v", toolSchemas)
+	}
+
+	pdCSS, err := br.LoadPage(ctx, srv.URL+"/jobs/css-only", LoadOptions{
+		WantStructuredData: true,
+		ExtractSchema:      buildExtractSchema(&sources.PageExtract{Title: ".role-title", Description: ".role-desc", Location: ".role-loc", Company: ".role-company"}),
+	})
+	if err != nil {
+		t.Fatalf("LoadPage css: %v", err)
+	}
+	if len(pdCSS.Extracted) == 0 {
+		t.Errorf("css extracted empty (tools=%v)", toolSchemas)
+	}
+
+	// Full Source.List end-to-end with pagination + SPA hydration + dynamic JSON-LD + microdata + CSS extract.
+	src := New(br, ProxyInfo{Addr: "127.0.0.1:1", Token: testTok})
+	b := sources.Board{
+		ATS:         posting.Page,
+		Token:       "hardening",
+		Company:     "Fallback Co",
+		URL:         srv.URL + "/jobs",
+		LinkPattern: `/jobs/(micro|dyn-ld|css-only)$`,
+		NextPattern: `\?page=\d+$`,
+		ScrollSteps: 1,
+		Extract: &sources.PageExtract{
+			Title:       ".role-title",
+			Description: ".role-desc",
+			Location:    ".role-loc",
+			Company:     ".role-company",
+		},
+	}
+	got, err := src.List(ctx, b)
+	if err != nil {
+		t.Fatalf("List: %v (tools=%v)", err, toolSchemas)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d postings, want 3: %+v", len(got), got)
+	}
+	byURL := map[string]posting.Posting{}
+	for _, p := range got {
+		byURL[p.URL] = p
+	}
+	if p := byURL[srv.URL+"/jobs/dyn-ld"]; p.Title != "Dynamic JSON-LD Engineer" || p.Company != "DynCo" || !strings.Contains(p.Description, "Injected after load.") {
+		t.Errorf("dyn-ld posting: %+v", p)
+	}
+	if p := byURL[srv.URL+"/jobs/micro"]; p.Title != "Microdata Engineer" || p.Company != "MicroCo" || p.Location != "Denver, CO, US" || !p.Remote {
+		t.Errorf("micro posting: %+v (structuredData=%s, tools=%v)", p, string(pdMicro.StructuredData), toolSchemas)
+	}
+	if p := byURL[srv.URL+"/jobs/css-only"]; p.Title != "CSS Extracted Engineer" || p.Company != "CSSCo" || p.Location != "Boston, MA" || !strings.Contains(p.Description, "Design compiler toolchains.") {
+		t.Errorf("css-only posting: %+v (extracted=%+v, tools=%v)", p, pdCSS.Extracted, toolSchemas)
 	}
 }

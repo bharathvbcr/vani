@@ -983,3 +983,111 @@ func TestAdvanceWorkers(t *testing.T) {
 		}
 	}
 }
+
+func TestPageBoardHardeningOptions(t *testing.T) {
+	pg := func() sources.Board {
+		return sources.Board{
+			ATS:         posting.Page,
+			Token:       "acme-careers",
+			Company:     "Acme",
+			URL:         "https://careers.acme.example/jobs",
+			LinkPattern: `^https://careers\.acme\.example/jobs/\d+$`,
+		}
+	}
+
+	// Valid round-trip with all four fields set, and omitted when unset.
+	b := pg()
+	b.NextPattern = `\?page=\d+$`
+	b.ScrollSteps = sources.MaxPageScrollSteps
+	b.WaitSelector = ".job-card, [data-job]"
+	b.Extract = &sources.PageExtract{
+		Title:       "h1.job-title",
+		Description: "main .job-description",
+		Location:    ".job-location",
+		Company:     ".company-name",
+	}
+	if err := ValidBoard(b); err != nil {
+		t.Fatalf("valid pg hardening board refused: %v", err)
+	}
+	c := valid()
+	c.Watchlist = append(c.Watchlist, b)
+	c.AllowedHosts = append(c.AllowedHosts, "careers.acme.example")
+	p := filepath.Join(t.TempDir(), "c.json")
+	if err := Save(p, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotPG := got.Watchlist[len(got.Watchlist)-1]
+	if gotPG.NextPattern != b.NextPattern || gotPG.ScrollSteps != b.ScrollSteps ||
+		gotPG.WaitSelector != b.WaitSelector || gotPG.Extract == nil || *gotPG.Extract != *b.Extract {
+		t.Fatalf("round trip lost page options: %+v (extract %+v)", gotPG, gotPG.Extract)
+	}
+
+	// Unset fields stay omitted from JSON.
+	cPlain := valid()
+	cPlain.Watchlist = append(cPlain.Watchlist, pg())
+	cPlain.AllowedHosts = append(cPlain.AllowedHosts, "careers.acme.example")
+	pPlain := filepath.Join(t.TempDir(), "plain.json")
+	if err := Save(pPlain, cPlain); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(pPlain)
+	for _, key := range []string{"next_pattern", "scroll_steps", "wait_selector", `"extract"`} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("unset %s written to JSON", key)
+		}
+	}
+
+	// Non-pg boards refuse all four fields.
+	for _, mod := range []struct {
+		name string
+		fn   func(*sources.Board)
+	}{
+		{"next_pattern on gh", func(x *sources.Board) { x.NextPattern = `page=\d+` }},
+		{"scroll_steps on gh", func(x *sources.Board) { x.ScrollSteps = 1 }},
+		{"wait_selector on gh", func(x *sources.Board) { x.WaitSelector = ".card" }},
+		{"extract on gh", func(x *sources.Board) { x.Extract = &sources.PageExtract{Title: "h1"} }},
+	} {
+		nonPG := sources.Board{ATS: posting.Greenhouse, Token: "acme"}
+		mod.fn(&nonPG)
+		if err := ValidBoard(nonPG); err == nil || !strings.Contains(err.Error(), "pg boards only") {
+			t.Errorf("%s: got %v, want pg-only refusal", mod.name, err)
+		}
+	}
+	feed := sources.Board{ATS: posting.Feed, Token: "shopify", URL: "https://www.shopify.com/feed.xml", ScrollSteps: 2}
+	if err := ValidBoard(feed); err == nil || !strings.Contains(err.Error(), "pg boards only") {
+		t.Errorf("scroll_steps on feed: got %v", err)
+	}
+
+	// Invalid pg board field values.
+	modPG := func(fn func(*sources.Board)) sources.Board { x := pg(); fn(&x); return x }
+	badCases := []struct {
+		name string
+		b    sources.Board
+		want string
+	}{
+		{"blank next_pattern", modPG(func(x *sources.Board) { x.NextPattern = "   " }), "next_pattern"},
+		{"long next_pattern", modPG(func(x *sources.Board) { x.NextPattern = strings.Repeat("a", maxLinkPattern+1) }), "next_pattern"},
+		{"bad next_pattern regexp", modPG(func(x *sources.Board) { x.NextPattern = "(" }), "next_pattern"},
+		{"negative scroll_steps", modPG(func(x *sources.Board) { x.ScrollSteps = -1 }), "scroll_steps"},
+		{"over max scroll_steps", modPG(func(x *sources.Board) { x.ScrollSteps = sources.MaxPageScrollSteps + 1 }), "scroll_steps"},
+		{"blank wait_selector", modPG(func(x *sources.Board) { x.WaitSelector = " \t " }), "wait_selector"},
+		{"long wait_selector", modPG(func(x *sources.Board) { x.WaitSelector = strings.Repeat("a", sources.MaxSelectorLen+1) }), "wait_selector"},
+		{"ctrl wait_selector", modPG(func(x *sources.Board) { x.WaitSelector = ".a\nb" }), "wait_selector"},
+		{"empty extract struct", modPG(func(x *sources.Board) { x.Extract = &sources.PageExtract{} }), "at least one selector"},
+		{"blank extract title", modPG(func(x *sources.Board) { x.Extract = &sources.PageExtract{Title: "  "} }), "extract.title"},
+		{"long extract desc", modPG(func(x *sources.Board) { x.Extract = &sources.PageExtract{Description: strings.Repeat("d", sources.MaxSelectorLen+1)} }), "extract.description"},
+		{"ctrl extract location", modPG(func(x *sources.Board) { x.Extract = &sources.PageExtract{Location: ".loc\x00"} }), "extract.location"},
+		{"ctrl extract company", modPG(func(x *sources.Board) { x.Extract = &sources.PageExtract{Company: ".co\x7f"} }), "extract.company"},
+	}
+	for _, tc := range badCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidBoard(tc.b); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("%s: got %v, want %q", tc.name, err, tc.want)
+			}
+		})
+	}
+}

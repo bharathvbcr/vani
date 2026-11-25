@@ -39,6 +39,27 @@ type fakePage struct {
 	DelayMs  int    `json:"delayMs,omitempty"`  // goto takes this long
 
 	StopReading bool `json:"stopReading,omitempty"` // after html's reply, never read stdin again
+
+	HydrateHTML              string          `json:"hydrateHtml,omitempty"`
+	ScrollHTMLs              []string        `json:"scrollHtmls,omitempty"`
+	WaitSelectorFail         bool            `json:"waitSelectorFail,omitempty"`
+	WaitSelectorRPC          int             `json:"waitSelectorRpc,omitempty"`
+	WaitStateFail            bool            `json:"waitStateFail,omitempty"`
+	WaitStateRPC             int             `json:"waitStateRpc,omitempty"`
+	ScrollFail               bool            `json:"scrollFail,omitempty"`
+	ScrollFailAfter          int             `json:"scrollFailAfter,omitempty"`
+	ScrollRPC                int             `json:"scrollRpc,omitempty"`
+	StructuredData           string          `json:"structuredData,omitempty"`
+	StructuredDataStructured json.RawMessage `json:"structuredDataStructured,omitempty"`
+	StructuredDataFail       bool            `json:"structuredDataFail,omitempty"`
+	StructuredDataRPC        int             `json:"structuredDataRpc,omitempty"`
+	StructuredDataSize       int             `json:"structuredDataSize,omitempty"`
+	Extracted                string          `json:"extracted,omitempty"`
+	ExtractFail              bool            `json:"extractFail,omitempty"`
+	ExtractRPC               int             `json:"extractRpc,omitempty"`
+	ExtractSize              int             `json:"extractSize,omitempty"`
+	CrashOnTool              string          `json:"crashOnTool,omitempty"`
+	HangOnTool               string          `json:"hangOnTool,omitempty"`
 }
 
 // fakeEvent is one line of the fake's log.
@@ -105,6 +126,8 @@ func fakeMCP(args []string) int {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 1<<20), 1<<20)
 	var current fakePage
+	var hydrated bool
+	var scrollCount int
 	for in.Scan() {
 		var req struct {
 			ID     json.RawMessage `json:"id"`
@@ -141,6 +164,13 @@ func fakeMCP(args []string) int {
 		default:
 			continue // notifications
 		}
+		if current.CrashOnTool != "" && req.Params.Name == current.CrashOnTool {
+			fmt.Fprint(os.Stderr, "fake tool crash "+req.Params.Name)
+			return 5
+		}
+		if current.HangOnTool != "" && req.Params.Name == current.HangOnTool {
+			time.Sleep(time.Hour)
+		}
 		switch req.Params.Name {
 		case "goto":
 			var a struct {
@@ -152,6 +182,8 @@ func fakeMCP(args []string) int {
 				p = fakePage{NavFail: "UnknownHost"}
 			}
 			current = p
+			hydrated = false
+			scrollCount = 0
 			if p.DelayMs > 0 {
 				time.Sleep(time.Duration(p.DelayMs) * time.Millisecond)
 			}
@@ -180,8 +212,48 @@ func fakeMCP(args []string) int {
 				}
 				reply(req.ID, res)
 			}
+		case "waitForSelector":
+			switch {
+			case current.WaitSelectorRPC != 0:
+				rpcErr(req.ID, current.WaitSelectorRPC, "waitForSelector error")
+			case current.WaitSelectorFail:
+				reply(req.ID, text("selector timed out", true))
+			default:
+				hydrated = true
+				reply(req.ID, text("ok", false))
+			}
+		case "waitForState":
+			switch {
+			case current.WaitStateRPC != 0:
+				rpcErr(req.ID, current.WaitStateRPC, "waitForState error")
+			case current.WaitStateFail:
+				reply(req.ID, text("waitForState timed out", true))
+			default:
+				hydrated = true
+				reply(req.ID, text("ok", false))
+			}
+		case "scroll":
+			switch {
+			case current.ScrollRPC != 0:
+				rpcErr(req.ID, current.ScrollRPC, "scroll unsupported")
+			case current.ScrollFail || (current.ScrollFailAfter > 0 && scrollCount >= current.ScrollFailAfter):
+				reply(req.ID, text("scroll failed", true))
+			default:
+				scrollCount++
+				reply(req.ID, text("scrolled", false))
+			}
 		case "html":
 			p := current
+			body := p.HTML
+			if scrollCount > 0 && len(p.ScrollHTMLs) > 0 {
+				idx := scrollCount - 1
+				if idx >= len(p.ScrollHTMLs) {
+					idx = len(p.ScrollHTMLs) - 1
+				}
+				body = p.ScrollHTMLs[idx]
+			} else if hydrated && p.HydrateHTML != "" {
+				body = p.HydrateHTML
+			}
 			switch {
 			case p.Junk:
 				raw("this is not json\n")
@@ -195,13 +267,39 @@ func fakeMCP(args []string) int {
 			case p.HTMLSize > 0:
 				reply(req.ID, text(strings.Repeat("x", p.HTMLSize), false))
 			default:
-				reply(req.ID, text(p.HTML, false))
+				reply(req.ID, text(body, false))
 			}
 			for range p.Flood {
 				raw(`{"jsonrpc":"2.0","method":"notifications/message"}` + "\n")
 			}
 			if p.StopReading {
 				time.Sleep(time.Hour)
+			}
+		case "structuredData":
+			p := current
+			switch {
+			case p.StructuredDataRPC != 0:
+				rpcErr(req.ID, p.StructuredDataRPC, "structuredData unsupported")
+			case p.StructuredDataFail:
+				reply(req.ID, text("structuredData failed", true))
+			case p.StructuredDataSize > 0:
+				reply(req.ID, text(strings.Repeat("x", p.StructuredDataSize), false))
+			case len(p.StructuredDataStructured) > 0:
+				reply(req.ID, map[string]any{"content": []any{}, "structuredContent": p.StructuredDataStructured, "isError": false})
+			default:
+				reply(req.ID, text(p.StructuredData, false))
+			}
+		case "extract":
+			p := current
+			switch {
+			case p.ExtractRPC != 0:
+				rpcErr(req.ID, p.ExtractRPC, "extract unsupported")
+			case p.ExtractFail:
+				reply(req.ID, text("extract failed", true))
+			case p.ExtractSize > 0:
+				reply(req.ID, text(strings.Repeat("x", p.ExtractSize), false))
+			default:
+				reply(req.ID, text(p.Extracted, false))
 			}
 		}
 	}

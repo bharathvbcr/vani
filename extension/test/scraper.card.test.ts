@@ -301,12 +301,62 @@ describe("card reading, adversarial", () => {
     for (const [h1, title] of [
       ["We have 68 open positions", "Careers home"],
       ["Join our team", "Back to Careers"],
-      ["12 open roles", "Search for Jobs"],
-      ["Explore opportunities", "Careers"],
+      ["Join our team!", "Careers Portal"],
+      ["68 jobs available", "Current Opportunities"],
+      ["12 open roles.", "Search for Jobs"],
+      ["Explore opportunities", "Careers."],
     ]) {
       const d = docOf(`<html><head><title>${title}</title></head><body><h1>${h1}</h1>${card("<h3>Staff Engineer</h3>")}${card("<h3>Principal Engineer</h3>", "/careers/role-2")}</body></html>`);
       const r = scrapePageJobs(d, "careers.example.test", undefined, PAGE);
       expect(r.jobs.map(j => j.company)).toEqual(["", ""]);
+    }
+  });
+
+  test("generic ATS and board labels in og:site_name are rejected and fall through to real company names", () => {
+    for (const badSite of [
+      "Greenhouse",
+      "Lever",
+      "Ashby",
+      "Workday",
+      "SmartRecruiters",
+      "iCIMS",
+      "Careers",
+      "Jobs",
+      "Job Board",
+      "Careers Portal",
+      "Join our team!",
+      "68 jobs available",
+      "Current Opportunities",
+    ]) {
+      const dNoCompany = docOf(
+        `<html><head><meta property="og:site_name" content="${badSite}"><title>Careers Portal</title></head><body><h1>68 jobs available</h1>${card("<h3>Staff Engineer</h3>")}${card("<h3>Principal Engineer</h3>", "/careers/role-2")}</body></html>`,
+      );
+      expect(scrapePageJobs(dNoCompany, "careers.example.test", undefined, PAGE).jobs.map(j => j.company)).toEqual(["", ""]);
+
+      const dWithTitleCompany = docOf(
+        `<html><head><meta property="og:site_name" content="${badSite}"><title>Acme Robotics | Careers</title></head><body><h1>Join our team!</h1>${card("<h3>Staff Engineer</h3>")}${card("<h3>Principal Engineer</h3>", "/careers/role-2")}</body></html>`,
+      );
+      expect(scrapePageJobs(dWithTitleCompany, "careers.example.test", undefined, PAGE).jobs.map(j => j.company)).toEqual(["Acme Robotics", "Acme Robotics"]);
+    }
+  });
+
+  test("separator-based doc.title forms extract company while rejecting generic/ATS segments", () => {
+    for (const [title, want] of [
+      ["Acme | Careers", "Acme"],
+      ["Acme - Jobs", "Acme"],
+      ["Careers | Acme", "Acme"],
+      ["Jobs - Acme", "Acme"],
+      ["Rolls-Royce | Careers", "Rolls-Royce"],
+      ["Acme | Careers - Greenhouse", "Acme"],
+      ["Careers | Greenhouse", ""],
+      ["Jobs - Workday", ""],
+      ["Careers Portal | Lever", ""],
+      ["68 jobs available | Ashby", ""],
+      ["Jobs at Greenhouse", ""],
+      ["Greenhouse Jobs", ""],
+    ] as const) {
+      const d = docOf(`<html><head><title>${title}</title></head><body><h1>Current Opportunities</h1>${card("<h3>Staff Engineer</h3>")}${card("<h3>Principal Engineer</h3>", "/careers/role-2")}</body></html>`);
+      expect(scrapePageJobs(d, "careers.example.test", undefined, PAGE).jobs.map(j => j.company)).toEqual([want, want]);
     }
   });
 });
