@@ -39,7 +39,7 @@ func TestZipRecruiterBoard(t *testing.T) {
 		"bad posted":        {with(zr, func(b *sources.Board) { b.Filters["posted_within_days"] = []string{"0"} }), "posted_within_days"},
 		"bad location type": {with(zr, func(b *sources.Board) { b.Filters["location_type"] = []string{"moon"} }), "location_type"},
 		"host":              {with(zr, func(b *sources.Board) { b.Host = "evil.example.com" }), "host applies"},
-		"max postings":      {with(zr, func(b *sources.Board) { b.MaxPostings = 10 }), "applies to wd, oc and ad only"},
+		"max postings":      {with(zr, func(b *sources.Board) { b.MaxPostings = 10 }), "applies to wd, oc, ad, dc and hm only"},
 	} {
 		if err := ValidBoard(bad.b); err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("%s: got %v, want an error containing %q", name, err, bad.want)
@@ -78,6 +78,9 @@ func TestDiceBoard(t *testing.T) {
 	if h, ok := BoardHost(dc); !ok || h != "mcp.dice.com" {
 		t.Fatalf("BoardHost = %q %v", h, ok)
 	}
+	if err := ValidBoard(with(dc, func(b *sources.Board) { b.MaxPostings = 5000 })); err != nil {
+		t.Fatalf("dc max_postings 5000: %v", err)
+	}
 	if !SingleBoardATS(posting.Dice) {
 		t.Fatal("dc must be a single-board system")
 	}
@@ -92,7 +95,8 @@ func TestDiceBoard(t *testing.T) {
 		"bad posted":      {with(dc, func(b *sources.Board) { b.Filters["posted_within_days"] = []string{"5"} }), "posted_within_days"},
 		"bad sponsorship": {with(dc, func(b *sources.Board) { b.Filters["sponsorship"] = []string{"yes"} }), "sponsorship"},
 		"unknown filter":  {with(dc, func(b *sources.Board) { b.Filters["easy_apply"] = []string{"true"} }), "not one of"},
-		"max postings":    {with(dc, func(b *sources.Board) { b.MaxPostings = 10 }), "applies to wd, oc and ad only"},
+		"max negative":    {with(dc, func(b *sources.Board) { b.MaxPostings = -1 }), "must be within"},
+		"max over":        {with(dc, func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 }), "must be within"},
 	} {
 		if err := ValidBoard(bad.b); err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("%s: got %v, want an error containing %q", name, err, bad.want)

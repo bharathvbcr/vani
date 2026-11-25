@@ -76,6 +76,7 @@ commands:
                    [--scroll-steps N] [--wait-selector CSS]
                    [--extract-title CSS] [--extract-description CSS]
                    [--extract-location CSS] [--extract-company CSS] (pg)
+                   [--max-postings N] (wd, oc, ad, dc, hm)
                    [--domain HOST [--icon URL]]
                    watchlist add -h says what each flag and token is per CODE
   watchlist remove [--json] --ats A --token T [--keep-postings | --close-postings]

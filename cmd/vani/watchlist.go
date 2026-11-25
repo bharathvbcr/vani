@@ -99,6 +99,7 @@ func (e *env) watchlistAdd(args []string) error {
 	extractDesc := fs.String("extract-description", "", "CSS selector for job description when structured data is absent (pg only)")
 	extractLoc := fs.String("extract-location", "", "CSS selector for job location when structured data is absent (pg only)")
 	extractCompany := fs.String("extract-company", "", "CSS selector for company name when structured data is absent (pg only)")
+	maxPostings := fs.Int("max-postings", 0, fmt.Sprintf("posting listing cap, 1..%d (0 means the adapter's default; wd, oc, ad, dc, hm)", sources.MaxPostingsCeiling))
 	domain := fs.String("domain", "", "the company's website host, for its icon (www.example.com)")
 	icon := fs.String("icon", "", "https URL of the company's icon, when --domain serves none at the usual paths")
 	allow := fs.Bool("allow-host", false, "also add the board's API host, --domain and the --icon host to allowed_hosts")
@@ -122,6 +123,7 @@ func (e *env) watchlistAdd(args []string) error {
 		ScrollSteps:  *scrollSteps,
 		WaitSelector: *waitSelector,
 		Filters:      filters,
+		MaxPostings:  *maxPostings,
 		Domain:       *domain,
 		Icon:         *icon,
 	}
@@ -375,6 +377,7 @@ func boardJSON(b sources.Board) watchlistJSON {
 		ScrollSteps:  b.ScrollSteps,
 		WaitSelector: b.WaitSelector,
 		Extract:      ext,
+		MaxPostings:  b.MaxPostings,
 		Domain:       b.Domain,
 		Icon:         b.Icon,
 	}
@@ -395,6 +398,7 @@ type watchlistJSON struct {
 	ScrollSteps  int                  `json:"scroll_steps,omitempty"`
 	WaitSelector string               `json:"wait_selector,omitempty"`
 	Extract      *sources.PageExtract `json:"extract,omitempty"`
+	MaxPostings  int                  `json:"max_postings,omitempty"`
 	Domain       string               `json:"domain,omitempty"`
 	Icon         string               `json:"icon,omitempty"`
 }

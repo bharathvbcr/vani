@@ -40,7 +40,7 @@ func TestTikTokBoard(t *testing.T) {
 		"url":            {func(b *sources.Board) { b.URL = "https://lifeattiktok.com/search" }, "page boards only"},
 		"unknown filter": {func(b *sources.Board) { b.Filters = map[string][]string{"department": {"x"}} }, "not one of country, location"},
 		"empty filter":   {func(b *sources.Board) { b.Filters = map[string][]string{"country": {" "}} }, "bytes with no control"},
-		"max postings":   {func(b *sources.Board) { b.MaxPostings = 100 }, "applies to wd, oc and ad only"},
+		"max postings":   {func(b *sources.Board) { b.MaxPostings = 100 }, "applies to wd, oc, ad, dc and hm only"},
 	} {
 		b := good
 		bad.mod(&b)

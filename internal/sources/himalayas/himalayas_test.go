@@ -222,6 +222,22 @@ func TestTermsAreCappedTogether(t *testing.T) {
 	}
 }
 
+func TestCustomMaxPostings(t *testing.T) {
+	n := MaxPostings + 200
+	b := board
+	b.MaxPostings = 2500
+	d := pager(t, func(string) int { return n }, func(_ string, i int) string { return row(strconv.Itoa(i)) })
+	got, err := withDoer(d).List(context.Background(), b)
+	if err != nil || len(got) != n {
+		t.Fatalf("raised cap: got %d postings, err %v; want %d", len(got), err, n)
+	}
+	b.MaxPostings = n
+	over := pager(t, func(string) int { return n + 1 }, func(_ string, i int) string { return row(strconv.Itoa(i)) })
+	if _, err := withDoer(over).List(context.Background(), b); !errors.Is(err, srcutil.ErrTooManyPostings) {
+		t.Fatalf("over custom cap: err = %v, want ErrTooManyPostings", err)
+	}
+}
+
 func TestShapeFailures(t *testing.T) {
 	for name, body := range map[string]string{
 		"no total":                `{"jobs":[]}`,
@@ -280,6 +296,8 @@ func TestBoardChecksSendNothing(t *testing.T) {
 		"unknown filter":    func(b *sources.Board) { b.Filters = map[string][]string{"timezone": {"-5"}} },
 		"two filter values": func(b *sources.Board) { b.Filters = map[string][]string{"country": {"US", "CA"}} },
 		"blank filter":      func(b *sources.Board) { b.Filters = map[string][]string{"country": {"  "}} },
+		"max negative":      func(b *sources.Board) { b.MaxPostings = -1 },
+		"max over ceiling":  func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			b := board

@@ -230,6 +230,11 @@ func TestWatchlistWritesJSON(t *testing.T) {
 	if cfg, err := config.Load(cfgPath); err != nil || len(cfg.Watchlist) != 0 {
 		t.Fatalf("watchlist after remove: %v %v", cfg.Watchlist, err)
 	}
+	o, _ = mustCode(t, 0, "--json", "watchlist", "add", "--ats", "dc", "--token", "dice", "--company", "Dice", "--search", "AI engineer", "--max-postings", "5000", "--allow-host")
+	b = boardReply{}
+	if decodeOne(t, o, &b); b.Board.ATS != "dc" || b.Board.MaxPostings != 5000 {
+		t.Fatalf("add max-postings %+v", b)
+	}
 	// A bad flag is still a usage error, in the envelope only under the global flag.
 	o, _ = mustCode(t, 2, "--json", "watchlist", "add", "--ats", "zz", "--token", "x", "--company", "X")
 	onlyError(t, nil, o)

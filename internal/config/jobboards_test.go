@@ -28,18 +28,22 @@ func TestJobBoardBoards(t *testing.T) {
 			t.Errorf("%s: not a single-board system; two boards would key one job twice", tc.b.ATS)
 		}
 	}
+	if err := ValidBoard(with(hm, func(b *sources.Board) { b.MaxPostings = 5000 })); err != nil {
+		t.Fatalf("hm max_postings 5000: %v", err)
+	}
 	for name, bad := range map[string]struct {
 		b    sources.Board
 		want string
 	}{
-		"hm other token":       {with(hm, func(b *sources.Board) { b.Token = "acme" }), "must be himalayas"},
-		"hm upper-case token":  {with(hm, func(b *sources.Board) { b.Token = "Himalayas" }), "must be himalayas"},
-		"hm no search":         {with(hm, func(b *sources.Board) { b.Search = "" }), "needs at least one search"},
-		"hm two filter values": {with(hm, func(b *sources.Board) { b.Filters = map[string][]string{"country": {"US", "CA"}} }), "takes one value"},
-		"hm unknown filter":    {with(hm, func(b *sources.Board) { b.Filters = map[string][]string{"timezone": {"-5"}} }), "not one of country, seniority, employment_type"},
-		"hm host":              {with(hm, func(b *sources.Board) { b.Host = "evil.example.com" }), "host applies"},
-		"hm url":               {with(hm, func(b *sources.Board) { b.URL = "https://himalayas.app/jobs" }), "url applies"},
-		"hm max postings":      {with(hm, func(b *sources.Board) { b.MaxPostings = 100 }), "applies to wd, oc and ad only"},
+		"hm other token":               {with(hm, func(b *sources.Board) { b.Token = "acme" }), "must be himalayas"},
+		"hm upper-case token":          {with(hm, func(b *sources.Board) { b.Token = "Himalayas" }), "must be himalayas"},
+		"hm no search":                 {with(hm, func(b *sources.Board) { b.Search = "" }), "needs at least one search"},
+		"hm two filter values":         {with(hm, func(b *sources.Board) { b.Filters = map[string][]string{"country": {"US", "CA"}} }), "takes one value"},
+		"hm unknown filter":            {with(hm, func(b *sources.Board) { b.Filters = map[string][]string{"timezone": {"-5"}} }), "not one of country, seniority, employment_type"},
+		"hm host":                      {with(hm, func(b *sources.Board) { b.Host = "evil.example.com" }), "host applies"},
+		"hm url":                       {with(hm, func(b *sources.Board) { b.URL = "https://himalayas.app/jobs" }), "url applies"},
+		"hm max_postings negative":     {with(hm, func(b *sources.Board) { b.MaxPostings = -1 }), "must be within"},
+		"hm max_postings over ceiling": {with(hm, func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 }), "must be within"},
 		"ro other token":       {with(ro, func(b *sources.Board) { b.Token = "remote-ok" }), "must be remoteok"},
 		"ro search":            {with(ro, func(b *sources.Board) { b.Search = "golang" }), "search applies to"},
 		"gh search names hm":   {sources.Board{ATS: posting.Greenhouse, Token: "acme", Search: "x"}, " hm,"},

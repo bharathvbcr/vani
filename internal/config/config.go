@@ -1340,8 +1340,8 @@ func ValidBoard(b sources.Board) error {
 			return fmt.Errorf("board %s/%s: max_postings %d must be within 1..%d (0 means %d)", b.ATS, b.Token, b.MaxPostings, adzuna.MaxPostingsCeiling, adzuna.MaxPostings)
 		}
 	} else if b.MaxPostings != 0 {
-		if b.ATS != posting.Workday && b.ATS != posting.OracleHCM {
-			return fmt.Errorf("board %s/%s: max_postings applies to wd, oc and ad only", b.ATS, b.Token)
+		if b.ATS != posting.Workday && b.ATS != posting.OracleHCM && b.ATS != posting.Dice && b.ATS != posting.Himalayas {
+			return fmt.Errorf("board %s/%s: max_postings applies to wd, oc, ad, dc and hm only", b.ATS, b.Token)
 		}
 		if b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling {
 			return fmt.Errorf("board %s/%s: max_postings %d must be within 1..%d (0 means the default)", b.ATS, b.Token, b.MaxPostings, sources.MaxPostingsCeiling)

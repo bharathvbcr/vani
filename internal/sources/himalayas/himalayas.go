@@ -44,21 +44,32 @@ const (
 	Token     = "himalayas"
 	site      = "https://himalayas.app"
 	searchURL = site + "/jobs/api/search"
-	// MaxPostings bounds one board, the union of its terms. At 20 rows a page
-	// it is 50 requests a term.
+	// MaxPostings is the default board limit when Board.MaxPostings is zero,
+	// the union of its terms. At 20 rows a page it is 50 requests a term; a
+	// board may raise or lower it up to sources.MaxPostingsCeiling.
 	MaxPostings = 1000
 	// pageSize is the rows search serves a page; the API does not take a
 	// limit on search (its own note, 2026-11-17).
 	pageSize = 20
-	maxPages = MaxPostings/pageSize + 2
 	// worldwide is the location of a row with no location restrictions,
 	// which the docs define as open worldwide.
 	worldwide = "Worldwide"
 	// paceEvery spaces Himalayas search requests below its ~35 req/min burst
 	// limit observed live (2026-11-24: 38 calls at 1/s hit HTTP 429 Retry-After 36s).
 	paceEvery  = 2 * time.Second
-	paceBudget = 10 * time.Minute
+	paceBudget = 45 * time.Minute
 )
+
+// capFor is the board's listing limit: its max_postings, or MaxPostings.
+func capFor(b sources.Board) (int, error) {
+	switch {
+	case b.MaxPostings == 0:
+		return MaxPostings, nil
+	case b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling:
+		return 0, fmt.Errorf("max_postings %d outside 1..%d", b.MaxPostings, sources.MaxPostingsCeiling)
+	}
+	return b.MaxPostings, nil
+}
 
 // ErrShape is a response whose layout is not the one this source knows.
 var ErrShape = errors.New("himalayas: unexpected search response")
@@ -122,13 +133,17 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err := checkFilters(b.Filters); err != nil {
 		return nil, fmt.Errorf("himalayas %q: %w", b.Token, err)
 	}
+	limit, err := capFor(b)
+	if err != nil {
+		return nil, fmt.Errorf("himalayas %q: %w", b.Token, err)
+	}
 	seen := s.now()
 	pace := &srcutil.Pacer{Every: paceEvery, Budget: paceBudget, Sleep: s.wait}
 	var out []posting.Posting
 	keys := map[posting.Key]bool{}
 	rows := srcutil.NewRows(ctx, b, 0)
 	for _, term := range terms {
-		jobs, err := s.search(ctx, pace, term, b.Filters)
+		jobs, err := s.search(ctx, pace, term, b.Filters, limit)
 		if err != nil {
 			return nil, fmt.Errorf("himalayas %q: search %q: %w", b.Token, term, err)
 		}
@@ -146,9 +161,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 				out = append(out, p)
 			}
 		}
-		if len(out) > MaxPostings {
+		if len(out) > limit {
 			return nil, fmt.Errorf("himalayas %q: %w: the board's searches together list more than %d postings; narrow them",
-				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
+				b.Token, srcutil.ErrTooManyPostings, limit)
 		}
 	}
 	if err := rows.Done(); err != nil {
@@ -181,15 +196,16 @@ func pageURL(term string, filters map[string][]string, page int) string {
 	return searchURL + "?" + q.Encode()
 }
 
-// search pages one term to its total. A total over MaxPostings fails before
+// search pages one term to its total. A total over limit fails before
 // any further page; terms that overlap are judged on their union by List.
 // Each page's totalCount is the
 // latest word on the size of a listing that changes while it is read: rows
 // shifted onto a page already read are dropped as repeats, and a page that
 // adds nothing while the total is still unmet is ErrShape.
-func (s *source) search(ctx context.Context, pace *srcutil.Pacer, term string, filters map[string][]string) ([]job, error) {
+func (s *source) search(ctx context.Context, pace *srcutil.Pacer, term string, filters map[string][]string, limit int) ([]job, error) {
 	var out []job
 	ids := map[string]bool{}
+	maxPages := limit/pageSize + 2
 	for page := 1; page <= maxPages; page++ {
 		if err := pace.Wait(ctx); err != nil {
 			return nil, err
@@ -202,9 +218,9 @@ func (s *source) search(ctx context.Context, pace *srcutil.Pacer, term string, f
 			return nil, fmt.Errorf("%w: page %d has no totalCount or jobs list", ErrShape, page)
 		}
 		total := *resp.TotalCount
-		if total > MaxPostings {
+		if total > limit {
 			return nil, fmt.Errorf("%w: search matches %d postings, over the %d limit; use a narrower term or the country, seniority and employment_type filters",
-				srcutil.ErrTooManyPostings, total, MaxPostings)
+				srcutil.ErrTooManyPostings, total, limit)
 		}
 		added := 0
 		for _, j := range resp.Jobs {

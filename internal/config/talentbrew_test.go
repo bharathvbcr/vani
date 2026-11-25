@@ -67,7 +67,7 @@ func TestTalentBrewBoards(t *testing.T) {
 		"search":           {func(b *sources.Board) { b.Search = "engineer" }, "search applies to"},
 		"filter":           {func(b *sources.Board) { b.Filters = map[string][]string{"country": {"us"}} }, "filters are not supported"},
 		"region":           {func(b *sources.Board) { b.Region = "eu" }, "region eu applies to lever only"},
-		"max postings":     {func(b *sources.Board) { b.MaxPostings = 10 }, "max_postings applies to wd, oc and ad only"},
+		"max postings":     {func(b *sources.Board) { b.MaxPostings = 10 }, "max_postings applies to wd, oc, ad, dc and hm only"},
 		"url":              {func(b *sources.Board) { b.URL = "https://jobs.intuit.com/search-jobs" }, "url applies to"},
 		"link pattern":     {func(b *sources.Board) { b.LinkPattern = "x" }, "link_pattern"},
 		"board name":       {func(b *sources.Board) { b.BoardName = "Intuit" }, "board_name applies to ab only"},

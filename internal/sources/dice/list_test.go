@@ -94,11 +94,11 @@ func TestPagingToTotalPagesNotPast(t *testing.T) {
 	if pages := f.pagesAsked("ml"); !reflect.DeepEqual(pages, []int{1, 2, 3}) {
 		t.Fatalf("pages asked = %v, want 1..3 and never past totalPages", pages)
 	}
-	// 250 new rows, 120 details: the rest deferred, not returned.
-	if len(got) != MaxDetails || st.Listed != 250 || st.Fetched != MaxDetails || st.Deferred != 130 || st.Requests != 3 || st.Matched != 250 {
+	// 250 new rows all fit under MaxDetails (500): none are deferred.
+	if len(got) != 250 || st.Listed != 250 || st.Fetched != 250 || st.Deferred != 0 || st.Requests != 3 || st.Matched != 250 {
 		t.Fatalf("got %d postings, stats %+v", len(got), st)
 	}
-	if f.count("get_job_details") != MaxDetails {
+	if f.count("get_job_details") != 250 {
 		t.Fatalf("detail calls = %d", f.count("get_job_details"))
 	}
 	if st.Windowed {
@@ -123,7 +123,7 @@ func TestStopsAtTotalPagesShortOfTotal(t *testing.T) {
 	f2.total = func(string, int) int { return 200 }
 	f2.pages = func(string, int) int { return 2 }
 	got, err := src(f2.doer(), &Options{}).List(context.Background(), diceBoard("ml"))
-	if err != nil || len(got) != MaxDetails {
+	if err != nil || len(got) != 199 {
 		t.Fatalf("got %d postings, %v", len(got), err)
 	}
 }
@@ -146,6 +146,30 @@ func TestOverCapFailsBeforePage2(t *testing.T) {
 	}
 	if reported {
 		t.Fatal("a board that failed while listing reported stats")
+	}
+}
+
+func TestCustomMaxPostingsAndDetailsCap(t *testing.T) {
+	if MaxDetails != 500 {
+		t.Fatalf("MaxDetails = %d, want 500", MaxDetails)
+	}
+	n := MaxPostings + 200
+	b := diceBoard("ml")
+	b.MaxPostings = 2500
+	f := newFake(t, map[string][]string{"ml": guids(0, n)})
+	var st Stats
+	got, err := src(f.doer(), &Options{Report: func(_ sources.Board, x Stats) { st = x }}).List(context.Background(), b)
+	if err != nil {
+		t.Fatalf("raised cap failed: %v", err)
+	}
+	if len(got) != MaxDetails || st.Listed != n || st.Fetched != MaxDetails || st.Deferred != n-MaxDetails {
+		t.Fatalf("got %d postings, stats %+v", len(got), st)
+	}
+	b.MaxPostings = 1200
+	over := newFake(t, map[string][]string{"ml": guids(0, 150)})
+	over.total = func(string, int) int { return 1201 }
+	if _, err := src(over.doer(), &Options{}).List(context.Background(), b); !errors.Is(err, srcutil.ErrTooManyPostings) {
+		t.Fatalf("over custom cap: err = %v, want ErrTooManyPostings", err)
 	}
 }
 
@@ -198,7 +222,7 @@ func TestDuplicateRowsAcrossPages(t *testing.T) {
 		return answer{sc: map[string]any{"data": rows, "metadata": map[string]any{"page": 2, "pageSize": 100, "total": 150, "totalPages": 2}}}, true
 	}
 	got, err := src(f.doer(), &Options{}).List(context.Background(), diceBoard("ml"))
-	if err != nil || len(got) != MaxDetails {
+	if err != nil || len(got) != 150 {
 		t.Fatalf("got %d, %v", len(got), err)
 	}
 }
@@ -395,8 +419,9 @@ func TestBoardChecks(t *testing.T) {
 		"other token": {ATS: posting.Dice, Token: "dice2", Search: "ml"},
 		"other ats":   {ATS: posting.Himalayas, Token: Token, Search: "ml"},
 		"no search":   {ATS: posting.Dice, Token: Token},
-		"host":        {ATS: posting.Dice, Token: Token, Search: "ml", Host: "mcp.dice.com"},
-		"max":         {ATS: posting.Dice, Token: Token, Search: "ml", MaxPostings: 50},
+		"host":             {ATS: posting.Dice, Token: Token, Search: "ml", Host: "mcp.dice.com"},
+		"max negative":     {ATS: posting.Dice, Token: Token, Search: "ml", MaxPostings: -1},
+		"max over ceiling": {ATS: posting.Dice, Token: Token, Search: "ml", MaxPostings: sources.MaxPostingsCeiling + 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t, nil)
@@ -426,7 +451,7 @@ func TestPacing(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := len(f.toolCalls())
-	if calls != 3+MaxDetails || len(waits) != calls-1 {
+	if calls != 3+150 || len(waits) != calls-1 {
 		t.Fatalf("%d calls, %d waits; want a wait before every call but the first", calls, len(waits))
 	}
 	for _, w := range waits {

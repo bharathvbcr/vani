@@ -72,7 +72,7 @@ func TestPerTenantBoards(t *testing.T) {
 				"board name":       {func(b *sources.Board) { b.BoardName = "Syrve" }, "ab only"},
 				"url":              {func(b *sources.Board) { b.URL = "https://syrve.example/jobs" }, "page boards only"},
 				"filter":           {func(b *sources.Board) { b.Filters = map[string][]string{"location": {"x"}} }, "not supported"},
-				"max postings":     {func(b *sources.Board) { b.MaxPostings = 300 }, "applies to wd, oc and ad only"},
+				"max postings":     {func(b *sources.Board) { b.MaxPostings = 300 }, "applies to wd, oc, ad, dc and hm only"},
 				"scrape suffix":    {func(b *sources.Board) { b.Token = "syrve-scrape" }, "reserved"},
 				"wrong code (zz)":  {func(b *sources.Board) { b.ATS = "zz" }, "is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps,"},
 				"label with a dot": {func(b *sources.Board) { b.Token = "a.b" }, "one lower-case host label"},

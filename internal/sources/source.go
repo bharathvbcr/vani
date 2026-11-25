@@ -269,12 +269,13 @@ type Board struct {
 	// is run with every filter applied.
 	Filters map[string][]string `json:"filters,omitempty"`
 	// MaxPostings sets the most postings the board may list, Workday, Oracle
-	// HCM and Adzuna only: zero is the adapter's default (workday.MaxPostings,
-	// 5,000; adzuna.MaxPostings, 500), at most MaxPostingsCeiling
-	// (adzuna.MaxPostingsCeiling, 1,000, for Adzuna). Listing costs a request per 20 postings at the
-	// per-host pace (about a second each); detail requests are bounded per
-	// run apart from it (workday.MaxDetails). A board over its cap still
-	// fails rather than being truncated.
+	// HCM, Adzuna, Dice and Himalayas only: zero is the adapter's default
+	// (workday.MaxPostings, 5,000; oraclehcm.MaxPostings, 5,000;
+	// dice.MaxPostings, 1,000; himalayas.MaxPostings, 1,000; adzuna.MaxPostings,
+	// 500), at most MaxPostingsCeiling (adzuna.MaxPostingsCeiling, 1,000, for Adzuna).
+	// Listing costs a request per page at the per-host pace; detail requests on
+	// Workday, Oracle HCM and Dice are bounded per run apart from it. A board
+	// over its cap still fails rather than being truncated.
 	MaxPostings int `json:"max_postings,omitempty"`
 
 	// URL is https: a page board's careers listing page, an Avature board's

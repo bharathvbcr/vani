@@ -105,30 +105,42 @@ const (
 	Token = "dice"
 	// Endpoint is Dice's MCP server.
 	Endpoint = "https://mcp.dice.com/mcp"
-	// MaxPostings bounds one board: what one term's first page may count, and
-	// the union of the board's terms. At 100 rows a page it is 10 calls a term.
+	// MaxPostings is the default board limit when Board.MaxPostings is zero:
+	// what one term's first page may count, and the union of the board's
+	// terms. At 100 rows a page it is 10 calls a term; a board may raise or
+	// lower it up to sources.MaxPostingsCeiling.
 	MaxPostings = 1000
 	// MaxDetails is the most get_job_details calls one board makes in one run.
-	MaxDetails = 120
+	MaxDetails = 500
 
 	host     = "mcp.dice.com"
 	jobPage  = "https://www.dice.com/job-detail/"
 	pageSize = 100
-	// maxPages bounds one term's pages: every row of the cap, and slack.
-	maxPages = MaxPostings/pageSize + 2
 
 	// paceEvery spaces a board's calls: Dice's upstream search answered 429
 	// after a few back-to-back 100-row calls on 2026-11-24.
 	paceEvery = time.Second
-	// paceBudget bounds a board's waiting: every page of every term at the cap
-	// and MaxDetails detail calls, with room.
-	paceBudget = 10 * time.Minute
+	// paceBudget bounds a board's waiting: listing up to
+	// sources.MaxPostingsCeiling across multiple overlapping terms plus
+	// MaxDetails detail calls, with room.
+	paceBudget = 40 * time.Minute
 
 	// Bounds on untrusted row fields that reach a posting.
 	maxLocation  = 100
 	maxSkills    = 50
 	maxRoleParts = 8
 )
+
+// capFor is the board's listing limit: its max_postings, or MaxPostings.
+func capFor(b sources.Board) (int, error) {
+	switch {
+	case b.MaxPostings == 0:
+		return MaxPostings, nil
+	case b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling:
+		return 0, fmt.Errorf("max_postings %d outside 1..%d", b.MaxPostings, sources.MaxPostingsCeiling)
+	}
+	return b.MaxPostings, nil
+}
 
 // FilterKeys are the board filters Dice takes, each checked live on
 // 2026-11-24 against result counts (package doc):
@@ -303,8 +315,12 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if b.Token != Token {
 		return nil, fmt.Errorf("dice: board token %q is not %q", b.Token, Token)
 	}
-	if b.Host != "" || b.Region != "" || b.MaxPostings != 0 || b.URL != "" || b.LinkPattern != "" {
-		return nil, fmt.Errorf("dice %q: host, region, max_postings, url and link_pattern do not apply", b.Token)
+	if b.Host != "" || b.Region != "" || b.URL != "" || b.LinkPattern != "" {
+		return nil, fmt.Errorf("dice %q: host, region, url and link_pattern do not apply", b.Token)
+	}
+	limit, err := capFor(b)
+	if err != nil {
+		return nil, fmt.Errorf("dice %q: %w", b.Token, err)
 	}
 	terms := b.SearchTerms()
 	if len(terms) == 0 {
@@ -327,7 +343,7 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	var rows []listed
 	have := map[string]bool{}
 	for _, term := range terms {
-		got, err := s.search(ctx, c, pace, b, term, q, bad, &st)
+		got, err := s.search(ctx, c, pace, b, term, q, limit, bad, &st)
 		if err != nil {
 			return nil, fmt.Errorf("dice %q: search %q: %w", b.Token, term, err)
 		}
@@ -337,9 +353,9 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 				rows = append(rows, r)
 			}
 		}
-		if len(rows) > MaxPostings {
+		if len(rows) > limit {
 			return nil, fmt.Errorf("dice %q: %w: the board's searches together list more than %d postings; narrow them with location, workplace_type or posted_within_days",
-				b.Token, srcutil.ErrTooManyPostings, MaxPostings)
+				b.Token, srcutil.ErrTooManyPostings, limit)
 		}
 	}
 	st.Listed = len(rows)
@@ -367,15 +383,16 @@ func shortfall(count int) int { return max(1, count/100) }
 // read) but never lower what page 1 promised: a later page answering a smaller
 // total, or none, must not end the walk with the rest unread (that would be a
 // truncated listing returned as whole, and its absent postings aged);
-// a first page counting more than MaxPostings fails the term before any
+// a first page counting more than the limit fails the term before any
 // further page. Rows shifted onto a page already read are dropped as repeats,
 // and a page that adds nothing while the total is unmet is ErrShape. A row
 // that cannot become a posting goes to bad (srcutil.Rows).
-func (s *source) search(ctx context.Context, c *mcphttp.Client, pace *srcutil.Pacer, b sources.Board, term string, q query, bad *srcutil.Rows, st *Stats) ([]listed, error) {
+func (s *source) search(ctx context.Context, c *mcphttp.Client, pace *srcutil.Pacer, b sources.Board, term string, q query, limit int, bad *srcutil.Rows, st *Stats) ([]listed, error) {
 	var out []listed
 	have := map[string]bool{}
 	read := 0
 	want, wantPages := 0, 0 // what page 1 promised
+	maxPages := limit/pageSize + 2
 	for page := 1; page <= maxPages; page++ {
 		if err := pace.Wait(ctx); err != nil {
 			return nil, err
@@ -398,9 +415,9 @@ func (s *source) search(ctx context.Context, c *mcphttp.Client, pace *srcutil.Pa
 			st.Matched += total
 			want, wantPages = total, pages
 		}
-		if total > MaxPostings {
+		if total > limit {
 			return nil, fmt.Errorf("%w: search matches %d postings, over the %d limit; narrow it with location, workplace_type or posted_within_days",
-				srcutil.ErrTooManyPostings, total, MaxPostings)
+				srcutil.ErrTooManyPostings, total, limit)
 		}
 		bad.Add(len(res.Data))
 		added := 0
