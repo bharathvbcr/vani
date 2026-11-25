@@ -61,9 +61,11 @@ Left:
   listed 22 with full descriptions in 30 s. Run once on the Mac:
   `VANI_NO_KEYCHAIN=1 vani run-once --list-only --no-digest --board zr:ziprecruiter --board dc:dice`.
 - **Adzuna not verified with a key.** No key could be given to the build session. Unknown: the
-  real 200 shape, a page past the end, whether `redirect_url`'s `v=` is stable across calls (if not,
-  stored links churn: list the same board twice and check `vani runs show` writes no field updates),
-  whether salaries are always annual, and the free tier's real limits. The first live run is the test.
+  real 200 shape, a page past the end, whether `redirect_url` carries a per-search token (an advert
+  already stored keeps its first link, `adzuna.Options.Stored`, so that cannot churn the ledger; an
+  old link that stops redirecting would show as a dead link), whether salaries are always annual,
+  whether `count` is exact (a walk may end within a hundredth of it, at least one; more fails the
+  board), and the free tier's real limits. The first live run is the test.
 - **Swift not compiled.** The build container has no Swift toolchain. Changed: `Drafting.swift`
   (`VaniConfig.hasAdzunaBoard`, the `adzuna-api-key` read and pass-through), `ScheduleAgent.swift`
   (restart when the first `ad` board is added), `Watchlist.swift` (board names), `JobRow.swift`,
@@ -81,14 +83,26 @@ Left:
   from `days_ago`; if ZipRecruiter rolls it over away from UTC midnight, it can move a day between
   runs (a field update, not a re-triage). Benefits are left out (they would re-triage on reorder).
   Without a `country` filter no pay line is written. Its terms footing is the weakest (docs/LEGAL.md).
-- **Dice `modifiedDate` churn unknown.** A changed `modifiedDate` costs a `get_job_details` re-read
-  (within `dice.MaxDetails`, 120 a run); how often it moves on unchanged postings is not measured.
+- **Dice re-reads on schedule only.** A stored Dice posting is re-read on its turn in the 30-day
+  refresh cycle, never because `modifiedDate` moved: the ledger keeps a posting's first `UpdatedAt`
+  when its text is unchanged (`refreshFields` ignores it), so a moved date would read as changed on
+  every later run. A Dice edit reaches the ledger within 30 days. SmartRecruiters compares the stored
+  posting's dates the same way (`releasedDate`), so it may re-read unchanged postings each run; not
+  measured, not changed here.
 - **Survivor ranking unchanged.** A job-board copy seen before the employer's own posting stays the
   survivor (true for `hm` and `ro` before this). Making an employer key always win is not safe as a
   one-line rule: an already-digested job-board survivor would leave the employer record live and
   digested twice, settled survivors could flip, and rule 1 (shared link) would disagree with rule 2
   (shared requisition id). A safe version applies only to non-terminal, unprotected job-board
   records, mirrors rule 1, and is tested against the identity oracle.
+- **Fable's review (2026-11-25), fixed before landing:** the Adzuna key could reach another host as
+  a redirect's Referer and that host's body could stand in for the listing (now an explicit
+  Referer, and an answer from any other address is refused, `adzuna.ErrRedirected`); one unreadable
+  row folded a windowed board as unreadable, which could turn a later clean read into a mass failure
+  (a windowed board now always folds as a window, warning about the rows); company-less adverts
+  counted as bad rows could fail an Adzuna board every run (now skipped and counted, `NoCompany`);
+  Dice and Adzuna let a later page's smaller total end a walk early (page 1's count now holds);
+  Adzuna failed whenever an advert was posted mid-walk (now tolerated within a hundredth, as Dice).
 - **Mass-held line on windowed boards.** While a windowed board's absent postings are held, the run's
   mass-held attention line names it, which for ZipRecruiter is most runs. Accurate, not a failure.
 - **Baseline failures as root.** In the build container (uid 0) these fail before and after the

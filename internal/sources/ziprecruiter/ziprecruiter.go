@@ -170,6 +170,8 @@ var (
 	// ErrStatus is a search_jobs result whose status is ERROR,
 	// UNSUPPORTED_CONSTRAINTS or UNSUPPORTED_COUNTRY.
 	ErrStatus = errors.New("ziprecruiter: search_jobs failed")
+	// errNoCompany is a row that names no employer (Stats.NoCompany).
+	errNoCompany = errors.New("ziprecruiter: the row names no company")
 )
 
 // Stats counts what one List did.
@@ -183,6 +185,9 @@ type Stats struct {
 	// Matched is the sum over the terms of the first call's meta.total, an
 	// estimate the server gives; informational only.
 	Matched int `json:"matched,omitempty"`
+	// NoCompany is rows that name no employer: they cannot be a posting and
+	// are skipped, not counted as unreadable.
+	NoCompany int `json:"no_company,omitempty"`
 	// Windowed is always true: a search serves at most 30 rows, so the
 	// listing is a window onto the board.
 	Windowed bool `json:"windowed,omitempty"`
@@ -341,6 +346,10 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	out := make([]posting.Posting, 0, len(listed))
 	for _, r := range listed {
 		p, err := r.posting(b, currency, seen)
+		if errors.Is(err, errNoCompany) {
+			st.NoCompany++
+			continue
+		}
 		if err != nil {
 			if ferr := rows.Bad(err); ferr != nil {
 				return nil, fmt.Errorf("ziprecruiter %q: %w", b.Token, ferr)
@@ -632,7 +641,7 @@ func (r row) posting(b sources.Board, currency string, seen time.Time) (posting.
 	}
 	company := fold(r.Company)
 	if company == "" {
-		return posting.Posting{}, fmt.Errorf("%w: listing %q has an empty company", ErrShape, lk)
+		return posting.Posting{}, fmt.Errorf("%w: listing %q", errNoCompany, lk)
 	}
 	page := JobPage + url.QueryEscape(lk)
 	if err := srcutil.CheckURL("job page", page); err != nil {

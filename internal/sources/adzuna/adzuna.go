@@ -155,7 +155,12 @@ var (
 	ErrAuth = errors.New("Adzuna refused the app id and key (AUTH_FAIL)")
 	// ErrShape is a response whose layout is not the documented one.
 	ErrShape = errors.New("adzuna: unexpected search response")
-	// ErrRequestBudget is a listing that would send more than MaxRequests.
+	// errNoCompany is a row that names no employer (Stats.NoCompany).
+	errNoCompany = errors.New("adzuna: the advert names no company")
+	// ErrRedirected is an answer from an address other than the one asked: a
+	// redirect the transport followed. The key went to no other host.
+	ErrRedirected = errors.New("adzuna: the API answered from another address (a redirect was followed); the answer is refused")
+	// ErrRequestBudget is a board that has sent MaxRequests requests.
 	ErrRequestBudget = errors.New("adzuna: the board's request budget is spent")
 )
 
@@ -173,6 +178,10 @@ type Stats struct {
 	// not the country's whole word, and a posting missing from it may only
 	// have aged out of the window.
 	Windowed bool `json:"windowed,omitempty"`
+	// NoCompany is rows that name no employer: they cannot be a posting and are
+	// skipped, not counted as unreadable (a job board's agency adverts often
+	// name none, and as bad rows they would fail the board past MaxGone).
+	NoCompany int `json:"no_company,omitempty"`
 }
 
 // Options configure the source (NewWith).
@@ -180,6 +189,12 @@ type Options struct {
 	// Credentials returns the app id and key, called once per List before any
 	// request. Nil, or an empty value, is ErrNoCredentials.
 	Credentials func(ctx context.Context) (appID, appKey string, err error)
+	// Stored, when set, returns the postings an earlier run stored for the
+	// board. A listed advert already stored keeps its stored link: Adzuna's
+	// redirect_url may carry a per-search token, and a link that changed on
+	// every run would write a field update for every posting every run
+	// (pipeline refreshFields compares URL and ApplyURL). Nil reuses nothing.
+	Stored func(b sources.Board) []posting.Posting
 	// Report, when set, receives a board's counts once per List that sent a
 	// request, whether the board then succeeded or failed.
 	Report func(sources.Board, Stats)
@@ -257,6 +272,19 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 	if err != nil {
 		return nil, sec.scrub(err)
 	}
+	if s.opt.Stored != nil {
+		keep := map[posting.Key]posting.Posting{}
+		for _, p := range s.opt.Stored(b) {
+			if p.URL != "" {
+				keep[p.Key] = p
+			}
+		}
+		for i := range out {
+			if p, ok := keep[out[i].Key]; ok {
+				out[i].URL, out[i].ApplyURL = p.URL, p.ApplyURL
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -274,8 +302,12 @@ func (s *source) list(ctx context.Context, kd *keyDoer, b sources.Board, terms [
 		rows.Add(len(got))
 		for _, r := range got {
 			p, err := r.posting(b, seen, kd.sec)
+			if errors.Is(err, errNoCompany) {
+				st.NoCompany++
+				continue
+			}
 			if err != nil {
-				if ferr := rows.Bad(err); ferr != nil {
+				if ferr := rows.Bad(kd.sec.scrub(err)); ferr != nil {
 					return nil, fmt.Errorf("adzuna %q: search %q: %w", b.Token, term, ferr)
 				}
 				continue
@@ -328,6 +360,13 @@ func credential(name, v string) (string, error) {
 		return "", fmt.Errorf("%w: the %s holds whitespace or a control character", ErrBadCredentials, name)
 	}
 	return v, nil
+}
+
+// CheckSearches is the search-term rules List applies, for config
+// validation, so a term the adapter would refuse is refused by `config check`.
+func CheckSearches(terms []string) error {
+	_, err := checkTerms(terms)
+	return err
 }
 
 func checkTerms(terms []string) ([]string, error) {
@@ -516,11 +555,21 @@ type row struct {
 // count is the latest word on a listing that changes while it is read: rows
 // shifted onto a page already read are dropped as repeats, and a page that
 // adds nothing while the count is unmet is ErrShape.
+// shortfall is how many of a search's counted adverts may be missing when its
+// pages end: a hundredth, at least one (an advert withdrawn mid-walk).
+func shortfall(count int) int { return max(1, count/100) }
+
 func search(ctx context.Context, d egress.Doer, country, term string, params url.Values, limit int) ([]row, int, error) {
 	var out []row
 	ids := map[string]bool{}
 	matched := 0
-	maxPages := limit/pageSize + 2
+	// Paging under sort_by=date shifts while it is read: an advert posted
+	// mid-walk repeats a row on the next page, one withdrawn skips one. A
+	// later page may raise the count but never lower what page 1 promised
+	// (a page answering a smaller count, or none, must not end the walk with
+	// the rest unread, which would be a truncated listing returned whole).
+	// The walk ends at the count, or at an empty page within shortfall of it.
+	maxPages := limit/pageSize + 3
 	for page := 1; page <= maxPages; page++ {
 		if err := ctx.Err(); err != nil {
 			return nil, matched, err
@@ -560,11 +609,18 @@ func search(ctx context.Context, d egress.Doer, country, term string, params url
 				return nil, matched, fmt.Errorf("%w: %w", ErrShape, err)
 			}
 		}
-		if len(out) >= count {
+		target := max(matched, count)
+		if len(out) >= target {
 			return out, matched, nil
 		}
+		if len(resp.Results) == 0 {
+			if target-len(out) <= shortfall(target) {
+				return out, matched, nil
+			}
+			return nil, matched, fmt.Errorf("%w: the search counts %d postings and its pages ended after %d", ErrShape, target, len(out))
+		}
 		if added == 0 {
-			return nil, matched, fmt.Errorf("%w: page %d added nothing with %d of %d read", ErrShape, page, len(out), count)
+			continue // a page of repeats only: the listing shifted under the walk
 		}
 	}
 	return nil, matched, fmt.Errorf("%w: listing did not end within %d pages", ErrShape, maxPages)
@@ -628,7 +684,7 @@ func (r row) posting(b sources.Board, seen time.Time, sec secrets) (posting.Post
 	}
 	company := htmltext.Text(j.Company.DisplayName, srcutil.MaxCompany)
 	if company == "" {
-		return posting.Posting{}, fmt.Errorf("%w: job %s names no company", ErrShape, r.id)
+		return posting.Posting{}, fmt.Errorf("%w: job %s", errNoCompany, r.id)
 	}
 	link, err := stableLink(j.RedirectURL, sec)
 	if err != nil {
@@ -784,6 +840,11 @@ func (k *keyDoer) Do(ctx context.Context, req *http.Request) (*http.Response, er
 	keyed.RawQuery += sep + "app_id=" + url.QueryEscape(k.id) + "&app_key=" + url.QueryEscape(k.key)
 	r := req.Clone(ctx)
 	r.URL = &keyed
+	// A redirect the transport follows would otherwise carry the keyed URL
+	// to its target as the Referer (net/http's refererForURL uses an explicit
+	// Referer in its place). The key itself never travels there: the
+	// redirected request's URL is the Location's.
+	r.Header.Set("Referer", "https://"+Host+"/")
 	resp, err := k.inner.Do(ctx, r)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -793,6 +854,16 @@ func (k *keyDoer) Do(ctx context.Context, req *http.Request) (*http.Response, er
 	}
 	if resp == nil {
 		return nil, nil
+	}
+	// The answer must come from the address asked: a redirect the transport
+	// followed to another host or path is refused, so no other host's body
+	// can stand in for Adzuna's listing (an empty one would age the board).
+	if fin := resp.Request; fin != nil && fin.URL != nil && (fin.URL.Scheme != "https" || fin.URL.Host != Host || fin.URL.Path != keyed.Path) {
+		if resp.Body != nil {
+			_, _ = io.CopyN(io.Discard, resp.Body, 64<<10)
+			resp.Body.Close()
+		}
+		return nil, ErrRedirected
 	}
 	resp.Request = req // the keyless request
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {

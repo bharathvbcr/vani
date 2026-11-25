@@ -63,7 +63,10 @@
 // every job and to cache what they read, so the detail step is SmartRecruiters'
 // bounded one (srcutil.PlanDetails, srcutil.DetailStep): a source from NewWith
 // reuses the postings an earlier run stored, re-reading one only when its
-// modifiedDate moved or its turn in the RefreshDays cycle comes; new rows
+// turn in the RefreshDays cycle comes (not when modifiedDate moves: the ledger
+// keeps a posting's first UpdatedAt when its text is unchanged, so a moved
+// date would read as changed on every later run, and Dice moves it often);
+// new rows
 // DropListed rejects from their listing row are never fetched; at most
 // MaxDetails detail calls go out per board per run, and new rows past that are
 // deferred to a later run and not returned (a summary-only posting would change
@@ -170,7 +173,7 @@ type Stats struct {
 	// Reused rows were returned as stored, with no call.
 	Reused int `json:"reused"`
 	// Fetched rows were new and got a detail call; Refreshed rows were stored
-	// and were re-read, on schedule or because modifiedDate moved.
+	// and were re-read on their turn in the refresh cycle.
 	Fetched   int `json:"fetched"`
 	Refreshed int `json:"refreshed,omitempty"`
 	// Prefiltered rows were new and dropped by DropListed without a call.
@@ -221,7 +224,7 @@ type source struct {
 func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now, wait: srcutil.Sleep} }
 
 // NewWith returns the source with the bounded detail step: stored postings are
-// reused (re-read when modifiedDate moves or their refresh turn comes), new
+// reused (re-read when their refresh turn comes), new
 // ones DropListed rejects are never fetched, and at most MaxDetails detail
 // calls go out per board per run.
 func NewWith(d egress.Doer, o Options) (sources.Source, error) {
@@ -359,8 +362,11 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 // shifts a later row up onto a page already read.
 func shortfall(count int) int { return max(1, count/100) }
 
-// search reads one term's pages, 1 to totalPages and never past it. Each
-// page's total is the latest word on a listing that changes while it is read;
+// search reads one term's pages, 1 to totalPages and never past it. A later
+// page's total and totalPages may grow (a listing that changes while it is
+// read) but never lower what page 1 promised: a later page answering a smaller
+// total, or none, must not end the walk with the rest unread (that would be a
+// truncated listing returned as whole, and its absent postings aged);
 // a first page counting more than MaxPostings fails the term before any
 // further page. Rows shifted onto a page already read are dropped as repeats,
 // and a page that adds nothing while the total is unmet is ErrShape. A row
@@ -369,6 +375,7 @@ func (s *source) search(ctx context.Context, c *mcphttp.Client, pace *srcutil.Pa
 	var out []listed
 	have := map[string]bool{}
 	read := 0
+	want, wantPages := 0, 0 // what page 1 promised
 	for page := 1; page <= maxPages; page++ {
 		if err := pace.Wait(ctx); err != nil {
 			return nil, err
@@ -389,6 +396,7 @@ func (s *source) search(ctx context.Context, c *mcphttp.Client, pace *srcutil.Pa
 		}
 		if page == 1 {
 			st.Matched += total
+			want, wantPages = total, pages
 		}
 		if total > MaxPostings {
 			return nil, fmt.Errorf("%w: search matches %d postings, over the %d limit; narrow it with location, workplace_type or posted_within_days",
@@ -421,15 +429,16 @@ func (s *source) search(ctx context.Context, c *mcphttp.Client, pace *srcutil.Pa
 				return nil, fmt.Errorf("%w: %w", ErrShape, err)
 			}
 		}
-		if read >= total {
+		target, lastPage := max(want, total), max(wantPages, pages)
+		if read >= target {
 			return out, nil
 		}
 		if added == 0 {
-			return nil, fmt.Errorf("%w: page %d added nothing with %d of %d read", ErrShape, page, read, total)
+			return nil, fmt.Errorf("%w: page %d added nothing with %d of %d read", ErrShape, page, read, target)
 		}
-		if page >= pages {
-			if total-read > shortfall(total) {
-				return nil, fmt.Errorf("%w: the search counts %d postings and its %d pages listed %d", errIncomplete, total, pages, read)
+		if page >= lastPage {
+			if target-read > shortfall(target) {
+				return nil, fmt.Errorf("%w: the search counts %d postings and its %d pages listed %d", errIncomplete, target, lastPage, read)
 			}
 			return out, nil
 		}
@@ -536,9 +545,8 @@ func (r listed) posting() posting.Posting {
 // details turns listed rows into postings, as SmartRecruiters' detail step
 // does. Without Options every row is fetched, and a board needing more than
 // MaxDetails fails. With Options the rows are planned by srcutil.PlanDetails: a
-// stored row is reused unless its turn has come or its modifiedDate moved; new
-// rows DropListed rejects are skipped; new rows are fetched first, then the
-// changed ones, then the scheduled ones, up to MaxDetails, and the new rows
+// stored row is reused unless its turn has come; new rows DropListed rejects
+// are skipped; new rows are fetched first, then the scheduled ones, up to MaxDetails, and the new rows
 // past it are deferred. Results keep listing order.
 func (s *source) details(ctx context.Context, c *mcphttp.Client, pace *srcutil.Pacer, b sources.Board, rows []listed, st *Stats) ([]posting.Posting, error) {
 	seen := s.now()
@@ -552,11 +560,9 @@ func (s *source) details(ctx context.Context, c *mcphttp.Client, pace *srcutil.P
 	}
 	plan := make([]srcutil.DetailRow, len(rows))
 	for i, r := range rows {
-		p, ok := stored[r.key]
+		_, ok := stored[r.key]
 		plan[i] = srcutil.DetailRow{ID: r.guid, Stored: ok, Unusable: ok && s.opt != nil && srcutil.Marked(s.opt.Unusable, r.key)}
-		if ok {
-			plan[i].Changed = !p.UpdatedAt.Equal(r.modified)
-		} else if s.opt != nil && s.opt.DropListed != nil {
+		if !ok && s.opt != nil && s.opt.DropListed != nil {
 			plan[i].Drop = s.opt.DropListed(r.posting())
 		}
 	}

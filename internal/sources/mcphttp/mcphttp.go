@@ -157,8 +157,8 @@ func (c *Client) Open(ctx context.Context) error {
 
 // Call runs tools/call for tool with args and decodes the result's
 // structuredContent into out. A tool that reports isError is a *ToolError; a
-// JSON-RPC error is an *RPCError; an HTTP failure is srcutil's error (a 404
-// is srcutil.ErrBoardNotFound, a 429 a *srcutil.RateLimitedError).
+// JSON-RPC error is an *RPCError; an HTTP failure is srcutil's error (a 429 is
+// a *srcutil.RateLimitedError), except a 404, which is ErrEndpointGone.
 func (c *Client) Call(ctx context.Context, tool string, args any, out any) error {
 	if !c.open {
 		return errors.New("mcphttp: Call before Open")
@@ -291,6 +291,7 @@ func response(raw []byte, id json.RawMessage, method string) (json.RawMessage, e
 	for _, m := range msgs {
 		var r struct {
 			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
 			Result json.RawMessage `json:"result"`
 			Error  *struct {
 				Code    int    `json:"code"`
@@ -300,8 +301,8 @@ func response(raw []byte, id json.RawMessage, method string) (json.RawMessage, e
 		if err := json.Unmarshal(m, &r); err != nil {
 			return nil, fmt.Errorf("%w: %s: %v", ErrProtocol, method, err)
 		}
-		if !bytes.Equal(bytes.TrimSpace(r.ID), id) {
-			continue
+		if r.Method != "" || !bytes.Equal(bytes.TrimSpace(r.ID), id) {
+			continue // a server's request or notification, or another response
 		}
 		if r.Error != nil {
 			return nil, &RPCError{Method: method, Code: r.Error.Code, Message: Clean(r.Error.Message)}

@@ -23,9 +23,10 @@ const (
 	adzunaNote = "Jobs by Adzuna (the Adzuna API, adzuna.com)."
 )
 
-// indeedScrape is the token of jobs ingested from Indeed's pages or through
-// skills/indeed-to-vani (cmd/vani scrapeToken of www.indeed.com).
-const indeedScrape = "www-indeed-com-scrape"
+// indeedScrape ends the token of jobs ingested from Indeed's pages or through
+// skills/indeed-to-vani (cmd/vani scrapeToken of www.indeed.com, or of
+// another Indeed host such as uk.indeed.com).
+const indeedScrape = "indeed-com-scrape"
 
 // SourceOf is k's Source: the job board behind a job-board key (hm, ro, zr,
 // dc, ad) or an Indeed batch, else the zero Source.
@@ -42,7 +43,7 @@ func SourceOf(k Key) Source {
 	case Adzuna:
 		return Source{Name: "Adzuna", Note: adzunaNote}
 	case Page:
-		if parts := strings.SplitN(string(k), ":", 3); len(parts) == 3 && parts[1] == indeedScrape {
+		if parts := strings.SplitN(string(k), ":", 3); len(parts) == 3 && (parts[1] == indeedScrape || strings.HasSuffix(parts[1], "-"+indeedScrape)) {
 			return Source{Name: "Indeed"}
 		}
 	}

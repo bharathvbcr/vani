@@ -122,14 +122,15 @@ func TestAdzunaBoard(t *testing.T) {
 		b    sources.Board
 		want string
 	}{
-		"unknown country":    {with(ad, func(b *sources.Board) { b.Token = "jp" }), "country codes"},
-		"upper-case country": {with(ad, func(b *sources.Board) { b.Token = "US" }), "country codes"},
-		"no search":          {with(ad, func(b *sources.Board) { b.Search = "" }), "needs at least one search"},
-		"contradiction":      {with(ad, func(b *sources.Board) { b.Filters["part_time"] = []string{"true"} }), "part_time"},
-		"two values":         {with(ad, func(b *sources.Board) { b.Filters["where"] = []string{"Austin", "Dallas"} }), "where"},
-		"bad age":            {with(ad, func(b *sources.Board) { b.Filters["max_days_old"] = []string{"0"} }), "max_days_old"},
-		"cap too high":       {with(ad, func(b *sources.Board) { b.MaxPostings = adzuna.MaxPostingsCeiling + 1 }), "max_postings"},
-		"cap negative":       {with(ad, func(b *sources.Board) { b.MaxPostings = -1 }), "max_postings"},
+		"unknown country":      {with(ad, func(b *sources.Board) { b.Token = "jp" }), "country codes"},
+		"upper-case country":   {with(ad, func(b *sources.Board) { b.Token = "US" }), "country codes"},
+		"no search":            {with(ad, func(b *sources.Board) { b.Search = "" }), "needs at least one search"},
+		"contradiction":        {with(ad, func(b *sources.Board) { b.Filters["part_time"] = []string{"true"} }), "part_time"},
+		"two values":           {with(ad, func(b *sources.Board) { b.Filters["where"] = []string{"Austin", "Dallas"} }), "where"},
+		"bad age":              {with(ad, func(b *sources.Board) { b.Filters["max_days_old"] = []string{"0"} }), "max_days_old"},
+		"cap too high":         {with(ad, func(b *sources.Board) { b.MaxPostings = adzuna.MaxPostingsCeiling + 1 }), "max_postings"},
+		"cap negative":         {with(ad, func(b *sources.Board) { b.MaxPostings = -1 }), "max_postings"},
+		"c1 control in search": {with(ad, func(b *sources.Board) { b.Search = "machine\u0085learning" }), "adzuna board"},
 	} {
 		if err := ValidBoard(bad.b); err == nil || !strings.Contains(err.Error(), bad.want) {
 			t.Errorf("%s: got %v, want an error containing %q", name, err, bad.want)

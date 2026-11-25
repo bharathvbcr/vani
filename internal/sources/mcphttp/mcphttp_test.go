@@ -273,6 +273,9 @@ func TestBadCallReplies(t *testing.T) {
 		}, isErr(ErrProtocol)},
 		{"stream with non-object data", func(string) srctest.Reply { return sseReply("data: [1,2]\n\n") }, isErr(ErrProtocol)},
 		{"response with neither", func(id string) srctest.Reply { return jsonReply(`{"jsonrpc":"2.0","id":` + id + `}`) }, isErr(ErrProtocol)},
+		{"only a server request reusing our id", func(id string) srctest.Reply {
+			return sseReply("data: {\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"ping\"}\n\n")
+		}, isErr(ErrProtocol)},
 		{"not found", func(string) srctest.Reply { return srctest.Reply{Status: 404} }, func(t *testing.T, err error) {
 			if !errors.Is(err, ErrEndpointGone) || errors.Is(err, srcutil.ErrBoardNotFound) {
 				t.Fatalf("err = %v, want ErrEndpointGone and not ErrBoardNotFound", err)
@@ -405,5 +408,19 @@ func TestClean(t *testing.T) {
 	}
 	if !bytes.Equal([]byte(Clean("")), nil) && Clean("") != "" {
 		t.Fatal("Clean of empty")
+	}
+}
+
+// A server's request that happens to reuse the client's id (a ping) is not the
+// response: it is skipped, and the response after it is read.
+func TestServerRequestWithOurIDIsSkipped(t *testing.T) {
+	s := &server{callReply: func(id string, _ map[string]any) srctest.Reply {
+		return sseReply("data: {\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"ping\"}\n\n" +
+			"data: {\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"structuredContent\":{\"rows\":[\"ok\"]}}}\n\n")
+	}}
+	c := open(t, s)
+	var o out
+	if err := c.Call(context.Background(), "t", nil, &o); err != nil || len(o.Rows) != 1 {
+		t.Fatalf("rows %v, err %v", o.Rows, err)
 	}
 }

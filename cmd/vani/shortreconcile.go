@@ -41,18 +41,24 @@ func (w *wired) boardFetchOf(b sources.Board) boardFetch {
 // full, or one restricted by recency) is reconciled by
 // pipeline.ReconcileWindow: what it leaves out is held the same way, but an
 // empty window is never a true mass absence, and since the window is the
-// board's design rather than a fault it is not warned about on each run. Rows
-// it could not read still win (ReconcileUnreadable), as on any board.
+// board's design rather than a fault it is not warned about on each run. A
+// windowed board's unreadable rows are warned about but do not change how it
+// is folded: the window already says nothing about what it leaves out, and
+// folding it as an unreadable listing would make a later clean read a mass
+// death (a failure) of postings that only left the window.
 func (w *wired) reconcileBoard(ctx context.Context, rec *pipeline.Reconciler, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
 	f := w.boardFetchOf(b)
+	if f.Windowed {
+		if f.BadRows > 0 {
+			w.warnf("board %s/%s: %d row(s) could not be read; the board's listing is a window, so what it leaves out is held and then closes as any posting that leaves the window does", b.ATS, b.Token, f.BadRows)
+		}
+		return rec.ReconcileWindow(ctx, b, listed, now)
+	}
 	if f.BadRows > 0 {
 		// Rows it could not read may be postings the ledger holds: this listing
 		// holds what it leaves out and kills none of it (ReconcileUnreadable).
 		w.warnf("board %s/%s: %d row(s) could not be read; folded as a full listing that holds every posting it leaves out and kills none of them", b.ATS, b.Token, f.BadRows)
 		return rec.ReconcileUnreadable(ctx, b, listed, now)
-	}
-	if f.Windowed {
-		return rec.ReconcileWindow(ctx, b, listed, now)
 	}
 	if short := f.Short; short > 0 {
 		w.warnf("board %s/%s: counted %d job(s) it did not list; folded as a full listing whose absent postings are held as a mass absence, not aged by the ordinary rule", b.ATS, b.Token, short)

@@ -1269,6 +1269,9 @@ func ValidBoard(b sources.Board) error {
 		if err := adzuna.CheckFilters(b.Filters); err != nil {
 			return fmt.Errorf("adzuna board %s: %w", b.Token, err)
 		}
+		if err := adzuna.CheckSearches(b.SearchTerms()); err != nil {
+			return fmt.Errorf("adzuna board %s: %w", b.Token, err)
+		}
 	}
 	if b.ATS == posting.Himalayas {
 		// The API reads one value of each filter: a second would be dropped

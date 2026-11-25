@@ -797,7 +797,6 @@ func TestBadRows(t *testing.T) {
 			"bad base64 key":      `{"listing_key":"not base64!` + rowstest.Index + `","title":"T","company":"C"}`,
 			"over-long key":       `{"listing_key":"` + strings.Repeat("A", 120) + rowstest.Index + `","title":"T","company":"C"}`,
 			"empty title":         `{"listing_key":"` + key("t") + rowstest.Index + `","title":"  ","company":"C"}`,
-			"empty company":       `{"listing_key":"` + key("c") + rowstest.Index + `","title":"T","company":"\t"}`,
 		},
 	})
 }
@@ -811,5 +810,20 @@ func TestNewWith(t *testing.T) {
 	}
 	if MaxPostings != 30*sources.MaxSearches {
 		t.Fatalf("MaxPostings %d", MaxPostings)
+	}
+}
+
+// A row that names no employer cannot be a posting: it is skipped and counted,
+// never a bad row, so it does not fail the board without a bad-row sink.
+func TestNoCompanyRowsAreSkippedNotBad(t *testing.T) {
+	f := &fake{t: t, call: func(args map[string]any) srctest.Reply {
+		rows := []string{zrRow(key("a"), "A"), strings.Replace(zrRow(key("b"), "B"), `"company":"Acme Corp"`, `"company":"  "`, 1)}
+		return result(page("OK", 2, rows))
+	}}
+	rep := &reports{}
+	b := board
+	got, err := newSource(t, f, nil, rep).List(context.Background(), b)
+	if err != nil || len(got) != 1 || rep.stats.NoCompany != 1 {
+		t.Fatalf("got %d postings, err %v, stats %+v; want 1, nil, NoCompany 1", len(got), err, rep.stats)
 	}
 }

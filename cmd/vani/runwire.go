@@ -331,6 +331,7 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 	// the board limits it by age (adzuna.Stats.Windowed).
 	adz, err := adzuna.NewWith(d, adzuna.Options{
 		Credentials: w.adzunaCredentials,
+		Stored:      storedFor,
 		Report:      func(b sources.Board, st adzuna.Stats) { w.noteBoardFetch(b, adzunaFetch(st)) },
 	})
 	if err != nil {

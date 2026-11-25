@@ -559,6 +559,7 @@ public struct DraftRunner: Sendable {
         // A job that calls no model gets no model key, workspace or decision key.
         var outcome = KeyOutcome.notRequested
         if usesModel, let failure = addKeys(to: &env, withDecisionKey: withDecisionKey, outcome: &outcome) { return .refused(failure) }
+        addAdzunaKey(to: &env, arguments: arguments)
         return .launch(Launch(program: program, arguments: argv, environment: env, decisionKey: outcome))
     }
 
@@ -682,18 +683,25 @@ public struct DraftRunner: Sendable {
                 outcome = .failed(String(describing: error))
             }
         }
-        // A run whose watchlist has an Adzuna board needs the owner's Adzuna app id and key, and
-        // a vani the app starts reads no Keychain (VANI_NO_KEYCHAIN). The item holds
-        // "APP_ID:APP_KEY". Its absence never refuses the launch: the Adzuna board fails that run
-        // with its own message, and every other board is read.
-        if withDecisionKey, keys != .noKey, VaniConfig.hasAdzunaBoard(configPath: configPath) {
-            env["VANI_NO_KEYCHAIN"] = "1"
-            if let pair = Self.adzunaPair(try? Self.bounded(adzunaKey, seconds: keychainTimeout)) {
-                env["VANI_ADZUNA_APP_ID"] = pair.id
-                env["VANI_ADZUNA_APP_KEY"] = pair.key
-            }
-        }
         return nil
+    }
+
+    /// The vani commands that read the watchlist's boards: only they are given the Adzuna
+    /// credentials (`run-request` asks the daemon, which already holds them).
+    static let boardReaders: Set<String> = ["daemon", "run-once"]
+
+    /// A run that reads boards, with an Adzuna board on the watchlist, gets the owner's Adzuna
+    /// app id and key: a vani the app starts reads no Keychain (VANI_NO_KEYCHAIN). The item
+    /// holds "APP_ID:APP_KEY". Its absence never refuses the launch: the Adzuna board fails that
+    /// run with its own message, and every other board is read. `.noKey` reads no item.
+    private func addAdzunaKey(to env: inout [String: String], arguments: [String]) {
+        guard keys != .noKey, let command = arguments.first, Self.boardReaders.contains(command),
+              VaniConfig.hasAdzunaBoard(configPath: configPath) else { return }
+        env["VANI_NO_KEYCHAIN"] = "1"
+        if let pair = Self.adzunaPair(try? Self.bounded(adzunaKey, seconds: keychainTimeout)) {
+            env["VANI_ADZUNA_APP_ID"] = pair.id
+            env["VANI_ADZUNA_APP_KEY"] = pair.key
+        }
     }
 
     /// The Adzuna item's "APP_ID:APP_KEY" split at the first colon, both halves trimmed, one

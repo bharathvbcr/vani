@@ -161,8 +161,8 @@ An `ad` board reads Adzuna's search API with the owner's own app id and key
 - both variables set win, and the Keychain is never read; one set without the other is an error;
 - else, unless `VANI_NO_KEYCHAIN` is set, the login Keychain item `adzuna-api-key` (one value,
   `APP_ID:APP_KEY`) is read and cached like a model key (`vault.AdzunaService`, in `ModelKey`'s table);
-- the Mac app reads the same item (`Keychain.adzunaService`) for a run or daemon it starts, only when
-  the watchlist has an `ad` board, and passes the two variables with `VANI_NO_KEYCHAIN=1`; a missing
+- the Mac app reads the same item (`Keychain.adzunaService`) for the commands that read boards
+  (`daemon`, `run-once`) it starts, only when the watchlist has an `ad` board, and passes the two variables with `VANI_NO_KEYCHAIN=1`; a missing
   or malformed item never refuses the launch, the `ad` board fails that run with its reason;
 - the adapter adds the id and key to the request inside its own `egress.Doer` wrapper, so no URL
   that srcutil, a log, a run record or an error sees carries them, and it scrubs every form of both

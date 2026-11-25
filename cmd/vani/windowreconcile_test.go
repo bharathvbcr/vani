@@ -38,9 +38,9 @@ func foldNotes(t *testing.T, w *wired, b sources.Board, listed []posting.Posting
 	return sum, warn.String()
 }
 
-// reconcileBoard picks the entry point from the board's fetch counts: rows it
-// could not read win over everything, a windowed listing is folded by
-// ReconcileWindow without a warning (the window is the board's design), a
+// reconcileBoard picks the entry point from the board's fetch counts: a
+// windowed listing is folded by ReconcileWindow (warned about only for rows it
+// could not read), rows it could not read win over everything else, a
 // short one by ReconcileShort with one, anything else by Reconcile. Which one
 // ran shows in the cause the absent posting carries.
 func TestReconcileBoardPicksTheWindowedPath(t *testing.T) {
@@ -50,12 +50,15 @@ func TestReconcileBoardPicksTheWindowedPath(t *testing.T) {
 		mass     bool   // Summary.Mass
 		warnWant string // "" means the run log must not name the board
 	}{
-		"complete":                      {cause: ""},
-		"short":                         {notes: []boardFetch{{Short: 3}}, cause: "short", mass: true, warnWant: "counted 3 job(s) it did not list"},
-		"windowed":                      {notes: []boardFetch{{Windowed: true, Short: 870}}, cause: "short"},
-		"windowed, nothing counted":     {notes: []boardFetch{{Windowed: true}}, cause: "short"},
-		"windowed with unreadable rows": {notes: []boardFetch{{Windowed: true, Short: 870}, {Short: 2, BadRows: 2}}, cause: "unreadable", mass: true, warnWant: "2 row(s) could not be read"},
-		"unreadable rows then windowed": {notes: []boardFetch{{Short: 2, BadRows: 2}, {Windowed: true, Short: 870}}, cause: "unreadable", mass: true, warnWant: "2 row(s) could not be read"},
+		"complete":                  {cause: ""},
+		"short":                     {notes: []boardFetch{{Short: 3}}, cause: "short", mass: true, warnWant: "counted 3 job(s) it did not list"},
+		"windowed":                  {notes: []boardFetch{{Windowed: true, Short: 870}}, cause: "short"},
+		"windowed, nothing counted": {notes: []boardFetch{{Windowed: true}}, cause: "short"},
+		// A window's unreadable rows are warned about, but the board is still
+		// folded as a window: held as short, never an unreadable mass mark.
+		"windowed with unreadable rows": {notes: []boardFetch{{Windowed: true, Short: 870}, {Short: 2, BadRows: 2}}, cause: "short", warnWant: "the board's listing is a window"},
+		"unreadable rows then windowed": {notes: []boardFetch{{Short: 2, BadRows: 2}, {Windowed: true, Short: 870}}, cause: "short", warnWant: "the board's listing is a window"},
+		"unreadable rows, not windowed": {notes: []boardFetch{{Short: 2, BadRows: 2}}, cause: "unreadable", mass: true, warnWant: "2 row(s) could not be read"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w, b, all, t0 := shortBoardSetup(t)

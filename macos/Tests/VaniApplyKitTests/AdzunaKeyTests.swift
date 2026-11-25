@@ -12,11 +12,11 @@ final class AdzunaKeyTests: XCTestCase {
         return url.path
     }
 
-    private func environment(_ cfg: String, adzuna: @escaping KeyLookup, withDecisionKey: Bool = true,
+    private func environment(_ cfg: String, adzuna: @escaping KeyLookup, command: [String] = ["daemon"], withDecisionKey: Bool = true,
                              keys: DraftRunner.KeySource = .anthropicAccount(nil)) throws -> [String: String] {
         let runner = DraftRunner(vaniBinary: try fakeVani(self), configPath: cfg, keys: keys,
                                  decisionKey: { nil }, adzunaKey: adzuna)
-        guard case let .launch(l) = runner.prepare(["daemon"], withDecisionKey: withDecisionKey) else {
+        guard case let .launch(l) = runner.prepare(command, withDecisionKey: withDecisionKey) else {
             XCTFail("launch refused"); return [:]
         }
         return l.environment
@@ -39,10 +39,15 @@ final class AdzunaKeyTests: XCTestCase {
         XCTAssertNil(env["VANI_ADZUNA_APP_KEY"])
     }
 
-    func testAJobWithoutTheDecisionKeyOrWithNoKeychainReadsNothing() throws {
+    /// Only the commands that read boards get the pair, with or without the decision key;
+    /// `.noKey` (the host's --no-keychain) reads no item.
+    func testOnlyBoardReadingRunsGetThePair() throws {
         let cfg = try config(#"[{"ats":"ad","token":"us"}]"#)
+        XCTAssertEqual(try environment(cfg, adzuna: { "i:k" }, command: ["run-once", "--list-only"], withDecisionKey: false)["VANI_ADZUNA_APP_KEY"], "k")
+        XCTAssertEqual(try environment(cfg, adzuna: { "i:k" }, withDecisionKey: false)["VANI_ADZUNA_APP_KEY"], "k")
         let never: KeyLookup = { XCTFail("read"); return "a:b" }
-        XCTAssertNil(try environment(cfg, adzuna: never, withDecisionKey: false)["VANI_ADZUNA_APP_KEY"])
+        XCTAssertNil(try environment(cfg, adzuna: never, command: ["suggest"])["VANI_ADZUNA_APP_KEY"])
+        XCTAssertNil(try environment(cfg, adzuna: never, command: ["run-request"])["VANI_ADZUNA_APP_KEY"])
         XCTAssertNil(try environment(cfg, adzuna: never, keys: .noKey)["VANI_ADZUNA_APP_KEY"])
     }
 

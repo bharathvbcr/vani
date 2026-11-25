@@ -312,6 +312,18 @@ func storedPosting(t *testing.T, guid string) posting.Posting {
 
 // notOnTurn is n guids, from start on, whose refresh turn is not today, so a
 // stored one is reused rather than re-read.
+// onTurn is n guids, from start on, whose refresh turn is today.
+func onTurn(start, n int) []string {
+	var out []string
+	day := srcutil.Day(fixedNow)
+	for i := start; len(out) < n; i++ {
+		if g := guidOf(i); srcutil.RefreshTurn(g, day) {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
 func notOnTurn(start, n int) []string {
 	var out []string
 	day := srcutil.Day(fixedNow)

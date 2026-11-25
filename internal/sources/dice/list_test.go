@@ -494,3 +494,24 @@ func TestToolArgumentsAreJSON(t *testing.T) {
 		t.Fatalf("detail call %s %s", c.Name, raw)
 	}
 }
+
+// A later page that counts fewer postings than page 1 promised, or none, does
+// not end the walk as if the listing were whole: the rows page 1 counted and
+// no page served are a truncated listing, and the board fails rather than
+// aging them.
+func TestALaterPageCannotShrinkTheListing(t *testing.T) {
+	f := newFake(t, map[string][]string{"ml": guids(0, 250)})
+	f.search = func(args map[string]any) (answer, bool) {
+		if int(args["page_number"].(float64)) < 2 {
+			return answer{}, false
+		}
+		return answer{sc: map[string]any{
+			"data":     []any{},
+			"metadata": map[string]any{"page": 2, "pageSize": 100, "total": 0, "totalPages": 0},
+		}}, true
+	}
+	got, err := src(f.doer(), &Options{}).List(context.Background(), diceBoard("ml"))
+	if err == nil {
+		t.Fatalf("got %d postings and no error; a page counting 0 after page 1's 250 ended the walk", len(got))
+	}
+}

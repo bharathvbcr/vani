@@ -785,15 +785,18 @@ func TestPagingAndDedupe(t *testing.T) {
 
 func TestShapeFailures(t *testing.T) {
 	for name, pages := range map[string][]string{
-		"page adds nothing":         {string(pageBody(60, rowsOf(0, 50))), string(pageBody(60, nil))},
-		"page only repeats":         {string(pageBody(60, rowsOf(0, 50))), string(pageBody(60, rowsOf(0, 10)))},
+		"page adds nothing": {string(pageBody(60, rowsOf(0, 50))), string(pageBody(60, nil))},
+		// A page of repeats moves on; the listing then ends 10 short of 60.
+		"page only repeats": {string(pageBody(60, rowsOf(0, 50))), string(pageBody(60, rowsOf(0, 10))), string(pageBody(60, nil))},
+		// Page 1 promised 120; page 2 answers a count of 0 and no rows.
+		"later count shrinks":       {string(pageBody(120, rowsOf(0, 50))), string(pageBody(0, nil))},
 		"count below rows":          {string(pageBody(2, rowsOf(0, 3)))},
 		"no count":                  {`{"results":[]}`},
 		"negative count":            {`{"count":-1,"results":[]}`},
 		"null results":              {`{"count":0,"results":null}`},
 		"results not a list":        {`{"count":1,"results":{}}`},
 		"other exception":           {`{"exception":"<script>"}`},
-		"repeats leave count unmet": {string(pageBody(2, []string{rowJSON("1"), rowJSON("1")})), string(pageBody(2, nil))},
+		"repeats leave count unmet": {string(pageBody(3, []string{rowJSON("1"), rowJSON("1")})), string(pageBody(3, nil))},
 	} {
 		t.Run(name, func(t *testing.T) {
 			i := 0
@@ -946,8 +949,6 @@ func TestBadRows(t *testing.T) {
 			return string(pageBody(n, rows))
 		},
 		BadRows: map[string]string{
-			"no company":       `{"id":"77` + rowstest.Index + `","title":"T","redirect_url":"https://www.adzuna.com/d/1"}`,
-			"blank company":    `{"id":"77` + rowstest.Index + `","title":"T","company":{"display_name":" <b></b> "},"redirect_url":"https://www.adzuna.com/d/1"}`,
 			"empty title":      `{"id":"77` + rowstest.Index + `","title":"<strong></strong>","company":{"display_name":"C"},"redirect_url":"https://www.adzuna.com/d/1"}`,
 			"letters id":       `{"id":"abc` + rowstest.Index + `","title":"T","company":{"display_name":"C"},"redirect_url":"https://www.adzuna.com/d/1"}`,
 			"long id":          `{"id":"123456789012345678901` + rowstest.Index + `","title":"T","company":{"display_name":"C"},"redirect_url":"https://www.adzuna.com/d/1"}`,
@@ -1101,5 +1102,80 @@ func TestNewDefaults(t *testing.T) {
 	s2, _ := NewWith(nil, Options{Credentials: creds})
 	if _, err := s2.List(context.Background(), board); err == nil {
 		t.Fatal("a nil Doer listed")
+	}
+}
+
+// An advert that names no employer cannot be a posting: it is skipped and
+// counted, never a bad row, so a board of agency adverts is not failed past
+// MaxGone, with or without a bad-row sink.
+func TestNoCompanyRowsAreSkippedNotBad(t *testing.T) {
+	var st Stats
+	d := pager(t, func(string) int { return 10 }, func(_ string, i int) string {
+		if i%2 == 0 {
+			return `{"id":"` + idFor(i) + `","title":"Role","redirect_url":"https://www.adzuna.com/d/1","company":{"display_name":"  "}}`
+		}
+		return rowJSON(idFor(i))
+	})
+	got, err := newSource(t, d, Options{Report: func(_ sources.Board, s Stats) { st = s }}).List(context.Background(), board)
+	if err != nil || len(got) != 5 || st.NoCompany != 5 {
+		t.Fatalf("got %d postings, err %v, stats %+v; want 5, nil, NoCompany 5", len(got), err, st)
+	}
+}
+
+// Paging under sort_by=date shifts while it is read: an advert posted
+// mid-walk repeats a row on the next page and adds one at the end, one
+// withdrawn leaves the walk one short. Both are kept, as a whole listing.
+func TestPagingToleratesAListingThatShiftsMidWalk(t *testing.T) {
+	for name, pages := range map[string][]string{
+		"one posted mid-walk":    {string(pageBody(60, rowsOf(0, 50))), string(pageBody(61, rowsOf(49, 61))), string(pageBody(61, nil))},
+		"one withdrawn mid-walk": {string(pageBody(60, rowsOf(0, 50))), string(pageBody(59, rowsOf(51, 60))), string(pageBody(59, nil))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			i := 0
+			d := srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+				wire(t, r)
+				if i >= len(pages) {
+					t.Errorf("request %d beyond the script", i+1)
+					return srctest.Reply{Status: 500}, true
+				}
+				i++
+				return srctest.Reply{Status: 200, Body: []byte(pages[i-1])}, true
+			})
+			got, err := newSource(t, d, Options{}).List(context.Background(), board)
+			if err != nil || len(got) < 59 {
+				t.Fatalf("got %d postings, %v", len(got), err)
+			}
+		})
+	}
+}
+
+// An advert already stored keeps its stored link, whatever token the listing's
+// redirect_url carries this time, so a relist writes no field update.
+func TestStoredAdvertKeepsItsLink(t *testing.T) {
+	call := 0
+	d := srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+		wire(t, r)
+		call++
+		row := strings.Replace(rowJSON(idFor(1)), "?v=H", fmt.Sprintf("?se=run%d&v=H", call), 1)
+		return srctest.Reply{Status: 200, Body: pageBody(2, []string{row, rowJSON(idFor(2))})}, true
+	})
+	first, err := newSource(t, d, Options{}).List(context.Background(), board)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("first: %d %v", len(first), err)
+	}
+	stored := func(sources.Board) []posting.Posting { return first }
+	again, err := newSource(t, d, Options{Stored: stored}).List(context.Background(), board)
+	if err != nil || len(again) != 2 {
+		t.Fatalf("again: %d %v", len(again), err)
+	}
+	for i := range again {
+		if again[i].URL != first[i].URL || again[i].ApplyURL != first[i].ApplyURL {
+			t.Fatalf("posting %d link moved: %q -> %q", i, first[i].URL, again[i].URL)
+		}
+	}
+	// Without the stored postings the new token would have moved the link.
+	fresh, _ := newSource(t, d, Options{}).List(context.Background(), board)
+	if fresh[0].URL == first[0].URL {
+		t.Fatal("the test's token did not change the link; it proves nothing")
 	}
 }

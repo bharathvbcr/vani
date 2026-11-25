@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
@@ -81,7 +80,11 @@ func TestRefreshTurnRereads(t *testing.T) {
 	}
 }
 
-func TestModifiedDateChangeRefetches(t *testing.T) {
+// A moved modifiedDate alone is no reason to call get_job_details: the
+// ledger keeps a posting's first UpdatedAt when its text is unchanged, so a
+// moved date would read as changed on every later run and spend a detail call
+// each time. Stored postings are re-read on their refresh turn only.
+func TestModifiedDateAloneDoesNotRefetch(t *testing.T) {
 	gs := notOnTurn(0, 3)
 	f := newFake(t, map[string][]string{"ml": gs})
 	f.edit = func(g string, row map[string]any) {
@@ -90,26 +93,34 @@ func TestModifiedDateChangeRefetches(t *testing.T) {
 		}
 	}
 	var st Stats
+	for run := range 2 {
+		got, err := src(f.doer(), &Options{Stored: storedOf(t, gs...), Report: func(_ sources.Board, x Stats) { st = x }}).List(context.Background(), diceBoard("ml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids := f.detailIDs(); len(ids) != 0 || st.Refreshed != 0 || st.Reused != 3 || len(got) != 3 {
+			t.Fatalf("run %d: details %v, stats %+v", run, ids, st)
+		}
+	}
+}
+
+// A stored posting on its refresh turn is re-read.
+func TestRefreshTurnRereadsAStoredPosting(t *testing.T) {
+	gs := append(onTurn(0, 1), notOnTurn(0, 2)...)
+	f := newFake(t, map[string][]string{"ml": gs})
+	var st Stats
 	got, err := src(f.doer(), &Options{Stored: storedOf(t, gs...), Report: func(_ sources.Board, x Stats) { st = x }}).List(context.Background(), diceBoard("ml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ids := f.detailIDs(); len(ids) != 1 || ids[0] != gs[1] || st.Refreshed != 1 || st.Reused != 2 {
+	if ids := f.detailIDs(); len(ids) != 1 || ids[0] != gs[0] || st.Refreshed != 1 || st.Reused != 2 || !strings.Contains(got[0].Description, "About role") {
 		t.Fatalf("details %v, stats %+v", ids, st)
-	}
-	if !got[1].UpdatedAt.Equal(time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)) || !strings.Contains(got[1].Description, "About role") {
-		t.Fatalf("refetched posting %+v", got[1])
 	}
 }
 
 func TestStoredTransientMissReturnsStored(t *testing.T) {
-	gs := notOnTurn(0, 3)
+	gs := append(onTurn(0, 1), notOnTurn(0, 2)...)
 	f := newFake(t, map[string][]string{"ml": gs})
-	f.edit = func(g string, row map[string]any) {
-		if g == gs[0] {
-			row["modifiedDate"] = "2026-11-24T08:00:00Z"
-		}
-	}
 	f.detail = func(string) (answer, bool) { return answer{raw: &srctest.Reply{Err: timeoutErr{}}}, true }
 	var st Stats
 	got, err := src(f.doer(), &Options{Stored: storedOf(t, gs...), Report: func(_ sources.Board, x Stats) { st = x }}).List(context.Background(), diceBoard("ml"))
