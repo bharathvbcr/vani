@@ -261,6 +261,43 @@ func TestShapeFailures(t *testing.T) {
 	}
 }
 
+// Jobs closing mid-walk leave an empty trailing page just shy of totalCount:
+// within 1% shortfall (at least 1) is kept; anything larger or a non-empty
+// repeating page is still ErrShape.
+func TestSmallShortfallOnEmptyTrailingPage(t *testing.T) {
+	serve := func(total, listed int, trailingDup bool) *srctest.Doer {
+		return srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+			u, _ := url.Parse(r.URL)
+			p, _ := strconv.Atoi(u.Query().Get("page"))
+			start := (p - 1) * pageSize
+			if start >= listed {
+				if trailingDup && listed > 0 {
+					return srctest.Reply{Status: 200, Body: []byte(page(total, []string{row("0")}))}, true
+				}
+				return srctest.Reply{Status: 200, Body: []byte(page(total, nil))}, true
+			}
+			end := min(listed, start+pageSize)
+			var rows []string
+			for i := start; i < end; i++ {
+				rows = append(rows, row(strconv.Itoa(i)))
+			}
+			return srctest.Reply{Status: 200, Body: []byte(page(total, rows))}, true
+		})
+	}
+	// 2 missing of 205 (within shortfall(205)=2): kept.
+	if got, err := withDoer(serve(205, 203, false)).List(context.Background(), board); err != nil || len(got) != 203 {
+		t.Fatalf("2 missing of 205: got %d postings, err %v; want 203", len(got), err)
+	}
+	// 3 missing of 205 (past shortfall(205)=2): ErrShape.
+	if _, err := withDoer(serve(205, 202, false)).List(context.Background(), board); !errors.Is(err, ErrShape) {
+		t.Fatalf("3 missing of 205: err = %v, want ErrShape", err)
+	}
+	// Duplicate non-empty trailing page even when within shortfall: ErrShape.
+	if _, err := withDoer(serve(205, 203, true)).List(context.Background(), board); !errors.Is(err, ErrShape) {
+		t.Fatalf("repeating trailing page: err = %v, want ErrShape", err)
+	}
+}
+
 func TestEmptySearchIsAnEmptyBoard(t *testing.T) {
 	d := srctest.New(map[string]srctest.Reply{page1: {Status: 200, Body: []byte(page(0, nil))}})
 	got, err := withDoer(d).List(context.Background(), board)

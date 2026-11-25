@@ -169,7 +169,7 @@ var (
 	guidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	// rateLimitRE finds an upstream 429 in a tool error's text. A guid cannot
 	// match: its hex groups are four or more characters long.
-	rateLimitRE = regexp.MustCompile(`\b429\b|(?i:too many requests)`)
+	rateLimitRE = regexp.MustCompile(`\b429\b|(?i:too many requests|rate limit exceeded)`)
 	notFoundRE  = regexp.MustCompile(`(?i)\bjob not found\b`)
 )
 

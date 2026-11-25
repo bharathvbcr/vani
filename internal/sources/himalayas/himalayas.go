@@ -71,6 +71,10 @@ func capFor(b sources.Board) (int, error) {
 	return b.MaxPostings, nil
 }
 
+// shortfall is how many rows of a counted query may be missing when the API's
+// last page ends empty (jobs closed mid-walk): a hundredth, at least one.
+func shortfall(count int) int { return max(1, count/100) }
+
 // ErrShape is a response whose layout is not the one this source knows.
 var ErrShape = errors.New("himalayas: unexpected search response")
 
@@ -238,6 +242,9 @@ func (s *source) search(ctx context.Context, pace *srcutil.Pacer, term string, f
 			}
 		}
 		if len(out) >= total {
+			return out, nil
+		}
+		if len(resp.Jobs) == 0 && total-len(out) <= shortfall(total) {
 			return out, nil
 		}
 		if added == 0 {

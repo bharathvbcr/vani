@@ -283,6 +283,13 @@ func TestRateLimitedSearch(t *testing.T) {
 	if rl.Status == nil || rl.Status.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %v", rl.Status)
 	}
+	f2 := newFake(t, map[string][]string{"ml": guids(0, 3)})
+	f2.search = func(map[string]any) (answer, bool) {
+		return answer{toolErr: "Rate limit exceeded: 1000 requests per 1 minutes for client: anonymous"}, true
+	}
+	if _, err := src(f2.doer(), nil).List(context.Background(), diceBoard("ml")); !errors.Is(err, srcutil.ErrRateLimited) {
+		t.Fatalf("rate limit exceeded err = %v, want ErrRateLimited", err)
+	}
 }
 
 func TestRateLimitedDetail(t *testing.T) {
