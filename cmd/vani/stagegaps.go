@@ -5,8 +5,10 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/adzuna"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/dice"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/jobvite"
@@ -17,6 +19,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/talentbrew"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
+	"github.com/bharathvbcr/Vani/internal/sources/ziprecruiter"
 )
 
 // explain modes (explainNote.Mode). A list-only pass still warns and does not
@@ -132,6 +135,25 @@ type boardFetch struct {
 	BadRows int
 	// Short is rows the board counted but did not list (workday.Stats.Short).
 	Short int
+	// Windowed says the board's listing is a window by design, not its whole
+	// word: a search that can never be listed in full (a job board serving at
+	// most a page of the rows a search matches) or one restricted by recency
+	// (posted in the last N days), so a still-open posting ages out of it. Its
+	// absence means "not in this window", not "closed": reconcileBoard folds it
+	// with pipeline.ReconcileWindow, says nothing about it per run, and the
+	// rows it did not list are not a shortfall (shortfall). An adapter reports
+	// it through its Stats, as it does Short.
+	Windowed bool
+}
+
+// shortfall is the rows f's board failed to list: Short, except on a windowed
+// board, whose unlisted rows are its design and whose only shortfall is the
+// rows it could not read (BadRows, which Short includes).
+func (f boardFetch) shortfall() int {
+	if f.Windowed {
+		return min(f.BadRows, f.Short)
+	}
+	return f.Short
 }
 
 type boardKey struct {
@@ -148,6 +170,18 @@ func fetchKey(ats posting.ATS, token string) boardKey {
 // (TestAdapterStatsReachTheBoardFetch) rather than an inline closure.
 func workdayFetch(st workday.Stats) boardFetch {
 	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Short: st.Short, Unanswered: st.Unanswered}
+}
+
+func diceFetch(st dice.Stats) boardFetch {
+	return boardFetch{Deferred: st.Deferred, Gone: st.Gone, Prefiltered: st.Prefiltered, Unanswered: st.Unanswered, Windowed: st.Windowed}
+}
+
+func adzunaFetch(st adzuna.Stats) boardFetch {
+	return boardFetch{Windowed: st.Windowed}
+}
+
+func zipRecruiterFetch(st ziprecruiter.Stats) boardFetch {
+	return boardFetch{Windowed: st.Windowed}
 }
 
 func smartRecruitersFetch(st smartrecruiters.Stats) boardFetch {
@@ -194,10 +228,11 @@ func ibmFetch(st ibm.Stats) boardFetch { return boardFetch{Short: st.Short} }
 
 // noteBoardFetch keeps one board's fetch counts. A second report for the same
 // board adds; the first pay error is the one kept. A listing that counted rows
-// it did not list (Short) is said in the run log too.
+// it did not list (Short) is said in the run log too, unless it is a window by
+// design (Windowed): then only rows it could not read are a shortfall.
 func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
-	if f.Short > 0 {
-		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings it left out are held as a mass absence, not aged by the ordinary rule", b.ATS, b.Token, f.Short)
+	if short := f.shortfall(); short > 0 {
+		w.warnf("board %s/%s: listed %d job(s) fewer than it counts; the listing is kept, and stored postings it left out are held as a mass absence, not aged by the ordinary rule", b.ATS, b.Token, short)
 	}
 	if f.PayError != "" {
 		f.PayError = oneLine(f.PayError, maxStageNote)
@@ -217,6 +252,7 @@ func (w *wired) noteBoardFetch(b sources.Board, f boardFetch) {
 	prev.Short += f.Short
 	prev.BadRows += f.BadRows
 	prev.Unanswered += f.Unanswered
+	prev.Windowed = prev.Windowed || f.Windowed
 	if prev.PayError == "" {
 		prev.PayError = f.PayError
 	}
@@ -241,14 +277,15 @@ func (w *wired) applyFetchesLocked(rep *boardsReport) {
 		// read and reconciled; an adapter may report them before a detail
 		// fails the board, so a board that did not read keeps none.
 		if it.Outcome != boardRead {
-			f.Short = 0
+			f.Short, f.Windowed = 0, false
 		}
 		it.Deferred = f.Deferred
 		it.PayFailed = f.PayFailed
 		it.PaySkipped = f.PaySkipped
 		it.Gone = f.Gone
 		it.Prefiltered = f.Prefiltered
-		it.Short = f.Short
+		it.Short = f.shortfall()
+		it.Windowed = f.Windowed
 		it.Unanswered = f.Unanswered
 		it.PayError = f.PayError
 		addFetch(rep, f)
@@ -270,7 +307,10 @@ func addFetch(rep *boardsReport, f boardFetch) {
 	rep.PaySkipped += f.PaySkipped
 	rep.Gone += f.Gone
 	rep.Prefiltered += f.Prefiltered
-	rep.Short += f.Short
+	rep.Short += f.shortfall()
+	if f.Windowed {
+		rep.Windowed++
+	}
 	rep.Unanswered += f.Unanswered
 	if rep.PayError == "" {
 		rep.PayError = f.PayError

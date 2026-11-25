@@ -925,6 +925,9 @@ func boardFetchSummary(b *boardsReport) string {
 	if b.Short > 0 {
 		parts = append(parts, fmt.Sprintf("%d counted but not listed", b.Short))
 	}
+	if b.Windowed > 0 {
+		parts = append(parts, fmt.Sprintf("%d windowed search(es) (listed in part by design: postings out of the window are held, then closed as expected)", b.Windowed))
+	}
 	return strings.Join(parts, ", ")
 }
 

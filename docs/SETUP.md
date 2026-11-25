@@ -290,7 +290,28 @@ Add boards with `vani watchlist add --ats CODE --token T --company 'Name' --allo
 | `sr`, `ds`, `at`, `rp`, `wk`, `mn` | SmartRecruiters, D. E. Shaw, Atlassian, Rippling, Workable, Manatal | Slug `--token`; `sr` accepts repeatable `--filter country=us` (2-letter ISO code) |
 | `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb` | Recruitee, Pinpoint, BambooHR, Personio, Breezy HR, Teamtailor, HireHive, HiBob | Lower-case subdomain `--token` (e.g. `acme` for `acme.recruitee.com`) |
 | `hm`, `ro` | Himalayas, Remote OK (job boards: one listing, many employers, remote roles) | `hm` requires `--token himalayas` and at least one `--search`, and takes `--filter country=US`, `seniority=Senior` and `employment_type=Full Time`, one value each. A board whose searches match over 1,000 jobs fails, so narrow it. `ro` requires `--token remoteok` and takes no search (one request lists about 100 recent jobs). Terms: docs/LEGAL.md |
+| `zr`, `dc` | ZipRecruiter, Dice (job boards read through their own job-search MCP servers, no sign-in) | Require `--token ziprecruiter` / `--token dice` and at least one `--search`; one board each. `zr` takes `--filter location=…` (one), `country=US` or `CA` (set it: without it pay is not shown, as the row names no currency), `radius_miles=N`, `posted_within_days=N` (1..30), `location_type=physical\|remote\|hybrid`, `employment_type=full_time\|part_time\|contract\|…`, `seniority=no_experience\|junior\|mid\|senior`. A ZipRecruiter search reaches only 10 to 30 rows and carries no job description, so its rows rank on title, pay and role alone. `dc` takes `location=…` (one; "Remote" is ignored by Dice, use `workplace_type=remote`), `radius_miles=N` (needs `location`), `posted_within_days=1\|3\|7`, `workplace_type=remote\|on-site\|hybrid`, `employment_type=fulltime\|contracts\|parttime\|third_party\|internship`, `employer_type=direct_hire\|recruiter\|other`, `sponsorship=true`; a board whose searches match over 1,000 jobs fails, so narrow it; Dice reads each new posting's full description, at most 120 a run. Both are *windowed* when they cannot be listed whole (zr always, dc with `posted_within_days`): a posting that leaves the window is held 14 days, then closes as an expected closure. Terms: docs/LEGAL.md |
+| `ad` | Adzuna (job search across many sites, with your own free API key) | `--token` is the country Adzuna searches (`us`, `gb`, `in`, `ca`, … one board per country); at least one `--search`. Filters, one value each: `where`, `distance_km` (needs `where`), `max_days_old`, `category`, `salary_min`, `full_time`/`part_time`/`permanent`/`contract` `=true`, `what_exclude`, `company`. Over 500 matches fails the board (`max_postings` in config.json sets 1..1000; a lower cap spends fewer of the free tier's requests, 50 rows each). Needs the Adzuna app id and key: see **Adzuna key** below. Descriptions are Adzuna's 500-character snippets |
 | `fd`, `pg` | XML feed, generic careers page | Short slug `--token` + `--url`; `pg` also requires `--link-pattern RE` |
+
+**Adzuna key.** Register at developer.adzuna.com (free; permitted for personal job search) and keep the
+app id and key either in the environment (`VANI_ADZUNA_APP_ID` and `VANI_ADZUNA_APP_KEY`, both) or in
+the login Keychain as one item, `APP_ID:APP_KEY`, without putting it in shell history:
+
+```bash
+security add-generic-password -U -a LOGINNAME -s adzuna-api-key -T $CODE_ROOT/apps/Vani/build/vani -w
+```
+
+A `vani` you start reads that item (unless `VANI_NO_KEYCHAIN=1`); the Mac app reads it itself and
+passes the two variables to the runs and the daemon it starts, when the watchlist has an `ad` board
+(adding the first `ad` board restarts the daemon). The key is sent only to `api.adzuna.com` and is
+never written to a log, a run record or an error. `vani config check` notes an `ad` board with
+neither variable set. Without a key the `ad` board fails each run with that reason; the other boards
+are read.
+
+**Indeed** has no board: its job search is a connector that only Claude can use (it signs in with your
+Indeed account). `skills/indeed-to-vani` has a Claude session search Indeed through it and hand the
+jobs to `vani jobs ingest`; run it when you want Indeed jobs. LinkedIn has no such route.
 
 ```bash
 $CODE_ROOT/apps/Vani/build/vani watchlist add --ats gh --token BOARD --company 'Name' --allow-host

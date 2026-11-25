@@ -8,11 +8,14 @@ import (
 
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/adzuna"
+	"github.com/bharathvbcr/Vani/internal/sources/dice"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
+	"github.com/bharathvbcr/Vani/internal/sources/ziprecruiter"
 )
 
 // A board that listed fewer jobs than it counts (workday.Stats.Short) carries
@@ -68,6 +71,10 @@ func TestAdapterStatsReachTheBoardFetch(t *testing.T) {
 		"smartrecruiters": {smartRecruitersFetch(smartrecruiters.Stats{Deferred: 2, Gone: 3, Short: 5}), boardFetch{Deferred: 2, Gone: 3, Short: 5}},
 		"oraclehcm":       {oracleFetch(oraclehcm.Stats{Deferred: 2, Gone: 3, Short: 5}), boardFetch{Deferred: 2, Gone: 3, Short: 5}},
 		"ibm":             {ibmFetch(ibm.Stats{Listed: 9, Short: 5}), boardFetch{Short: 5}},
+		"dice":            {diceFetch(dice.Stats{Listed: 9, Deferred: 2, Gone: 3, Prefiltered: 4, Unanswered: 1, Windowed: true}), boardFetch{Deferred: 2, Gone: 3, Prefiltered: 4, Unanswered: 1, Windowed: true}},
+		"adzuna windowed": {adzunaFetch(adzuna.Stats{Listed: 40, Windowed: true}), boardFetch{Windowed: true}},
+		"adzuna whole":    {adzunaFetch(adzuna.Stats{Listed: 40}), boardFetch{}},
+		"ziprecruiter":    {zipRecruiterFetch(ziprecruiter.Stats{Listed: 30, Matched: 900, Windowed: true}), boardFetch{Windowed: true}},
 		"workable":        {workableFetch(workable.Stats{Deferred: 2, Gone: 3, Prefiltered: 4, Unanswered: 1}), boardFetch{Deferred: 2, Gone: 3, Prefiltered: 4, Unanswered: 1}},
 	} {
 		if tc.got != tc.want {

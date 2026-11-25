@@ -24,6 +24,8 @@ func sightingKind(t *testing.T, l ledger.Ledger, s *PendingReopens, p DropPolicy
 		sum, err = rc.ReconcileShort(ctx, board, ps, at)
 	case shortUnreadable:
 		sum, err = rc.ReconcileUnreadable(ctx, board, ps, at)
+	case shortWindow:
+		sum, err = rc.ReconcileWindow(ctx, board, ps, at)
 	default:
 		sum, err = rc.Reconcile(ctx, board, ps, at)
 	}
@@ -36,12 +38,13 @@ func sightingKind(t *testing.T, l ledger.Ledger, s *PendingReopens, p DropPolicy
 // A pending reopen expires on 14 days of read time in which the board's listing
 // left the posting out. A listing that is short of its count, or skipped rows
 // it could not read, cannot say the posting is gone (it may be the row it could
-// not read, or one it did not list), so it counts nothing: a dropped posting
+// not read, or one it did not list), and neither can a windowed one (a search
+// a posting ages out of while still open), so it counts nothing: a dropped posting
 // hidden behind an unreadable row must stay pending, not expire and stay
 // dropped. Only a clean full listing counts. Title, model and exclusion entries
 // alike.
 func TestOnlyACleanFullListingCountsTowardPendingReopenExpiry(t *testing.T) {
-	for name, kind := range map[string]shortKind{"short": shortCounted, "unreadable": shortUnreadable} {
+	for name, kind := range map[string]shortKind{"short": shortCounted, "unreadable": shortUnreadable, "window": shortWindow} {
 		t.Run(name, func(t *testing.T) {
 			l := openLedger(t)
 			s := NewPendingReopens()
@@ -93,7 +96,7 @@ func TestOnlyACleanFullListingCountsTowardPendingReopenExpiry(t *testing.T) {
 // board that is short on every run still lets a drop back when the listing
 // shows the posting.
 func TestPendingReopenStillAppliesWhenAShortOrSkippedRowListingShowsThePosting(t *testing.T) {
-	for name, kind := range map[string]shortKind{"short": shortCounted, "unreadable": shortUnreadable} {
+	for name, kind := range map[string]shortKind{"short": shortCounted, "unreadable": shortUnreadable, "window": shortWindow} {
 		t.Run(name, func(t *testing.T) {
 			l := openLedger(t)
 			k := excludedDrop(t, l, "1", "London", excludeLocation("London"))

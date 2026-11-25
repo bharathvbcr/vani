@@ -22,15 +22,21 @@ const (
 	GeminiService = "gemini-api-key"
 )
 
+// AdzunaService holds the owner's Adzuna API credentials as one item,
+// "APP_ID:APP_KEY" (cmd/vani adzunaCredentials; docs/SETUP.md). It is not a
+// model key, but it is read the same way, so ModelKey's table names it.
+const AdzunaService = "adzuna-api-key"
+
 // ModelKeyTimeout bounds one model-key read: long enough to answer the
 // Keychain's access prompt, short enough that an unanswered prompt cannot hold
 // a run.
 const ModelKeyTimeout = 60 * time.Second
 
-// modelServices lists the only services ModelKey reads. Anthropic's key is not
-// here: the app reaches it through anthropic-account, which picks the Console
-// workspace a direct read would bypass.
-var modelServices = []string{OpenRouterService, SubQService, GeminiService}
+// modelServices lists the only services ModelKey reads: the model keys and the
+// Adzuna API credentials. Anthropic's key is not here: the app reaches it
+// through anthropic-account, which picks the Console workspace a direct read
+// would bypass.
+var modelServices = []string{OpenRouterService, SubQService, GeminiService, AdzunaService}
 
 var (
 	// ErrKeychainTimeout means security(1) did not answer in time, usually an

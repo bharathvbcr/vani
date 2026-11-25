@@ -616,6 +616,16 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 	}
 
 	b.WriteString("---\n\n")
+	// The notes the job boards' terms ask for, once each, when the page shows
+	// any of their rows (posting.SourceNotes: Dice's AI disclosure, Adzuna's
+	// attribution).
+	shownKeys := make([]posting.Key, 0, len(shown))
+	for _, s := range shown {
+		shownKeys = append(shownKeys, s.Key)
+	}
+	for _, n := range posting.SourceNotes(shownKeys) {
+		fmt.Fprintf(&b, "%s\n\n", n)
+	}
 	fmt.Fprintf(&b, "New today: %d | Dropped today: %d | Dead today: %d\n", c.New, c.Dropped, c.Dead)
 	var unchecked []string
 	for _, u := range c.CouldNotCheck {
@@ -639,7 +649,7 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 		fmt.Fprintf(&b, "\nDied after a mass hold: %d posting(s) whose boards stopped listing them at once and never listed them again (`vani runs failures` names the boards)\n", c.MassDead)
 	}
 	if c.ShortDead > 0 {
-		fmt.Fprintf(&b, "\nDied after a short listing: %d posting(s) their board's short listing had left out and still did not list when the hold ended (expected closures on a board that lists short; not a failure)\n", c.ShortDead)
+		fmt.Fprintf(&b, "\nDied after a short listing: %d posting(s) their board's short or windowed listing had left out and still did not list when the hold ended (expected closures on a board that lists short, or whose search covers only recent or top results; not a failure)\n", c.ShortDead)
 	}
 	if c.MassHeld != "" {
 		fmt.Fprintf(&b, "\n%s\n", Escape(c.MassHeld, 4*maxFieldRunes))
@@ -673,11 +683,19 @@ func RenderShown(recs []ledger.Record, m map[posting.Key]marks.Mark, date time.T
 func writeBrief(b *strings.Builder, r ledger.Record, res jobinsight.Result, dropClass string) {
 	p := r.Posting
 	fmt.Fprintf(b, "- **%s** at %s (%s): %s\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes), Where(p), linkLine(p.URL))
-	fmt.Fprintf(b, "  - Relevance %s · priority %s · key `%s`\n", strconv.FormatFloat(res.Relevance, 'f', 0, 64),
-		strconv.FormatFloat(res.Score, 'f', 1, 64), codeSpan(string(r.Key)))
+	fmt.Fprintf(b, "  - Relevance %s · priority %s · key `%s`%s\n", strconv.FormatFloat(res.Relevance, 'f', 0, 64),
+		strconv.FormatFloat(res.Score, 'f', 1, 64), codeSpan(string(r.Key)), viaSource(r.Key))
 	if dropClass != "" {
 		fmt.Fprintf(b, "  - Dropped: %s\n", Escape(dropClass, 80))
 	}
+}
+
+// viaSource is " · via Dice" for a job board's row (posting.SourceOf), else "".
+func viaSource(k posting.Key) string {
+	if src := posting.SourceOf(k); src.Name != "" {
+		return " · via " + src.Name
+	}
+	return ""
 }
 
 // hydrate is Options.Hydrate for a record whose text must be read back: the
@@ -699,7 +717,7 @@ func (o Options) hydrate(r ledger.Record) (ledger.Record, bool) {
 func writeUnscored(b *strings.Builder, r ledger.Record, dropClass string) {
 	p := r.Posting
 	fmt.Fprintf(b, "- **%s** at %s (%s): %s\n", Escape(p.Title, maxFieldRunes), Escape(p.Company, maxFieldRunes), Where(p), linkLine(p.URL))
-	fmt.Fprintf(b, "  - not scored: text not loaded · key `%s`\n", codeSpan(string(r.Key)))
+	fmt.Fprintf(b, "  - not scored: text not loaded · key `%s`%s\n", codeSpan(string(r.Key)), viaSource(r.Key))
 	if dropClass != "" {
 		fmt.Fprintf(b, "  - Dropped: %s\n", Escape(dropClass, 80))
 	}
@@ -749,6 +767,9 @@ func writeRoleSimilar(b *strings.Builder, r ledger.Record, similar int) {
 		fmt.Fprintf(b, "- Pay: %s\n", pay)
 	}
 	fmt.Fprintf(b, "- Link: %s\n", linkLine(p.URL))
+	if src := posting.SourceOf(r.Key); src.Name != "" {
+		fmt.Fprintf(b, "- Source: %s\n", src.Name)
+	}
 
 	if cov, ok := Coverage(r); ok {
 		fmt.Fprintf(b, "- Must-have coverage: %s%%\n", strconv.FormatFloat(cov, 'f', 0, 64))

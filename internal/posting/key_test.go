@@ -85,6 +85,8 @@ func TestSearchSiteKeys(t *testing.T) {
 		{JobviteKey, "nutanix", "ohorafwq", "jv:nutanix:ohorafwq", Jobvite},
 		{FeedKey, "Shopify", "1AFFB074-F055-4F5A-A97E-80D97D77DA6E", "fd:shopify:1affb074-f055-4f5a-a97e-80d97d77da6e", Feed},
 		{RemoteOKKey, "remoteok", "1137796", "ro:remoteok:1137796", RemoteOK},
+		{DiceKey, "dice", "46F0D513-ff59-4049-b4ab-9b45d8002fbe", "dc:dice:46f0d513-ff59-4049-b4ab-9b45d8002fbe", Dice},
+		{AdzunaKey, "us", "5012345678", "ad:us:5012345678", Adzuna},
 	} {
 		k, err := tc.mk(tc.a, tc.b)
 		if err != nil || k != tc.want || k.ATS() != tc.ats {
@@ -181,5 +183,33 @@ func TestPageKeyCanonicalises(t *testing.T) {
 	}
 	if _, err := PageKey("a:b", "https://x.com/1"); !errors.Is(err, ErrKeyPart) {
 		t.Error("board with separator accepted")
+	}
+}
+
+func TestZipRecruiterKey(t *testing.T) {
+	// Live listing keys (2026-11-24), one with '_'.
+	k, err := ZipRecruiterKey("ziprecruiter", "MBgmmSHgNLagbiJrIbkQMQ")
+	if err != nil || k != "zr:ziprecruiter:3018269921e034b6a06e226b21b91031" || k.ATS() != ZipRecruiter {
+		t.Fatalf("key = %q, %v (ATS %q)", k, err, k.ATS())
+	}
+	a, err := ZipRecruiterKey("ziprecruiter", "pc0_CB4QZt8KuWWeBQI0yQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keys that differ only in case are two rows, and stay two keys.
+	b, err := ZipRecruiterKey("ziprecruiter", "PC0_cb4qzT8kUwwEbqi0Yq")
+	if err != nil || a == b {
+		t.Fatalf("case-folded listing keys collided: %q %q %v", a, b, err)
+	}
+	if strings.ContainsAny(string(a)[len("zr:ziprecruiter:"):], "_-ABCDEF") {
+		t.Fatalf("id part is not lower-case hex: %q", a)
+	}
+	for _, bad := range []string{"", "   ", "has space", "a:b", "####", strings.Repeat("A", 100), "MBgmmSHgNLagbiJrIbkQMQ=="} {
+		if _, err := ZipRecruiterKey("ziprecruiter", bad); !errors.Is(err, ErrKeyPart) {
+			t.Errorf("ZipRecruiterKey(%q) err = %v, want ErrKeyPart", bad, err)
+		}
+	}
+	if _, err := ZipRecruiterKey("", "MBgmmSHgNLagbiJrIbkQMQ"); !errors.Is(err, ErrKeyPart) {
+		t.Errorf("empty board err = %v", err)
 	}
 }

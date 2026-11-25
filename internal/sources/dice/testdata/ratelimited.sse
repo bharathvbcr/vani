@@ -1,0 +1,3 @@
+event: message
+data: {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"Error calling tool 'search_jobs': Job search failed: API request failed with status 502: The Job Search API request failed with status 429."}],"isError":true}}
+

@@ -227,7 +227,7 @@ func listBoards(ctx context.Context, watchlist []sources.Board, srcs map[posting
 			warnf("board %s/%s: %d of those were held because rows the adapter could not read may have been them", b.ATS, b.Token, sum.UnreadableDead)
 		}
 		if sum.ShortDead > 0 {
-			warnf("board %s/%s: %d postings held because its listing was short died: the hold ended and the board still does not list them", b.ATS, b.Token, sum.ShortDead)
+			warnf("board %s/%s: %d postings held because its listing was short or windowed died: the hold ended and the board still does not list them", b.ATS, b.Token, sum.ShortDead)
 		}
 		if sum.Deferred > 0 {
 			warnf("board %s/%s: %d deaths wait one more read: more than %s passed since those postings' last event", b.ATS, b.Token, sum.Deferred, pipeline.ClockWindow)

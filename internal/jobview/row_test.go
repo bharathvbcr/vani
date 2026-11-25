@@ -53,6 +53,12 @@ func goldenRows() []Row {
 			Key: "greenhouse:hooli:3", Title: "Staff Engineer", Company: "Hooli",
 			Status: "unsure", Relevance: 63.8, Priority: 63.8, RoleFit: "adjacent", AgeDays: ip(95), FreshSrc: "posted",
 		}),
+		// A job board's row names its source and the note its terms ask for.
+		Build(Inputs{
+			Key: "dc:dice:46f0d513-ff59-4049-b4ab-9b45d8002fbe", Title: "Machine Learning Engineer", Company: "Example Analytics",
+			Location: "Austin, TX", Status: "scored", Relevance: 70, Priority: 66, RelevanceBasis: "rank", RoleFit: "partial_fit",
+			AgeDays: ip(2), FreshSrc: "posted",
+		}),
 	}
 }
 

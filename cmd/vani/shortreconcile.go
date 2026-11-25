@@ -36,8 +36,24 @@ func (w *wired) boardFetchOf(b sources.Board) boardFetch {
 // daily run cannot kill one on the second day of a short listing, and a board
 // that is short on every run still ages, after the hold. The run record names
 // the shortfall (Boards.Short) and the newly held postings (Boards.Mass).
+//
+// A windowed listing (boardFetch.Windowed: a search that is never listed in
+// full, or one restricted by recency) is reconciled by
+// pipeline.ReconcileWindow: what it leaves out is held the same way, but an
+// empty window is never a true mass absence, and since the window is the
+// board's design rather than a fault it is not warned about on each run. A
+// windowed board's unreadable rows are warned about but do not change how it
+// is folded: the window already says nothing about what it leaves out, and
+// folding it as an unreadable listing would make a later clean read a mass
+// death (a failure) of postings that only left the window.
 func (w *wired) reconcileBoard(ctx context.Context, rec *pipeline.Reconciler, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
 	f := w.boardFetchOf(b)
+	if f.Windowed {
+		if f.BadRows > 0 {
+			w.warnf("board %s/%s: %d row(s) could not be read; the board's listing is a window, so what it leaves out is held and then closes as any posting that leaves the window does", b.ATS, b.Token, f.BadRows)
+		}
+		return rec.ReconcileWindow(ctx, b, listed, now)
+	}
 	if f.BadRows > 0 {
 		// Rows it could not read may be postings the ledger holds: this listing
 		// holds what it leaves out and kills none of it (ReconcileUnreadable).

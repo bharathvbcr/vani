@@ -76,7 +76,9 @@ type Summary struct {
 	Open, Absent int
 	// Mass says this listing was a mass absence (liveness.go); MassMarked counts
 	// the postings it newly mass-marked (ones marked by an earlier listing and
-	// still absent are Held, not counted again).
+	// still absent are Held, not counted again). A windowed listing
+	// (ReconcileWindow) sets neither: it marks what it leaves out, as a short
+	// listing does, but that is its routine, not a mass absence.
 	MassMarked int
 	Mass       bool
 	// ClockBehind: the ledger holds events stamped ahead of this read's clock
@@ -163,6 +165,27 @@ func (rc *Reconciler) ReconcileUnreadable(ctx context.Context, b sources.Board, 
 	return rc.reconcile(ctx, b, listed, now, true, shortUnreadable)
 }
 
+// ReconcileWindow folds a windowed listing: a search that can never be listed
+// in full (a job board that serves at most a page of the rows a search
+// matches) or that is restricted by recency (posted in the last N days), so a
+// still-open posting falls out of it. For such a listing absence means "not in
+// this window", not "closed". It is ReconcileShort with one difference that
+// matters: it is never a true mass absence, not even when it shows none of the
+// board's open postings (an empty window is legitimate: nothing was posted in
+// it). Sightings, pending reopens and field updates apply to the postings it
+// lists as in Reconcile; every open posting it leaves out is held for MassHold
+// from its own first miss, never killed by the ordinary rule, and then dies as
+// an expected closure (Summary.ShortDead, MassShortKey "short"), not a mass
+// death. A posting listed again inside its hold is live again with its miss
+// marks forgotten. It reports no mass absence (Summary.Mass and MassMarked stay
+// unset): its holds show in Missed, Held and ShortDead. Pending reopens it
+// leaves out are not aged by it. A mark an earlier listing of another kind left
+// (a true mass absence, unreadable rows) keeps its cause: a windowed listing
+// never downgrades it.
+func (rc *Reconciler) ReconcileWindow(ctx context.Context, b sources.Board, listed []posting.Posting, now time.Time) (Summary, error) {
+	return rc.reconcile(ctx, b, listed, now, true, shortWindow)
+}
+
 // shortKind is what a full listing says about the postings it leaves out.
 type shortKind int
 
@@ -170,6 +193,7 @@ const (
 	shortNone       shortKind = iota // it is the board's whole word
 	shortCounted                     // it counted more rows than it listed
 	shortUnreadable                  // ... and some rows it skipped could not be read
+	shortWindow                      // it is a window of the board by design (ReconcileWindow)
 )
 
 // ReconcilePartial folds postings that are part of a board's listing, not the

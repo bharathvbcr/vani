@@ -37,6 +37,12 @@ final class JobRowTests: XCTestCase {
         XCTAssertEqual(first.reasons?.count, 2)
         XCTAssertEqual(g.rows.first { $0.status == "duplicate" }?.similar, 2)
         XCTAssertNil(g.rows.first { $0.status == "duplicate" }?.fit, "a reading outside the fixture carries no fit")
+        // A job board's row names its source and its terms' note; an employer's own row has neither.
+        let dice = try XCTUnwrap(g.rows.first { $0.key.hasPrefix("dc:") })
+        XCTAssertEqual(dice.source, "Dice")
+        XCTAssertTrue(dice.sourceNote?.contains("AI") ?? false)
+        XCTAssertNil(first.source)
+        XCTAssertNil(first.sourceNote)
     }
 
     func testEveryGoldenRowRoundTripsWithoutLoss() throws {

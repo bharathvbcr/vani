@@ -9,6 +9,21 @@ were ported with notice. Source files do not carry an upstream copyright header.
 
 ### Added
 
+- **ZipRecruiter, Dice and Adzuna boards, and Indeed through Claude** (2026-11-25, the owner's request;
+  LinkedIn left out). `zr` and `dc` read the boards' own job-search MCP servers with no sign-in,
+  through a new Streamable-HTTP MCP client (`internal/sources/mcphttp`) that keeps every request in
+  srcutil's retry, throttle and body-cap loop (`srcutil.PostExchange`). Dice reads each new posting's
+  full description through a bounded detail step (120 a run). `ad` reads Adzuna's API with the owner's
+  own app id and key (`VANI_ADZUNA_APP_ID`/`VANI_ADZUNA_APP_KEY`, or the Keychain item
+  `adzuna-api-key`, which the Mac app passes on); the key never reaches a URL srcutil, a log or an
+  error sees. Indeed's MCP server is Claude-only, so `skills/indeed-to-vani` has a Claude session
+  search it and hand the jobs to `vani jobs ingest`. A new *windowed* listing kind
+  (`pipeline.ReconcileWindow`) folds searches that are never the board's whole word (ZipRecruiter's
+  10 to 30 rows, a `posted_within_days` or `max_days_old` filter): what leaves the window is held 14
+  days and closes as an expected closure. Job-board rows name their source everywhere, with Dice's AI
+  disclosure and Adzuna's attribution (`posting.SourceOf`). Ingested job-site searches no longer count
+  as engagement in `vani status`. Terms: docs/LEGAL.md; open items: docs/FOLLOWUPS.md.
+
 - **Model switch: SubQ Snap and Gemini Decision beside Liquid, Claude or Google AI Studio for
   drafts and triage** (2026-11-17, the owner's request). `decide.provider` picks the decision
   model: `openrouter` (Liquid, the default), `subq` (`subq-snap-1.2` on SubQ's `/v1/systemone`)

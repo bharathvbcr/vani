@@ -209,12 +209,34 @@ public enum VaniConfig {
         let decide: Named?
     }
 
+    /// The watchlist's board kinds, decoded on their own so a watchlist this reader cannot
+    /// parse never changes what `providers` says.
+    private struct WatchlistFile: Decodable {
+        struct Board: Decodable { let ats: String? }
+        let watchlist: [Board]?
+    }
+
+    /// Whether the config's watchlist has an Adzuna board (`ats` "ad"), whose adapter needs the
+    /// owner's Adzuna app id and key (cmd/vani adzunaCredentials reads the same variables).
+    /// False when the file is missing, unreadable, oversized or not the shape vani writes.
+    public static func hasAdzunaBoard(configPath: String?) -> Bool {
+        guard let data = configData(configPath: configPath),
+              let file = try? JSONDecoder().decode(WatchlistFile.self, from: data) else { return false }
+        return file.watchlist?.contains { $0.ats == "ad" } ?? false
+    }
+
     private static func providers(configPath: String?) -> ProvidersFile? {
+        guard let data = configData(configPath: configPath) else { return nil }
+        return try? JSONDecoder().decode(ProvidersFile.self, from: data)
+    }
+
+    /// The config file's bytes, at most `maxBytes`; nil when missing, unreadable or larger.
+    private static func configData(configPath: String?) -> Data? {
         let path = configPath.flatMap { $0.isEmpty ? nil : $0 } ?? VaniProcess.defaultConfigPath
         guard let h = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? h.close() }
         guard let data = try? h.read(upToCount: maxBytes + 1), data.count <= maxBytes else { return nil }
-        return try? JSONDecoder().decode(ProvidersFile.self, from: data)
+        return data
     }
 }
 
@@ -240,6 +262,10 @@ public enum Keychain {
     /// The Google AI Studio key, passed as GEMINI_API_KEY to the gemini llm provider and the
     /// Gemini decision model.
     public static let geminiService = "gemini-api-key"
+    /// The owner's Adzuna app id and key as one item, "APP_ID:APP_KEY", passed to a run as
+    /// VANI_ADZUNA_APP_ID and VANI_ADZUNA_APP_KEY when the watchlist has an Adzuna board
+    /// (docs/SETUP.md). Not a model key, so not in `modelKeyServices`: Settings does not edit it.
+    public static let adzunaService = "adzuna-api-key"
     /// The items Settings may write or remove: the model keys vani's vault.ModelKey reads.
     /// The Anthropic key stays with anthropic-account.
     public static let modelKeyServices = [openRouterService, subqService, geminiService]
@@ -351,6 +377,8 @@ public struct DraftRunner: Sendable {
     let decisionKey: KeyLookup
     /// The Google AI Studio key, read when the config's llm.provider is gemini.
     let aiStudioKey: KeyLookup
+    /// The Adzuna item ("APP_ID:APP_KEY"), read for a run when the watchlist has an Adzuna board.
+    let adzunaKey: KeyLookup
     let timeout: TimeInterval
     public static let keychainTimeout: TimeInterval = 60
     let keychainTimeout: TimeInterval
@@ -377,6 +405,7 @@ public struct DraftRunner: Sendable {
                 key: @escaping KeyLookup = { nil },
                 decisionKey: KeyLookup? = nil,
                 aiStudioKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.geminiService) },
+                adzunaKey: @escaping KeyLookup = { try Keychain.genericPassword(service: Keychain.adzunaService) },
                 refusal: DraftReply? = nil) {
         self.refusal = refusal
         self.vaniBinary = vaniBinary
@@ -394,6 +423,7 @@ public struct DraftRunner: Sendable {
             try Keychain.genericPassword(service: VaniConfig.decisionKeyRoute(configPath: configPath).service)
         }
         self.aiStudioKey = aiStudioKey
+        self.adzunaKey = adzunaKey
     }
 
     /// Validate a request given as Foundation JSON objects (from a browser) into a DraftRequest.
@@ -529,6 +559,7 @@ public struct DraftRunner: Sendable {
         // A job that calls no model gets no model key, workspace or decision key.
         var outcome = KeyOutcome.notRequested
         if usesModel, let failure = addKeys(to: &env, withDecisionKey: withDecisionKey, outcome: &outcome) { return .refused(failure) }
+        addAdzunaKey(to: &env, arguments: arguments)
         return .launch(Launch(program: program, arguments: argv, environment: env, decisionKey: outcome))
     }
 
@@ -653,6 +684,39 @@ public struct DraftRunner: Sendable {
             }
         }
         return nil
+    }
+
+    /// The vani commands that read the watchlist's boards: only they are given the Adzuna
+    /// credentials (`run-request` asks the daemon, which already holds them).
+    static let boardReaders: Set<String> = ["daemon", "run-once"]
+
+    /// A run that reads boards, with an Adzuna board on the watchlist, gets the owner's Adzuna
+    /// app id and key: a vani the app starts reads no Keychain (VANI_NO_KEYCHAIN). The item
+    /// holds "APP_ID:APP_KEY". Its absence never refuses the launch: the Adzuna board fails that
+    /// run with its own message, and every other board is read. `.noKey` reads no item.
+    private func addAdzunaKey(to env: inout [String: String], arguments: [String]) {
+        guard keys != .noKey, let command = arguments.first, Self.boardReaders.contains(command),
+              VaniConfig.hasAdzunaBoard(configPath: configPath) else { return }
+        env["VANI_NO_KEYCHAIN"] = "1"
+        if let pair = Self.adzunaPair(try? Self.bounded(adzunaKey, seconds: keychainTimeout)) {
+            env["VANI_ADZUNA_APP_ID"] = pair.id
+            env["VANI_ADZUNA_APP_KEY"] = pair.key
+        }
+    }
+
+    /// The Adzuna item's "APP_ID:APP_KEY" split at the first colon, both halves trimmed, one
+    /// line, printable ASCII and at most 128 bytes; nil for anything else. Never echoes a value.
+    static func adzunaPair(_ raw: String?) -> (id: String, key: String)? {
+        guard let value = raw else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let colon = trimmed.firstIndex(of: ":") else { return nil }
+        let id = String(trimmed[..<colon]).trimmingCharacters(in: .whitespaces)
+        let key = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        func ok(_ s: String) -> Bool {
+            !s.isEmpty && s.utf8.count <= 128 && s.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value < 0x7F }
+        }
+        guard ok(id), ok(key) else { return nil }
+        return (id, key)
     }
 }
 

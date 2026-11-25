@@ -45,6 +45,74 @@ flowchart TD
     N8N -.->|vani.event lines| VANI_RUN
 ```
 
+## Job boards: ZipRecruiter, Dice, Adzuna and the Indeed skill (2026-11-25): what is left
+
+The owner asked for Indeed and the other boards the ATS adapters do not reach, LinkedIn excluded.
+Built: `zr` and `dc` (the boards' own MCP servers, through `internal/sources/mcphttp`), `ad` (the
+Adzuna API with the owner's key), `skills/indeed-to-vani` (Indeed's Claude-only connector feeding
+`vani jobs ingest`), windowed listings (`pipeline.ReconcileWindow`), and source attribution
+(`posting.SourceOf`: digest, `jobs show`, jobs row, Jobs tab, extension). Fable reviewed the design.
+Left:
+
+- **Live run through Vani's own egress not done.** The build container reaches the internet only
+  through an HTTPS proxy, and egress resolves DNS itself, so `vani run-once` could not reach any
+  host there. The `zr` and `dc` adapters were run live on 2026-11-25 through a proxy-aware client
+  standing in for egress: `zr` listed 10 postings (Austin, TX, 7 days; two identical runs), `dc`
+  listed 22 with full descriptions in 30 s. Run once on the Mac:
+  `VANI_NO_KEYCHAIN=1 vani run-once --list-only --no-digest --board zr:ziprecruiter --board dc:dice`.
+- **Adzuna not verified with a key.** No key could be given to the build session. Unknown: the
+  real 200 shape, a page past the end, whether `redirect_url` carries a per-search token (an advert
+  already stored keeps its first link, `adzuna.Options.Stored`, so that cannot churn the ledger; an
+  old link that stops redirecting would show as a dead link), whether salaries are always annual,
+  whether `count` is exact (a walk may end within a hundredth of it, at least one; more fails the
+  board), and the free tier's real limits. The first live run is the test.
+- **Swift not compiled.** The build container has no Swift toolchain. Changed: `Drafting.swift`
+  (`VaniConfig.hasAdzunaBoard`, the `adzuna-api-key` read and pass-through), `ScheduleAgent.swift`
+  (restart when the first `ad` board is added), `Watchlist.swift` (board names), `JobRow.swift`,
+  `Jobs.swift`, `JobsView.swift` (the "via Dice" label), and tests `AdzunaKeyTests.swift`,
+  `JobRowTests.swift`. Run `swift test` in `macos/` and build the app.
+- **Indeed skill not run.** The connector is not attached to the build session, so its tool names
+  and result fields (the job key `jk`) are the ones Indeed's docs and the connector directory
+  give, not observed. Also unverified: that Claude Code, signed in with the claude.ai account, sees
+  the claude.ai Indeed connector. Indeed's terms do not say whether connector results may be kept
+  outside the conversation. Ingested Indeed jobs are a partial listing and never age out: re-run
+  the skill to refresh them.
+- **ZipRecruiter's reach varies and its rows have no text.** A search serves 10 to 30 rows (a
+  filtered search repeated its second page from offset 10 on). Rows carry no description, so they
+  rank on title, pay and role alone and are "kept without a check" by triage. `PostedAt` is derived
+  from `days_ago`; if ZipRecruiter rolls it over away from UTC midnight, it can move a day between
+  runs (a field update, not a re-triage). Benefits are left out (they would re-triage on reorder).
+  Without a `country` filter no pay line is written. Its terms footing is the weakest (docs/LEGAL.md).
+- **Dice re-reads on schedule only.** A stored Dice posting is re-read on its turn in the 30-day
+  refresh cycle, never because `modifiedDate` moved: the ledger keeps a posting's first `UpdatedAt`
+  when its text is unchanged (`refreshFields` ignores it), so a moved date would read as changed on
+  every later run. A Dice edit reaches the ledger within 30 days. SmartRecruiters compares the stored
+  posting's dates the same way (`releasedDate`), so it may re-read unchanged postings each run; not
+  measured, not changed here.
+- **Survivor ranking unchanged.** A job-board copy seen before the employer's own posting stays the
+  survivor (true for `hm` and `ro` before this). Making an employer key always win is not safe as a
+  one-line rule: an already-digested job-board survivor would leave the employer record live and
+  digested twice, settled survivors could flip, and rule 1 (shared link) would disagree with rule 2
+  (shared requisition id). A safe version applies only to non-terminal, unprotected job-board
+  records, mirrors rule 1, and is tested against the identity oracle.
+- **Fable's review (2026-11-25), fixed before landing:** the Adzuna key could reach another host as
+  a redirect's Referer and that host's body could stand in for the listing (now an explicit
+  Referer, and an answer from any other address is refused, `adzuna.ErrRedirected`); one unreadable
+  row folded a windowed board as unreadable, which could turn a later clean read into a mass failure
+  (a windowed board now always folds as a window, warning about the rows); company-less adverts
+  counted as bad rows could fail an Adzuna board every run (now skipped and counted, `NoCompany`);
+  Dice and Adzuna let a later page's smaller total end a walk early (page 1's count now holds);
+  Adzuna failed whenever an advert was posted mid-walk (now tolerated within a hundredth, as Dice).
+- **Mass-held line on windowed boards.** While a windowed board's absent postings are held, the run's
+  mass-held attention line names it, which for ZipRecruiter is most runs. Accurate, not a failure.
+- **Baseline failures as root.** In the build container (uid 0) these fail before and after the
+  change: cmd/vani `TestWatchlistRemoveLeavesATombstone`, `TestLastJSONModeZeroIsNotInvented`,
+  `TestTeacherFreezeWritesOnceAndRefusesThinOrBrokenLabels`; `internal/mcpstdio` `TestStartFailures`;
+  greenhouse `TestUnreadablePayFileIsLeftInPlace` (root reads "unreadable" files), and cmd/vani
+  `TestJobsRetriageErrors`, `TestDaemonIdentityAccessDeniedIsNotLive`, `TestProcessExistsEPERMIsNotAlive`
+  (root never gets EPERM) and `TestEveryOfferedModelIsServedByTheLinkedManvi` (the pinned Manvi has
+  no Gemini 4 Hydrogen entry); all nine fail on a clean checkout of the parent commit too.
+
 ## Agent CLI: `vani mcp` (2026-11-18): what is left
 
 The owner asked for CLI access to the app and tools for agents, "as sometimes MCP is unreliable".

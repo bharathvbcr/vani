@@ -343,6 +343,23 @@ func pageRefusal(b sources.Board) string {
 var aggregators = []string{"linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com", "wellfound.com", "dice.com", "monster.com", "simplyhired.com",
 	"naukri.com", "glassdoor.co.in", "glassdoor.co.uk", "glassdoor.ca", "glassdoor.com.au", "glassdoor.sg", "glassdoor.de", "glassdoor.fr", "glassdoor.ie"}
 
+// aggregatorReason is why a job site's page cannot be a saved search, and
+// what to use instead where Vani has a way: a board for the job boards it
+// reads through their own search servers (Dice, ZipRecruiter), the Indeed
+// skill for Indeed.
+func aggregatorReason(host string) string {
+	under := func(d string) bool { return host == d || strings.HasSuffix(host, "."+d) }
+	switch {
+	case under("dice.com"):
+		return host + "'s pages are not read on a schedule; Vani searches Dice through its job-search server instead: vani watchlist add --ats dc --token dice --company Dice --search TERM --allow-host"
+	case under("ziprecruiter.com"):
+		return host + "'s pages are not read on a schedule; Vani searches ZipRecruiter through its job-search server instead: vani watchlist add --ats zr --token ziprecruiter --company ZipRecruiter --search TERM --allow-host"
+	case under("indeed.com"):
+		return host + " needs a signed-in browser; Vani cannot search it on its own. Indeed's Claude connector can, through skills/indeed-to-vani"
+	}
+	return host + " needs a signed-in browser; Vani cannot search it on its own"
+}
+
 func isAggregator(host string) bool {
 	for _, a := range aggregators {
 		if host == a || strings.HasSuffix(host, "."+a) {
@@ -372,7 +389,7 @@ func deriveBoard(pageURL string, jobs []inbox.Job, company string, wl []sources.
 		first = segs[0]
 	}
 	if isAggregator(host) {
-		return fail(searchUnsupported, "%s needs a signed-in browser; Vani cannot search it on its own", host)
+		return fail(searchUnsupported, "%s", aggregatorReason(host))
 	}
 	// Workable, Rippling and per-tenant (Recruitee, Pinpoint, BambooHR,
 	// Personio, Breezy, Teamtailor, HireHive, HiBob) pages are left to the page board below:

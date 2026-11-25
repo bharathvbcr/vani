@@ -390,6 +390,40 @@ func doJSON(ctx context.Context, d egress.Doer, method, rawURL string, body []by
 	return nil
 }
 
+// PostBodyLimit POSTs body as given and returns the 200 body under DoJSON's
+// status, body-cap (limit, at most MaxBody), retry and host-throttle rules,
+// without decoding it. It is for a read-only endpoint whose reply is not
+// plain JSON: a remote MCP server answers a tools/call as JSON or as a
+// text/event-stream (internal/sources/mcphttp). accept is the Accept header;
+// header carries the rest (Content-Type included). A 429 or 503 resends the
+// same body, so it is only for calls that change nothing on the server.
+func PostBodyLimit(ctx context.Context, d egress.Doer, rawURL string, body []byte, header http.Header, accept string, limit int64) ([]byte, error) {
+	if limit <= 0 || limit > maxBody {
+		limit = maxBody
+	}
+	if accept == "" {
+		accept = "application/json"
+	}
+	return fetch(ctx, d, http.MethodPost, rawURL, body, header, accept, limit)
+}
+
+// PostExchange is PostBodyLimit for a reply whose headers or a non-200
+// success matter: it also accepts 202 Accepted and 204 No Content (an empty
+// body), and returns the status and headers with the body. A remote MCP
+// server assigns its session id in a header at initialize and answers a
+// notification with 202 (internal/sources/mcphttp).
+func PostExchange(ctx context.Context, d egress.Doer, rawURL string, body []byte, header http.Header, accept string, limit int64) (Exchange, error) {
+	if limit <= 0 || limit > maxBody {
+		limit = maxBody
+	}
+	if accept == "" {
+		accept = "application/json"
+	}
+	return fetchX(ctx, d, http.MethodPost, rawURL, body, header, accept, limit, func(code int) bool {
+		return code == http.StatusOK || code == http.StatusAccepted || code == http.StatusNoContent
+	})
+}
+
 // GetBody GETs rawURL and returns the body under DoJSON's status, body-cap
 // and retry rules, for sources that read an HTML page rather than an API.
 func GetBody(ctx context.Context, d egress.Doer, rawURL string) ([]byte, error) {
@@ -413,8 +447,25 @@ func GetBodyLimit(ctx context.Context, d egress.Doer, rawURL, accept string, lim
 // whether the host may be asked, runs the retry loop, and tells the throttle
 // what the host answered. It returns the 200 body.
 func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64) ([]byte, error) {
+	x, err := fetchX(ctx, d, method, rawURL, body, header, accept, limit, onlyOK)
+	return x.Body, err
+}
+
+// onlyOK is fetch's success rule: a 200 and nothing else.
+func onlyOK(code int) bool { return code == http.StatusOK }
+
+// Exchange is one answered request: its success status, headers and body.
+type Exchange struct {
+	Status int
+	Header http.Header
+	Body   []byte
+}
+
+// fetchX is fetch with the success statuses ok accepts, returning the
+// response's status and headers with its body.
+func fetchX(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64, ok func(int) bool) (Exchange, error) {
 	if d == nil {
-		return nil, errors.New("sources: no http doer configured")
+		return Exchange{}, errors.New("sources: no http doer configured")
 	}
 	th, _ := ctx.Value(throttleKey{}).(*HostThrottle)
 	var host string
@@ -422,13 +473,13 @@ func fetch(ctx context.Context, d egress.Doer, method, rawURL string, body []byt
 		host = strings.ToLower(u.Hostname())
 	}
 	if th == nil || host == "" {
-		return fetchLoop(ctx, d, method, rawURL, body, header, accept, limit, "")
+		return fetchLoop(ctx, d, method, rawURL, body, header, accept, limit, "", ok)
 	}
 	probeWhy, err := th.admit(ctx, host, method, rawURL)
 	if err != nil {
-		return nil, err
+		return Exchange{}, err
 	}
-	out, err := fetchLoop(ctx, d, method, rawURL, body, header, accept, limit, probeWhy)
+	out, err := fetchLoop(ctx, d, method, rawURL, body, header, accept, limit, probeWhy, ok)
 	var rl *RateLimitedError
 	if err != nil && answeredHTTP(err) {
 		th.heard(host)
@@ -495,7 +546,7 @@ func canStretch(ctx context.Context, waited time.Duration) bool {
 // fetchLoop is fetch's retry loop. probeWhy is non-empty for the one probe of a
 // throttled host: a single attempt, whose 429 ends it with probeWhy as the
 // reason.
-func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64, probeWhy string) ([]byte, error) {
+func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body []byte, header http.Header, accept string, limit int64, probeWhy string, ok func(int) bool) (Exchange, error) {
 	verb := strings.ToLower(method)
 	var waited time.Duration // spent waiting to retry this request
 	stretched := false
@@ -507,7 +558,7 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 		}
 		req, err := http.NewRequestWithContext(ctx, method, rawURL, rd)
 		if err != nil {
-			return nil, fmt.Errorf("sources: build request: %w", err)
+			return Exchange{}, fmt.Errorf("sources: build request: %w", err)
 		}
 		for k, vs := range header {
 			req.Header[http.CanonicalHeaderKey(k)] = append([]string(nil), vs...)
@@ -521,12 +572,12 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 				continue
 			}
 			noteTransportGiveUp(ctx, reqHost, transportRetries, err)
-			return nil, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), err)
+			return Exchange{}, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), err)
 		}
 		if resp == nil || resp.Body == nil {
-			return nil, fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
+			return Exchange{}, fmt.Errorf("sources: %s %s: empty response", verb, req.URL.Redacted())
 		}
-		if resp.StatusCode == http.StatusOK {
+		if ok(resp.StatusCode) {
 			// readBody closes the body, so a retry starts from a fresh response.
 			// A read cut short is the same transient class as a failed Do and
 			// shares its one retry; a body over the cap is not transient.
@@ -537,19 +588,20 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 					continue
 				}
 				noteTransportGiveUp(ctx, reqHost, transportRetries, err)
+				return Exchange{}, err
 			}
-			return raw, err
+			return Exchange{Status: resp.StatusCode, Header: resp.Header, Body: raw}, nil
 		}
 		code, hdr := resp.StatusCode, resp.Header
 		// Drain a little so the connection can be reused, then let it go.
 		_, _ = io.CopyN(io.Discard, resp.Body, 64<<10)
 		resp.Body.Close()
 		if code == http.StatusNotFound {
-			return nil, fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
+			return Exchange{}, fmt.Errorf("%w: %s", ErrBoardNotFound, req.URL.Redacted())
 		}
 		se := &egress.StatusError{Code: code, Method: method, Host: req.URL.Hostname()}
 		if !retryableStatus(code) {
-			return nil, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), se)
+			return Exchange{}, fmt.Errorf("sources: %s %s: %w", verb, req.URL.Redacted(), se)
 		}
 		// giveUp ends the retrying: a 429 as a *RateLimitedError, so the board is
 		// told apart from one that is broken, a gateway status as the plain status.
@@ -562,9 +614,9 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 		}
 		if probeWhy != "" {
 			if code == http.StatusTooManyRequests {
-				return nil, giveUp(probeWhy)
+				return Exchange{}, giveUp(probeWhy)
 			}
-			return nil, giveUp("probe of a throttled host: one attempt, no retries")
+			return Exchange{}, giveUp("probe of a throttled host: one attempt, no retries")
 		}
 		// stretch is the one longer wait a 429 may take after its short attempts,
 		// and only when the budgets can pay. It is decided before the host-limited
@@ -575,13 +627,13 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 				stretch = true
 				stretched = true
 			} else {
-				return nil, giveUp(fmt.Sprintf("gave up after %d attempts", attempt+1))
+				return Exchange{}, giveUp(fmt.Sprintf("gave up after %d attempts", attempt+1))
 			}
 		}
 		// Another request has since found the host throttled: waiting on it for
 		// this one would spend the budget the host's memory exists to save.
 		if why, limited := hostLimitedWhy(ctx, se.Host); limited {
-			return nil, giveUp(why)
+			return Exchange{}, giveUp(why)
 		}
 		wait := backoff(attempt)
 		ra, hasRA := retryAfter(hdr, now())
@@ -589,7 +641,7 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 		case stretch:
 			wait = maxRetryWait
 		case hasRA && ra > maxRetryWait:
-			return nil, giveUp(fmt.Sprintf("asked to retry after %s, over the %s limit", ra, maxRetryWait))
+			return Exchange{}, giveUp(fmt.Sprintf("asked to retry after %s, over the %s limit", ra, maxRetryWait))
 		case hasRA && ra > 0:
 			wait = ra
 		case hasRA && attempt == 0:
@@ -599,14 +651,14 @@ func fetchLoop(ctx context.Context, d egress.Doer, method, rawURL string, body [
 			wait = 0
 		}
 		if waited+wait > maxRequestWait {
-			return nil, giveUp(fmt.Sprintf("gave up after %d attempts: waiting %s more would pass the %s limit for one request", attempt+1, wait, maxRequestWait))
+			return Exchange{}, giveUp(fmt.Sprintf("gave up after %d attempts: waiting %s more would pass the %s limit for one request", attempt+1, wait, maxRequestWait))
 		}
 		if ok, spent := spend(ctx, wait); !ok {
-			return nil, giveUp(fmt.Sprintf("gave up after %d attempts: the %s's retry budget is spent", attempt+1, spent))
+			return Exchange{}, giveUp(fmt.Sprintf("gave up after %d attempts: the %s's retry budget is spent", attempt+1, spent))
 		}
 		waited += wait
 		if err := sleep(ctx, wait); err != nil {
-			return nil, fmt.Errorf("sources: %s %s: waiting to retry %w: %w", verb, req.URL.Redacted(), se, err)
+			return Exchange{}, fmt.Errorf("sources: %s %s: waiting to retry %w: %w", verb, req.URL.Redacted(), se, err)
 		}
 	}
 }

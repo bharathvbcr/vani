@@ -1,0 +1,21 @@
+{
+  "page": {"url": "https://www.indeed.com/jobs", "title": "Indeed search"},
+  "save_search": false,
+  "jobs": [
+    {
+      "title": "Machine Learning Engineer",
+      "company": "Example Analytics",
+      "location": "Austin, TX",
+      "url": "https://www.indeed.com/viewjob?jk=0123456789abcdef",
+      "snippet": "Example Analytics is hiring a machine learning engineer to build and ship ranking models. You will own training pipelines, offline evaluation and production serving. Requirements: 3+ years of Python, experience with PyTorch, and a track record of shipping models to production.",
+      "posted": "2026-11-20T00:00:00Z"
+    },
+    {
+      "title": "Senior Data Scientist, Forecasting",
+      "company": "Sample Logistics Co",
+      "location": "Remote",
+      "url": "https://www.indeed.com/viewjob?jk=fedcba9876543210",
+      "snippet": "Build demand forecasts for a fleet of regional warehouses. Time-series modelling, SQL and experiment design. Fully remote within the United States."
+    }
+  ]
+}

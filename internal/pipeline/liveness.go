@@ -35,6 +35,11 @@ import (
 //     reappearing does.
 //   - A mass-marked posting dies only after MissesToDead misses and MassHold
 //     since its own first miss.
+//   - A short listing (ReconcileShort, ReconcileUnreadable) or a windowed one
+//     (ReconcileWindow: a search listed in part by design, or one restricted by
+//     recency) mass marks every posting it leaves absent. Only a short listing
+//     that shows none of the board's open postings is a true mass absence; a
+//     windowed one never is (an empty window is legitimate).
 //   - A partial listing ages nothing.
 //
 // The clock. The rule measures holds with the clock of each read, so a clock
@@ -105,7 +110,8 @@ const (
 	MassMissedSinceKey = "mass_missed_since"
 	// MassShortKey is "short" on a mass-marked posting whose every mass
 	// listing in the current episode was a short listing (a board that counted
-	// more rows than it listed), never a true mass absence. Its death is an
+	// more rows than it listed) or a windowed one (ReconcileWindow), never a
+	// true mass absence. Its death is an
 	// expected closure, reported (Summary.ShortDead) but not a failure; a
 	// posting with no value (the ledger before this key, or one a true mass
 	// absence ever marked) counts as a mass death. Read only while
@@ -392,10 +398,12 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 	// by share: a short listing leaves out what it leaves out because it is
 	// short, however much that is, so what it holds dies as a short death
 	// (MassShortKey). A listing that shows none of the board's open postings is
-	// one whether or not it is short (the Snap case: an empty read).
+	// one whether or not it is short (the Snap case: an empty read), except a
+	// windowed listing (ReconcileWindow): it is partial by design, and an empty
+	// window is legitimate, so it is never a true mass absence.
 	short := kind != shortNone
 	unreadable := kind == shortUnreadable
-	trueMass := massAbsence(lv, len(open), len(absent)) && (!short || len(absent) == len(open))
+	trueMass := kind != shortWindow && massAbsence(lv, len(open), len(absent)) && (!short || len(absent) == len(open))
 	mass := short || trueMass
 
 	var w absence
@@ -438,6 +446,12 @@ func ageAbsent(ctx context.Context, l ledger.Ledger, lv Liveness, open []posting
 		return a, err
 	}
 	a.missed, a.held, a.dead, a.massMarked, a.mass = w.missed, w.held, w.dead, w.massMarked, mass
+	if kind == shortWindow {
+		// Holding what falls out of the window is a windowed listing's routine,
+		// not a mass absence: its holds show in missed, held and shortDead, and
+		// it reports no mass marking (a report would name a mass absence every run).
+		a.massMarked, a.mass = 0, false
+	}
 	a.deferred, a.massDead, a.shortDead, a.unreadableDead = w.deferred, w.massDead, w.shortDead, w.unreadableDead
 	return a, nil
 }

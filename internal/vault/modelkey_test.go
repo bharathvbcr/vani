@@ -71,13 +71,13 @@ func TestModelKeyTimeout(t *testing.T) {
 	}
 }
 
-// The table holds exactly the three decision-provider keys; the Anthropic key
-// stays with anthropic-account.
+// The table holds exactly the three decision-provider keys and the Adzuna API
+// credentials; the Anthropic key stays with anthropic-account.
 func TestModelKeyReadsEachProviderService(t *testing.T) {
-	if !reflect.DeepEqual(modelServices, []string{"openrouter-api-key", "subq-api-key", "gemini-api-key"}) {
+	if !reflect.DeepEqual(modelServices, []string{"openrouter-api-key", "subq-api-key", "gemini-api-key", "adzuna-api-key"}) {
 		t.Fatalf("modelServices = %v", modelServices)
 	}
-	for _, svc := range []string{SubQService, GeminiService} {
+	for _, svc := range []string{SubQService, GeminiService, AdzunaService} {
 		f := &keyRunner{out: "k\n"}
 		if got, err := NewWithRunner(f).ModelKey(context.Background(), svc, "owner"); err != nil || got != "k" {
 			t.Errorf("%s: %q %v", svc, got, err)

@@ -131,13 +131,34 @@ func unwatchedCompaniesOf(recs []ledger.Record, cfg config.Config, stateDir stri
 
 // isScrapedKey reports whether k is a posting the browser extension ingested
 // from a page that is not a saved board's own (config.ScrapeSuffix ends the
-// board token of those batches).
+// board token of those batches), as engagement with its company. A job site's
+// search (LinkedIn, Indeed, the aggregators list) lists many employers, and a
+// batch from one, by the extension or by skills/indeed-to-vani, is a search,
+// not interest in each company it holds, so it is not counted.
 func isScrapedKey(k posting.Key) bool {
 	if k.ATS() != posting.Page {
 		return false
 	}
 	parts := strings.SplitN(string(k), ":", 3)
-	return len(parts) == 3 && strings.HasSuffix(parts[1], config.ScrapeSuffix)
+	if len(parts) != 3 || !strings.HasSuffix(parts[1], config.ScrapeSuffix) {
+		return false
+	}
+	return !aggregatorScrape(strings.TrimSuffix(parts[1], config.ScrapeSuffix))
+}
+
+// aggregatorScrape reports whether slug, a scrape token without its suffix
+// (scrapeToken: the page's host with every run of other characters as '-'),
+// is an aggregator's host or a subdomain of one. The slug has lost its dots, so
+// "my-indeed.com" reads as a subdomain of indeed.com; that only costs a line in
+// status's engagement count.
+func aggregatorScrape(slug string) bool {
+	for _, a := range aggregators {
+		as := hostSlug(a)
+		if slug == as || strings.HasSuffix(slug, "-"+as) {
+			return true
+		}
+	}
+	return false
 }
 
 // unwatchedLines are the status lines for f: nothing when every engaged company

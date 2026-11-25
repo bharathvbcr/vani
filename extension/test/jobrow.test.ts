@@ -103,3 +103,33 @@ describe("jobs row contract", () => {
     expect(v.fitLabel).toContain("Vani row not shown: schema version 2 is not supported");
   });
 });
+
+describe("job board source", () => {
+  test("a job board's golden row carries its source and note; an employer's has none", () => {
+    const dice = golden.rows.find((r) => String(r.key).startsWith("dc:"));
+    expect(dice).toBeDefined();
+    const p = parseJobRow(dice);
+    expect(p.ok).toBe(true);
+    if (!p.ok) return;
+    expect(p.row.source).toBe("Dice");
+    expect(p.row.source_note).toContain("AI");
+    const first = parseJobRow(golden.rows[0]);
+    expect(first.ok && first.row.source).toBeFalsy();
+  });
+
+  test("the pill names a job board's source and nothing for an employer's own row", () => {
+    const dice = parseJobRow(golden.rows.find((r) => String(r.key).startsWith("dc:")));
+    const first = parseJobRow(golden.rows[0]);
+    if (!dice.ok || !first.ok) throw new Error("golden rows did not parse");
+    expect(applyVaniRow(estimate(), dice.row).fitLabel).toContain("· via Dice");
+    expect(applyVaniRow(estimate(), first.row).fitLabel).not.toContain("via");
+  });
+
+  test("a malformed source is refused", () => {
+    const dice = { ...golden.rows.find((r) => String(r.key).startsWith("dc:")) };
+    for (const bad of [7, "x".repeat(601), {}]) {
+      expect(parseJobRow({ ...dice, source: bad }).ok).toBe(false);
+      expect(parseJobRow({ ...dice, source_note: bad }).ok).toBe(false);
+    }
+  });
+});

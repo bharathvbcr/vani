@@ -96,6 +96,20 @@ const (
 	// RemoteOK is the remoteok.com remote-jobs API, a job board that lists
 	// many employers. The token is "remoteok"; the key id is its job id.
 	RemoteOK ATS = "ro"
+	// ZipRecruiter is ZipRecruiter's job-search MCP server
+	// (api.ziprecruiter.com/mcp), a job board that lists many employers. The
+	// token is "ziprecruiter"; the key id is the row's listing key, decoded
+	// from base64url and written as hex so case survives the lower-cased key.
+	ZipRecruiter ATS = "zr"
+	// Dice is Dice's job-search MCP server (mcp.dice.com/mcp), a job board
+	// that lists many employers. The token is "dice"; the key id is the job's
+	// guid, the id in its dice.com/job-detail/{guid} page.
+	Dice ATS = "dc"
+	// Adzuna is Adzuna's job-search API (api.adzuna.com), a job aggregator
+	// that lists many employers, read with the owner's own app id and key. The
+	// token is the country code the API searches ("us", "gb"); the key id is
+	// Adzuna's advert id.
+	Adzuna ATS = "ad"
 	// Feed is one https XML job feed the owner names. The token is a short
 	// slug; the posting id is the feed's partner job id.
 	Feed ATS = "fd"

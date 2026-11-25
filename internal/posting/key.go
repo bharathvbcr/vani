@@ -1,6 +1,8 @@
 package posting
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -171,6 +173,29 @@ func HimalayasKey(board, companySlug, jobSlug string) (Key, error) {
 // RemoteOKKey is ro:remoteok:{id}, the API's numeric job id.
 func RemoteOKKey(board, id string) (Key, error) { return build(RemoteOK, board, id) }
 
+// ZipRecruiterKey is zr:ziprecruiter:{hex}, where hex is the row's
+// listing_key ("MBgmmSHgNLagbiJrIbkQMQ", base64url) decoded and written in
+// lower-case hex. The listing key is case-sensitive and may hold '_' and '-',
+// so neither lower-casing it nor JobviteKey's '_' escape would keep two keys
+// apart; its bytes in hex do. A listing key that is not base64url, or decodes
+// to nothing or to more than 64 bytes, is ErrKeyPart.
+func ZipRecruiterKey(board, listingKey string) (Key, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(listingKey))
+	if err != nil || len(raw) == 0 || len(raw) > 64 {
+		return "", fmt.Errorf("%w: listing key %q is not base64url", ErrKeyPart, listingKey)
+	}
+	return build(ZipRecruiter, board, hex.EncodeToString(raw))
+}
+
+// DiceKey is dc:dice:{guid}, the job's guid (the id in its
+// dice.com/job-detail/{guid} page and the job_id get_job_details takes), not
+// the search row's other "id".
+func DiceKey(board, guid string) (Key, error) { return build(Dice, board, guid) }
+
+// AdzunaKey is ad:{country}:{id}: the board's token is the country code the
+// API searched, and Adzuna's advert ids are numbers.
+func AdzunaKey(country, id string) (Key, error) { return build(Adzuna, country, id) }
+
 // FeedKey is fd:{board}:{partner_job_id}. The id is the feed's own, so a
 // cosmetic change to the apply URL does not split one role into two.
 func FeedKey(board, jobID string) (Key, error) { return build(Feed, board, jobID) }
@@ -233,7 +258,7 @@ func (k Key) ATS() ATS {
 	switch a := ATS(head); a {
 	case Greenhouse, Lever, Ashby, Workday, Amazon, Google, Apple, Eightfold, Jibe,
 		Gem, SmartRecruiters, IBM, Avature, DEShaw, Atlassian, Meta, Jobvite, OracleHCM, Rippling, Workable,
-		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, Manatal, TikTok, TalentBrew, Himalayas, RemoteOK, Feed, Page, Other:
+		Recruitee, Pinpoint, BambooHR, Personio, Breezy, Teamtailor, HireHive, HiBob, Manatal, TikTok, TalentBrew, Himalayas, RemoteOK, ZipRecruiter, Dice, Adzuna, Feed, Page, Other:
 		return a
 	}
 	return ""

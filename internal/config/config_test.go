@@ -83,7 +83,7 @@ func TestValidateRules(t *testing.T) {
 		{"workday host missing from allowlist", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Workday, Token: "acme/Ext", Host: "acme.wd5.myworkdayjobs.com"}}
 		}, "allowed_hosts is missing: acme.wd5.myworkdayjobs.com"},
-		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, oc, az, gg, ap, ef, jb, hm, ib and tt only"},
+		{"search on non-workday", func(c *Config) { c.Watchlist[0].Search = "ml" }, "search applies to wd, oc, az, gg, ap, ef, jb, hm, zr, ad, dc, ib and tt only"},
 		{"page http url", func(c *Config) {
 			c.Watchlist = []sources.Board{{ATS: posting.Page, Token: "acme", URL: "http://acme.example/jobs", LinkPattern: "/jobs/"}}
 		}, "needs an https url"},
@@ -752,9 +752,9 @@ func TestSearchSiteBoards(t *testing.T) {
 		"unverified jibe filter":    {mod(5, func(b *sources.Board) { b.Filters = map[string][]string{"country": {"Canada"}} }), "is not one of"},
 		"url on jibe":               {mod(5, func(b *sources.Board) { b.URL = "https://careers.amd.com/careers-home/jobs" }), "page boards only"},
 		"unknown ats":               {sources.Board{ATS: "zz", Token: "x"}, "is not one of"},
-		"max_postings on amazon":    {mod(0, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd and oc only"},
-		"max_postings on eightfold": {mod(3, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd and oc only"},
-		"max_postings on jibe":      {mod(5, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd and oc only"},
+		"max_postings on amazon":    {mod(0, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd, oc and ad only"},
+		"max_postings on eightfold": {mod(3, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd, oc and ad only"},
+		"max_postings on jibe":      {mod(5, func(b *sources.Board) { b.MaxPostings = 300 }), "applies to wd, oc and ad only"},
 		"max_postings negative":     {mod(4, func(b *sources.Board) { b.MaxPostings = -1 }), "must be within"},
 		"max_postings over ceiling": {mod(4, func(b *sources.Board) { b.MaxPostings = sources.MaxPostingsCeiling + 1 }), "must be within"},
 

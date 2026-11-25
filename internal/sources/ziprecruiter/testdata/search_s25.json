@@ -1,0 +1,123 @@
+{
+ "jsonrpc": "2.0",
+ "id": 0,
+ "result": {
+  "content": [
+   {
+    "type": "text",
+    "text": "(trimmed: the live reply repeats structuredContent as text)"
+   }
+  ],
+  "structuredContent": {
+   "request": {
+    "job_role": "software engineer",
+    "location": "Austin, TX",
+    "filters": {
+     "country_admin_code": "US"
+    }
+   },
+   "results": [
+    {
+     "listing_key": "pc0_CB4QZt8KuWWeBQI0yQ",
+     "title": ".Net Full-stack Engineer",
+     "company": "ZipStaff Inc.",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 80000,
+      "max_annual": 82000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=CpQBChZwYzBfQ0I0UVp0OEt1V1dlQlFJMHlREiQw&tsid=100000500",
+     "job_type": "Contractor · On-site",
+     "benefits": "Medical, Vision, Dental, Paid time off, Retirement",
+     "days_ago": 1,
+     "application_status": null,
+     "is_external": false
+    },
+    {
+     "listing_key": "bNg2_XGCZZdoM8hkO2DV2Q",
+     "title": "Software Engineer (Rust , Node.JS & GraphQL)",
+     "company": "SoftPath Technologies LLC",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 121400,
+      "max_annual": 160000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChZiTmcyX1hHQ1paZG9NOGhrTzJEVjJREiQw&tsid=100000500",
+     "job_type": "On-site",
+     "benefits": null,
+     "days_ago": 1,
+     "application_status": null,
+     "is_external": true
+    },
+    {
+     "listing_key": "nGM-KszlzHmdBgjuTaOlFA",
+     "title": "AV Field Engineer",
+     "company": "Ford Audio-Video Systems",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 60000,
+      "max_annual": 72000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChZuR00tS3N6bHpIbWRCZ2p1VGFPbEZBEiQw&tsid=100000500",
+     "job_type": "Full-time · On-site",
+     "benefits": "Medical, Vision, Dental, Paid time off, Life insurance, Retirement",
+     "days_ago": 26,
+     "application_status": null,
+     "is_external": false
+    },
+    {
+     "listing_key": "L_Fr_7hUUjIUf4-blma_zQ",
+     "title": "Senior Software Engineer, Identity & Access Manage",
+     "company": "Judge Group, Inc.",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 140000,
+      "max_annual": 150000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChZMX0ZyXzdoVVVqSVVmNC1ibG1hX3pREiQw&tsid=100000500",
+     "job_type": "On-site",
+     "benefits": "Medical, Vision, Dental",
+     "days_ago": 21,
+     "application_status": null,
+     "is_external": true
+    },
+    {
+     "listing_key": "1iB8HdVxIZd6PnAdzDIEag",
+     "title": "Senior Electrical Engineer - Power Systems (Relocation)",
+     "company": "Andrew Humphrey Engineering, LLC",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 125000,
+      "max_annual": 135000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChYxaUI4SGRWeElaZDZQbkFkekRJRWFnEiQw&tsid=100000500",
+     "job_type": "Full-time · On-site",
+     "benefits": "Medical, Vision, Paid time off, Retirement",
+     "days_ago": 4,
+     "application_status": null,
+     "is_external": false
+    }
+   ],
+   "status": "OK",
+   "meta": {
+    "count": 5,
+    "offset": 25,
+    "limit": 5,
+    "total": 921
+   },
+   "search_url": "https://www.ziprecruiter.com/jobs-search?search=software+engineer&location=Austin%2C+TX&tsid=100000500",
+   "warnings": [],
+   "conversation_id": "test-conversation-s25"
+  }
+ }
+}

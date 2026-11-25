@@ -30,6 +30,10 @@ export interface JobRow {
   age_days?: number;
   fresh_src?: string;
   age_label?: string;
+  /** The job board a posting came from when it lists many employers ("Dice"; posting.SourceOf). */
+  source?: string;
+  /** The line that board's terms ask a client to show beside its listings (Dice's AI disclosure). */
+  source_note?: string;
 }
 
 /**
@@ -66,7 +70,7 @@ export function parseJobRow(x: unknown): RowParse {
     return { ok: false, error: "the Vani row is missing a field" };
   }
   if (!num(o.relevance) || !num(o.priority) || !num(o.similar)) return { ok: false, error: "the Vani row has a bad score" };
-  for (const k of ["location", "relevance_basis", "fit", "fit_label", "fresh_src", "age_label"]) {
+  for (const k of ["location", "relevance_basis", "fit", "fit_label", "fresh_src", "age_label", "source", "source_note"]) {
     if (o[k] !== undefined && !text(o[k])) return { ok: false, error: `the Vani row has a bad ${k}` };
   }
   if (o.age_days !== undefined && !num(o.age_days)) return { ok: false, error: "the Vani row has a bad age_days" };
@@ -104,7 +108,7 @@ export function applyVaniRow(rel: RelevanceResult, row: JobRow): RelevanceResult
     vani: row,
     score: Math.max(0, Math.min(100, Math.round(row.relevance))),
     fit: fit as RelevanceResult["fit"],
-    fitLabel: `${label} (priority ${Math.round(row.priority)})`,
+    fitLabel: `${label} (priority ${Math.round(row.priority)})${row.source ? ` · via ${row.source}` : ""}`,
   };
 }
 
