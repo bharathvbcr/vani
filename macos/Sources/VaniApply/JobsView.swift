@@ -1479,6 +1479,12 @@ private struct JobRow: View {
                         .foregroundStyle(freshTint)
                         .help(ageHelp)
                 }
+                if let source = job.source {
+                    Text(verbatim: "via \(source)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(job.sourceNote ?? "Listed on \(source), a job board of many employers")
+                }
             }
         }
         .padding(.vertical, 4)

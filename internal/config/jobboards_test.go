@@ -39,7 +39,7 @@ func TestJobBoardBoards(t *testing.T) {
 		"hm unknown filter":    {with(hm, func(b *sources.Board) { b.Filters = map[string][]string{"timezone": {"-5"}} }), "not one of country, seniority, employment_type"},
 		"hm host":              {with(hm, func(b *sources.Board) { b.Host = "evil.example.com" }), "host applies"},
 		"hm url":               {with(hm, func(b *sources.Board) { b.URL = "https://himalayas.app/jobs" }), "url applies"},
-		"hm max postings":      {with(hm, func(b *sources.Board) { b.MaxPostings = 100 }), "applies to wd and oc only"},
+		"hm max postings":      {with(hm, func(b *sources.Board) { b.MaxPostings = 100 }), "applies to wd, oc and ad only"},
 		"ro other token":       {with(ro, func(b *sources.Board) { b.Token = "remote-ok" }), "must be remoteok"},
 		"ro search":            {with(ro, func(b *sources.Board) { b.Search = "golang" }), "search applies to"},
 		"gh search names hm":   {sources.Board{ATS: posting.Greenhouse, Token: "acme", Search: "x"}, " hm,"},

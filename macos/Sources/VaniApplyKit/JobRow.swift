@@ -42,6 +42,11 @@ public struct JobRow: Codable, Equatable, Sendable {
     public var ageDays: Int?
     public var freshSrc: String?
     public var ageLabel: String?
+    /// The job board a posting came from when that board lists many employers ("Dice"), and
+    /// the line its terms ask a client to show beside its listings; nil for an employer's own
+    /// board (posting.SourceOf). Optional fields: older rows omit them.
+    public var source: String?
+    public var sourceNote: String?
 
     enum CodingKeys: String, CodingKey {
         case v, key, title, company, location, status, relevance, priority, fit, reasons, similar
@@ -51,6 +56,8 @@ public struct JobRow: Codable, Equatable, Sendable {
         case ageDays = "age_days"
         case freshSrc = "fresh_src"
         case ageLabel = "age_label"
+        case source
+        case sourceNote = "source_note"
     }
 
     public init(from decoder: Decoder) throws {
@@ -75,6 +82,8 @@ public struct JobRow: Codable, Equatable, Sendable {
         ageDays = try c.decodeIfPresent(Int.self, forKey: .ageDays)
         freshSrc = try c.decodeIfPresent(String.self, forKey: .freshSrc)
         ageLabel = try c.decodeIfPresent(String.self, forKey: .ageLabel)
+        source = try c.decodeIfPresent(String.self, forKey: .source)
+        sourceNote = try c.decodeIfPresent(String.self, forKey: .sourceNote)
     }
 
     /// The row as a JSON object, for the native host to hand the extension

@@ -121,6 +121,26 @@
       "age_days": 95,
       "fresh_src": "posted",
       "age_label": "3mo"
+    },
+    {
+      "v": 1,
+      "key": "dc:dice:46f0d513-ff59-4049-b4ab-9b45d8002fbe",
+      "title": "Machine Learning Engineer",
+      "company": "Example Analytics",
+      "location": "Austin, TX",
+      "status": "scored",
+      "status_label": "Scored",
+      "relevance": 70,
+      "relevance_basis": "rank",
+      "priority": 66,
+      "fit": "partial_fit",
+      "fit_label": "Partial fit",
+      "similar": 0,
+      "age_days": 2,
+      "fresh_src": "posted",
+      "age_label": "2d",
+      "source": "Dice",
+      "source_note": "Dice listings were retrieved through Dice's AI job-search server; check every detail with the employer before you apply."
     }
   ]
 }

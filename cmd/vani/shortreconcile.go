@@ -36,6 +36,13 @@ func (w *wired) boardFetchOf(b sources.Board) boardFetch {
 // daily run cannot kill one on the second day of a short listing, and a board
 // that is short on every run still ages, after the hold. The run record names
 // the shortfall (Boards.Short) and the newly held postings (Boards.Mass).
+//
+// A windowed listing (boardFetch.Windowed: a search that is never listed in
+// full, or one restricted by recency) is reconciled by
+// pipeline.ReconcileWindow: what it leaves out is held the same way, but an
+// empty window is never a true mass absence, and since the window is the
+// board's design rather than a fault it is not warned about on each run. Rows
+// it could not read still win (ReconcileUnreadable), as on any board.
 func (w *wired) reconcileBoard(ctx context.Context, rec *pipeline.Reconciler, b sources.Board, listed []posting.Posting, now time.Time) (pipeline.Summary, error) {
 	f := w.boardFetchOf(b)
 	if f.BadRows > 0 {
@@ -43,6 +50,9 @@ func (w *wired) reconcileBoard(ctx context.Context, rec *pipeline.Reconciler, b 
 		// holds what it leaves out and kills none of it (ReconcileUnreadable).
 		w.warnf("board %s/%s: %d row(s) could not be read; folded as a full listing that holds every posting it leaves out and kills none of them", b.ATS, b.Token, f.BadRows)
 		return rec.ReconcileUnreadable(ctx, b, listed, now)
+	}
+	if f.Windowed {
+		return rec.ReconcileWindow(ctx, b, listed, now)
 	}
 	if short := f.Short; short > 0 {
 		w.warnf("board %s/%s: counted %d job(s) it did not list; folded as a full listing whose absent postings are held as a mass absence, not aged by the ordinary rule", b.ATS, b.Token, short)

@@ -291,13 +291,26 @@ func (e *env) jobsShow(args []string) error {
 	}()
 	return e.reply(*asJSON, out, err, func() {
 		fmt.Fprintf(e.stdout, "%s at %s\n%s\n", out.Title, out.Company, out.URL)
-		for _, line := range []string{out.ApplyFormNote, jobview.SponsorshipLine(out)} {
+		for _, line := range []string{sourceLine(out.Key), out.ApplyFormNote, jobview.SponsorshipLine(out)} {
 			if line != "" {
 				fmt.Fprintln(e.stdout, line)
 			}
 		}
 		fmt.Fprintf(e.stdout, "\n%s\n", out.Description)
 	})
+}
+
+// sourceLine is "Source: Dice. <its note>" for a job board's posting
+// (posting.SourceOf), else "".
+func sourceLine(k posting.Key) string {
+	src := posting.SourceOf(k)
+	if src.Name == "" {
+		return ""
+	}
+	if src.Note == "" {
+		return "Source: " + src.Name
+	}
+	return "Source: " + src.Name + ". " + src.Note
 }
 
 // showJob is what `jobs show` reports for k: the enriched job (keywords, scores,

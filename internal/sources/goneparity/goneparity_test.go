@@ -1,7 +1,8 @@
 // Package goneparity holds one table that puts Workday, Eightfold, Apple,
-// SmartRecruiters, Avature and Oracle HCM side by side on the same question:
-// what does a detail that answers 404 (or
-// fails otherwise) do to a board of n listed postings. tenantparity_test.go
+// SmartRecruiters, Avature, Oracle HCM, TalentBrew and Dice side by side on the
+// same question: what does a detail that answers 404 (Dice's "Job not found"
+// tool error, which is its 404) or fails otherwise do to a board of n listed
+// postings. tenantparity_test.go
 // does the same for the per-tenant boards (Recruitee, Pinpoint, BambooHR,
 // Personio, Breezy, Teamtailor, HireHive and HiBob), on the questions that apply to a board
 // read in one request.
@@ -24,6 +25,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/dice"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/oraclehcm"
 	"github.com/bharathvbcr/Vani/internal/sources/smartrecruiters"
@@ -289,7 +291,7 @@ func oracleFake() fake {
 }
 
 func all() []fake {
-	return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake(), avatureFake(), oracleFake(), talentbrewFake()}
+	return []fake{workdayFake(), eightfoldFake(), appleFake(), smartrecruitersFake(), avatureFake(), oracleFake(), talentbrewFake(), diceFake()}
 }
 
 // ---- talentbrew ----
@@ -378,6 +380,119 @@ func avatureFake() fake {
 		})
 		s := avature.NewWith(d, avature.Options{Report: func(_ sources.Board, st avature.Stats) { rep.add(st.Listed, st.Gone) }, Wait: noWait})
 		return s, sources.Board{ATS: posting.Avature, Token: "twosigma", Company: "Two Sigma", Host: host, URL: "https://" + host + "/careers/OpenRoles"}, rep
+	}}
+}
+
+// ---- dice ----
+
+// diceFake is Dice's MCP endpoint (every call a JSON-RPC POST answered as an
+// event stream): initialize, the initialized notification, one search_jobs
+// page of n rows, and get_job_details per row. Dice has no per-posting 404: a
+// closed job answers get_job_details with the "Job not found" tool error
+// (../dice/testdata/notfound.sse), so bad[i] == notFound() is served as that
+// error for posting i, and any other bad[i] as the HTTP reply it is.
+func diceFake() fake {
+	return fake{"dice", func(t *testing.T, n int, bad map[int]srctest.Reply) (sources.Source, sources.Board, *reports) {
+		if n > dice.MaxDetails {
+			t.Fatalf("n=%d is over dice.MaxDetails (%d): the board would fail before any detail", n, dice.MaxDetails)
+		}
+		rep := &reports{}
+		capture := func(name string) map[string]any {
+			for _, line := range strings.Split(string(read(t, "../dice/testdata/"+name)), "\n") {
+				if data, hit := strings.CutPrefix(line, "data: "); hit {
+					var msg map[string]any
+					if err := json.Unmarshal([]byte(data), &msg); err != nil {
+						t.Fatal(err)
+					}
+					return msg
+				}
+			}
+			t.Fatalf("../dice/testdata/%s has no data line", name)
+			return nil
+		}
+		initMsg, goneMsg := capture("initialize.sse"), capture("notfound.sse")
+		goneText := goneMsg["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+		const zero = "00000000-0000-0000-0000-000000000000"
+		if !strings.HasSuffix(goneText, zero) {
+			t.Fatalf("notfound.sse text %q does not end in the zero guid", goneText)
+		}
+		guidOf := func(i int) string { return fmt.Sprintf("%08x-0000-4000-8000-%012x", 0x1000+i, i) }
+		sse := func(id json.RawMessage, result any) srctest.Reply {
+			raw, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+			return srctest.Reply{Status: 200, Body: []byte("event: message\ndata: " + string(raw) + "\n\n"),
+				Header: http.Header{"Content-Type": {"text/event-stream"}}}
+		}
+		tool := func(id json.RawMessage, sc any) srctest.Reply {
+			return sse(id, map[string]any{"content": []any{map[string]any{"type": "text", "text": "(same as structuredContent)"}}, "structuredContent": sc, "isError": false})
+		}
+		d := srctest.NewFunc(func(r srctest.Request) (srctest.Reply, bool) {
+			if r.Method != http.MethodPost || r.URL != dice.Endpoint {
+				return srctest.Reply{}, false
+			}
+			var msg struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+				Params struct {
+					Name      string         `json:"name"`
+					Arguments map[string]any `json:"arguments"`
+				} `json:"params"`
+			}
+			if json.Unmarshal(r.Body, &msg) != nil {
+				return srctest.Reply{}, false
+			}
+			switch msg.Method {
+			case "initialize":
+				return sse(msg.ID, initMsg["result"]), true
+			case "notifications/initialized":
+				return srctest.Reply{Status: http.StatusAccepted}, true
+			case "tools/call":
+			default:
+				return srctest.Reply{}, false
+			}
+			switch msg.Params.Name {
+			case "search_jobs":
+				if page, _ := msg.Params.Arguments["page_number"].(float64); page != 1 {
+					return srctest.Reply{}, false // one page holds every row
+				}
+				rows := []any{}
+				for i := 0; i < n; i++ {
+					g := guidOf(i)
+					rows = append(rows, map[string]any{
+						"guid": g, "title": fmt.Sprintf("R%d", i), "companyName": "Example Corp",
+						"postedDate": "2026-11-20T10:00:00Z", "modifiedDate": "2026-11-23T10:00:00Z",
+						"jobLocation": map[string]any{"displayName": "Austin, Texas, USA"}, "detailsPageUrl": "https://www.dice.com/job-detail/" + g,
+					})
+				}
+				return tool(msg.ID, map[string]any{"data": rows, "metadata": map[string]any{"page": 1, "pageSize": 100, "total": n, "totalPages": 1}}), true
+			case "get_job_details":
+				g, _ := msg.Params.Arguments["job_id"].(string)
+				var i int64
+				if len(g) != 36 {
+					return srctest.Reply{}, false
+				}
+				if _, err := fmt.Sscanf(g[24:], "%x", &i); err != nil || guidOf(int(i)) != g || int(i) >= n {
+					return srctest.Reply{}, false
+				}
+				if rp, hit := bad[int(i)]; hit {
+					if rp.Status == http.StatusNotFound {
+						text := strings.TrimSuffix(goneText, zero) + g
+						return sse(msg.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}, "isError": true}), true
+					}
+					return rp, true
+				}
+				return tool(msg.ID, map[string]any{"description": "<p>d</p>", "skills": []any{map[string]any{"name": "Go"}}}), true
+			}
+			return srctest.Reply{}, false
+		})
+		s, err := dice.NewWith(d, dice.Options{
+			Stored: func(sources.Board) []posting.Posting { return nil },
+			Report: func(_ sources.Board, st dice.Stats) { rep.add(st.Listed, st.Gone) },
+			Wait:   noWait,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s, sources.Board{ATS: posting.Dice, Token: dice.Token, Company: "Dice", Search: "machine learning engineer"}, rep
 	}}
 }
 

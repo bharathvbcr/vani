@@ -27,11 +27,14 @@ import (
 	"github.com/bharathvbcr/Vani/internal/employer"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/adzuna"
 	"github.com/bharathvbcr/Vani/internal/sources/avature"
+	"github.com/bharathvbcr/Vani/internal/sources/dice"
 	"github.com/bharathvbcr/Vani/internal/sources/himalayas"
 	"github.com/bharathvbcr/Vani/internal/sources/ibm"
 	"github.com/bharathvbcr/Vani/internal/sources/page"
 	"github.com/bharathvbcr/Vani/internal/sources/remoteok"
+	"github.com/bharathvbcr/Vani/internal/sources/ziprecruiter"
 )
 
 const (
@@ -881,6 +884,12 @@ func BoardHost(b sources.Board) (host string, ok bool) {
 		return "himalayas.app", true
 	case posting.RemoteOK:
 		return "remoteok.com", true
+	case posting.ZipRecruiter:
+		return "api.ziprecruiter.com", true
+	case posting.Adzuna:
+		return adzuna.Host, true
+	case posting.Dice:
+		return "mcp.dice.com", true
 	case posting.Amazon:
 		return "www.amazon.jobs", true
 	case posting.Google:
@@ -971,7 +980,8 @@ var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]
 // unsearched listing is the whole company and cannot be paged to the end).
 func searchATS(a posting.ATS) bool {
 	switch a {
-	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.TikTok, posting.Himalayas:
+	case posting.Workday, posting.OracleHCM, posting.Amazon, posting.Google, posting.Apple, posting.Eightfold, posting.Jibe, posting.IBM, posting.TikTok, posting.Himalayas,
+		posting.ZipRecruiter, posting.Adzuna, posting.Dice:
 		return true
 	}
 	return false
@@ -1028,7 +1038,7 @@ var talentBrewToken = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 // same posting twice, so a watchlist holds at most one of each.
 func SingleBoardATS(a posting.ATS) bool {
 	return a == posting.Amazon || a == posting.Google || a == posting.Apple || a == posting.DEShaw || a == posting.Atlassian || a == posting.Meta ||
-		a == posting.Himalayas || a == posting.RemoteOK
+		a == posting.Himalayas || a == posting.RemoteOK || a == posting.ZipRecruiter || a == posting.Dice
 }
 
 func cleanText(s string) bool {
@@ -1044,7 +1054,7 @@ func cleanText(s string) bool {
 func validSearches(b sources.Board) error {
 	if !searchATS(b.ATS) {
 		if b.Search != "" || len(b.Searches) > 0 {
-			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef, jb, hm, ib and tt only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: search applies to wd, oc, az, gg, ap, ef, jb, hm, zr, ad, dc, ib and tt only", b.ATS, b.Token)
 		}
 	}
 	if len(b.Searches) > sources.MaxSearches {
@@ -1104,9 +1114,9 @@ func ValidBoard(b sources.Board) error {
 		posting.Gem, posting.SmartRecruiters, posting.IBM, posting.Avature, posting.DEShaw, posting.Atlassian, posting.Meta, posting.Jobvite, posting.OracleHCM,
 		posting.Rippling, posting.Workable, posting.Recruitee, posting.Pinpoint, posting.BambooHR, posting.Personio,
 		posting.TikTok, posting.TalentBrew, posting.Feed, posting.Page, posting.Breezy, posting.Teamtailor, posting.HireHive, posting.HiBob, posting.Manatal,
-		posting.Himalayas, posting.RemoteOK:
+		posting.Himalayas, posting.RemoteOK, posting.ZipRecruiter, posting.Adzuna, posting.Dice:
 	default:
-		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb, mt, jv, mn, hm, ro", b.ATS)
+		return fmt.Errorf("board ats %q is not one of gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, fd, pg, bz, tm, hv, hb, mt, jv, mn, hm, ro, zr, ad, dc", b.ATS)
 	}
 	if strings.TrimSpace(b.Token) == "" {
 		return fmt.Errorf("board (%s) has an empty token", b.ATS)
@@ -1233,6 +1243,33 @@ func ValidBoard(b sources.Board) error {
 	if b.ATS == posting.RemoteOK && b.Token != remoteok.Token {
 		return fmt.Errorf("board (%s) token %q must be %s", b.ATS, b.Token, remoteok.Token)
 	}
+	if b.ATS == posting.ZipRecruiter {
+		// One MCP server on a fixed host; the token only names the board.
+		if b.Token != ziprecruiter.Token {
+			return fmt.Errorf("board (%s) token %q must be %s", b.ATS, b.Token, ziprecruiter.Token)
+		}
+		if err := ziprecruiter.CheckFilters(b.Filters); err != nil {
+			return fmt.Errorf("ziprecruiter board: %w", err)
+		}
+	}
+	if b.ATS == posting.Dice {
+		// One MCP server on a fixed host; the token only names the board.
+		if b.Token != dice.Token {
+			return fmt.Errorf("board (%s) token %q must be %s", b.ATS, b.Token, dice.Token)
+		}
+		if err := dice.CheckFilters(b.Filters); err != nil {
+			return fmt.Errorf("dice board: %w", err)
+		}
+	}
+	if b.ATS == posting.Adzuna {
+		// The token is the country the API searches, one of its own codes.
+		if !adzuna.ValidCountry(b.Token) {
+			return fmt.Errorf("board (%s) token %q must be one of Adzuna's country codes: %s", b.ATS, b.Token, strings.Join(adzuna.Countries, ", "))
+		}
+		if err := adzuna.CheckFilters(b.Filters); err != nil {
+			return fmt.Errorf("adzuna board %s: %w", b.Token, err)
+		}
+	}
 	if b.ATS == posting.Himalayas {
 		// The API reads one value of each filter: a second would be dropped
 		// silently, not added to the search.
@@ -1245,9 +1282,15 @@ func ValidBoard(b sources.Board) error {
 	if err := validSearches(b); err != nil {
 		return err
 	}
-	if b.MaxPostings != 0 {
+	if b.MaxPostings != 0 && b.ATS == posting.Adzuna {
+		// Adzuna's free tier allows a few hundred requests a day: a lower cap
+		// is how an owner spends fewer of them (50 rows a request).
+		if b.MaxPostings < 1 || b.MaxPostings > adzuna.MaxPostingsCeiling {
+			return fmt.Errorf("board %s/%s: max_postings %d must be within 1..%d (0 means %d)", b.ATS, b.Token, b.MaxPostings, adzuna.MaxPostingsCeiling, adzuna.MaxPostings)
+		}
+	} else if b.MaxPostings != 0 {
 		if b.ATS != posting.Workday && b.ATS != posting.OracleHCM {
-			return fmt.Errorf("board %s/%s: max_postings applies to wd and oc only", b.ATS, b.Token)
+			return fmt.Errorf("board %s/%s: max_postings applies to wd, oc and ad only", b.ATS, b.Token)
 		}
 		if b.MaxPostings < 1 || b.MaxPostings > sources.MaxPostingsCeiling {
 			return fmt.Errorf("board %s/%s: max_postings %d must be within 1..%d (0 means the default)", b.ATS, b.Token, b.MaxPostings, sources.MaxPostingsCeiling)

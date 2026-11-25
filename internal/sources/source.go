@@ -268,9 +268,10 @@ type Board struct {
 	// the systems that have verified ones (see FilterKeys). Each search term
 	// is run with every filter applied.
 	Filters map[string][]string `json:"filters,omitempty"`
-	// MaxPostings sets the most postings the board may list, Workday and Oracle
-	// HCM only: zero is the adapter's default (workday.MaxPostings, 5,000), at most
-	// MaxPostingsCeiling. Listing costs a request per 20 postings at the
+	// MaxPostings sets the most postings the board may list, Workday, Oracle
+	// HCM and Adzuna only: zero is the adapter's default (workday.MaxPostings,
+	// 5,000; adzuna.MaxPostings, 500), at most MaxPostingsCeiling
+	// (adzuna.MaxPostingsCeiling, 1,000, for Adzuna). Listing costs a request per 20 postings at the
 	// per-host pace (about a second each); detail requests are bounded per
 	// run apart from it (workday.MaxDetails). A board over its cap still
 	// fails rather than being truncated.
@@ -326,6 +327,26 @@ var FilterKeys = map[posting.ATS][]string{
 	// parameter is not a union (country=US&country=CA answered CA's 237, and a
 	// comma list is a 400), so config allows one value per filter.
 	posting.Himalayas: {"country", "seniority", "employment_type"},
+	// ZipRecruiter "machine learning engineer" (2026-11-24): 845 US-wide ->
+	// 547 with location "Austin, TX" -> 516 with radius_miles 5; 547 -> 29
+	// with posted_within_days 3. Its total is an estimate that drifts (a
+	// remote, full-time or senior filter raised it while every row matched
+	// the filter), so the list filters were checked on the rows. Values and
+	// their rules are ziprecruiter.CheckFilters'; the list is
+	// ziprecruiter.FilterKeys (config holds the two equal).
+	posting.ZipRecruiter: {"location", "country", "radius_miles", "posted_within_days", "location_type", "employment_type", "seniority"},
+	// Adzuna's documented search parameters (OpenAPI spec, 2026-11-24), one
+	// value each. NOT verified against live counts: no key was available.
+	// Values and their rules are adzuna.CheckFilters'; the list is
+	// adzuna.FilterKeys (config holds the two equal).
+	// Dice "machine learning engineer" (2026-11-24): 2,330 -> 400 with
+	// location "Austin, TX" -> 397 with radius 10 mi; 144 with posted within
+	// 3 days; workplace Remote 347, Hybrid 77, both 422 (a union); FULLTIME
+	// 2,147, with CONTRACTS 2,323 (a union); Direct Hire 1,805; willing to
+	// sponsor 43. A location of "Remote" is ignored, so remote is a workplace
+	// type. Values are dice.CheckFilters'; the list is dice.FilterKeys.
+	posting.Dice:   {"location", "radius_miles", "posted_within_days", "workplace_type", "employment_type", "employer_type", "sponsorship"},
+	posting.Adzuna: {"where", "distance_km", "max_days_old", "category", "salary_min", "full_time", "part_time", "permanent", "contract", "what_exclude", "company"},
 }
 
 // SearchTerms is the board's distinct search terms in order: Search, then

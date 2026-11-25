@@ -13,6 +13,8 @@ package jobview
 import (
 	"fmt"
 	"math"
+
+	"github.com/bharathvbcr/Vani/internal/posting"
 )
 
 // Version is the schema version of Row. Surfaces pin it in their golden
@@ -50,6 +52,12 @@ type Row struct {
 	AgeDays  *int   `json:"age_days,omitempty"`
 	FreshSrc string `json:"fresh_src,omitempty"`
 	AgeLabel string `json:"age_label,omitempty"`
+	// Source names the job board a posting came from when that board lists
+	// many employers ("Dice", "Adzuna"; posting.SourceOf), and SourceNote the
+	// line its terms ask a client to show beside its listings (Dice's AI
+	// disclosure). Both are empty for an employer's own board.
+	Source     string `json:"source,omitempty"`
+	SourceNote string `json:"source_note,omitempty"`
 }
 
 // Reason is one picked reason from a posting's note.
@@ -157,6 +165,8 @@ func Build(in Inputs) Row {
 		Reasons: in.Reasons, AgeDays: in.AgeDays, FreshSrc: in.FreshSrc,
 		AgeLabel: AgeLabel(in.AgeDays, in.FreshSrc),
 	}
+	src := posting.SourceOf(posting.Key(in.Key))
+	r.Source, r.SourceNote = src.Name, src.Note
 	if l := FitLabel(in.RoleFit); l != "" {
 		r.Fit, r.FitLabel = in.RoleFit, l
 	}

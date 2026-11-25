@@ -433,6 +433,9 @@ type boardsReport struct {
 	// Short is rows the boards counted but did not list, together (see
 	// boardReport.Short). Additive: readers that do not know the key ignore it.
 	Short int `json:"short,omitempty"`
+	// Windowed counts read boards whose listing is a window by design
+	// (boardReport.Windowed): their unlisted rows are not in Short. Additive.
+	Windowed int `json:"windowed,omitempty"`
 	// Items holds one entry per tried board, in watchlist order. When the
 	// bounds cut it, failed, skipped, mass and clock-behind boards are kept
 	// before read ones.
@@ -503,6 +506,13 @@ type boardReport struct {
 	// (workday.Stats.Short). The listing is kept, not failed, so the postings
 	// behind those rows go unseen: the board is reconciled as a full listing whose absent postings are mass held (shortreconcile.go).
 	Short int `json:"short,omitempty"`
+	// Windowed says the read board's listing is a window by design (a search
+	// listed in part, or restricted by recency: boardFetch.Windowed): it was
+	// reconciled with pipeline.ReconcileWindow, so what it left out is held and
+	// then closes as expected, and the rows it did not list are not in Short
+	// (only rows it could not read are). Additive: readers that do not know the
+	// key ignore it.
+	Windowed bool `json:"windowed,omitempty"`
 
 	// DeferredSince and ShortSince, set when Deferred or Short is, are when the
 	// board's current streak of good reads with that count began (board

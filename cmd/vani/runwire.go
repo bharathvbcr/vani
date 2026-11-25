@@ -17,6 +17,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/pipeline"
 	"github.com/bharathvbcr/Vani/internal/posting"
 	"github.com/bharathvbcr/Vani/internal/sources"
+	"github.com/bharathvbcr/Vani/internal/sources/adzuna"
 	"github.com/bharathvbcr/Vani/internal/sources/amazon"
 	"github.com/bharathvbcr/Vani/internal/sources/apple"
 	"github.com/bharathvbcr/Vani/internal/sources/ashby"
@@ -25,6 +26,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/bamboohr"
 	"github.com/bharathvbcr/Vani/internal/sources/breezy"
 	"github.com/bharathvbcr/Vani/internal/sources/deshaw"
+	"github.com/bharathvbcr/Vani/internal/sources/dice"
 	"github.com/bharathvbcr/Vani/internal/sources/eightfold"
 	"github.com/bharathvbcr/Vani/internal/sources/feed"
 	"github.com/bharathvbcr/Vani/internal/sources/gem"
@@ -52,6 +54,7 @@ import (
 	"github.com/bharathvbcr/Vani/internal/sources/tiktok"
 	"github.com/bharathvbcr/Vani/internal/sources/workable"
 	"github.com/bharathvbcr/Vani/internal/sources/workday"
+	"github.com/bharathvbcr/Vani/internal/sources/ziprecruiter"
 )
 
 // advanceKind names who asks for the advance phase. The callers share one
@@ -297,6 +300,43 @@ func (w *wired) readBoards(ctx context.Context, d *egress.Client, policy pipelin
 		return pipeline.BoardCounts{}, err
 	}
 	srcs[posting.SmartRecruiters] = sr
+	// ZipRecruiter's search serves at most 30 rows, so its listing is a window
+	// (ziprecruiter.Stats.Windowed): the report carries that to reconcileBoard.
+	zr, err := ziprecruiter.NewWith(d, ziprecruiter.Options{
+		Report: func(b sources.Board, st ziprecruiter.Stats) { w.noteBoardFetch(b, zipRecruiterFetch(st)) },
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.ZipRecruiter] = zr
+	// Dice is SmartRecruiters' shape over MCP: a get_job_details call per new
+	// posting, bounded the same way (stored postings reused, listed rows
+	// prefiltered, at most dice.MaxDetails calls a board a run), and a window
+	// when the board limits it by age (dice.Stats.Windowed).
+	dc, err := dice.NewWith(d, dice.Options{
+		Stored:     storedFor,
+		Unusable:   unusable.has,
+		DropListed: w.listedDrops(policy),
+		Report: func(b sources.Board, st dice.Stats) {
+			w.warnf("board %s/%s: details %+v", b.ATS, b.Token, st)
+			w.noteBoardFetch(b, diceFetch(st))
+		},
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.Dice] = dc
+	// Adzuna is read with the owner's own app id and key (adzunaCredentials:
+	// environment, else the login Keychain), and its listing is a window when
+	// the board limits it by age (adzuna.Stats.Windowed).
+	adz, err := adzuna.NewWith(d, adzuna.Options{
+		Credentials: w.adzunaCredentials,
+		Report:      func(b sources.Board, st adzuna.Stats) { w.noteBoardFetch(b, adzunaFetch(st)) },
+	})
+	if err != nil {
+		return pipeline.BoardCounts{}, err
+	}
+	srcs[posting.Adzuna] = adz
 	// Oracle HCM costs a detail request per posting too, bounded the same way.
 	oc, err := oraclehcm.NewWith(d, oraclehcm.Options{
 		Stored:   storedFor,
@@ -976,6 +1016,9 @@ func apiSources(d egress.Doer) map[posting.ATS]sources.Source {
 		posting.TalentBrew:      talentbrew.New(d),
 		posting.Himalayas:       himalayas.New(d),
 		posting.RemoteOK:        remoteok.New(d),
+		posting.ZipRecruiter:    ziprecruiter.New(d),
+		posting.Adzuna:          adzuna.New(d),
+		posting.Dice:            dice.New(d),
 		posting.Feed:            feed.New(d),
 	}
 }

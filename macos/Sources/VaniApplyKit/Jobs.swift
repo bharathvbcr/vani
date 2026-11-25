@@ -519,6 +519,11 @@ public struct Job: Codable, Identifiable, Equatable, Sendable {
         return [Reason(kind: .other, text: note)]
     }
 
+    /// The job board this posting came from ("Dice") and the note its terms ask to show beside
+    /// it; nil for an employer's own board or a row from an older vani.
+    public var source: String? { row?.source }
+    public var sourceNote: String? { row?.sourceNote }
+
     /// "3d", "5w", "4mo": how old the posting is; "~" marks an age measured
     /// from when Vani first saw it, not a board date.
     public var ageLabel: String? {

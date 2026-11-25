@@ -8,7 +8,7 @@ How to add a new job-board adapter to Vani without duplicating shared rate limit
 
 First verify that an existing generic mechanism does not already cover the board:
 
-1. **Does an existing adapter cover it?** Check all 35 built-in ATS codes in [`internal/posting/posting.go`](../internal/posting/posting.go) (including multi-tenant `wd`, `oc`, `ef`, `jb`, `av`, `tb` and the 8 subdomain adapters `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb`, and the job boards `hm` and `ro`, whose rows each name their own employer).
+1. **Does an existing adapter cover it?** Check every built-in ATS code in [`internal/posting/posting.go`](../internal/posting/posting.go) (including multi-tenant `wd`, `oc`, `ef`, `jb`, `av`, `tb`, the 8 subdomain adapters `rc`, `pp`, `bh`, `ps`, `bz`, `tm`, `hv`, `hb`, the single-site `mt`, `jv`, `mn`, and the job boards `hm`, `ro`, `zr`, `dc` and `ad`, whose rows each name their own employer).
 2. **XML job feed (`fd`)?** If the site serves `<source><job>...</job></source>`, [`internal/sources/feed`](../internal/sources/feed/feed.go) already parses it with zero new code.
 3. **Static or Lightpanda page with JSON-LD `JobPosting` (`pg`)?** If the company has ≤50 roles and embeds `JobPosting` JSON-LD on each role page, use `watchlist add --ats pg --url ... --link-pattern ...` ([`internal/sources/page`](../internal/sources/page/page.go)).
 4. **One-off / heavily authenticated JS board?** Use the browser extension's **Crawl all pages → Vani** (`extension/src/crawler.ts` -> `vani jobs ingest`).
@@ -48,9 +48,13 @@ Every adapter MUST preserve these invariants:
 | **Single GET per-tenant subdomain (`{token}.domain.com`)** | [`internal/sources/hibob/hibob.go`](../internal/sources/hibob/hibob.go), [`recruitee`](../internal/sources/recruitee), [`hirehive`](../internal/sources/hirehive) | `srcutil.CheckTenant`, `srcutil.DoJSON`, `srcutil.CheckCount`, `srcutil.NewRows`, `srcutil.Lead`/`Sections`, add host suffix to `sources.TenantHostSuffix` |
 | **Single GET hosted board (`api.vendor.com/{token}`)** | [`internal/sources/gem`](../internal/sources/gem), [`workable`](../internal/sources/workable), [`greenhouse`](../internal/sources/greenhouse) | `srcutil.CheckBoard`, `srcutil.GetJSONLimit` / `DoJSON`, explicit static host in `config.BoardHost` |
 | **Paginated listing + per-posting detail requests** | [`internal/sources/smartrecruiters/smartrecruiters.go`](../internal/sources/smartrecruiters/smartrecruiters.go), [`bamboohr`](../internal/sources/bamboohr) | `NewWith(d, Options{KeepsBody, Stored, Now, Wait, Report})` + `srcutil.Pacer` + `srcutil.PlanDetails` (`RefreshDays = 30`, `MaxDetails`, `srcutil.MaxGone` for detail 404s) + `srcutil.Relocate` |
+| **A job board's MCP server (Streamable HTTP)** | [`internal/sources/ziprecruiter`](../internal/sources/ziprecruiter) (search only), [`dice`](../internal/sources/dice) (search + bounded detail step) | [`internal/sources/mcphttp`](../internal/sources/mcphttp) (`New`, `Open`, `Call`; a tool's `isError` is `*mcphttp.ToolError`, a 404 is `mcphttp.ErrEndpointGone`, not `srcutil.ErrBoardNotFound`), `srcutil.PostExchange` for a reply whose headers or 202 matter |
+| **An API that needs the owner's key** | [`internal/sources/adzuna`](../internal/sources/adzuna) | `Options.Credentials` injected by `cmd/vani` (environment, then the Keychain through `w.modelKey`); a wrapping `egress.Doer` adds the key to the request, so srcutil, logs and errors never see it, and scrubs every error (`url.Redacted()` hides no query parameter) |
 | **Search / custom host / query filters** | [`internal/sources/workday`](../internal/sources/workday), [`eightfold`](../internal/sources/eightfold), [`oraclehcm`](../internal/sources/oraclehcm) | Register verified filter keys in `sources.FilterKeys`; validate `b.Host` strictly in `config.ValidBoard` and `config.BoardHost`; iterate `b.SearchTerms()` |
 
 ---
+
+**Windowed listings.** A search that can never be listed whole (ZipRecruiter's 10 to 30 rows) or that a recency filter narrows (`posted_within_days`, `max_days_old`) is not the board's whole word: report `Windowed: true` in the adapter's `Stats`, carry it to `boardFetch.Windowed` (`cmd/vani/stagegaps.go`), and the run folds the board with `pipeline.ReconcileWindow` (absent postings held, then closed as expected closures, never a mass failure). A source that lists many employers also gets a `posting.SourceOf` entry, so every surface names it.
 
 ## 4. Complete Wiring Checklist (10 Places)
 

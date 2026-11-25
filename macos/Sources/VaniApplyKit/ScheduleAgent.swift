@@ -176,14 +176,17 @@ public enum ScheduleAgent {
         log.write(ScheduleAgentConstants.storeFailureLine, to: url)
     }
 
-    /// Also the keys the config's providers need (the decision key's item and variable, and
-    /// whether the llm is gemini): a daemon holds the keys it was started with, with
+    /// Also the keys the config's providers need (the decision key's item and variable, whether
+    /// the llm is gemini, and whether the watchlist has an Adzuna board): a daemon holds the keys it was started with, with
     /// VANI_NO_KEYCHAIN set, so switching a provider in Settings must restart it, or it would
     /// keep the old provider's key and the new model would be off until a manual restart.
     static func fingerprint(_ settings: DraftSettings, _ paths: Paths) -> String {
         let route = VaniConfig.decisionKeyRoute(configPath: paths.configPath)
         let llm = VaniConfig.llmProvider(configPath: paths.configPath) ?? ""
-        return "\(paths.configPath)\n\(paths.stateDir)\n\(settings.anthropicAccount)\n\(route.service) \(route.envVar)\n\(llm)"
+        // Adding the first Adzuna board must restart the daemon too: it is started holding the
+        // Adzuna variables only when the watchlist had such a board then.
+        let adzuna = VaniConfig.hasAdzunaBoard(configPath: paths.configPath) ? "adzuna" : ""
+        return "\(paths.configPath)\n\(paths.stateDir)\n\(settings.anthropicAccount)\n\(route.service) \(route.envVar)\n\(llm)\n\(adzuna)"
     }
 
     /// The fingerprint of the settings saved now; nil when they cannot be read, so an edit in

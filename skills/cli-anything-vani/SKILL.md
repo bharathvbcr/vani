@@ -123,7 +123,7 @@ and work while a run holds the ledger.
 **Change setup:**
 
 - `vani init` writes a config and refuses to overwrite one.
-- `vani watchlist add|remove|domain|icon` edits the boards (`watchlist remove` writes a tombstone so the next run closes open postings unless `--keep-postings` is passed; `--close-postings` closes postings for an already-removed board).
+- `vani watchlist add|remove|domain|icon` edits the boards (job boards too: `hm`, `ro`, `zr`, `dc`, and `ad` with the owner's Adzuna key; Indeed has no board, see `skills/indeed-to-vani`) (`watchlist remove` writes a tombstone so the next run closes open postings unless `--keep-postings` is passed; `--close-postings` closes postings for an already-removed board).
 - `vani watchlist discover` reads a third-party site and never edits the watchlist, except
   `--profile --add N`, which adds the top N corroborated new boards (ask the owner first).
 - `vani config motivation|exclude [--set]` reads or replaces those config fields. For `exclude`, prefer

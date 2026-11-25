@@ -1,0 +1,3 @@
+event: message
+data: {"jsonrpc":"2.0","id":8,"result":{"content":[{"type":"text","text":"Error calling tool 'search_jobs': Job search failed: 1 validation error for JobSearchFilters\npostedDate\n  Input should be 'ONE', 'THREE' or 'SEVEN' [type=enum, input_value='NINE', input_type=str]\n    For further information visit https://errors.pydantic.dev/2.12/v/enum"}],"isError":true}}
+

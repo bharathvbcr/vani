@@ -67,19 +67,19 @@ func (e *env) watchlistList(args []string) error {
 
 func (e *env) watchlistAdd(args []string) error {
 	fs := e.newFlags("watchlist add")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem), sr (SmartRecruiters), ib (IBM; tokens ibm and confluent), av (Avature), ds (D. E. Shaw), at (Atlassian), mt (Meta), jv (Jobvite), oc (Oracle HCM), rp (Rippling), wk (Workable), rc (Recruitee), pp (Pinpoint), bh (BambooHR), ps (Personio), tt (TikTok), tb (Radancy TalentBrew), hm (Himalayas job board), ro (Remote OK job board), fd (XML feed), bz (Breezy HR), tm (Teamtailor), hv (HireHive), hb (HiBob), mn (Manatal) or pg (careers page)")
-	token := fs.String("token", "", "board token (workday and oc: tenant/site, e.g. jpmc/CX_1001; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; av: a lower-case slug, e.g. twosigma; rp: the board slug; wk: the account slug; rc, pp, bh, ps, bz, tm, hv and hb: the board's subdomain, e.g. acme for acme.recruitee.com; tb: a lower-case slug, e.g. intuit; gm: the Gem vanity path; mn: the Manatal career-page slug; tt: tiktok; hm: himalayas; ro: remoteok; pg and fd: a short slug)")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az (Amazon), gg (Google), ap (Apple), ef (Eightfold), jb (Jibe), gm (Gem), sr (SmartRecruiters), ib (IBM; tokens ibm and confluent), av (Avature), ds (D. E. Shaw), at (Atlassian), mt (Meta), jv (Jobvite), oc (Oracle HCM), rp (Rippling), wk (Workable), rc (Recruitee), pp (Pinpoint), bh (BambooHR), ps (Personio), tt (TikTok), tb (Radancy TalentBrew), hm (Himalayas job board), ro (Remote OK job board), zr (ZipRecruiter job board), dc (Dice job board), ad (Adzuna job search; needs your Adzuna app id and key), fd (XML feed), bz (Breezy HR), tm (Teamtailor), hv (HireHive), hb (HiBob), mn (Manatal) or pg (careers page)")
+	token := fs.String("token", "", "board token (workday and oc: tenant/site, e.g. jpmc/CX_1001; ef: the company domain; jb: the client code, e.g. amd; sr: the company identifier, e.g. servicenow; av: a lower-case slug, e.g. twosigma; rp: the board slug; wk: the account slug; rc, pp, bh, ps, bz, tm, hv and hb: the board's subdomain, e.g. acme for acme.recruitee.com; tb: a lower-case slug, e.g. intuit; gm: the Gem vanity path; mn: the Manatal career-page slug; tt: tiktok; hm: himalayas; ro: remoteok; zr: ziprecruiter; dc: dice; ad: the country code Adzuna searches, e.g. us or gb; pg and fd: a short slug)")
 	company := fs.String("company", "", "company display name")
 	boardName := fs.String("board-name", "", "the board's literal name on the ATS when it is not --token (ab only): --token hippocratic-ai --board-name \"Hippocratic AI\"")
 	region := fs.String("region", "", "regional host (eu, lever only)")
 	host := fs.String("host", "", "workday host (acme.wd5.myworkdayjobs.com, or wd1.myworkdaysite.com whose tenant is the token's), oc host (jpmc.fa.oraclecloud.com, or eeho.fa.us2.oraclecloud.com), or eightfold, jibe, avature or tb (TalentBrew) careers host (careers.amd.com, jobs.intuit.com)")
 	var searches []string
-	fs.Func("search", "search term (repeatable; wd, oc, az, gg, ap, ef, jb, ib, tt); the board lists their union", func(s string) error {
+	fs.Func("search", "search term (repeatable; wd, oc, az, gg, ap, ef, jb, ib, tt, hm, zr, dc, ad); the board lists their union", func(s string) error {
 		searches = append(searches, s)
 		return nil
 	})
 	var filters map[string][]string
-	fs.Func("filter", "site filter name=value (repeatable; gg, az, ap, ef, jb, sr: country=us; tt: country=Germany)", func(s string) error {
+	fs.Func("filter", "site filter name=value (repeatable; gg, az, ap, ef, jb, sr: country=us; tt: country=Germany; hm: country=US; zr: location=\"Austin, TX\", country=US, posted_within_days=3, location_type=remote; dc: location=\"Austin, TX\", posted_within_days=3, workplace_type=remote, sponsorship=true; ad: where=Austin, max_days_old=7, full_time=true; docs/SETUP.md lists every key)", func(s string) error {
 		k, v, ok := strings.Cut(s, "=")
 		if !ok || k == "" {
 			return fmt.Errorf("filter %q is not name=value", s)
@@ -211,7 +211,7 @@ func (e *env) setBoardField(args []string, label, field, help string, set func(*
 
 func (e *env) watchlistRemove(args []string) error {
 	fs := e.newFlags("watchlist remove")
-	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, hm, ro, fd, bz, tm, hv, hb or pg")
+	ats := fs.String("ats", "", "ATS: gh, lv, ab, wd, az, gg, ap, ef, jb, gm, sr, ib, av, ds, at, oc, rp, wk, rc, pp, bh, ps, tt, tb, hm, ro, zr, dc, ad, fd, bz, tm, hv, hb or pg")
 	token := fs.String("token", "", "board token")
 	keep := fs.Bool("keep-postings", false, "leave the board's open postings open (by default the next run closes them, and adding the board back reopens them)")
 	closeAbsent := fs.Bool("close-postings", false, "close the board's open postings at the next run even when it is no longer on the watchlist (a board removed before removal closed them)")

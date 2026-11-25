@@ -1,0 +1,122 @@
+{
+ "jsonrpc": "2.0",
+ "id": 0,
+ "result": {
+  "content": [
+   {
+    "type": "text",
+    "text": "(trimmed: the live reply repeats structuredContent as text)"
+   }
+  ],
+  "structuredContent": {
+   "request": {
+    "job_role": "software engineer",
+    "location": "Austin, TX",
+    "filters": {
+     "country_admin_code": "US"
+    }
+   },
+   "results": [
+    {
+     "listing_key": "Ew9h4IzpNQTQCBgRcxjwmw",
+     "title": "Software Engineer (part-time work from home) - AI Trainer",
+     "company": "DataAnnotation",
+     "location": "Austin, Texas",
+     "is_remote": true,
+     "salary": {
+      "min_annual": 80000,
+      "max_annual": 250000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChZFdzloNEl6cE5RVFFDQmdSY3hqd213EiQw&tsid=100000500",
+     "job_type": "Contractor · Remote optional",
+     "benefits": null,
+     "days_ago": 0,
+     "application_status": null,
+     "is_external": true
+    },
+    {
+     "listing_key": "MBgmmSHgNLagbiJrIbkQMQ",
+     "title": "Software Engineer II - Test Solutions Center",
+     "company": "Raytheon",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 68900,
+      "max_annual": 131100
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChZNQmdtbVNIZ05MYWdiaUpySWJrUU1REiQw&tsid=100000500",
+     "job_type": "Full-time · On-site",
+     "benefits": "Medical, Vision, Dental, Paid time off, Life insurance, Retirement",
+     "days_ago": 19,
+     "application_status": null,
+     "is_external": true
+    },
+    {
+     "listing_key": "yrStUrmGlkK_El7osE3kJA",
+     "title": "Software Engineer II, Annapurna Labs ML Acceleration Systems Software",
+     "company": "Annapurna Labs (U.S.) Inc.",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 143700,
+      "max_annual": 194400
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChZ5clN0VXJtR2xrS19FbDdvc0Uza0pBEiQw&tsid=100000500",
+     "job_type": "Full-time · On-site",
+     "benefits": "Medical, Vision, Dental, Paid time off, Life insurance, Retirement",
+     "days_ago": 0,
+     "application_status": null,
+     "is_external": true
+    },
+    {
+     "listing_key": "8MTv1P3bhcSfLSHwbuvGuQ",
+     "title": "Security Systems Engineer, AWS Infrastructure Security Product & Solutions, Security Products and So",
+     "company": "Amazon Data Services, Inc.",
+     "location": "Austin, Texas",
+     "is_remote": false,
+     "salary": {
+      "min_annual": 117300,
+      "max_annual": 160000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=Cp8BChY4TVR2MVAzYmhjU2ZMU0h3YnV2R3VREiQw&tsid=100000500",
+     "job_type": "Full-time · On-site",
+     "benefits": "Medical, Vision, Dental, Paid time off, Life insurance, Retirement",
+     "days_ago": 12,
+     "application_status": null,
+     "is_external": true
+    },
+    {
+     "listing_key": "4sibQaqgKga1vmxrjJ_nxA",
+     "title": "Mid-Level Software Engineer - Remote (Austin, TX)",
+     "company": "Trophy Scan",
+     "location": "Austin, Texas",
+     "is_remote": true,
+     "salary": {
+      "min_annual": 110000,
+      "max_annual": 130000
+     },
+     "company_logo": null,
+     "job_redirect_url": "https://www.ziprecruiter.com/job-redirect?match_token=CpQBChY0c2liUWFxZ0tnYTF2bXhyakpfbnhBEiQw&tsid=100000500",
+     "job_type": "Full-time · Remote",
+     "benefits": "Medical, Retirement",
+     "days_ago": 0,
+     "application_status": null,
+     "is_external": true
+    }
+   ],
+   "status": "OK",
+   "meta": {
+    "count": 5,
+    "limit": 5,
+    "total": 920
+   },
+   "search_url": "https://www.ziprecruiter.com/jobs-search?search=software+engineer&location=Austin%2C+TX&tsid=100000500",
+   "warnings": [],
+   "conversation_id": "test-conversation-s0"
+  }
+ }
+}

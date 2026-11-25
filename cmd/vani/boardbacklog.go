@@ -40,7 +40,8 @@ func trackBacklog(r boardHealthRec, e boardReport, f boardFetch, at time.Time) b
 		return r
 	}
 	r.DeferredSince = streak(r.DeferredSince, f.Deferred > 0, at)
-	r.ShortSince = streak(r.ShortSince, f.Short > 0, at)
+	// A windowed board's unlisted rows are its design: no short streak.
+	r.ShortSince = streak(r.ShortSince, f.Short > 0 && !f.Windowed, at)
 	return r
 }
 
@@ -158,7 +159,9 @@ func deferredBacklogLines(b *boardsReport, at time.Time) []string {
 // (when withStale; the digest lists them in a section of their own), boards
 // skipped this run, and boards whose listing has been short for over
 // boardStaleAfter: what they leave out is held for the mass hold from each
-// posting's own first miss, then dies (Summary.ShortDead). "" when there are none. Names
+// posting's own first miss, then dies (Summary.ShortDead). A windowed board
+// (boardReport.Windowed) is never named there: its listing is partial by
+// design. "" when there are none. Names
 // are bounded (maxAttentionNames per kind); the counts are exact.
 func boardAttentionLine(b *boardsReport, at time.Time, withStale bool) string {
 	if b == nil {
@@ -177,7 +180,7 @@ func boardAttentionLine(b *boardsReport, at time.Time, withStale bool) string {
 		switch {
 		case it.Outcome == boardSkipped:
 			skipped = append(skipped, boardName(it))
-		case it.Outcome == boardRead && it.Short > 0 && streakAge(it.ShortSince, at) > boardStaleAfter:
+		case it.Outcome == boardRead && it.Short > 0 && !it.Windowed && streakAge(it.ShortSince, at) > boardStaleAfter:
 			long = append(long, boardName(it)+" "+ageText(streakAge(it.ShortSince, at)))
 		}
 	}
