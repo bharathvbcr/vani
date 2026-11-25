@@ -29,7 +29,7 @@ var board = sources.Board{ATS: posting.Himalayas, Token: Token, Company: "Himala
 const page1 = "https://himalayas.app/jobs/api/search?country=US&page=1&q=machine+learning"
 
 func withDoer(d *srctest.Doer) *source {
-	return &source{d: d, now: func() time.Time { return fixedNow }}
+	return &source{d: d, now: func() time.Time { return fixedNow }, wait: func(ctx context.Context, _ time.Duration) error { return ctx.Err() }}
 }
 
 // row is one valid search row for job id.
@@ -354,5 +354,25 @@ func TestHugeLocationListIsKeptWhole(t *testing.T) {
 	got, err := withDoer(srctest.New(map[string]srctest.Reply{page1: {Status: 200, Body: []byte(body)}})).List(context.Background(), board)
 	if err != nil || len(got) != 1 || !strings.HasSuffix(got[0].Location, "; United States") {
 		t.Fatalf("got %+v, %v", got, err)
+	}
+}
+
+func TestPagesArePaced(t *testing.T) {
+	var waits []time.Duration
+	s := withDoer(pager(t, func(string) int { return 45 }, func(_ string, i int) string { return row(strconv.Itoa(i)) }))
+	s.wait = func(ctx context.Context, d time.Duration) error {
+		waits = append(waits, d)
+		return ctx.Err()
+	}
+	if _, err := s.List(context.Background(), board); err != nil {
+		t.Fatal(err)
+	}
+	if len(waits) != 2 {
+		t.Fatalf("waits = %v, want 2 gaps across 3 pages", waits)
+	}
+	for _, w := range waits {
+		if w != paceEvery {
+			t.Fatalf("wait = %v, want %v", w, paceEvery)
+		}
 	}
 }

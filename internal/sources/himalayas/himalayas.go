@@ -54,6 +54,10 @@ const (
 	// worldwide is the location of a row with no location restrictions,
 	// which the docs define as open worldwide.
 	worldwide = "Worldwide"
+	// paceEvery spaces Himalayas search requests below its ~35 req/min burst
+	// limit observed live (2026-11-24: 38 calls at 1/s hit HTTP 429 Retry-After 36s).
+	paceEvery  = 2 * time.Second
+	paceBudget = 10 * time.Minute
 )
 
 // ErrShape is a response whose layout is not the one this source knows.
@@ -67,12 +71,13 @@ const slug = `[a-z0-9](?:[a-z0-9-]{0,298}[a-z0-9])?`
 var guidRE = regexp.MustCompile(`^https://himalayas\.app/companies/(` + slug + `)/jobs/(` + slug + `)$`)
 
 type source struct {
-	d   egress.Doer
-	now func() time.Time
+	d    egress.Doer
+	now  func() time.Time
+	wait func(ctx context.Context, d time.Duration) error
 }
 
 // New returns the Himalayas source, sending requests through d.
-func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now} }
+func New(d egress.Doer) sources.Source { return &source{d: d, now: time.Now, wait: srcutil.Sleep} }
 
 func (*source) ATS() posting.ATS { return posting.Himalayas }
 
@@ -118,11 +123,12 @@ func (s *source) List(ctx context.Context, b sources.Board) ([]posting.Posting, 
 		return nil, fmt.Errorf("himalayas %q: %w", b.Token, err)
 	}
 	seen := s.now()
+	pace := &srcutil.Pacer{Every: paceEvery, Budget: paceBudget, Sleep: s.wait}
 	var out []posting.Posting
 	keys := map[posting.Key]bool{}
 	rows := srcutil.NewRows(ctx, b, 0)
 	for _, term := range terms {
-		jobs, err := s.search(ctx, term, b.Filters)
+		jobs, err := s.search(ctx, pace, term, b.Filters)
 		if err != nil {
 			return nil, fmt.Errorf("himalayas %q: search %q: %w", b.Token, term, err)
 		}
@@ -181,11 +187,11 @@ func pageURL(term string, filters map[string][]string, page int) string {
 // latest word on the size of a listing that changes while it is read: rows
 // shifted onto a page already read are dropped as repeats, and a page that
 // adds nothing while the total is still unmet is ErrShape.
-func (s *source) search(ctx context.Context, term string, filters map[string][]string) ([]job, error) {
+func (s *source) search(ctx context.Context, pace *srcutil.Pacer, term string, filters map[string][]string) ([]job, error) {
 	var out []job
 	ids := map[string]bool{}
 	for page := 1; page <= maxPages; page++ {
-		if err := ctx.Err(); err != nil {
+		if err := pace.Wait(ctx); err != nil {
 			return nil, err
 		}
 		var resp response

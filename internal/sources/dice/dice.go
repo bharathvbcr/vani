@@ -19,7 +19,7 @@
 //     and more. It answers data[] (guid, title, a ~500-character plain-text
 //     summary, postedDate and modifiedDate in RFC 3339, jobLocation
 //     {displayName} or null on a remote row, detailsPageUrl
-//     www.dice.com/job-detail/{guid} with utm_source naming the client,
+//     www.dice.com/job-detail/{guid} or /direct-apply/{guid} with utm_source naming the client,
 //     free-text salary, companyName, employmentType such as "Contract, Third
 //     Party", workplaceTypes, isRemote, willingToSponsor ...) and metadata
 //     {page, pageSize, total, totalPages, ...}. A page past totalPages is an
@@ -517,9 +517,10 @@ func utc(t time.Time) time.Time {
 }
 
 // checkPage accepts an empty detailsPageUrl or one that is the row's own page,
-// https://www.dice.com/job-detail/{guid}, whatever its query. The posting's
-// URL is built from the guid, without the query (whose utm_source echoes the
-// client's name), so this only refuses a row that points somewhere else.
+// https://www.dice.com/job-detail/{guid} or /direct-apply/{guid}, whatever its
+// query. The posting's URL is built from the guid, without the query (whose
+// utm_source echoes the client's name), so this only refuses a row that points
+// somewhere else.
 func checkPage(raw, guid string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -530,8 +531,8 @@ func checkPage(raw, guid string) error {
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Hostname(), "www.dice.com") || u.Port() != "" ||
-		!strings.EqualFold(u.Path, "/job-detail/"+guid) {
-		return fmt.Errorf("%w: detailsPageUrl is not the job's www.dice.com/job-detail page", ErrShape)
+		(!strings.EqualFold(u.Path, "/job-detail/"+guid) && !strings.EqualFold(u.Path, "/direct-apply/"+guid)) {
+		return fmt.Errorf("%w: detailsPageUrl is not the job's www.dice.com page", ErrShape)
 	}
 	return nil
 }

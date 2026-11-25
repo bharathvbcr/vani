@@ -231,6 +231,26 @@ func TestStoredFromAnotherBoardIgnored(t *testing.T) {
 	}
 }
 
+func TestDirectApplyDetailsPageAccepted(t *testing.T) {
+	gs := guids(0, 2)
+	f := newFake(t, map[string][]string{"applied AI": gs})
+	f.edit = func(g string, row map[string]any) {
+		if g == gs[1] {
+			row["detailsPageUrl"] = "https://www.dice.com/direct-apply/" + g + "?utm_source=vani-test&utm_medium=mcp"
+		}
+	}
+	got, err := src(f.doer(), nil).List(context.Background(), diceBoard("applied AI"))
+	if err != nil {
+		t.Fatalf("direct-apply row rejected: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d postings, want 2", len(got))
+	}
+	if got[1].URL != "https://www.dice.com/job-detail/"+gs[1] {
+		t.Fatalf("URL = %q, want canonical job-detail page", got[1].URL)
+	}
+}
+
 // listPayload runs one listing of the rows in payload (a JSON array) with a
 // detail answering each, for rowstest.
 func listPayload(t *testing.T) func(ctx context.Context, payload string) ([]posting.Posting, error) {
@@ -280,8 +300,9 @@ func TestBadRows(t *testing.T) {
 			"empty company":    bad(func(r map[string]any) { r["companyName"] = "\u00a0" }),
 			"bad postedDate":   bad(func(r map[string]any) { r["postedDate"] = "yesterday" }),
 			"bad modifiedDate": bad(func(r map[string]any) { r["modifiedDate"] = "2026-13-01" }),
-			"foreign page":     bad(func(r map[string]any) { r["detailsPageUrl"] = "https://evil.example/job-detail/x" }),
-			"script page":      bad(func(r map[string]any) { r["detailsPageUrl"] = "javascript:alert(1)" }),
+			"foreign page":           bad(func(r map[string]any) { r["detailsPageUrl"] = "https://evil.example/job-detail/x" }),
+			"direct-apply wrong id":  bad(func(r map[string]any) { r["detailsPageUrl"] = "https://www.dice.com/direct-apply/00000000-0000-4000-8000-ffffffffffff" }),
+			"script page":            bad(func(r map[string]any) { r["detailsPageUrl"] = "javascript:alert(1)" }),
 		},
 	})
 }
