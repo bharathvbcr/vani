@@ -1,0 +1,41 @@
+# Interface contract: native messaging between the browser extension and the Mac
+# app (macos/Sources/VaniApplyKit/NativeProtocol.swift header comment). Not an
+# HTTP service; spec init places the contract file at contracts/service.yaml.
+contract: native-messaging
+transport:
+  chrome: "length-prefixed JSON on stdio, served by macos/Sources/vani-apply-host/main.swift"
+  safari: "Foundation objects through SFExtensionMessageKey, served by the Safari native extension"
+handler: macos/Sources/VaniApplyKit/NativeMessaging.swift
+client: [extension/src/nativeport.ts, extension/src/background.ts]
+operations:
+  ping:
+    request: { op: ping }
+    reply: { ok: true, protocol: 1, rev: "N" }
+  get:
+    request: { op: get }
+    reply: { rev: "N", bank: "{...}" }
+  put:
+    request: { op: put, baseRev: "N", bank: "{...}" }
+    reply_ok: { rev: "N+1", droppedSecret: "K" }
+    reply_conflict: { conflict: true, rev: "M", bank: "{...} (the current bank; nothing was overwritten)" }
+  log:
+    request: { op: log, entry: { event: "...", host: "optional", counts: "optional {...}" } }
+    reply: { ok: true }
+  draft:
+    request: { op: draft, request: { question: "...", job: "{...}", max_words: "optional N", attempt: "optional N" } }
+    reply_ok: { draft: "...", model: "...", evidence_items: "..." }
+    reply_error: { error: "...", code: "..." }
+  contacts:
+    put: { request: { op: put, key: "...", text: "..." }, reply: "{stored: true} | {error, code: E_JARVIS | E_BAD_REQUEST | unavailable}" }
+    list: { request: { op: list }, reply: "{keys: [...]} | {error, code}; a missing bank executable is an error, never {keys: []}" }
+    get: { request: { op: get, key: "..." }, reply: "{key, text} | {error, code}" }
+    choose: { request: { op: choose, label: "...", kind: "..." }, reply: "{status: filled, key, text, review: true} | {status: none|refused|empty|skipped|missing, detail?} | {status: not_run, note: 'the check did not run'}" }
+    import: { request: { op: import, items: "[{key, text}]" } }
+  jobsIngest:
+    source: docs/EXTENSION_INGEST.md
+    request: { op: jobsIngest, page: { url: "...", title: "..." }, save_search: "bool", jobs: "[...]" }
+    behaviour: "the host runs `vani jobs ingest --json` with the request minus op on stdin; the Go side validates and spools it"
+rules:
+  - "A put whose baseRev is older than the stored revision returns a conflict and writes nothing."
+  - "A check that could not run is reported as not_run or an error, never as an empty success."
+  - "Reply shapes above are copied from the header comment as read; the comment lists more operations after contacts import that were not read for this spec."

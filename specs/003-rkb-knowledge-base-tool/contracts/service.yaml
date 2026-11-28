@@ -1,0 +1,54 @@
+# Interface contract: the rkb command surface (usage text and flag table in rkb/main.go)
+# and the claims export Vani reads (ClaimsFile in rkb/render.go, consumed by
+# internal/kbsync). Not an HTTP service; spec init places the contract file at
+# contracts/service.yaml. Field names only; no career data.
+contract: rkb
+binary: "built from the nested module rkb/ with GOWORK=off; Vani runs the path in its config key kb.rkb"
+environment_from_vani: [PATH, HOME, TMPDIR, RKB_CODE_ROOT]
+flags:
+  unknown_or_repeated: refused
+  common: ["--code-root <dir> (or RKB_CODE_ROOT)", "RKB_CHROME=<chrome binary>"]
+commands:
+  content: ["bank import-tex", "bank check", "bank set", compose]
+  claims: ["claims vm", "claims export", "claims status", "claims worksheet", "claims ingest", "claims add", eco, kbcheck]
+  words: [lint, review]
+  outputs: [render, fit, ats, docx, latex, build, finalize]
+  environment: [doctor, setup, version]
+finalize:
+  # Ordered; any failure stops (header comment of rkb/finalize.go).
+  checks:
+    - "claims.json is for this exact resume, fresh; validator report fresh"
+    - "ecosystem report fresh and every declared link VERIFIED or PARTIAL"
+    - "lint --final"
+    - "render --final"
+    - "fit --strict --final"
+    - "ATS text layer"
+    - "Word export within the page count"
+    - "LaTeX"
+  output: "staged, then published"
+  manifest: { file: manifest.json, fields: [resume, resume_hash, finalized, checks, inputs_sha256, outputs_sha256, figures, page_fill, font_pt, docx_font_pt, docx_pages, attested] }
+claims_export:
+  command: "rkb claims export --used-in <resume> --vm-report <report> [--out claims.json]"
+  type: ClaimsFile (rkb/render.go)
+  fields:
+    generated: string
+    resume_hash: string
+    claims_tex_sha256: "string; empty means an older rkb wrote it"
+    selection: string
+    vm_report: "map string -> string"
+    claims:
+      "<claim id>": { value: string, kind: string, check: string, source: string, double_verified: bool, confirmed_sentences: "[string]", problems: "[string]", caution: "string, optional", refuted_sentences: "map sentence hash -> verdict, optional" }
+    statements: "map id -> StatementView (rkb/render.go)"
+    guards: "int; 0 means an older rkb wrote it and the refuted-wording check cannot run"
+files_written:
+  rule: "atomic replace (temp file, fsync, one rename); shared files under an advisory <file>.lock and a sha256 compare-and-swap (rkb/safeio.go)"
+  shared: [bank.json, Claims.verify.json]
+  byte_contract: "rkb/testdata/json-contract/*.golden.json"
+vani_eligibility:
+  owner: internal/kbsync/eligible.go
+  rule:
+    - "a current selection (config kb.selections) lists the bullet"
+    - "every claim token it uses resolves to a value"
+    - "no token flagged CAUTION is used unless the bullet's caution_ok names it"
+    - "for an HR reader and a hiring-manager reader each: the latest round-2 verdict on this exact wording (text_hash) is a pass, with a second pass behind it; the round-2 reviewer is named, is not drafter and is not the author; one reviewer is not both roles"
+  runner: "internal/rkbexec ExecRunner: bounded time and output, whole process tree stopped on timeout or cancel"

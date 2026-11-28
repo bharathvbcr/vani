@@ -4,7 +4,7 @@
 # scripts/bootstrap.sh, on Linux and macOS; the Swift suite needs the owner's signing identity, so swift,
 # bun and types run here, on this Mac.
 #
-#   scripts/test.sh [--suite go,swift,bun,types] [--bg] [--ui] [--strict] [--fresh] [--race] [--keep N]
+#   scripts/test.sh [--suite go,swift,bun,types,specs] [--bg] [--ui] [--strict] [--fresh] [--race] [--keep N]
 #   scripts/test.sh status          # summary of the newest run (works while it is still going)
 #
 # Suites run concurrently, each logging to <run>/<suite>.log; the summary prints one line per suite:
@@ -17,6 +17,8 @@
 #          so they are NOT RUN unless --ui; a default run, and --bg, never opens a window or takes focus.
 #   bun    bun test --parallel over extension/test, then a serial re-run of any file that failed
 #   types  extension/scripts/typecheck.sh (bun test does not type-check)
+#   specs  devcouncil spec validate --all --strict, run in the repo root (every specs/NNN-* directory). Needs the
+#          devcouncil binary; without it the suite FAILS (it never passes unrun). Not run by hosted CI.
 #
 # --bg runs the whole thing detached, returns at once, and never posts a notification (nor, without --ui, a
 #   window). Read it with `scripts/test.sh status`; the exit code of the run is in <run>/exit. It is NOT
@@ -45,7 +47,7 @@ skip_capable_classes() {
   done | grep -Ev "^($WINDOW_TESTS)\$" | sort -u | paste -sd'|' -
 }
 
-SUITES="go,swift,bun,types"
+SUITES="go,swift,bun,types,specs"
 BG=0
 STRICT=0
 RACE=0
@@ -69,18 +71,18 @@ while [ $# -gt 0 ]; do
     --ui) UI=1 ;;
     --keep) shift; [ $# -gt 0 ] || die "--keep needs a number"; KEEP="$1" ;;
     --run-dir) shift; RUN_DIR="$1" ;;   # internal: the detached child of --bg
-    *) die "unknown argument $1 (usage: scripts/test.sh [status] [--suite go,swift,bun,types] [--bg] [--ui] [--strict] [--fresh] [--race] [--keep N])" ;;
+    *) die "unknown argument $1 (usage: scripts/test.sh [status] [--suite go,swift,bun,types,specs] [--bg] [--ui] [--strict] [--fresh] [--race] [--keep N])" ;;
   esac
   shift
 done
 case "$KEEP" in ''|*[!0-9]*) die "--keep needs a number" ;; esac
 for s in ${SUITES//,/ }; do
-  case "$s" in go|swift|bun|types) ;; *) die "unknown suite '$s' (go, swift, bun, types)" ;; esac
+  case "$s" in go|swift|bun|types|specs) ;; *) die "unknown suite '$s' (go, swift, bun, types, specs)" ;; esac
 done
 
 summary() { # print <run>/<suite>.result lines in a fixed order
   local d="$1" s
-  for s in go swift bun types; do
+  for s in go swift bun types specs; do
     [ -f "$d/$s.result" ] && printf '%-6s %s\n' "$s" "$(cat "$d/$s.result")"
   done
 }
@@ -130,6 +132,17 @@ run_types() {
     finish types pass 0 "$t0"
   else
     finish types "FAIL (see types.log)" 1 "$t0"
+  fi
+}
+
+run_specs() {
+  local t0 log="$RUN_DIR/specs.log"; t0=$(now)
+  # Plain invocation, in the repo root (the command rejects a relative --project-root). A missing devcouncil
+  # binary is a non-zero exit and so a FAIL: the gate never passes by not running.
+  if (cd "$ROOT" && devcouncil spec validate --all --strict) > "$log" 2>&1; then
+    finish specs pass 0 "$t0"
+  else
+    finish specs "FAIL (see specs.log; needs the devcouncil binary on PATH)" 1 "$t0"
   fi
 }
 

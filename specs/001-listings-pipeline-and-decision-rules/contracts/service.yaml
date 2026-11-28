@@ -1,0 +1,25 @@
+# Interface contract: the ledger event line (internal/ledger/types.go) and the
+# posting status vocabulary (internal/posting/posting.go). Not an HTTP service;
+# spec init places the contract file at contracts/service.yaml.
+contract: ledger-event
+format: "JSON Lines, one object per line, append-only; schema version in field v"
+source:
+  event: internal/ledger/types.go
+  statuses: internal/posting/posting.go
+event:
+  v: { type: integer, note: "schema version, currently 1" }
+  at: { type: string, format: date-time }
+  key: { type: string, note: "posting.Key, the identity of the posting" }
+  status: { type: string, enum: [discovered, live, triaged, unsure, scored, explained, digested, dead, duplicate, dropped] }
+  posting: { type: object, optional: true, note: "set when the event carries a new or changed posting version" }
+  annotations: { type: object, optional: true, note: "typed results (triage slots, scores, explanation, duplicate-of key); values are short strings; no personal data" }
+  reason: { type: string, optional: true, note: "why the status changed, for the digest and audit" }
+status_notes:
+  unsure: "triage could not decide; the posting is kept and flagged in the digest"
+  dropped: "removed by an engine rule keyed on a triage annotation, never by a model answer on its own"
+  dead: "the board no longer lists it"
+  duplicate: "folded into another posting key"
+rules:
+  - "Readers must refuse an unknown v rather than guess."
+  - "The folded Record may have an empty Description when BodyEvicted is true."
+  - "One writer holds the ledger lock at a time; other processes spool batches through internal/inbox."
